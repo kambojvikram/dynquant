@@ -6,10 +6,10 @@ torch minor and CUDA major it was linked against, so a release is a *matrix* of
 wheels for the same source. PEP 440 has exactly one place to record that -- the
 local version segment -- and torch itself uses it (``2.7.1+cu126``). So::
 
-    0.1.0.dev0  ->  0.1.0.dev0+cu126torch27
+    0.1.0  ->  0.1.0+cu126torch27
 
 pip treats the local segment as a build variant of the same release, which is what
-makes ``dynquant-kernels>=0.1.0.dev0,<0.2`` in the meta package resolve to
+makes ``dynquant-kernels>=0.1.0,<0.2`` in the meta package resolve to
 whichever variant an index offers, while a ``==`` pin on the full string selects
 one exactly.
 
