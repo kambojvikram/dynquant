@@ -1166,7 +1166,7 @@ def build() -> Sheet:
         rw,
         AUDIT_ITEMS,
         "Wheel hygiene",
-        "manylinux_2_28_x86_64",
+        "manylinux_2_34_x86_64",
         TORCH,
         height=h3,
     )

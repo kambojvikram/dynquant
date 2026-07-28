@@ -6,7 +6,7 @@
 # wheel per (torch minor x CUDA major.minor x CPython), and PEP 440's local version
 # segment is where that is recorded -- exactly as torch does it:
 #
-#     dynquant_kernels-0.1.0+cu126torch27-cp311-cp311-manylinux_2_28_x86_64.whl
+#     dynquant_kernels-0.1.0+cu126torch27-cp311-cp311-manylinux_2_34_x86_64.whl
 #
 # PyPI rejects local versions, so precisely one cell -- the most common combination
 # -- is built plain and published there, and every other variant is attached to the
@@ -90,27 +90,44 @@ jobs:
           # on a different torch gets an undefined-symbol ImportError, which
           # _loader.py turns into the exact wheel name to install instead -- the
           # accepted cost of PyPI having room for only one variant.
+          #
+          # The image's CUDA and `torch_index`'s CUDA must be the *same* version, not
+          # merely the same major. `CIBW_REPAIR_WHEEL_COMMAND` below excludes
+          # `libcudart.so.*` so the wheel uses torch's bundled runtime; a `_C.so`
+          # compiled by nvcc 12.8 against a torch carrying cudart 12.6 can then want a
+          # symbol that runtime does not have, and the failure lands on the user at
+          # import. So the pairings here are exact, and that requirement -- not
+          # preference -- is what selects the images: of the published CUDA manylinux
+          # images, only the `manylinux_2_34` family has versions that any torch build
+          # actually ships. (The `2_28` family stops at CUDA 12.3, which no torch wheel
+          # is built against, so it cannot be paired exactly at all.)
+          #
+          # Consequence, stated plainly because it is user-visible: these wheels need
+          # glibc >= 2.34 -- Ubuntu 22.04, Debian 12, RHEL 9 and newer. Older hosts fall
+          # back to the sdist and need a CUDA toolkit. This matches the floor the one
+          # manually verified wheel already had (see the P0 notes in CHANGELOG.md);
+          # auditwheel refuses to label a wheel with a lower `--plat` than its symbols
+          # require, so this cannot silently regress into a mislabelled wheel.
           - label: "cu126 / torch 2.7"
             cuda: "12.6"
             torch: "2.7.1"
             torch_index: "https://download.pytorch.org/whl/cu126"
-            image: "sameli/manylinux_2_28_x86_64_cuda_12.6"
+            image: "sameli/manylinux_2_34_x86_64_cuda_12.6@sha256:be84b5937b2f6e02ee584226e54394976026b5f4489de113d3f2df2171a74b62"
             cibw_build: "cp310-* cp311-* cp312-* cp313-*"
             default: true
-          - label: "cu124 / torch 2.6"
-            cuda: "12.4"
+          - label: "cu126 / torch 2.6"
+            cuda: "12.6"
             torch: "2.6.0"
-            torch_index: "https://download.pytorch.org/whl/cu124"
-            image: "sameli/manylinux_2_28_x86_64_cuda_12.4"
+            torch_index: "https://download.pytorch.org/whl/cu126"
+            image: "sameli/manylinux_2_34_x86_64_cuda_12.6@sha256:be84b5937b2f6e02ee584226e54394976026b5f4489de113d3f2df2171a74b62"
             cibw_build: "cp310-* cp311-* cp312-* cp313-*"
             default: false
-          - label: "cu121 / torch 2.4"
-            cuda: "12.1"
-            torch: "2.4.1"
-            torch_index: "https://download.pytorch.org/whl/cu121"
-            image: "sameli/manylinux_2_28_x86_64_cuda_12.1"
-            # torch 2.4 has no cp313 wheels; asking for one fails the whole cell.
-            cibw_build: "cp310-* cp311-* cp312-*"
+          - label: "cu128 / torch 2.8"
+            cuda: "12.8"
+            torch: "2.8.0"
+            torch_index: "https://download.pytorch.org/whl/cu128"
+            image: "sameli/manylinux_2_34_x86_64_cuda_12.8@sha256:3ff78728c35eb6522a97d1fbf507d7faacfc402df6678ca49cc78a7ba5289bf6"
+            cibw_build: "cp310-* cp311-* cp312-* cp313-*"
             default: false
     steps:
       - uses: actions/checkout@v4
@@ -139,10 +156,12 @@ jobs:
         env:
           CIBW_BUILD: ${{ matrix.cibw_build }}
           CIBW_ARCHS_LINUX: x86_64
-          # Third-party CUDA manylinux image. Before the first public release this
-          # must become an image we build ourselves (pypa/manylinux + nvidia/cuda)
-          # or at minimum a digest pin: a tag can be moved, and whoever controls it
-          # controls the compiler that produces the binaries users run.
+          # Third-party CUDA manylinux image, now pinned by digest in the matrix above.
+          # These repositories publish only a mutable `latest`, so a tag reference would
+          # mean whoever controls it controls the compiler that produces the binaries
+          # users run; a digest cannot be moved under us. Building the image ourselves
+          # (pypa/manylinux + nvidia/cuda) is still the right end state and removes the
+          # dependency rather than pinning it -- tracked for 0.2.
           CIBW_MANYLINUX_X86_64_IMAGE: ${{ matrix.image }}
           # --no-isolation so the build sees the exact torch installed below rather
           # than whatever pip resolves as newest. This is the same constraint the
@@ -169,7 +188,7 @@ jobs:
           # auditwheel >= 5.4; the pinned cibuildwheel above carries 6.x.
           CIBW_REPAIR_WHEEL_COMMAND: >-
             auditwheel repair -w {dest_dir} {wheel}
-            --plat manylinux_2_28_x86_64
+            --plat manylinux_2_34_x86_64
             --exclude libtorch.so --exclude libtorch_cpu.so --exclude libtorch_cuda.so
             --exclude libtorch_python.so --exclude libc10.so --exclude libc10_cuda.so
             --exclude 'libcudart.so.*' --exclude 'libcublas.so.*'

@@ -34,6 +34,13 @@ Two things to know before installing:
   with `--find-links`, installing on Linux compiles the extension from source and
   needs a CUDA toolkit. Without one, `dynquant-core` still installs and runs on the
   torch backend.
+- The CUDA wheels are `manylinux_2_34_x86_64`, so they need **glibc 2.34 or newer** —
+  Ubuntu 22.04, Debian 12, RHEL 9 and up. Older hosts fall back to the sdist, which
+  needs a CUDA toolkit. This is forced rather than chosen: the repair step excludes
+  `libcudart.so.*` so the wheel uses torch's own runtime, which means the build
+  toolkit's CUDA version has to match torch's exactly, and of the published CUDA
+  manylinux images only the `2_34` family has versions torch actually ships against.
+  It is also the floor the one hand-verified wheel already had.
 - `KERNEL_ABI_VERSION` is 2. A kernels wheel refuses to load against a core that
   expects a different number, with the remedy in the error rather than an import
   traceback.
@@ -264,10 +271,12 @@ where the mistakes live.
   identical in size and file list to the run with pinned sonames.
 
   Also worth recording: the manual repair reached `manylinux_2_34` while the workflow
-  asks for `manylinux_2_28`. Those do not disagree. The floor comes from the build
-  host's glibc, and CI builds inside a manylinux_2_28 container while this repair ran
-  on the box's native Ubuntu. If a wheel ever needs a higher glibc than the requested
-  `--plat`, auditwheel refuses rather than mislabelling it.
+  asked for `manylinux_2_28`. Those did not disagree — the floor comes from the build
+  host's glibc, and the repair ran on the box's native Ubuntu rather than in a
+  container. The workflow now asks for `manylinux_2_34` as well, for the reason in the
+  release-blocker note below, so CI and the hand-verified wheel land on the same floor.
+  If a wheel ever needs a higher glibc than the requested `--plat`, auditwheel refuses
+  rather than mislabelling it.
 
   **Still not publishable, for a different reason.** The wheel's version is
   `0.1.0+cu130torch213`, and PEP 440 local versions cannot be uploaded to PyPI at
