@@ -285,6 +285,78 @@ where the mistakes live.
   Python combination behind a `find-links` URL, with PyPI holding only the pure-Python
   core plus whichever single combination is chosen as the default.
 
+### Fixed — P0, release blocker: the CUDA wheel matrix had never been run
+
+`wheels.yml` is triggered by `push: tags: ["v*"]` and nothing else, so from the day it
+was written until the `v0.1.0` tag it had executed exactly zero times. Tagging ran it
+for the first time and it failed on all three CUDA arms — then failed twice more, on
+two further causes, each hidden behind the previous one. All three are the same mistake
+with different faces: **assuming what is inside an image we do not build.**
+
+1. **The images did not exist.** `pull access denied for
+   sameli/manylinux_2_28_x86_64_cuda_12.4, repository does not exist`, before compiling
+   anything. That namespace publishes exactly one `manylinux_2_28` CUDA image, 12.3, and
+   no torch wheel is built against CUDA 12.3 — so the `2_28` family could never have
+   been paired at all and the matrix was unbuildable as written.
+
+   The pairing has to be *exact*, not same-major: the repair step excludes
+   `libcudart.so.*` so the wheel uses torch's bundled runtime, and a `_C.so` built by
+   nvcc 12.8 against a torch carrying cudart 12.6 can want a symbol that runtime does
+   not have — a failure that lands on the user at import, not on us at build. That
+   requirement is what selects the images, and only the `manylinux_2_34` family has CUDA
+   versions torch actually ships (12.6, 12.8). Hence the glibc 2.34 floor recorded
+   above: forced, not chosen. All twelve (torch, CUDA, CPython) cells were checked
+   against `download.pytorch.org` before pushing this time rather than after.
+
+   Images are now pinned **by digest**. These repositories publish only a mutable
+   `latest`, which means a tag reference lets whoever controls it choose the compiler
+   that produces the binaries our users run.
+
+2. **cibuildwheel probed for a CPython the image had dropped.** `Command
+   ['/opt/python/cp38-cp38/bin/python', ...] failed with code 127` on the CUDA 12.8 arm.
+   2.21.3 hardcodes cp38 as the interpreter it uses to read the container environment,
+   and the newer image no longer ships one; `CIBW_BUILD` never asked for 3.8, so the
+   restriction did not help. 2.22.0 moved that probe to cp39, and the pin is now the
+   last 2.x (2.23.4) — a version bump rather than a 3.x config migration.
+
+3. **nvcc rejected the image's default host compiler.** `error: #error -- unsupported
+   GNU version! gcc versions later than 13 are not supported!` on both CUDA 12.6 arms.
+   nvcc compiles the host half of every `.cu` with a host C++ compiler and refuses any
+   version newer than it knows; the `manylinux_2_34` base ships GCC 14.2.1. It surfaced
+   inside `enable_language(CUDA)` in torch's own `cuda.cmake`, reached through our
+   `find_package(Torch)`.
+
+   `-allow-unsupported-compiler` was available and was not used: nvcc's own message says
+   it "may cause compilation failure or incorrect run time execution," which is not a
+   bet worth taking on numerics kernels — a miscompiled dequant is a wrong answer, not a
+   crash. Instead `CIBW_BEFORE_ALL` installs gcc-toolset-13 and `CUDAHOSTCXX` pins it
+   (GCC 13 satisfies both 12.6 and 12.8, so one pin covers the matrix). That variable
+   has to arrive as an environment variable and not in `CMAKE_ARGS`, because it is
+   consumed at `enable_language(CUDA)` — reached while `find_package(Torch)` is still
+   running, so a `-D` on our own command line lands too late to be read.
+
+   Worth having regardless of the failure: the host compiler was previously whatever the
+   image defaulted to, so an image rebuild could change code generation under every
+   wheel we ship without a line of our own changing.
+
+Two process changes came out of this, both cheap and both aimed at the *class* of bug
+rather than the three instances:
+
+- **The build now records its own toolchain.** `CIBW_BEFORE_ALL` prints the host GCC,
+  nvcc, `auditwheel` and `/opt/python` inventory. Along the way this corrected a claim
+  in the workflow's own comments: the wildcard excludes need auditwheel ≥ 5.4, and
+  auditwheel comes from the *manylinux image*, not from cibuildwheel as the comment
+  said — a third version the image picks for us, so it is now printed too.
+- **Validate with `workflow_dispatch` on `main` before moving a tag.** Every publish and
+  release job in this workflow is gated on `startsWith(github.ref, 'refs/tags/v')` and
+  on `needs: [sdist, linux-wheels]`, so a dispatch run builds all twelve wheels while
+  publishing nothing. Doing that found causes 2 and 3 at zero cost. A tag-triggered
+  workflow that has never run is not a tested workflow.
+
+Nothing was published during any of this — `release` needs both build jobs, so the failed
+runs produced no GitHub Release and all three publish jobs skipped. The only artifact was
+the tag itself, so `0.1.0` stayed unclaimed and reusable.
+
 ### Fixed — P0, the CPU-only kernels build never worked
 
 - `CMakeLists.txt` read the torch probe's third line to get the CUDA version, but

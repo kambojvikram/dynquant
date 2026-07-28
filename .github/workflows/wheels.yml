@@ -152,7 +152,13 @@ jobs:
           fi
 
       - name: build wheels
-        uses: pypa/cibuildwheel@v2.21.3
+        # 2.21.3 hardcoded `/opt/python/cp38-cp38/bin/python` as the interpreter it uses
+        # to read the container's environment. The manylinux_2_34 CUDA 12.8 image no
+        # longer ships a CPython 3.8, so that arm died on `failed with code 127` before
+        # compiling a line -- and it was unrelated to `CIBW_BUILD` below, which never
+        # asked for 3.8. 2.22.0 moved the probe to cp39. Pinned to the last 2.x rather
+        # than 3.x/4.x so this is a version bump and not also a config migration.
+        uses: pypa/cibuildwheel@v2.23.4
         env:
           CIBW_BUILD: ${{ matrix.cibw_build }}
           CIBW_ARCHS_LINUX: x86_64
@@ -168,11 +174,43 @@ jobs:
           # kernels pyproject documents; here it is the difference between a wheel
           # that matches its advertised torch minor and one that does not.
           CIBW_BUILD_FRONTEND: "build; args: --no-isolation"
+          # Runs once per image, before any build. Two jobs.
+          #
+          # Pin the host compiler. nvcc compiles the host half of every .cu with a host
+          # C++ compiler, and it hard-refuses versions newer than it knows about: CUDA
+          # 12.6 caps at GCC 13, this image defaults to GCC 14.2.1, and that is what
+          # failed the first manylinux_2_34 run with "unsupported GNU version".
+          # `-allow-unsupported-compiler` is not the fix -- nvcc's own message says it
+          # "may cause compilation failure or incorrect run time execution", which is not
+          # a bet to take on numerics kernels. GCC 13 is accepted by both 12.6 and 12.8,
+          # so one pin covers the matrix. This is right on its own merits regardless of
+          # the failure: the host compiler used to be whatever the image happened to
+          # default to, so an image rebuild could change code generation under every
+          # wheel we ship, silently.
+          #
+          # Then record the toolchain. Three separate failures here have now come from
+          # assuming what is inside a third-party image -- a CUDA version that did not
+          # exist, a CPython that had been removed, a GCC that was too new. So the log
+          # states what actually built the binaries, and the next surprise is a grep
+          # instead of a bisect.
+          CIBW_BEFORE_ALL: |
+            set -eux
+            dnf -y install gcc-toolset-13-gcc gcc-toolset-13-gcc-c++
+            /opt/rh/gcc-toolset-13/root/usr/bin/g++ --version
+            /usr/local/cuda/bin/nvcc --version
+            auditwheel --version || true
+            ls /opt/python || true
           CIBW_BEFORE_BUILD: >-
             pip install "scikit-build-core>=0.10" "cmake>=3.26" ninja &&
             pip install torch==${{ matrix.torch }} --index-url ${{ matrix.torch_index }}
+          # CUDAHOSTCXX is how CMake initialises CMAKE_CUDA_HOST_COMPILER, and it has to
+          # arrive as an environment variable rather than in CMAKE_ARGS: the variable is
+          # consumed at `enable_language(CUDA)`, which torch's own cuda.cmake reaches
+          # while our find_package(Torch) is still running, so a -D on our command line
+          # lands too late to be read. Installed by CIBW_BEFORE_ALL above.
           CIBW_ENVIRONMENT: >-
             CUDACXX=/usr/local/cuda/bin/nvcc
+            CUDAHOSTCXX=/opt/rh/gcc-toolset-13/root/usr/bin/g++
             CMAKE_ARGS=-DDYNQUANT_REQUIRE_CUDA=ON
           # auditwheel must not vendor libtorch or the CUDA runtime. Bundling them
           # would produce a ~2GB wheel with a second copy of libtorch loaded into
@@ -184,8 +222,11 @@ jobs:
           # is CUDA 12 today, so a pinned major would work -- and would then fail
           # open the day a CUDA 13 cell is added, because a soname that matches no
           # --exclude gets grafted rather than reported. Silently shipping 400MB of
-          # cuBLAS is a worse failure than a broken build. Wildcards need
-          # auditwheel >= 5.4; the pinned cibuildwheel above carries 6.x.
+          # cuBLAS is a worse failure than a broken build.
+          #
+          # Wildcards need auditwheel >= 5.4, and auditwheel is supplied by the manylinux
+          # image, not by cibuildwheel -- so it is a third thing whose version the image
+          # chooses for us, which is why CIBW_BEFORE_ALL prints it.
           CIBW_REPAIR_WHEEL_COMMAND: >-
             auditwheel repair -w {dest_dir} {wheel}
             --plat manylinux_2_34_x86_64
