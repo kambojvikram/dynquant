@@ -45,8 +45,8 @@ dynamic = ["version"]
 dependencies = ["torch>=2.4"]
 
 [project.urls]
-Homepage = "https://github.com/dynquant/dynquant"
-Issues = "https://github.com/dynquant/dynquant/issues"
+Homepage = "https://github.com/kambojvikram/dynquant"
+Issues = "https://github.com/kambojvikram/dynquant/issues"
 
 [tool.scikit-build]
 minimum-version = "0.10"

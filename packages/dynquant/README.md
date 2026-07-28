@@ -43,7 +43,7 @@ from transformers import AutoModelForCausalLM
 model = AutoModelForCausalLM.from_pretrained("./q3")
 ```
 
-Full documentation: <https://github.com/dynquant/dynquant>
+Full documentation: <https://github.com/kambojvikram/dynquant>
 
 ## Extras
 

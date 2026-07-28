@@ -619,4 +619,4 @@ and `mma.sync` accumulation — the AWQ/Marlin route — which is P7.
   Python costs. CUDA Graphs (P8) and a `flash-linear-attention` fast path are what address
   it. `experiments/qwen35_2b/RESULTS.md` has the measurement.
 
-[Unreleased]: https://github.com/dynquant/dynquant/commits/main
+[Unreleased]: https://github.com/kambojvikram/dynquant/commits/main

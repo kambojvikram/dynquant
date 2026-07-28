@@ -1,6 +1,6 @@
 # dynquant-core
 
-The pure-Python half of [DynQuant](https://github.com/dynquant/dynquant):
+The pure-Python half of [DynQuant](https://github.com/kambojvikram/dynquant):
 training-dynamics-driven mixed-precision LLM quantization.
 
 Most users should `pip install dynquant`, which adds the prebuilt CUDA kernels.

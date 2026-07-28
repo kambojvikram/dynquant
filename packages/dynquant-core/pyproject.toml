@@ -70,10 +70,12 @@ dev = [
 dynquant = "dynquant.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/dynquant/dynquant"
-Documentation = "https://dynquant.github.io/dynquant"
-Issues = "https://github.com/dynquant/dynquant/issues"
-Changelog = "https://github.com/dynquant/dynquant/blob/main/CHANGELOG.md"
+# No Documentation key until the mkdocs site of P10 exists. PyPI renders whatever
+# is listed here as a link on the project page, and a 404 next to the install
+# command costs more trust than an absent row does.
+Homepage = "https://github.com/kambojvikram/dynquant"
+Issues = "https://github.com/kambojvikram/dynquant/issues"
+Changelog = "https://github.com/kambojvikram/dynquant/blob/main/CHANGELOG.md"
 
 [tool.hatch.version]
 path = "src/dynquant/_version.py"

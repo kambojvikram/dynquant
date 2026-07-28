@@ -1,6 +1,6 @@
 # dynquant-kernels
 
-Compiled CUDA kernels for [DynQuant](https://github.com/dynquant/dynquant).
+Compiled CUDA kernels for [DynQuant](https://github.com/kambojvikram/dynquant).
 
 You almost certainly want `pip install dynquant`, which resolves this wheel for
 your platform. Install it directly only to force a specific variant.

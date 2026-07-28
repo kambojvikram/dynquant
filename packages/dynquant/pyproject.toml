@@ -77,10 +77,10 @@ dev = ["dynquant-core[dev]==0.1.0.dev0"]
 kernels = ["dynquant-kernels>=0.1.0.dev0,<0.2"]
 
 [project.urls]
-Homepage = "https://github.com/dynquant/dynquant"
-Documentation = "https://dynquant.github.io/dynquant"
-Issues = "https://github.com/dynquant/dynquant/issues"
-Changelog = "https://github.com/dynquant/dynquant/blob/main/CHANGELOG.md"
+# See the note in dynquant-core: no Documentation key until the site exists.
+Homepage = "https://github.com/kambojvikram/dynquant"
+Issues = "https://github.com/kambojvikram/dynquant/issues"
+Changelog = "https://github.com/kambojvikram/dynquant/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 # No code to ship. Hatchling refuses to build a wheel with nothing in it unless
