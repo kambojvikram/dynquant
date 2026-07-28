@@ -186,7 +186,7 @@ jobs:
           # kernels pyproject documents; here it is the difference between a wheel
           # that matches its advertised torch minor and one that does not.
           CIBW_BUILD_FRONTEND: "build; args: --no-isolation"
-          # Runs once per image, before any build. Two jobs.
+          # Runs once per image, before any build. Three jobs.
           #
           # Pin the host compiler. nvcc compiles the host half of every .cu with a host
           # C++ compiler, and it hard-refuses versions newer than it knows about: CUDA
@@ -200,18 +200,30 @@ jobs:
           # default to, so an image rebuild could change code generation under every
           # wheel we ship, silently.
           #
-          # Then record the toolchain. Three separate failures here have now come from
-          # assuming what is inside a third-party image -- a CUDA version that did not
-          # exist, a CPython that had been removed, a GCC that was too new. So the log
-          # states what actually built the binaries, and the next surprise is a grep
-          # instead of a bisect.
+          # Pin auditwheel, for the same reason and with sharper teeth. The images pick
+          # its version for us and they disagree: the CUDA 12.6 image (built 2024-12)
+          # carries 6.1.0, the CUDA 12.8 one (2026-05) carries 6.6.0. Wildcard
+          # `--exclude` arrived in 6.2.0, so on 12.6 the `libcudart.so.*` patterns below
+          # matched nothing and auditwheel quietly grafted libcudart, libcublas and
+          # libcublasLt into the wheel -- the exact "fails open" outcome those patterns
+          # were written to prevent, caught by the verify step rather than by a user.
+          # Same version everywhere means same wheel everywhere; it is pinned exactly
+          # rather than floored because this is a release pipeline and 6.6.0 is the
+          # version that produced the one arm which passed end to end.
+          #
+          # Then record the toolchain. Five failures here have now come from assuming
+          # what a container we do not build contains -- a CUDA version that did not
+          # exist, a CPython that had been removed, a GCC too new, a package manager
+          # that was apk, an auditwheel too old. So the log states what actually built
+          # the binaries, and the next surprise is a grep instead of a bisect.
           CIBW_BEFORE_ALL: |
             set -eux
             dnf -y install gcc-toolset-13-gcc gcc-toolset-13-gcc-c++
+            /opt/_internal/pipx/venvs/auditwheel/bin/python -m pip install --no-cache-dir auditwheel==6.6.0
             /opt/rh/gcc-toolset-13/root/usr/bin/g++ --version
             /usr/local/cuda/bin/nvcc --version
-            auditwheel --version || true
-            ls /opt/python || true
+            auditwheel --version
+            ls /opt/python
           CIBW_BEFORE_BUILD: >-
             pip install "scikit-build-core>=0.10" "cmake>=3.26" ninja &&
             pip install torch==${{ matrix.torch }} --index-url ${{ matrix.torch_index }}
@@ -236,9 +248,10 @@ jobs:
           # --exclude gets grafted rather than reported. Silently shipping 400MB of
           # cuBLAS is a worse failure than a broken build.
           #
-          # Wildcards need auditwheel >= 5.4, and auditwheel is supplied by the manylinux
-          # image, not by cibuildwheel -- so it is a third thing whose version the image
-          # chooses for us, which is why CIBW_BEFORE_ALL prints it.
+          # Wildcards need auditwheel >= 6.2.0 (pypa/auditwheel#508), and auditwheel is
+          # supplied by the manylinux image rather than by cibuildwheel -- so its version
+          # is the image's choice, and one image's choice was 6.1.0. Hence the exact pin
+          # in CIBW_BEFORE_ALL above; these patterns are silently inert without it.
           CIBW_REPAIR_WHEEL_COMMAND: >-
             auditwheel repair -w {dest_dir} {wheel}
             --plat manylinux_2_34_x86_64

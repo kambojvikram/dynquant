@@ -289,8 +289,8 @@ where the mistakes live.
 
 `wheels.yml` is triggered by `push: tags: ["v*"]` and nothing else, so from the day it
 was written until the `v0.1.0` tag it had executed exactly zero times. Tagging ran it
-for the first time and it failed on all three CUDA arms — then failed twice more, on
-three further causes, each one hidden behind the one before it. All four are the same
+for the first time and it failed on all three CUDA arms — then failed three times more,
+on four further causes, each one hidden behind the one before it. All five are the same
 mistake wearing different faces: **assuming what a container we do not build contains,
 or which containers would be used at all.**
 
@@ -352,8 +352,43 @@ or which containers would be used at all.**
    "*musllinux*"` now says so. Note the shape of this one — the leg that cannot work
    ran *last*, so it discarded a pile of successful work rather than failing fast.
 
+5. **The image also chose our auditwheel, and one chose a version too old.** With musl
+   skipped, the CUDA 12.8 arm went green end to end and both CUDA 12.6 arms failed in
+   the verify step:
+
+   ```
+   vendored libraries that must come from the user's torch:
+     libcublasLt-…so.12.6.4.1, libcudart-…so.12.6.77, libcublas-…so.12.6.4.1
+   ```
+
+   auditwheel comes from the manylinux image, and the two images disagree: the CUDA 12.6
+   image (built 2024-12) carries **6.1.0**, the CUDA 12.8 one (2026-05) carries
+   **6.6.0**. Wildcard `--exclude` arrived in 6.2.0 ([pypa/auditwheel#508]), so on 12.6
+   the `libcudart.so.*` patterns matched nothing at all and auditwheel grafted the CUDA
+   runtime into the wheel. Its log tells the story plainly — 12.8 prints `Excluding
+   libcudart.so.12`, 12.6 prints no such line and never mentions them again.
+
+   This is precisely the "fails open" outcome those wildcards were introduced to
+   prevent, arriving by a route the note above did not anticipate: not a CUDA 13 soname
+   slipping past a pinned pattern, but a *correct* pattern silently inert because the
+   tool reading it was one release too old. It also corrects a claim made when the
+   wildcards landed — they need auditwheel ≥ 6.2.0, not ≥ 5.4.
+
+   `CIBW_BEFORE_ALL` now pins `auditwheel==6.6.0` into the image's pipx venv, so every
+   arm repairs wheels identically regardless of how old its image is. Pinned exactly
+   rather than floored: this is a release pipeline, and 6.6.0 is the version that
+   produced the arm which passed.
+
+   Worth stating what actually held here. The wildcard patterns failed, and the wheel was
+   wrong, and *nothing shipped* — because the verify step checks the wheel it is about to
+   publish rather than trusting the tool that produced it. A 400MB wheel carrying a
+   duplicate cuBLAS would have been a bad day for whoever installed it, and it never got
+   past the build.
+
+[pypa/auditwheel#508]: https://github.com/pypa/auditwheel/pull/508
+
 Two process changes came out of this, both cheap and both aimed at the *class* of bug
-rather than the four instances:
+rather than the five instances:
 
 - **The build now records its own toolchain.** `CIBW_BEFORE_ALL` prints the host GCC,
   nvcc, `auditwheel` and `/opt/python` inventory. Along the way this corrected a claim
