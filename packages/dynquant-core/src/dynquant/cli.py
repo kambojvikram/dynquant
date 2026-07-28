@@ -342,7 +342,10 @@ def _add_eval(subparsers: _SubParsers) -> None:
     )
     parser.add_argument("model", help="checkpoint directory or Hub id")
     parser.add_argument(
-        "--task", required=True, choices=("gsm8k", "casehold"), help="which task to score"
+        "--task",
+        required=True,
+        choices=("gsm8k", "casehold", "banking77"),
+        help="which task to score",
     )
     _add_loading(parser)
     _add_map_input(parser)

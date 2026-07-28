@@ -65,23 +65,22 @@ class _TaskSpec:
         self.max_prompt_tokens = max_prompt_tokens
         self.batch_size = batch_size
 
+    def _module(self) -> Any:
+        """Import the task module on demand.
+
+        Deferred because each one imports ``datasets`` transitively, and building
+        the argument parser must not pay for three dataset backends to offer
+        ``--task`` as a choice.
+        """
+        from importlib import import_module
+
+        return import_module(f"dynquant.eval.{self.key}")
+
     def load(self, split: str) -> list[Any]:
-        if self.key == "gsm8k":
-            from dynquant.eval.gsm8k import load_gsm8k
-
-            return load_gsm8k(split)
-        from dynquant.eval.casehold import load_casehold
-
-        return load_casehold(split)
+        return getattr(self._module(), f"load_{self.key}")(split)  # type: ignore[no-any-return]
 
     def evaluate(self, *args: Any, **kwargs: Any) -> Any:
-        if self.key == "gsm8k":
-            from dynquant.eval.gsm8k import evaluate_gsm8k
-
-            return evaluate_gsm8k(*args, **kwargs)
-        from dynquant.eval.casehold import evaluate_casehold
-
-        return evaluate_casehold(*args, **kwargs)
+        return getattr(self._module(), f"evaluate_{self.key}")(*args, **kwargs)
 
 
 TASKS = {
@@ -103,6 +102,20 @@ TASKS = {
         chance=0.2,
         max_new_tokens=8,
         max_prompt_tokens=3072,
+        batch_size=32,
+    ),
+    # Four shots. The prompt is dominated by the 77-line intent header (~615 of
+    # ~710 tokens) rather than by the exemplars, which are one sentence each, so
+    # shots are nearly free here in a way they are not on CaseHOLD. Six new tokens
+    # is room for a two-digit index plus punctuation. 1536 leaves headroom over the
+    # header so nothing can truncate it -- front-truncation would cut the list the
+    # answer indexes into and score the model on a numbering it never saw.
+    "banking77": _TaskSpec(
+        "banking77",
+        shots=4,
+        chance=1.0 / 77,
+        max_new_tokens=6,
+        max_prompt_tokens=1536,
         batch_size=32,
     ),
 }

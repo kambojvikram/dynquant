@@ -19,6 +19,7 @@ adding an innocuous import:
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -579,6 +580,30 @@ def test_every_task_has_defaults_and_a_stated_chance_floor() -> None:
         assert spec.max_new_tokens > 0
         assert spec.batch_size > 0
     assert evaluate.TASKS["casehold"].chance == pytest.approx(0.2)
+    assert evaluate.TASKS["banking77"].chance == pytest.approx(1 / 77)
+
+
+def test_every_registered_task_is_reachable_from_the_command_line() -> None:
+    """``--task`` lists its choices literally, so adding a task to ``TASKS`` and
+    forgetting the parser produces a registry entry no user can select -- and the
+    reverse produces a choice that raises ``KeyError`` on the way in."""
+    subparsers = next(
+        a for a in build_parser()._actions if isinstance(a, argparse._SubParsersAction)
+    )
+    action = next(a for a in subparsers.choices["eval"]._actions if a.dest == "task")
+    assert set(action.choices or ()) == set(evaluate.TASKS)
+
+
+def test_task_dispatch_resolves_by_naming_convention() -> None:
+    """``_TaskSpec`` imports ``dynquant.eval.<key>`` and calls ``load_<key>`` /
+    ``evaluate_<key>``. That convention is implicit in a getattr, so a module named
+    off-pattern would fail at the end of a GPU run rather than at import."""
+    from importlib import import_module
+
+    for key in evaluate.TASKS:
+        module = import_module(f"dynquant.eval.{key}")
+        assert callable(getattr(module, f"load_{key}"))
+        assert callable(getattr(module, f"evaluate_{key}"))
 
 
 @pytest.mark.parametrize("field", ["task", "split", "shots", "shot_seed", "limit"])
