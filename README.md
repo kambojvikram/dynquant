@@ -180,7 +180,7 @@ Separately, faster weight streaming does not make *this* model decode faster —
 and being outweighed: in-model matmul time is 1.42× faster packed, but matmul is only 12% of
 a step that is ~2000 launches and ~70% idle, and the host-side cost of dispatching 187 packed
 modules from Python exceeds the 3.5% of the step that 1.42× buys back. That is what P8's CUDA
-Graphs remove. `experiments/qwen35_2b/RESULTS.md` reports all of it, including the arms that
+Graphs remove. `experiments/four_point/RESULTS.md` reports all of it, including the arms that
 lost and one figure it previously got wrong.
 
 P7–P8 have not landed: prefill still goes through dequantize-then-GEMM, and so does

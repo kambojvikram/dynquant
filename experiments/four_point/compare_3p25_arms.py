@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import json
 from math import sqrt
-from pathlib import Path
 
+# Resolved the same way every stage resolves it, rather than written out here. This was
+# an absolute path to a directory on a rented box, which meant the script could only
+# ever re-read one run's records -- and would read them from a machine that no longer
+# exists. Set DQ_RUN_DIR to point it at a specific run.
+from common import RUN_DIR as RUNS
 from scipy.stats import binomtest
-
-RUNS = Path("/workspace/runs/qwen35_2b_casehold")
 
 ARMS = {
     "sensitivity": "stage5_3p25_sens",

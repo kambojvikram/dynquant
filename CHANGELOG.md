@@ -19,6 +19,41 @@ ones that invalidate artifacts a user has already produced.
 
 ## [Unreleased]
 
+### Changed — the experiment harness is no longer tied to one model
+
+`experiments/qwen35_2b/` is now `experiments/four_point/`, and the model is read from
+`DQ_MODEL` instead of being a constant in `common.py`. Six of the eight stage scripts
+never mentioned a dataset and — after this — none of them mentions a model either, so
+the alternative was copying ~700 lines per model and letting the copies drift. Drift in
+the *shared* machinery is exactly what makes two runs' tables incomparable, which is the
+same argument `tasks.py` already makes for keeping every task in one file.
+
+`RUN_DIR` now defaults to `/workspace/runs/<model-slug>_<task>`. A Mistral record read
+into a Qwen table is the same failure as a GSM8K record read into a CaseHOLD one, and
+less obvious. The committed Qwen records predate the slug and live under
+`qwen35_2b_<task>`; point `DQ_RUN_DIR` at them to re-read them.
+
+`stage2_finetune.py` gained `--lora-rank`. It still full fine-tunes by default, which is
+what the Qwen runs did, but a 7B needs ~87 GB for parameters, gradients and fp32 AdamW
+moments before a single activation and does not fit an 80 GB card. Signal fidelity is
+unaffected: `outer_exact` reconstructs `∇W = δxᵀ` from the layer *output* gradient, and
+`y = Wx + s·BAx` means `∂L/∂y` is the same tensor whether or not an adapter is attached.
+The adapter is merged before the checkpoint is written — saving adapter weights would
+leave stage 3 scoring the base model under the label "fine-tuned".
+
+`Task.stop_sequence` became a field fed from each eval module's `FEWSHOT_STOP` rather
+than a method each truncation subclass overrode, which had tied *where a prompt is cut*
+to *what generation stops on* — two unrelated decisions that a third task had no way to
+combine.
+
+### Added — Banking77 in the experiment task registry
+
+Selected by re-running the headroom screen against Mistral-7B-Instruct-v0.3, since
+headroom is a property of the model/dataset pair and not of the dataset. ~52 points of
+it, the widest of four candidates, and a 1.3% chance floor — the most sensitive of the
+three tasks to quantization damage, because there is no cushion for a small regression
+to hide under. `dynquant.eval.banking77` holds the screen table.
+
 ### Fixed — the kernels wheel let pip pair it with a torch it cannot load
 
 `pip install dynquant` on Linux x86_64 — the one command the meta-package exists to

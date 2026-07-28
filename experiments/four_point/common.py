@@ -1,4 +1,4 @@
-"""Shared setup for the Qwen3.5-2B four-point experiment.
+"""Shared setup for the four-point experiment.
 
 Every measurement point in this experiment loads a model, evaluates it, and writes
 a JSON record. What makes the six numbers comparable is that *only* the weights
@@ -11,11 +11,25 @@ is restartable from the artifacts on disk.
 
 Which task
 ----------
-Selected by ``DQ_TASK`` (``casehold`` by default, ``gsm8k`` for the first run) and
-resolved in :mod:`tasks`, which holds everything that differs between them. ``RUN_DIR``
-includes the task key, so the two runs' records cannot land on top of each other -- a
-shared directory would let a stale GSM8K record be read into a CaseHOLD table as a
-row that looks measured and is not, which is the kind of mistake that survives review.
+Selected by ``DQ_TASK`` (``casehold`` by default) and resolved in :mod:`tasks`, which
+holds everything that differs between them. ``RUN_DIR`` includes the task key, so two
+runs' records cannot land on top of each other -- a shared directory would let a stale
+GSM8K record be read into a CaseHOLD table as a row that looks measured and is not,
+which is the kind of mistake that survives review.
+
+Which model
+-----------
+Selected by ``DQ_MODEL``. It was a constant for the first two runs, and hoisting it to
+an environment variable is what lets a second model reuse this machinery instead of
+forking it -- the same argument :mod:`tasks` makes for keeping both tasks in one file.
+``RUN_DIR`` therefore includes a model slug as well as the task key, for the same
+reason: a Mistral record read into a Qwen table is the same failure as a GSM8K record
+read into a CaseHOLD one, and less obvious.
+
+The committed Qwen records were written before the slug existed, under
+``/workspace/runs/qwen35_2b_<task>``. The derived slug is ``qwen3_5_2b_base``, so
+reproducing against those directories means passing ``DQ_RUN_DIR`` explicitly rather
+than relying on the default.
 """
 
 from __future__ import annotations
@@ -23,6 +37,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -31,13 +46,19 @@ import numpy as np
 import torch
 from tasks import get_task, split_task
 
-MODEL_ID = "Qwen/Qwen3.5-2B-Base"
+MODEL_ID = os.environ.get("DQ_MODEL", "Qwen/Qwen3.5-2B-Base")
 SEED = 0
 DTYPE = torch.bfloat16
 
 TASK = get_task()
 
-RUN_DIR = Path(os.environ.get("DQ_RUN_DIR", f"/workspace/runs/qwen35_2b_{TASK.key}"))
+
+def model_slug(model_id: str = MODEL_ID) -> str:
+    """A filesystem-safe name for the model, for run directories and record fields."""
+    return re.sub(r"[^a-z0-9]+", "_", model_id.rsplit("/", 1)[-1].lower()).strip("_")
+
+
+RUN_DIR = Path(os.environ.get("DQ_RUN_DIR", f"/workspace/runs/{model_slug()}_{TASK.key}"))
 
 N_SHOTS = TASK.n_shots
 """Re-exported so the stage scripts need not each reach into the task object for the

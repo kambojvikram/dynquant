@@ -1225,13 +1225,14 @@ so the test needs no GPU. And the packed run is the confirmation: `packed 187 mo
 ## Reproducing
 
 ```bash
-cd experiments/qwen35_2b
+cd experiments/four_point
 export PYTHONPATH=/path/to/packages/dynquant-core/src
 
 python screen_headroom.py   # stage 0: which task has room? ~20 min, no fine-tune
 
-export DQ_TASK=casehold     # or gsm8k; selects the task in tasks.py
-./run_all.sh                # all six arms, resumable, then the table
+export DQ_MODEL=Qwen/Qwen3.5-2B-Base   # the default; every number below is this model
+export DQ_TASK=casehold                # or gsm8k; selects the task in tasks.py
+./run_all.sh                           # all six arms, resumable, then the table
 ```
 
 Stage 0 is separate from `run_all.sh` and comes before it because it chooses the argument
