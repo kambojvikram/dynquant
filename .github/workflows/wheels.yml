@@ -143,10 +143,15 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
           df -h /
 
-      - name: stamp the binary variant into the version
+      - name: stamp the binary variant into the version and the torch pin
+        # --torch goes to both cells, including the plain one. It sets the runtime
+        # dependency bound, not just the version label, and the plain cell is the
+        # wheel on PyPI -- the one an open bound hurts most. 0.1.0 shipped
+        # `torch>=2.4` there, so `pip install dynquant` cheerfully paired a wheel
+        # built against torch 2.7 with torch 2.13 and the kernels never loaded.
         run: |
           if [ "${{ matrix.default }}" = "true" ]; then
-            python scripts/stamp_kernel_version.py --plain
+            python scripts/stamp_kernel_version.py --plain --torch '${{ matrix.torch }}'
           else
             python scripts/stamp_kernel_version.py --cuda '${{ matrix.cuda }}' --torch '${{ matrix.torch }}'
           fi

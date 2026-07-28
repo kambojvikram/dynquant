@@ -32,6 +32,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import os
+import platform
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
@@ -82,16 +83,42 @@ class BackendStatus:
 # --------------------------------------------------------------------------
 
 
+def _prebuilt_wheel_exists() -> bool:
+    """Whether a ``dynquant-kernels`` wheel is published for this platform.
+
+    Mirrors the environment marker on the ``dynquant`` meta-package's dependency.
+    Kept in sync by tests/test_packaging.py: if the two ever disagree, the doctor
+    starts handing out advice that cannot work.
+    """
+    return platform.system() == "Linux" and platform.machine() == "x86_64"
+
+
 def _probe_cuda() -> BackendStatus:
     if importlib.util.find_spec(KERNELS_IMPORT_NAME) is None:
+        # Rule 3 in the module docstring applies hardest here. "Install the
+        # kernels" is only actionable where a wheel exists; on Windows, macOS or
+        # ARM it sends the user into a source build of CUDA code that the
+        # meta-package's marker deliberately declines to attempt on their behalf.
+        # Saying so is the difference between a diagnosis and a dead end.
+        if _prebuilt_wheel_exists():
+            remedy = (
+                "pip install dynquant   (the meta-package pulls in the kernels wheel "
+                f"for your platform), or pip install {KERNELS_DISTRIBUTION} directly."
+            )
+        else:
+            remedy = (
+                f"No prebuilt {KERNELS_DISTRIBUTION} wheel exists for "
+                f"{platform.system()}/{platform.machine()} -- wheels are published for "
+                "Linux x86_64 only, so the torch backend is the expected path here and "
+                "the quantization pipeline is fully usable on it. To build from source "
+                "anyway (needs nvcc, cmake >= 3.26 and a C++ toolchain): "
+                "pip install 'dynquant[kernels]'."
+            )
         return BackendStatus(
             Backend.CUDA,
             False,
             reason=f"{KERNELS_DISTRIBUTION} is not installed",
-            remedy=(
-                "pip install dynquant   (the meta-package pulls in the kernels wheel "
-                f"for your platform), or pip install {KERNELS_DISTRIBUTION} directly."
-            ),
+            remedy=remedy,
         )
 
     try:

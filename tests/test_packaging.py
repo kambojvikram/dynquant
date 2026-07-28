@@ -20,7 +20,9 @@ copies honest.
 
 from __future__ import annotations
 
+import platform
 from pathlib import Path
+from unittest import mock
 
 import pytest
 import yaml
@@ -36,15 +38,19 @@ META = PACKAGES / "dynquant"
 ALL_PACKAGES = (CORE, KERNELS, META)
 
 
-def _load_toml(path: Path) -> dict:
+def _load_toml_text(text: str) -> dict:
     try:
         import tomllib
     except ImportError:  # Python 3.10
         tomli = pytest.importorskip(
             "tomli", reason="TOML parsing needs Python 3.11+ or the tomli backport"
         )
-        return tomli.loads(path.read_text(encoding="utf-8"))
-    return tomllib.loads(path.read_text(encoding="utf-8"))
+        return tomli.loads(text)
+    return tomllib.loads(text)
+
+
+def _load_toml(path: Path) -> dict:
+    return _load_toml_text(path.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(scope="module")
@@ -141,6 +147,38 @@ def test_kernels_is_pinned_by_range_not_exactly(meta_toml: dict) -> None:
     assert "platform_system=='Linux'" in marker.replace('"', "'")
 
 
+def test_the_doctors_platform_test_matches_the_dependency_marker(meta_toml: dict) -> None:
+    """``_prebuilt_wheel_exists`` decides which remedy ``dynquant doctor`` prints when
+    the kernels are missing, and the marker decides whether pip would have installed
+    them. If the two drift, the doctor tells users on a wheel-less platform to run the
+    install that just declined to give them one -- advice that cannot work, from the
+    command whose whole job is to explain why something did not."""
+    from dynquant.runtime.backend import _prebuilt_wheel_exists
+
+    pins = [d for d in meta_toml["project"]["dependencies"] if d.startswith("dynquant-kernels")]
+    marker = pins[0].partition(";")[2].replace('"', "'").strip()
+
+    # Evaluate the real marker against synthetic environments and require the doctor's
+    # predicate to agree on each. `packaging` ships with pip and is a test-time dep.
+    from packaging.markers import Marker
+
+    cases = [
+        ({"platform_system": "Linux", "platform_machine": "x86_64"}, True),
+        ({"platform_system": "Linux", "platform_machine": "aarch64"}, False),
+        ({"platform_system": "Windows", "platform_machine": "AMD64"}, False),
+        ({"platform_system": "Darwin", "platform_machine": "arm64"}, False),
+    ]
+    parsed = Marker(marker)
+    for env, expected in cases:
+        assert parsed.evaluate(env) is expected, (marker, env)
+
+        with (
+            mock.patch.object(platform, "system", lambda e=env: e["platform_system"]),
+            mock.patch.object(platform, "machine", lambda e=env: e["platform_machine"]),
+        ):
+            assert _prebuilt_wheel_exists() is expected, env
+
+
 def test_requires_python_agrees_across_packages(
     core_toml: dict, kernels_toml: dict, meta_toml: dict
 ) -> None:
@@ -208,6 +246,13 @@ def pre_commit_config() -> dict:
 def ci_workflow() -> dict:
     return yaml.safe_load(
         (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    )
+
+
+@pytest.fixture(scope="module")
+def ci_wheels_workflow() -> dict:
+    return yaml.safe_load(
+        (REPO_ROOT / ".github" / "workflows" / "wheels.yml").read_text(encoding="utf-8")
     )
 
 
@@ -288,6 +333,63 @@ def test_stamped_versions_are_valid_pep_440(stamp) -> None:
     # Same release, different build: this is what makes a range pin resolve to any
     # variant while an exact pin selects one.
     assert stamped.base_version == Version("0.1.0.dev0").base_version
+
+
+def test_the_torch_pin_excludes_the_torch_that_broke_0_1_0(stamp) -> None:
+    """The regression this pin exists for.
+
+    0.1.0 shipped the kernels with an open ``torch>=2.4``, so on Linux
+    ``pip install dynquant`` resolved a wheel built against torch 2.7.1+cu126
+    alongside torch 2.13.0 and the CUDA 13 stack. Nothing warned: pip reported
+    success and the extension failed its undefined-symbol import at runtime, which
+    the loader turns into a silent fall back to the torch backend. So the assertion
+    that matters is not the pin's spelling but that the resolver would now refuse
+    the pairing."""
+    from packaging.specifiers import SpecifierSet
+
+    pin = stamp.torch_pin("2.7.1+cu126")
+    assert pin == "torch>=2.7,<2.8"
+
+    spec = SpecifierSet(pin.removeprefix("torch"))
+    assert "2.13.0" not in spec, "the exact pairing that shipped broken in 0.1.0"
+    assert "2.8.0" not in spec and "2.6.0" not in spec
+    # Patch releases stay in: libtorch's C++ ABI moves per minor, and rejecting
+    # 2.7.2 would send users to a source build for a wheel that loads fine.
+    assert "2.7.0" in spec and "2.7.1" in spec and "2.7.9" in spec
+
+
+def test_every_matrix_cell_stamps_a_torch_pin(ci_wheels_workflow: dict) -> None:
+    """--torch is required by argparse, but the plain cell is the one that reaches
+    PyPI and the one whose invocation was missing it. A workflow edit that drops it
+    should fail here rather than at the next release."""
+    jobs = ci_wheels_workflow["jobs"]
+    steps = [s for j in jobs.values() for s in j.get("steps", []) if "run" in s]
+    invocations = [
+        line.strip()
+        for s in steps
+        for line in s["run"].splitlines()
+        if "stamp_kernel_version.py" in line
+    ]
+    assert invocations, "no stamp invocations found; did the workflow move?"
+    for line in invocations:
+        assert "--torch" in line, line
+
+
+def test_the_torch_pin_regex_matches_the_real_pyproject(stamp) -> None:
+    """Companion to the version-file check below. If this regex stops matching, the
+    script now raises instead of stamping nothing -- but only if the pattern and the
+    file are checked against each other somewhere, which is here."""
+    text = stamp.PYPROJECT_FILE.read_text(encoding="utf-8")
+    stamped, count = stamp._RUNTIME_TORCH.subn(r"\g<1>torch>=9.9,<10.0\g<2>", text, count=1)
+    assert count == 1, f"no runtime torch dependency found in {stamp.PYPROJECT_FILE}"
+
+    # It must have rewritten the *runtime* dependency and left `[build-system]
+    # requires` alone -- that one names torch too, and it is cibuildwheel's to set.
+    parsed = _load_toml_text(stamped)
+    assert parsed["project"]["dependencies"] == ["torch>=9.9,<10.0"]
+    assert any(r.startswith("torch") for r in parsed["build-system"]["requires"]), (
+        "the build-system requirement was rewritten or removed; it must not be touched"
+    )
 
 
 def test_the_stamp_regex_matches_the_real_version_file(stamp) -> None:

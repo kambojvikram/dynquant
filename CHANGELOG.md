@@ -19,13 +19,75 @@ ones that invalidate artifacts a user has already produced.
 
 ## [Unreleased]
 
+### Fixed — the kernels wheel let pip pair it with a torch it cannot load
+
+`pip install dynquant` on Linux x86_64 — the one command the meta-package exists to
+make work — installed the CUDA kernels and then did not use them. Verified on Ubuntu
+22.04, glibc 2.35, CPython 3.10, against the published 0.1.0:
+
+```
+dynquant-kernels 0.1.0     # built against torch 2.7.1+cu126
+torch            2.13.0    # + the whole CUDA 13 runtime stack
+```
+
+Those cannot load together. The extension links libtorch's C++ ABI, so `import`
+raises `undefined symbol`, `_loader.py` does its job and falls back to the torch
+backend, and the user gets a correct-but-slow install with no VRAM saving — the
+opposite of the reason to install kernels at all. `pip` reports success throughout.
+
+The cause is that the variant machinery only ever *described* the build. The version
+label said `+cu126torch27` and the wheel's own `_build_info.py` recorded
+`TORCH_VERSION = 2.7.1+cu126`, but the dependency metadata said `torch>=2.4` with no
+upper bound, so nothing in it constrained the resolver. Provenance is not a
+constraint; only the specifier is.
+
+`scripts/stamp_kernel_version.py` now stamps the runtime pin alongside the version,
+derived from the same `--torch` that produces the label — `torch>=2.7,<2.8` for the
+torch 2.7 cell. `--torch` became required for **every** cell including `--plain`,
+which is the one that reaches PyPI and the one whose invocation was missing it.
+Bounds are minor-wide because that is where libtorch's ABI actually moves; pinning
+patches would reject 2.7.2, which loads fine.
+
+Guarded by three tests rather than one, because each covers a different way to
+regress it: that the pin rejects the exact 2.7-wheel/2.13-torch pairing that shipped,
+that the rewrite hits the runtime dependency and leaves `[build-system] requires`
+alone, and that no workflow cell invokes the stamper without `--torch`.
+
+### Fixed — `dynquant doctor` prescribed an install that cannot work
+
+On any platform with no published kernels wheel, the remedy for a missing CUDA
+backend was "pip install dynquant (the meta-package pulls in the kernels wheel for
+your platform)" — printed, on Windows, to a user who had just run exactly that. The
+meta-package's marker is Linux-x86_64-only *on purpose*, so there was nothing to pull
+and the fallback advice pointed at a 20-minute CUDA source build. The doctor now
+tests the platform, names it, and says the torch backend is the expected path there,
+keeping the source build as an explicit opt-in. `_prebuilt_wheel_exists()` and the
+marker are pinned to each other by a test that evaluates the real marker against
+four synthetic environments.
+
 ## [0.1.0] — 2026-07-28
 
 First release. The phases below are the build order from the project plan, and the
 status table in [README.md](README.md) is authoritative for what actually works
 today — this is P0 through P5 plus the P6 decode kernels, not a finished package.
 
-Two things to know before installing:
+### Known issues in 0.1.0
+
+**Pin torch when installing this version.** On Linux x86_64:
+
+```bash
+pip install dynquant 'torch==2.7.*'
+```
+
+Without the pin the kernels install but never load: the wheel is built against torch
+2.7.1 and declares only `torch>=2.4`, so pip resolves torch 2.13 beside it and the
+extension fails its import. DynQuant falls back to the torch backend — correct
+results, no VRAM saving, no speedup — and `pip` reports success. `dynquant doctor`
+is what tells you which backend you actually got; run it. Fixed at source in
+Unreleased above, where every wheel carries the bound of the minor it was built
+against.
+
+Two more things to know before installing:
 
 - **PyPI carries one binary variant; the GitHub Release carries the rest.** On Linux
   x86_64 with CPython 3.10–3.13, `pip install dynquant` gets a real wheel from PyPI —
@@ -38,11 +100,6 @@ Two things to know before installing:
   variant index. On a different torch, either point pip at it or build the sdist,
   which needs a CUDA toolkit. Without one, `dynquant-core` still installs and runs on
   the torch backend.
-
-  Beware the failure mode this creates: the PyPI wheel is linked against torch 2.7's
-  C++ ABI, so importing it under torch 2.6 or 2.8 raises an undefined-symbol
-  `ImportError`. `_loader.py` catches that and names the exact wheel to install
-  instead, which is the accepted cost of PyPI having room for only one variant.
 - The CUDA wheels are `manylinux_2_34_x86_64`, so they need **glibc 2.34 or newer** —
   Ubuntu 22.04, Debian 12, RHEL 9 and up. Older hosts fall back to the sdist, which
   needs a CUDA toolkit. This is forced rather than chosen: the repair step excludes

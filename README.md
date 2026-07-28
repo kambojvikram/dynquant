@@ -198,17 +198,26 @@ in this repository reports them from the other.
 
 ## Install
 
+On Linux x86_64 with CPython 3.10–3.13, **pin torch when installing 0.1.0**:
+
 ```bash
-pip install dynquant                              # core + kernels
+pip install dynquant 'torch==2.7.*'               # core + kernels
 ```
 
-On Linux x86_64 with CPython 3.10–3.13 that is a real wheel and compiles nothing, but
-it is one wheel: the cu126 / torch 2.7 build, linked against that torch's C++ ABI. On
-a different torch it will import-fail with an undefined symbol, and `_loader.py` names
-the wheel you want instead. Take it from the variant index:
+The pin is doing real work and leaving it out is the difference between having the
+kernels and not. 0.1.0's kernels wheel declares an open `torch>=2.4` while the binary
+is linked against torch 2.7.1's C++ ABI, so a bare `pip install dynquant` resolves
+torch 2.13 next to it, the extension fails an undefined-symbol import, and DynQuant
+falls back to the torch backend — `pip` reporting success the whole way. Run
+`dynquant doctor`; it says which backend it actually got. Fixed at source for 0.1.1,
+where each wheel pins the minor it was built against; see
+[CHANGELOG.md](CHANGELOG.md#known-issues-in-010).
+
+There is one wheel on PyPI — the cu126 / torch 2.7 build. For other combinations the
+[v0.1.0 release][v010] is a `--find-links` variant index:
 
 ```bash
-pip install dynquant-kernels==0.1.0+cu128torch28 \
+pip install 'torch==2.8.*' && pip install dynquant-kernels==0.1.0+cu128torch28 \
   --find-links https://github.com/kambojvikram/dynquant/releases/expanded_assets/v0.1.0
 ```
 

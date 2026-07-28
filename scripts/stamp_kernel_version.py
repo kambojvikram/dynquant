@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stamp the binary variant into ``dynquant-kernels``' version, PEP 440 style.
+"""Stamp the binary variant into ``dynquant-kernels``' version and torch pin.
 
 One kernels wheel is not enough: a compiled extension is valid only next to the
 torch minor and CUDA major it was linked against, so a release is a *matrix* of
@@ -18,14 +18,43 @@ the source file by regex (see ``packages/dynquant-kernels/pyproject.toml``), and
 there is no build-time hook to append to it -- the string in the file *is* the
 version. So CI rewrites the file per matrix cell, before the build.
 
-The default combination for PyPI is built with ``--plain``, which stamps nothing:
-PyPI rejects local versions outright, so exactly one cell of the matrix can be
-published there and the rest are served from a ``--find-links`` index.
+The default combination for PyPI is built with ``--plain``, which stamps no local
+segment: PyPI rejects local versions outright, so exactly one cell of the matrix
+can be published there and the rest are served from a ``--find-links`` index.
+
+The torch pin, and why it is not optional
+-----------------------------------------
+The version label *describes* the build; it does not *constrain* what pip installs
+next to it. ``dynquant-kernels`` declaring an open ``torch>=2.4`` meant the
+resolver was free to satisfy it with whatever torch was newest, and it did::
+
+    $ pip install dynquant            # on Linux x86_64, 0.1.0
+    dynquant-kernels 0.1.0            # built against torch 2.7.1+cu126
+    torch            2.13.0           # + the CUDA 13 runtime stack
+
+Those cannot load together. The extension links libtorch's C++ ABI, so the import
+dies on an undefined symbol, ``_loader.py`` falls back to the torch backend, and
+the user who typed the one command that exists to deliver working kernels silently
+gets none of them -- while pip reports complete success. Worse, the remedy the
+loader prints names ``cu130torch213``, a variant the matrix never built.
+
+So the same call that stamps the version also rewrites the runtime dependency to
+the minor the binary was actually linked against::
+
+    torch>=2.4  ->  torch>=2.7,<2.8
+
+which makes the resolver do the right thing by itself: asking for the wheel now
+asks for a torch it can load next to. ``--torch`` is therefore required for every
+cell including ``--plain`` -- the PyPI cell is the one most users land on, so it is
+the last place that can afford an open bound.
+
+Bounds are minor-wide because a torch *patch* release does not change the C++ ABI,
+the same reasoning that keeps the patch level out of the local label.
 
 Usage::
 
     python scripts/stamp_kernel_version.py --cuda 12.6 --torch 2.7.1
-    python scripts/stamp_kernel_version.py --plain          # PyPI cell
+    python scripts/stamp_kernel_version.py --plain --torch 2.7.1     # PyPI cell
     python scripts/stamp_kernel_version.py --cuda 12.6 --torch 2.7.1 --print-only
 """
 
@@ -35,19 +64,20 @@ import argparse
 import re
 from pathlib import Path
 
-VERSION_FILE = (
-    Path(__file__).resolve().parents[1]
-    / "packages"
-    / "dynquant-kernels"
-    / "src"
-    / "dynquant_kernels"
-    / "_version.py"
-)
+_KERNELS = Path(__file__).resolve().parents[1] / "packages" / "dynquant-kernels"
+
+VERSION_FILE = _KERNELS / "src" / "dynquant_kernels" / "_version.py"
+PYPROJECT_FILE = _KERNELS / "pyproject.toml"
 
 #: Must stay in step with scikit-build-core's own regex provider, which looks for
 #: this exact assignment. A change here that the build cannot parse fails at build
 #: time rather than producing a mis-versioned wheel, which is the safe direction.
 _ASSIGNMENT = re.compile(r'^(__version__\s*=\s*)"([^"]+)"', re.MULTILINE)
+
+#: The *runtime* dependency list, anchored at column 0 so it cannot match
+#: ``[build-system] requires``, which names torch too but is cibuildwheel's to
+#: control -- it installs the exact torch it wants before the build starts.
+_RUNTIME_TORCH = re.compile(r'^(dependencies\s*=\s*\[")torch[^"]*(")', re.MULTILINE)
 
 
 def local_label(cuda: str, torch: str) -> str:
@@ -68,6 +98,23 @@ def local_label(cuda: str, torch: str) -> str:
     return f"cu{cuda_parts[0]}{cuda_parts[1]}torch{torch_parts[0]}{torch_parts[1]}"
 
 
+def torch_pin(torch: str) -> str:
+    """``2.7.1+cu126`` -> ``torch>=2.7,<2.8``.
+
+    Minor-wide, because that is the granularity at which libtorch's C++ ABI
+    actually moves. Narrower would reject patch releases that load fine; wider is
+    the bug this function exists to close.
+    """
+    parts = re.findall(r"\d+", torch.split("+", 1)[0])
+    if len(parts) < 2:
+        raise SystemExit(
+            f"could not read major.minor from --torch {torch!r}; expected a form "
+            f"like '2.7.1' or '2.7.1+cu126'"
+        )
+    major, minor = int(parts[0]), int(parts[1])
+    return f"torch>={major}.{minor},<{major}.{minor + 1}"
+
+
 def stamped_version(base: str, label: str | None) -> str:
     # Strip any existing local segment first: CI reuses a checkout across matrix
     # cells, and appending twice would produce `...+cu126torch27+cu121torch24`,
@@ -81,23 +128,29 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--cuda", help="CUDA toolkit version, e.g. 12.6")
-    parser.add_argument("--torch", help="torch version, e.g. 2.7.1 or 2.7.1+cu126")
+    parser.add_argument(
+        "--torch",
+        required=True,
+        help="torch version this cell links against, e.g. 2.7.1 or 2.7.1+cu126. "
+        "Required for every cell: it sets the runtime pin, not just the label.",
+    )
     parser.add_argument(
         "--plain",
         action="store_true",
-        help="strip any local segment (the one cell that may be uploaded to PyPI)",
+        help="omit the local version segment (the one cell that may be uploaded to "
+        "PyPI). The torch pin is still written -- see the module docstring.",
     )
     parser.add_argument(
         "--print-only",
         action="store_true",
-        help="print the version that would be written and change nothing",
+        help="print what would be written and change nothing",
     )
     args = parser.parse_args()
 
-    if args.plain == bool(args.cuda or args.torch):
-        raise SystemExit("pass either --plain or both --cuda and --torch")
-    if not args.plain and not (args.cuda and args.torch):
-        raise SystemExit("--cuda and --torch must be given together")
+    if args.plain and args.cuda:
+        raise SystemExit("--plain omits the local segment, so --cuda has nothing to do")
+    if not args.plain and not args.cuda:
+        raise SystemExit("pass --cuda (with --torch), or --plain --torch for the PyPI cell")
 
     text = VERSION_FILE.read_text(encoding="utf-8")
     match = _ASSIGNMENT.search(text)
@@ -106,15 +159,30 @@ def main() -> int:
 
     label = None if args.plain else local_label(args.cuda, args.torch)
     new_version = stamped_version(match.group(2), label)
+    pin = torch_pin(args.torch)
+
+    project = PYPROJECT_FILE.read_text(encoding="utf-8")
+    # count=1 and a required match: silently stamping nothing would ship exactly the
+    # open-bound wheel this is here to prevent, and the failure would only surface
+    # in a user's resolver weeks later.
+    project, replaced = _RUNTIME_TORCH.subn(rf"\g<1>{pin}\g<2>", project, count=1)
+    if replaced != 1:
+        raise SystemExit(
+            f'no runtime `dependencies = ["torch..."]` line found in {PYPROJECT_FILE}; '
+            f"the torch pin could not be applied"
+        )
 
     if args.print_only:
         print(new_version)
+        print(pin)
         return 0
 
     VERSION_FILE.write_text(
         _ASSIGNMENT.sub(rf'\g<1>"{new_version}"', text, count=1), encoding="utf-8"
     )
+    PYPROJECT_FILE.write_text(project, encoding="utf-8")
     print(f"{VERSION_FILE.name}: __version__ = {new_version!r}")
+    print(f"{PYPROJECT_FILE.name}: dependencies = [{pin!r}]")
     return 0
 
 
