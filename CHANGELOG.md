@@ -277,6 +277,17 @@ where the mistakes live.
   that catches CMake and operator-registration mistakes before a GPU runner is
   needed — so it had been silently absent from the gate it was written for.
 
+- With the build fixed, the same job failed one step later on
+  `'_OpNamespace' 'dynquant' object has no attribute 'probe_axpy'`. The step
+  imported `dynquant_kernels` under a comment claiming the import registers the
+  ops. It does not: loading is lazy by design, and `load_result()` — not the
+  import — is what imports `_C` and runs the static initializers that declare the
+  schemas. The caller was fixed rather than the laziness, since the laziness is
+  the documented contract (importing `dynquant` must not pay for a large shared
+  object, and a machine with a broken driver still has to run the CPU-side
+  quantizer). Every other caller in the tree already went through
+  `is_available()`, which loads; this step was the only one that did not.
+
 - The `types` job could not reproduce a local mypy run. `strict = true` enables
   `warn_unused_ignores`, and the job installed neither `transformers` (an optional
   extra) nor a pinned `safetensors`. Absent transformers, `ignore_missing_imports`

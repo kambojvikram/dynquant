@@ -247,7 +247,23 @@ jobs:
         run: |
           python - <<'PY'
           import torch
-          import dynquant_kernels  # noqa: F401  -- importing registers the ops
+          import dynquant_kernels
+
+          # Importing the package does NOT register the ops. Loading the shared
+          # object is deliberately lazy (see load_result's docstring: merely
+          # importing dynquant must not pay for a large .so, and a machine with a
+          # broken driver still has to run the CPU-side quantizer). load_result() is
+          # what imports _C and runs the static initializers that register the
+          # schemas, so calling it is the precondition for touching
+          # torch.ops.dynquant at all -- without it the namespace is empty and the
+          # first op access raises AttributeError.
+          result = dynquant_kernels.load_result()
+          print(dynquant_kernels.report())
+          # `module` is the _C module or None, so this distinguishes "the shared
+          # object did not load" from "it loaded but an op is wrong" -- and reports
+          # the loader's own diagnosis instead of an AttributeError several lines
+          # later. Not `available`: that is False here by design, no device code.
+          assert result.module is not None, f"{result.error}\n{result.remedy}"
 
           x = torch.randn(1024, dtype=torch.float16)
           y = torch.randn(1024, dtype=torch.float16)
