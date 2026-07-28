@@ -121,7 +121,7 @@ partly met the table says so rather than rounding up.
 
 | | Phase | State |
 |---|---|---|
-| P0 | Packaging, build system, backend dispatch, CLI, `dynquant doctor` | done; wheels build, install and carry a manylinux tag, variant index open |
+| P0 | Packaging, build system, backend dispatch, CLI, `dynquant doctor` | done; published to PyPI at 0.1.0, variant wheels on the GitHub release |
 | P1 | On-disk formats: packed tensors, stats schema, role model | done |
 | P2 | Training-time signal collection hook | done, GPU gate items open |
 | P3 | Architecture-generic role classification | done |
@@ -153,12 +153,15 @@ and newer — and that repair is verified to be a pure retag: nothing vendored, 
 `_C` extension byte-identical, torch and CUDA resolved from the already-loaded
 process image rather than from a second copy inside the wheel.
 
-What is still not done is publishing, for one remaining reason: the wheel's version
-is `0.1.0+cu130torch213`, and PEP 440 local versions cannot go to PyPI at all. So
-distribution needs the torch-style variant index — one wheel per CUDA × torch ×
-Python behind a `find-links` URL, PyPI holding the pure-Python core plus one default
-combination. The plan's mkdocs site is also not written; this README and
+Publishing is done as of 0.1.0, in the split shape that constraint forces. Twelve of
+the thirteen binary builds are versioned `0.1.0+cu126torch26` and the like, and PEP
+440 local versions cannot go to PyPI at all — so PyPI holds the pure-Python core plus
+the one default combination (cu126 / torch 2.7, CPython 3.10–3.13, Linux x86_64), and
+the [v0.1.0 release][v010] carries the rest and serves as the `find-links` variant
+index. The plan's mkdocs site is still not written; this README and
 [docs/format-spec.md](docs/format-spec.md) are the docs.
+
+[v010]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.0
 
 **What "done" means for P6, precisely.** The published research prototype dequantized
 back to fp16 at load time — storage savings only, no VRAM reduction and no speedup.
@@ -195,17 +198,29 @@ in this repository reports them from the other.
 
 ## Install
 
-No wheels on PyPI yet — see P0 in [Status](#status) for exactly what is missing. From
-a checkout:
+```bash
+pip install dynquant                              # core + kernels
+```
+
+On Linux x86_64 with CPython 3.10–3.13 that is a real wheel and compiles nothing, but
+it is one wheel: the cu126 / torch 2.7 build, linked against that torch's C++ ABI. On
+a different torch it will import-fail with an undefined symbol, and `_loader.py` names
+the wheel you want instead. Take it from the variant index:
+
+```bash
+pip install dynquant-kernels==0.1.0+cu128torch28 \
+  --find-links https://github.com/kambojvikram/dynquant/releases/expanded_assets/v0.1.0
+```
+
+Anywhere else — Windows, macOS, CPU-only, ARM, glibc older than 2.34 — `dynquant-core`
+installs on its own and runs on the torch backend, no compiler needed. Building the
+kernels there needs nvcc and cmake >= 3.26. From a checkout:
 
 ```bash
 pip install packages/dynquant-core                # pure Python: allocate and quantize anywhere
 pip install --no-build-isolation packages/dynquant-kernels   # needs nvcc + cmake >= 3.26
 pip install 'packages/dynquant-core[train]'       # + transformers, peft, trl, datasets
 ```
-
-Once published, `pip install dynquant` will pull the core plus the kernels wheel
-matching the detected CUDA and torch.
 
 Then, always, before trusting a number out of it:
 
