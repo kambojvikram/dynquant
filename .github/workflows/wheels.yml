@@ -161,6 +161,18 @@ jobs:
         uses: pypa/cibuildwheel@v2.23.4
         env:
           CIBW_BUILD: ${{ matrix.cibw_build }}
+          # Linux means manylinux *and* musllinux to cibuildwheel, and the patterns
+          # above match `cp310-musllinux_x86_64` just as happily as the manylinux one.
+          # There is nothing to build there: torch publishes manylinux_2_28 and
+          # win_amd64 wheels and nothing else, so an Alpine build has no torch to
+          # compile against or link to, and the musllinux image carries no CUDA toolkit
+          # either. Skipping is the correct answer rather than the expedient one.
+          #
+          # It stayed hidden because musllinux is the *last* thing cibuildwheel
+          # attempts: all four manylinux wheels were built and repaired first, and the
+          # job then died on exit 127 when CIBW_BEFORE_ALL's `dnf` met an image whose
+          # package manager is `apk` -- 26 minutes of good work thrown away at the end.
+          CIBW_SKIP: "*musllinux*"
           CIBW_ARCHS_LINUX: x86_64
           # Third-party CUDA manylinux image, now pinned by digest in the matrix above.
           # These repositories publish only a mutable `latest`, so a tag reference would

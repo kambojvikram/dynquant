@@ -290,8 +290,9 @@ where the mistakes live.
 `wheels.yml` is triggered by `push: tags: ["v*"]` and nothing else, so from the day it
 was written until the `v0.1.0` tag it had executed exactly zero times. Tagging ran it
 for the first time and it failed on all three CUDA arms — then failed twice more, on
-two further causes, each hidden behind the previous one. All three are the same mistake
-with different faces: **assuming what is inside an image we do not build.**
+three further causes, each one hidden behind the one before it. All four are the same
+mistake wearing different faces: **assuming what a container we do not build contains,
+or which containers would be used at all.**
 
 1. **The images did not exist.** `pull access denied for
    sameli/manylinux_2_28_x86_64_cuda_12.4, repository does not exist`, before compiling
@@ -339,8 +340,20 @@ with different faces: **assuming what is inside an image we do not build.**
    image defaulted to, so an image rebuild could change code generation under every
    wheel we ship without a line of our own changing.
 
+4. **It was also building musllinux wheels, which cannot exist.** With the compiler
+   fixed, all four manylinux wheels built and repaired — and the job then failed on
+   `exit 127` anyway, 26 minutes in, because "Linux" means manylinux *and* musllinux to
+   cibuildwheel and `cp310-*` matches `cp310-musllinux_x86_64` too. The `dnf` line added
+   for cause 3 had met an Alpine image, whose package manager is `apk`.
+
+   Skipping musl is correct rather than expedient: torch publishes `manylinux_2_28` and
+   `win_amd64` wheels and nothing else, so an Alpine build has no torch to compile
+   against or link to, and the musllinux image has no CUDA toolkit either. `CIBW_SKIP:
+   "*musllinux*"` now says so. Note the shape of this one — the leg that cannot work
+   ran *last*, so it discarded a pile of successful work rather than failing fast.
+
 Two process changes came out of this, both cheap and both aimed at the *class* of bug
-rather than the three instances:
+rather than the four instances:
 
 - **The build now records its own toolchain.** `CIBW_BEFORE_ALL` prints the host GCC,
   nvcc, `auditwheel` and `/opt/python` inventory. Along the way this corrected a claim
