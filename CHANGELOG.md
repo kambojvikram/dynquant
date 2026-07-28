@@ -19,9 +19,24 @@ ones that invalidate artifacts a user has already produced.
 
 ## [Unreleased]
 
-Pre-release. Nothing is published yet; the phases below are the build order from
-the project plan, and the status table in [README.md](README.md) is authoritative
-for what actually works today.
+## [0.1.0] — 2026-07-28
+
+First release. The phases below are the build order from the project plan, and the
+status table in [README.md](README.md) is authoritative for what actually works
+today — this is P0 through P5 plus the P6 decode kernels, not a finished package.
+
+Two things to know before installing:
+
+- `dynquant-kernels` reaches PyPI as an **sdist only**. Every real wheel carries a
+  PEP 440 local version (`0.1.0+cu126torch27`) identifying the CUDA and torch build
+  it matches, and PyPI rejects local versions outright. The wheels are attached to
+  the GitHub Release, which serves as the variant index; until you point pip at it
+  with `--find-links`, installing on Linux compiles the extension from source and
+  needs a CUDA toolkit. Without one, `dynquant-core` still installs and runs on the
+  torch backend.
+- `KERNEL_ABI_VERSION` is 2. A kernels wheel refuses to load against a core that
+  expects a different number, with the remedy in the error rather than an import
+  traceback.
 
 ### Added — P0, foundations
 
@@ -691,4 +706,5 @@ and `mma.sync` accumulation — the AWQ/Marlin route — which is P7.
   Python costs. CUDA Graphs (P8) and a `flash-linear-attention` fast path are what address
   it. `experiments/qwen35_2b/RESULTS.md` has the measurement.
 
-[Unreleased]: https://github.com/kambojvikram/dynquant/commits/main
+[Unreleased]: https://github.com/kambojvikram/dynquant/compare/v0.1.0...main
+[0.1.0]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.0
