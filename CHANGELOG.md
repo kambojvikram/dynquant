@@ -261,6 +261,41 @@ where the mistakes live.
   Python combination behind a `find-links` URL, with PyPI holding only the pure-Python
   core plus whichever single combination is chosen as the default.
 
+### Changed — P0, PyPI publication is one job per distribution
+
+- `publish-pypi` is replaced by three jobs — `publish-core`, `publish-kernels`,
+  `publish-meta` — each running in its own GitHub environment (`pypi-core`,
+  `pypi-kernels`, `pypi`).
+
+  This is forced by PyPI, not a preference. A *pending* trusted publisher is keyed
+  on `(owner, repository, workflow, environment)` and deliberately **not** on the
+  project name, so a single environment can hold exactly one pending publisher.
+  Registering the second of three names against one environment fails with *"a
+  pending trusted publisher matching this configuration has already been registered
+  for a different project name"*. Confirmed against the constraint in
+  `warehouse/accounts/views.py`, which says so in a comment; it is not documented on
+  docs.pypi.org, which is why the first attempt at this configuration was wrong.
+
+- The three jobs are chained with `needs:` rather than run in parallel, so a
+  dependency always reaches PyPI before the distribution that pins it. `dynquant`
+  requires `dynquant-core==<the same version>` exactly, and with required reviewers
+  on each environment the approvals can be minutes or hours apart — publishing the
+  meta package first would leave `pip install dynquant` unresolvable for that whole
+  window.
+
+- Each job selects only its own artifacts by filename prefix and fails if the
+  selection is empty. `dynquant-` cannot collide with `dynquant_core-` or
+  `dynquant_kernels-` because distribution filenames normalise the project name with
+  underscores, so the hyphen is only ever the name/version separator. An empty
+  upload directory is a no-op that reports success, which is a worse outcome than a
+  red build.
+
+- The artifact-selection step is inlined rather than factored into a checked-in
+  script, because that would require `actions/checkout` inside a job holding
+  `id-token: write`. Executing a script from the same tag being published means
+  anyone who can push a tag can rewrite what gets uploaded. These jobs now touch
+  build artifacts only, never repository source.
+
 ### Added — P1, formats and data model
 
 - `constants.py` as the single owner of every filename in the format.

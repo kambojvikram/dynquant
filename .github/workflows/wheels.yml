@@ -285,17 +285,39 @@ jobs:
           files: staged/*
           fail_on_unmatched_files: true
 
-  publish-pypi:
-    name: publish to PyPI
+  # PyPI publication is one job per distribution, each in its own GitHub
+  # environment. That is not tidiness -- PyPI forces it. A *pending* trusted
+  # publisher is keyed on (owner, repository, workflow, environment) and
+  # deliberately NOT on the project name, so one environment can hold exactly one
+  # pending publisher. Registering a second name against the same environment
+  # fails with "a pending trusted publisher matching this configuration has
+  # already been registered for a different project name". Do not collapse these
+  # jobs back into one: it cannot be made to work.
+  #
+  # Register one publisher per name at pypi.org/manage/account/publishing, all
+  # sharing owner=kambojvikram, repository=dynquant, workflow=wheels.yml:
+  #
+  #     dynquant-core      ->  environment  pypi-core
+  #     dynquant-kernels   ->  environment  pypi-kernels
+  #     dynquant           ->  environment  pypi
+  #
+  # Each is gated three ways, because this is the one irreversible step in the
+  # repository -- a filename cannot be reused on PyPI even after a delete, and
+  # this project's source began as a confidential reviewer copy under double-blind
+  # review. Nothing fires until someone sets the variable *and* approves the
+  # environment.
+  #
+  # They are chained with `needs:` rather than run in parallel so a dependency is
+  # always on PyPI before the thing that pins it: `dynquant` requires
+  # `dynquant-core==<this version>` exactly, and with required reviewers the
+  # approvals can be minutes apart. Publishing the meta package first would leave
+  # `pip install dynquant` unresolvable for that entire window.
+  publish-core:
+    name: publish dynquant-core to PyPI
     needs: [sdist, linux-wheels]
-    # Three independent gates, because this is the one irreversible step in the
-    # repository -- a filename cannot be reused on PyPI even after a delete, and
-    # this project's source began as a confidential reviewer copy under
-    # double-blind review. Nothing here fires until someone deliberately sets the
-    # variable *and* approves the environment.
     if: startsWith(github.ref, 'refs/tags/v') && vars.PUBLISH_ENABLED == 'true'
     runs-on: ubuntu-latest
-    environment: pypi           # configure required reviewers on this environment
+    environment: pypi-core
     permissions:
       id-token: write           # trusted publishing; no API token in a secret
     steps:
@@ -303,19 +325,88 @@ jobs:
         with:
           path: staged
           merge-multiple: true
-
-      - name: keep only what PyPI accepts
-        # PyPI rejects local versions outright, so the variant wheels are dropped
-        # here rather than failing the upload half-way through. They live on the
-        # Release page instead.
+      - name: select dynquant-core artifacts
+        env:
+          PREFIX: dynquant_core-
         run: |
           mkdir -p dist
-          for f in staged/*; do
+          shopt -s nullglob
+          for f in staged/"$PREFIX"*; do
             case "$(basename "$f")" in
               *+*) echo "skipping local-version artifact $(basename "$f")" ;;
               *)   cp "$f" dist/ ;;
             esac
           done
           ls -la dist
+          # An empty dist/ uploads nothing and reports success. A silent no-op
+          # release is worse than a red build, so make it red.
+          [ -n "$(ls -A dist)" ] || { echo "::error::no $PREFIX artifacts to publish"; exit 1; }
+      - uses: pypa/gh-action-pypi-publish@release/v1
 
+  publish-kernels:
+    name: publish dynquant-kernels to PyPI
+    needs: [publish-core]
+    if: startsWith(github.ref, 'refs/tags/v') && vars.PUBLISH_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi-kernels
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: staged
+          merge-multiple: true
+      - name: select dynquant-kernels artifacts
+        # In practice this is the sdist alone: every built wheel carries a PEP 440
+        # local version (0.1.0+cu126torch27) and PyPI rejects those outright, so
+        # they are filtered out here and distributed from the Release page instead.
+        env:
+          PREFIX: dynquant_kernels-
+        run: |
+          mkdir -p dist
+          shopt -s nullglob
+          for f in staged/"$PREFIX"*; do
+            case "$(basename "$f")" in
+              *+*) echo "skipping local-version artifact $(basename "$f")" ;;
+              *)   cp "$f" dist/ ;;
+            esac
+          done
+          ls -la dist
+          # An empty dist/ uploads nothing and reports success. A silent no-op
+          # release is worse than a red build, so make it red.
+          [ -n "$(ls -A dist)" ] || { echo "::error::no $PREFIX artifacts to publish"; exit 1; }
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-meta:
+    name: publish dynquant to PyPI
+    needs: [publish-core, publish-kernels]
+    if: startsWith(github.ref, 'refs/tags/v') && vars.PUBLISH_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: staged
+          merge-multiple: true
+      - name: select dynquant artifacts
+        # `dynquant-` does not match `dynquant_core-` or `dynquant_kernels-`:
+        # distribution filenames normalise the name with underscores, so the
+        # hyphen here is only ever the name/version separator of the meta package.
+        env:
+          PREFIX: dynquant-
+        run: |
+          mkdir -p dist
+          shopt -s nullglob
+          for f in staged/"$PREFIX"*; do
+            case "$(basename "$f")" in
+              *+*) echo "skipping local-version artifact $(basename "$f")" ;;
+              *)   cp "$f" dist/ ;;
+            esac
+          done
+          ls -la dist
+          # An empty dist/ uploads nothing and reports success. A silent no-op
+          # release is worse than a red build, so make it red.
+          [ -n "$(ls -A dist)" ] || { echo "::error::no $PREFIX artifacts to publish"; exit 1; }
       - uses: pypa/gh-action-pypi-publish@release/v1
