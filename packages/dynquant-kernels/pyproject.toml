@@ -1,0 +1,75 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "torch>=2.4"]
+build-backend = "scikit_build_core.build"
+
+# NOTE on build isolation. `torch` is listed above so that `cibuildwheel`, which
+# controls exactly which torch it installs, can build in an isolated environment.
+# A *local* source build must instead use:
+#
+#     pip install --no-build-isolation ./packages/dynquant-kernels
+#
+# because in an isolated environment pip resolves the newest torch, and an
+# extension linked against torch 2.9 will not import next to the torch 2.6 the
+# user actually runs. The failure is an undefined-symbol ImportError at import
+# time, which the loader in _loader.py translates into this explanation.
+
+[project]
+name = "dynquant-kernels"
+description = "Compiled CUDA kernels for DynQuant: n-bit dequant, decode GEMV, tensor-core GEMM, MoE grouped GEMM."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "DynQuant authors" }]
+keywords = ["cuda", "quantization", "llm", "kernels", "gemv", "gemm", "moe"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dynamic = ["version"]
+
+# Deliberately does NOT depend on dynquant-core. The dependency runs the other
+# way: core discovers the kernels if they are importable. Depending on core here
+# would make the two wheels mutually constraining, so a core patch release could
+# not be installed without a matching kernels rebuild -- for a change that touched
+# no binary at all.
+dependencies = ["torch>=2.4"]
+
+[project.urls]
+Homepage = "https://github.com/dynquant/dynquant"
+Issues = "https://github.com/dynquant/dynquant/issues"
+
+[tool.scikit-build]
+minimum-version = "0.10"
+cmake.version = ">=3.26"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["src/dynquant_kernels"]
+# The compiled module and the generated build stamp are installed by CMake's
+# install() rules into the same directory the Python sources land in.
+wheel.install-dir = "."
+sdist.include = ["csrc", "cmake", "CMakeLists.txt"]
+sdist.exclude = ["build", "*.so", "*.pyd"]
+
+[tool.scikit-build.cmake.define]
+# Release wheels set DYNQUANT_REQUIRE_CUDA=ON in CI so that a toolkit which
+# silently failed detection becomes a build failure rather than a wheel that is
+# advertised as containing kernels and does not.
+DYNQUANT_REQUIRE_CUDA = "OFF"
+
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "src/dynquant_kernels/_version.py"
+
+# CUDA/torch variant selection rides on the local version segment, the same
+# scheme torch itself uses: dynquant-kernels==0.1.0+cu124torch27. CI rewrites
+# __version__ in _version.py before building each matrix cell, because PEP 440
+# local versions cannot be expressed as a build-time option.

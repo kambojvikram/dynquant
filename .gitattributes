@@ -1,0 +1,36 @@
+# Line endings are normalized to LF in the repository and on checkout everywhere.
+#
+# Not a style preference. `dynquant/_legacy/` is a verbatim copy of the paper's
+# code, kept as a reference oracle, and `tests/test_legacy_provenance.py` pins it
+# by hash. Without this file a Windows checkout with `core.autocrlf=true` would
+# rewrite those files on disk and the hash check would fail for a reason having
+# nothing to do with the code. (The test also normalizes before hashing, so it is
+# correct either way -- but a repository that disagrees with itself about line
+# endings produces diffs where nothing changed, which is its own tax.)
+* text=auto eol=lf
+
+# Windows-only entry points, which cmd.exe and older PowerShell hosts want CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary: never touched, never diffed as text.
+*.png binary
+*.jpg binary
+*.pdf binary
+*.safetensors binary
+*.gguf binary
+*.pt binary
+*.bin binary
+*.so binary
+*.pyd binary
+*.dylib binary
+*.cubin binary
+*.fatbin binary
+
+# GitHub language statistics. The vendored research code is not this project's
+# code and should not be counted as such; CUDA is, and GitHub does not detect it
+# from `.cu` reliably in a mostly-Python repository.
+packages/dynquant-core/src/dynquant/_legacy/** linguist-vendored
+*.cu linguist-language=Cuda
+*.cuh linguist-language=Cuda

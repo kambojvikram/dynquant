@@ -1,0 +1,78 @@
+# pre-commit hooks. Install once:
+#
+#     pre-commit install
+#
+# Deliberately fast. Anything that needs torch imported, a GPU, or more than a few
+# seconds belongs in CI, not here -- a slow pre-commit hook gets bypassed with
+# `--no-verify`, and a hook that is routinely bypassed protects nothing.
+#
+# The one exception to "fast" is the confidential-file guard at the bottom, which
+# is here rather than in CI because CI runs *after* the commit exists, and by then
+# the file is in git history forever.
+
+default_language_version:
+  python: python3
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.(md|patch)$'   # trailing spaces are meaningful in Markdown
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-case-conflict
+        # The bug that made every checkpoint in the research code unloadable was a
+        # capital Q in one filename on a case-insensitive filesystem. This hook is
+        # the mechanical guard against the same class of mistake.
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-added-large-files
+        args: [--maxkb=512]
+        # Stats fixtures are the largest legitimate files in the tree. A weight
+        # checkpoint or a PDF would exceed this, which is the intent.
+      - id: detect-private-key
+      - id: debug-statements
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.0
+    hooks:
+      - id: ruff-check
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v19.1.7
+    hooks:
+      - id: clang-format
+        types_or: [c++, c, cuda]
+        exclude: '^packages/dynquant-kernels/csrc/_cutlass/'
+
+  - repo: local
+    hooks:
+      # ------------------------------------------------------------------
+      # The guard that cannot wait for CI
+      # ------------------------------------------------------------------
+      - id: no-confidential-material
+        name: block confidential reviewer material and credentials
+        entry: python scripts/check_no_confidential.py
+        language: system
+        pass_filenames: true
+        # Runs on every staged file, including ones .gitignore would have covered:
+        # `git add -f` bypasses .gitignore, and a commit cannot be un-made.
+
+      # ------------------------------------------------------------------
+      # Cheap type checking. Full strict mypy runs in CI where torch is present.
+      # ------------------------------------------------------------------
+      - id: mypy-core
+        name: mypy (dynquant-core, strict)
+        entry: mypy
+        language: system
+        types: [python]
+        files: '^packages/dynquant-core/src/dynquant/'
+        # No `args`: configuration lives in pyproject.toml so the hook and CI cannot
+        # drift into checking different things.
+        require_serial: true

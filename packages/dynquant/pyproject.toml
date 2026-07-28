@@ -1,0 +1,91 @@
+# The user-facing install: `pip install dynquant`.
+#
+# This distribution contains no code. Its entire job is to be the one name people
+# type and to pull in the pieces that make the kernels present by default -- the
+# thing that separates "a quantization library" from "a research script you have to
+# compile yourself".
+#
+# Why a meta-package at all, instead of putting everything in one wheel:
+#
+#   * The compiled half is ~one wheel per (CUDA major x torch minor x Python x
+#     platform). Fusing it with the Python half would mean re-releasing the
+#     allocator every time a torch point release lands.
+#   * The Python half has to install where there is no compiler and no GPU --
+#     Windows, macOS, ARM, CPU CI. `dynquant-core` alone always installs, and the
+#     quantization pipeline is fully usable there. Only inference speed needs the
+#     binary.
+#
+# Version numbers move in lockstep with `dynquant-core` (tests/test_packaging.py
+# enforces it), so `dynquant==X` and `dynquant-core==X` always mean the same code.
+
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dynquant"
+version = "0.1.0.dev0"
+description = "Training-dynamics-driven mixed-precision LLM quantization, with prebuilt CUDA kernels."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "DynQuant authors" }]
+keywords = ["quantization", "llm", "transformers", "mixed-precision", "moe", "compression", "cuda"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Environment :: GPU :: NVIDIA CUDA",
+]
+
+dependencies = [
+    "dynquant-core==0.1.0.dev0",
+    # Prebuilt kernels exist only where we can build and test them. Elsewhere this
+    # resolves to nothing, `dynquant doctor` reports backend=torch with the reason,
+    # and quantization still works -- rather than pip failing to find a wheel and
+    # the install dying on a machine that would have been perfectly usable.
+    #
+    # The marker is deliberately narrow: an sdist fallback compiling CUDA on a
+    # user's laptop is a 20-minute build that usually ends in a toolkit error, so
+    # `dynquant-kernels` is opted into explicitly on unsupported platforms rather
+    # than attempted automatically.
+    #
+    # Pinned by *range*, not exactly, unlike core: core is the same source tree
+    # released together, but the kernels wheel exists to be rebuilt on its own
+    # cadence -- a new CUDA toolkit, a new torch minor, a kernel optimisation --
+    # none of which changes a line of Python. Real compatibility is enforced by the
+    # ABI handshake (see csrc/include/dynquant/abi.h), which is a much stronger
+    # check than a version equality: a mismatched ABI refuses to load, whereas a
+    # matching version number proves nothing about the packed layout.
+    "dynquant-kernels>=0.1.0.dev0,<0.2; platform_system=='Linux' and platform_machine=='x86_64'",
+]
+
+[project.optional-dependencies]
+# Mirrors of dynquant-core's extras, so users never have to know that `core`
+# exists as a separate name.
+hf = ["dynquant-core[hf]==0.1.0.dev0"]
+train = ["dynquant-core[train]==0.1.0.dev0"]
+eval = ["dynquant-core[eval]==0.1.0.dev0"]
+triton = ["dynquant-core[triton]==0.1.0.dev0"]
+dev = ["dynquant-core[dev]==0.1.0.dev0"]
+
+# Force the compiled kernels regardless of platform marker. Falls back to an sdist
+# build, which needs nvcc, cmake and a C++ toolchain.
+kernels = ["dynquant-kernels>=0.1.0.dev0,<0.2"]
+
+[project.urls]
+Homepage = "https://github.com/dynquant/dynquant"
+Documentation = "https://dynquant.github.io/dynquant"
+Issues = "https://github.com/dynquant/dynquant/issues"
+Changelog = "https://github.com/dynquant/dynquant/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+# No code to ship. Hatchling refuses to build a wheel with nothing in it unless
+# told that is the intent.
+bypass-selection = true
+
+[tool.hatch.build.targets.sdist]
+include = ["README.md", "LICENSE", "pyproject.toml"]

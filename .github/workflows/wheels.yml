@@ -1,0 +1,321 @@
+# Release artifacts: the CUDA wheel matrix, the pure-Python wheels, and the sdists.
+#
+# Why a matrix at all. A compiled torch extension is valid only next to the torch
+# minor it was linked against (libtorch's C++ symbols are mangled and change across
+# minors) and the CUDA major it was compiled for. So one source release means one
+# wheel per (torch minor x CUDA major.minor x CPython), and PEP 440's local version
+# segment is where that is recorded -- exactly as torch does it:
+#
+#     dynquant_kernels-0.1.0+cu126torch27-cp311-cp311-manylinux_2_28_x86_64.whl
+#
+# PyPI rejects local versions, so precisely one cell -- the most common combination
+# -- is built plain and published there, and every other variant is attached to the
+# GitHub Release, which serves as a `pip install --find-links` index. A user on a
+# non-default torch either points pip at that index or builds the sdist.
+#
+# This workflow does not publish anything by itself. See the `publish` job.
+
+name: Wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      windows:
+        description: "Also attempt Windows wheels (best effort, may fail)"
+        type: boolean
+        default: false
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wheels-${{ github.ref }}
+  cancel-in-progress: false      # never cancel a release build half-way
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  FORCE_COLOR: "1"
+
+jobs:
+  # ------------------------------------------------------------------------
+  # Source distributions and the two pure-Python wheels
+  # ------------------------------------------------------------------------
+  sdist:
+    name: sdists and pure-Python wheels
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: install build tooling
+        run: |
+          pip install build twine "scikit-build-core>=0.10"
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: build
+        # The kernels sdist is built with --no-isolation against the CPU torch
+        # above; writing a tarball runs no CMake, and an isolated environment would
+        # pull the 2.5GB CUDA torch to do nothing with it.
+        run: |
+          python -m build --outdir dist packages/dynquant-core
+          python -m build --outdir dist packages/dynquant
+          python -m build --sdist --no-isolation --outdir dist packages/dynquant-kernels
+
+      - run: twine check --strict dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-pure
+          path: dist/*
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------------
+  # The CUDA wheel matrix
+  # ------------------------------------------------------------------------
+  linux-wheels:
+    name: ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `default: true` is the cell that may go to PyPI: built with no local
+          # version segment, so `pip install dynquant-kernels` resolves it. Anyone
+          # on a different torch gets an undefined-symbol ImportError, which
+          # _loader.py turns into the exact wheel name to install instead -- the
+          # accepted cost of PyPI having room for only one variant.
+          - label: "cu126 / torch 2.7"
+            cuda: "12.6"
+            torch: "2.7.1"
+            torch_index: "https://download.pytorch.org/whl/cu126"
+            image: "sameli/manylinux_2_28_x86_64_cuda_12.6"
+            cibw_build: "cp310-* cp311-* cp312-* cp313-*"
+            default: true
+          - label: "cu124 / torch 2.6"
+            cuda: "12.4"
+            torch: "2.6.0"
+            torch_index: "https://download.pytorch.org/whl/cu124"
+            image: "sameli/manylinux_2_28_x86_64_cuda_12.4"
+            cibw_build: "cp310-* cp311-* cp312-* cp313-*"
+            default: false
+          - label: "cu121 / torch 2.4"
+            cuda: "12.1"
+            torch: "2.4.1"
+            torch_index: "https://download.pytorch.org/whl/cu121"
+            image: "sameli/manylinux_2_28_x86_64_cuda_12.1"
+            # torch 2.4 has no cp313 wheels; asking for one fails the whole cell.
+            cibw_build: "cp310-* cp311-* cp312-*"
+            default: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: free disk space
+        # A CUDA manylinux image plus four CPython builds plus a CUDA torch per
+        # build overruns the hosted runner's 14GB without this.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h /
+
+      - name: stamp the binary variant into the version
+        run: |
+          if [ "${{ matrix.default }}" = "true" ]; then
+            python scripts/stamp_kernel_version.py --plain
+          else
+            python scripts/stamp_kernel_version.py --cuda '${{ matrix.cuda }}' --torch '${{ matrix.torch }}'
+          fi
+
+      - name: build wheels
+        uses: pypa/cibuildwheel@v2.21.3
+        env:
+          CIBW_BUILD: ${{ matrix.cibw_build }}
+          CIBW_ARCHS_LINUX: x86_64
+          # Third-party CUDA manylinux image. Before the first public release this
+          # must become an image we build ourselves (pypa/manylinux + nvidia/cuda)
+          # or at minimum a digest pin: a tag can be moved, and whoever controls it
+          # controls the compiler that produces the binaries users run.
+          CIBW_MANYLINUX_X86_64_IMAGE: ${{ matrix.image }}
+          # --no-isolation so the build sees the exact torch installed below rather
+          # than whatever pip resolves as newest. This is the same constraint the
+          # kernels pyproject documents; here it is the difference between a wheel
+          # that matches its advertised torch minor and one that does not.
+          CIBW_BUILD_FRONTEND: "build; args: --no-isolation"
+          CIBW_BEFORE_BUILD: >-
+            pip install "scikit-build-core>=0.10" "cmake>=3.26" ninja &&
+            pip install torch==${{ matrix.torch }} --index-url ${{ matrix.torch_index }}
+          CIBW_ENVIRONMENT: >-
+            CUDACXX=/usr/local/cuda/bin/nvcc
+            CMAKE_ARGS=-DDYNQUANT_REQUIRE_CUDA=ON
+          # auditwheel must not vendor libtorch or the CUDA runtime. Bundling them
+          # would produce a ~2GB wheel with a second copy of libtorch loaded into
+          # the process next to the user's -- two ATen registries, duplicate
+          # dispatch keys, and crashes with no line pointing here. torch's own libs
+          # are found at runtime because torch is imported first (see _loader.py).
+          #
+          # The CUDA sonames are wildcards, not `.so.12`. Every cell of this matrix
+          # is CUDA 12 today, so a pinned major would work -- and would then fail
+          # open the day a CUDA 13 cell is added, because a soname that matches no
+          # --exclude gets grafted rather than reported. Silently shipping 400MB of
+          # cuBLAS is a worse failure than a broken build. Wildcards need
+          # auditwheel >= 5.4; the pinned cibuildwheel above carries 6.x.
+          CIBW_REPAIR_WHEEL_COMMAND: >-
+            auditwheel repair -w {dest_dir} {wheel}
+            --plat manylinux_2_28_x86_64
+            --exclude libtorch.so --exclude libtorch_cpu.so --exclude libtorch_cuda.so
+            --exclude libtorch_python.so --exclude libc10.so --exclude libc10_cuda.so
+            --exclude 'libcudart.so.*' --exclude 'libcublas.so.*'
+            --exclude 'libcublasLt.so.*' --exclude 'libcuda.so.*'
+          # No test command: the container has no GPU *and* no driver, so importing
+          # the extension would fail on libcuda.so.1 regardless of whether the wheel
+          # is correct. The metadata checks below are what can honestly be verified
+          # here; numerics are the GPU job's business.
+          CIBW_TEST_SKIP: "*"
+        with:
+          package-dir: packages/dynquant-kernels
+          output-dir: wheelhouse
+
+      - name: verify every wheel without importing it
+        run: |
+          python - <<'PY'
+          import glob, re, zipfile
+
+          wheels = sorted(glob.glob("wheelhouse/*.whl"))
+          assert wheels, "cibuildwheel produced nothing"
+          forbidden = ("libtorch", "libc10", "libcudart", "libcublas", "libcuda.so")
+
+          for path in wheels:
+              names = zipfile.ZipFile(path).namelist()
+              assert any(re.search(r"dynquant_kernels/_C\..*\.so$", n) for n in names), (
+                  f"{path} has no compiled extension in it"
+              )
+              stamp = [n for n in names if n.endswith("dynquant_kernels/_build_info.py")]
+              assert stamp, f"{path} has no CMake build stamp"
+              text = zipfile.ZipFile(path).read(stamp[0]).decode()
+              assert "WITH_CUDA: Final[bool] = bool(1)" in text, (
+                  f"{path} was built without CUDA despite DYNQUANT_REQUIRE_CUDA=ON:\n{text}"
+              )
+              vendored = [n for n in names if any(f in n for f in forbidden)]
+              assert not vendored, (
+                  f"{path} vendored libraries that must come from the user's torch: {vendored}"
+              )
+              print(f"ok {path}")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-cu${{ matrix.cuda }}-torch${{ matrix.torch }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------------
+  # Windows: best effort, never blocking
+  # ------------------------------------------------------------------------
+  windows-wheels:
+    name: windows (best effort)
+    if: inputs.windows
+    runs-on: windows-latest
+    # MSVC + nvcc on a hosted runner is a long build with several ways to fail that
+    # have nothing to do with this code. Windows users are served by the sdist and
+    # by the pure-Python core, so a failure here must not fail a release.
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: "12.6.0"
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+
+      - name: build
+        run: |
+          pip install "scikit-build-core>=0.10" "cmake>=3.26" ninja build
+          pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu126
+          python scripts/stamp_kernel_version.py --cuda 12.6 --torch 2.7.1
+          python -m build --wheel --no-isolation --outdir wheelhouse packages/dynquant-kernels
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-windows-py${{ matrix.python }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------------
+  # Publication
+  # ------------------------------------------------------------------------
+  release:
+    name: attach to the GitHub Release
+    needs: [sdist, linux-wheels]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # the only job that needs it
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: staged
+          merge-multiple: true
+
+      - name: list what is about to be published
+        run: ls -la staged
+
+      - name: attach
+        # The Release page doubles as the variant index:
+        #   pip install dynquant-kernels==0.1.0+cu124torch26 \
+        #     --find-links https://github.com/<org>/dynquant/releases/expanded_assets/<tag>
+        uses: softprops/action-gh-release@v2
+        with:
+          files: staged/*
+          fail_on_unmatched_files: true
+
+  publish-pypi:
+    name: publish to PyPI
+    needs: [sdist, linux-wheels]
+    # Three independent gates, because this is the one irreversible step in the
+    # repository -- a filename cannot be reused on PyPI even after a delete, and
+    # this project's source began as a confidential reviewer copy under
+    # double-blind review. Nothing here fires until someone deliberately sets the
+    # variable *and* approves the environment.
+    if: startsWith(github.ref, 'refs/tags/v') && vars.PUBLISH_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi           # configure required reviewers on this environment
+    permissions:
+      id-token: write           # trusted publishing; no API token in a secret
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: staged
+          merge-multiple: true
+
+      - name: keep only what PyPI accepts
+        # PyPI rejects local versions outright, so the variant wheels are dropped
+        # here rather than failing the upload half-way through. They live on the
+        # Release page instead.
+        run: |
+          mkdir -p dist
+          for f in staged/*; do
+            case "$(basename "$f")" in
+              *+*) echo "skipping local-version artifact $(basename "$f")" ;;
+              *)   cp "$f" dist/ ;;
+            esac
+          done
+          ls -la dist
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

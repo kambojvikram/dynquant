@@ -1,0 +1,441 @@
+# Per-commit gates. Everything here runs on a free hosted runner with no GPU.
+#
+# The ordering principle is cost: ruff answers in ~20s, mypy in ~1min, the test
+# matrix in ~3min, and the CPU-only kernels build -- the only job that invokes a
+# compiler -- in ~5min. A packaging, schema or registration mistake therefore
+# surfaces minutes after a push instead of at the end of a GPU matrix, which is the
+# whole reason the extension carries CPU implementations of every op (see
+# csrc/bindings.cpp).
+#
+# What is deliberately NOT here: kernel numerics. Those need a GPU, and the `gpu`
+# job at the bottom stays dormant until a self-hosted runner is registered.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One run per ref. Cancel superseded PR runs; never cancel a push to main, whose
+  # result is the record of whether main is green.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Pinned, not floating. A linter release must not be able to turn a green PR red
+  # on a branch that changed nothing -- upgrading is a commit, with its own diff.
+  # These must match .pre-commit-config.yaml's ruff rev and the documented dev
+  # install, or contributors get failures they cannot reproduce locally.
+  RUFF_VERSION: "0.16.0"
+  MYPY_VERSION: "2.3.0"
+  # The CPU wheel index: ~200MB instead of ~2.5GB of CUDA libraries that no hosted
+  # runner can use.
+  TORCH_CPU_INDEX: "https://download.pytorch.org/whl/cpu"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  FORCE_COLOR: "1"
+
+jobs:
+  # ------------------------------------------------------------------------
+  # Lint: no torch, no install, ~20 seconds
+  # ------------------------------------------------------------------------
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install ruff==${{ env.RUFF_VERSION }} pyyaml
+
+      - name: ruff check
+        # `--output-format=github` annotates the diff in the PR view, where a
+        # finding gets acted on rather than scrolled past in a log.
+        run: ruff check --output-format=github .
+
+      - name: ruff format
+        run: ruff format --check --diff .
+
+      - name: workflow files parse
+        # A malformed workflow is otherwise reported only by GitHub, on the push
+        # that broke it, with no link to a line -- and a workflow that fails to
+        # parse does not run, so its absence looks like success.
+        run: |
+          python - <<'PY'
+          import pathlib, yaml
+          for path in sorted(pathlib.Path(".github/workflows").glob("*.yml")):
+              yaml.safe_load(path.read_text(encoding="utf-8"))
+              print(f"ok {path}")
+          PY
+
+  # ------------------------------------------------------------------------
+  # Types: strict mypy on the oldest supported interpreter
+  # ------------------------------------------------------------------------
+  types:
+    name: types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # 3.10 because `python_version = "3.10"` in pyproject.toml: syntax or
+          # typing that needs 3.11 must fail here, not in a user's install.
+          python-version: "3.10"
+          cache: pip
+
+      - name: install torch (CPU)
+        run: pip install torch --index-url ${{ env.TORCH_CPU_INDEX }}
+
+      - name: install core and mypy
+        # core is installed for its dependencies (safetensors, numpy, pyyaml).
+        # mypy checks the source tree directly, per `files` in pyproject.toml, but
+        # it can only follow imports it can resolve.
+        run: |
+          pip install ./packages/dynquant-core
+          pip install mypy==${{ env.MYPY_VERSION }}
+
+      - name: mypy (strict)
+        run: mypy
+
+  # ------------------------------------------------------------------------
+  # Tests: the pure-Python half, everywhere it claims to install
+  # ------------------------------------------------------------------------
+  test:
+    name: test (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows and macOS are here because `dynquant-core` promises to install
+        # where there is no compiler and no GPU. That promise is what the meta
+        # package's platform marker is built on, so it is tested, not assumed.
+        include:
+          - { os: ubuntu-latest, python: "3.10" }
+          - { os: ubuntu-latest, python: "3.11" }
+          - { os: ubuntu-latest, python: "3.12" }
+          - { os: ubuntu-latest, python: "3.13" }
+          - { os: windows-latest, python: "3.11" }
+          - { os: macos-14, python: "3.12" }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: install torch (CPU)
+        # macOS wheels on PyPI are already CPU-only, and the pytorch CPU index
+        # carries no arm64 macOS build.
+        if: runner.os != 'macOS'
+        run: pip install torch --index-url ${{ env.TORCH_CPU_INDEX }}
+
+      - name: install core and test deps
+        shell: bash
+        # Not `[dev]`: that pulls lm-eval, trl, datasets and mkdocs -- about a
+        # gigabyte, and four more release cadences that could break a PR touching
+        # none of them. The suite needs pytest and hypothesis. The heavy extras get
+        # exercised by the phases that use them, as those land.
+        run: pip install ./packages/dynquant-core pytest pytest-xdist hypothesis
+
+      - name: pytest
+        run: pytest -n auto --no-header
+
+      - name: the CLI works from an install, not just from the checkout
+        # `tests/conftest.py` puts `packages/dynquant-core/src` on sys.path, so the
+        # suite above passes even if the wheel ships the wrong files. These two
+        # commands go through the installed console script instead. `bash` on every
+        # platform so a non-zero exit from the first command fails the step.
+        shell: bash
+        run: |
+          set -euo pipefail
+          dynquant version
+          dynquant doctor
+
+  # ------------------------------------------------------------------------
+  # The compiled extension, built without CUDA
+  # ------------------------------------------------------------------------
+  kernels-cpu:
+    name: kernels (CPU-only build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: install torch (CPU)
+        run: pip install torch --index-url ${{ env.TORCH_CPU_INDEX }}
+
+      - name: install build tools
+        run: pip install "scikit-build-core>=0.10" "cmake>=3.26" ninja
+
+      - name: build and install the extension
+        # --no-build-isolation is mandatory, not an optimisation: in an isolated
+        # environment pip resolves the newest torch, and an extension linked against
+        # a torch this runner does not have fails to import with an undefined
+        # symbol. Same reason the kernels pyproject documents it for local builds.
+        #
+        # DYNQUANT_REQUIRE_CUDA stays OFF: no toolkit on this runner is the expected
+        # state, and CMake's CPU-only path is exactly what is under test here.
+        run: pip install --no-build-isolation -v ./packages/dynquant-kernels
+
+      - name: install core and pytest
+        run: pip install ./packages/dynquant-core pytest
+
+      - name: the wheel is a CPU-only build and says so
+        env:
+          # A load failure must raise rather than degrade to the torch backend --
+          # otherwise a broken wheel passes CI by never being used. The one outcome
+          # exempt from this is "CPU-only build, no CUDA device", which is precisely
+          # this job's steady state; see KernelLoadResult.expected.
+          DYNQUANT_KERNELS_STRICT: "1"
+        run: |
+          python - <<'PY'
+          import dynquant_kernels as k
+
+          info = k.build_info()
+          print("build info:", info)
+          assert info, "no CMake build stamp in the wheel: it was not built by this project"
+          assert info["WITH_CUDA"] is False, (
+              "this job builds CPU-only, but CMake found a CUDA toolkit; the "
+              "assertions below no longer describe what was built"
+          )
+          assert info["ABI_VERSION"] == k.ABI_VERSION
+          assert info["BUILD_TYPE"] == "Release", info["BUILD_TYPE"]
+          # is_available() is False here by design -- there is no device code and no
+          # device. What matters is *why*, and that it is the benign reason.
+          assert not k.is_available()
+          assert "CPU-only extension and no CUDA device" in k.unavailable_reason()
+          PY
+
+      - name: the ops are registered and answer correctly
+        env:
+          DYNQUANT_KERNELS_STRICT: "1"
+        run: |
+          python - <<'PY'
+          import torch
+          import dynquant_kernels  # noqa: F401  -- importing registers the ops
+
+          x = torch.randn(1024, dtype=torch.float16)
+          y = torch.randn(1024, dtype=torch.float16)
+          got = torch.ops.dynquant.probe_axpy(x, y, 2.5)
+          want = (x.float() * 2.5 + y.float()).to(torch.float16)
+          # Exact equality: the CPU reference and the CUDA kernel both accumulate in
+          # fp32 and round once, so anything else means one of them changed.
+          assert torch.equal(got, want), (got.float() - want.float()).abs().max()
+
+          assert int(torch.ops.dynquant.abi_version()) == dynquant_kernels.ABI_VERSION
+          assert torch.ops.dynquant.built_with_cuda() is False
+          print("registered ops agree with the reference")
+          PY
+
+      - name: the ABI tests run instead of skipping
+        env:
+          DYNQUANT_KERNELS_STRICT: "1"
+        run: pytest tests/test_abi.py tests/test_kernel_loader.py -v --no-header
+
+      - name: doctor's abi check must be ok, not skip
+        # The assertion that makes this job mean something: `dynquant doctor` exits 0
+        # on a machine with no kernels at all, so "exit 0" alone proves nothing.
+        # `abi=ok` is only reachable when core, the Python shell and the compiled
+        # binary all report the same ABI number.
+        run: python scripts/assert_doctor.py abi=ok
+
+  # ------------------------------------------------------------------------
+  # Distribution metadata
+  # ------------------------------------------------------------------------
+  build:
+    name: build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: install build tooling
+        run: |
+          pip install build twine
+          pip install "scikit-build-core>=0.10"
+          pip install torch --index-url ${{ env.TORCH_CPU_INDEX }}
+
+      - name: build the pure-Python distributions
+        run: |
+          python -m build --outdir dist packages/dynquant-core
+          python -m build --outdir dist packages/dynquant
+
+      - name: build the kernels sdist
+        # --no-isolation with torch and scikit-build-core already installed: an
+        # isolated environment would download the default CUDA torch (~2.5GB) just
+        # to write a tarball. Producing an sdist runs no CMake and needs no nvcc.
+        run: python -m build --sdist --no-isolation --outdir dist packages/dynquant-kernels
+
+      - name: twine check
+        run: twine check --strict dist/*
+
+      - name: the distributions contain what they claim
+        run: |
+          python - <<'PY'
+          import glob, tarfile, zipfile
+
+          (core,) = glob.glob("dist/dynquant_core-*.whl")
+          names = zipfile.ZipFile(core).namelist()
+          for required in (
+              "dynquant/__init__.py",
+              "dynquant/quant/pack.py",
+              "dynquant/cli.py",
+              # The compat oracle. `--preset paper-3.15` imports these at runtime, so
+              # a build backend that skipped `_legacy/` as "vendored" would turn the
+              # preset into an ImportError for the installing user and nobody else.
+              "dynquant/_legacy/allocator.py",
+              "dynquant/_legacy/scorer.py",
+              "dynquant/_legacy/quantizer.py",
+          ):
+              assert required in names, f"{required} missing from {core}"
+          # Path varies with the packaging backend's PEP 639 support, so match loosely.
+          assert any("LICENSE" in n for n in names), f"no LICENSE in {core}"
+
+          # The other half of the same rule. `tests/test_legacy_provenance.py` stops
+          # these being copied into `_legacy/`; this stops them reaching a published
+          # wheel by any other route -- a stray `force-include`, a backend that
+          # follows symlinks, a future `packages` entry. `supervised_finetuning.py`
+          # carries a token literal and `inference_3bits.py` carries the author's VM
+          # paths; a wheel on PyPI cannot be un-published.
+          forbidden = (
+              "supervised_finetuning.py",
+              "inference_3bits.py",
+              "inference_4bits.py",
+              "run_quantization.py",
+              "unified_tracker.py",
+          )
+          leaked = [n for n in names if n.rsplit("/", 1)[-1] in forbidden]
+          assert leaked == [], f"research driver code leaked into {core}: {leaked}"
+
+          # `dynquant-` with a hyphen cannot match `dynquant_core-`, so this selects
+          # the meta wheel alone.
+          (meta,) = glob.glob("dist/dynquant-*.whl")
+          payload = [n for n in zipfile.ZipFile(meta).namelist() if ".dist-info/" not in n]
+          # Codeless on purpose: a file under `dynquant/` here would split the import
+          # namespace across two distributions, and a half-finished upgrade would
+          # leave mismatched halves with nothing able to detect it.
+          assert payload == [], f"the meta distribution must ship no modules, found {payload}"
+
+          (sdist,) = glob.glob("dist/dynquant_kernels-*.tar.gz")
+          members = tarfile.open(sdist).getnames()
+          for required in ("CMakeLists.txt", "csrc/bindings.cpp", "csrc/include/dynquant/abi.h"):
+              assert any(n.endswith("/" + required) for n in members), (
+                  f"{required} missing from {sdist}: the sdist is the fallback that "
+                  f"compiles on install, so it has to contain the sources"
+              )
+          print("distribution contents verified")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/*
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------------
+  # The guard that cannot be left to pre-commit alone
+  # ------------------------------------------------------------------------
+  confidential:
+    name: no confidential material
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: scan every tracked file
+        # pre-commit runs this on staged files, but `--no-verify` exists and a fork
+        # need not have hooks installed. Here it runs over the whole tree, so a
+        # confidential PDF or a token literal cannot reach main through a PR -- even
+        # though, irreversibly, it can already have reached a contributor's history.
+        run: git ls-files -z | xargs -0 python scripts/check_no_confidential.py
+
+  # ------------------------------------------------------------------------
+  # GPU parity -- dormant until a runner exists
+  # ------------------------------------------------------------------------
+  gpu:
+    name: kernels (GPU parity)
+    # Set the repository variable HAS_GPU_RUNNER=true once a self-hosted runner
+    # labelled `gpu` is registered. Without the guard this job would queue forever
+    # on every PR and report nothing, which is worse than not existing.
+    if: vars.HAS_GPU_RUNNER == 'true'
+    runs-on: [self-hosted, gpu]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build the extension against the runner's CUDA
+        # REQUIRE_CUDA=ON: on a GPU runner, a toolkit that quietly failed detection
+        # would produce a CPU-only extension, and every check below would pass while
+        # testing nothing.
+        run: |
+          pip install "scikit-build-core>=0.10" "cmake>=3.26" ninja
+          pip install --no-build-isolation -v \
+            -C cmake.define.DYNQUANT_REQUIRE_CUDA=ON \
+            ./packages/dynquant-kernels
+          pip install ./packages/dynquant-core pytest
+
+      - name: full suite against the real binary
+        env:
+          # Here strict mode carries its full weight: with a GPU present, any
+          # unavailability is a fault, and none of it is `expected`.
+          DYNQUANT_KERNELS_STRICT: "1"
+        run: pytest --no-header -ra
+
+      - name: the kernels must be selected and numerically correct
+        # Per-kernel parity (every bits x group_size x shape x M against the torch
+        # oracle) arrives with P6. Until then this is the real assertion: the CUDA
+        # backend was chosen, and the launch / Thrust / cuBLASLt probes each agree
+        # with the reference -- i.e. the three link-time dependencies work.
+        run: python scripts/assert_doctor.py abi=ok kernels=ok
+
+      - name: doctor report
+        if: always()
+        run: dynquant doctor || true
+
+  # ------------------------------------------------------------------------
+  # P2's signals gate -- also dormant until a runner exists
+  # ------------------------------------------------------------------------
+  signals:
+    name: signals (real LoRA fine-tune)
+    # Separate from `gpu` deliberately: the tracker is pure torch and needs no
+    # compiled extension, so pairing it with the kernels build would make a CUDA
+    # toolchain failure look like a signals regression. Same runner guard, though --
+    # the gate needs a device, and on CPU a 50-step run is minutes rather than seconds.
+    if: vars.HAS_GPU_RUNNER == 'true'
+    runs-on: [self-hosted, gpu]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install core, peft and transformers
+        run: pip install ./packages/dynquant-core "transformers>=4.40" peft
+
+      - name: canonical keys from a real get_peft_model
+        # The unit tests use a hand-built stand-in for peft's wrapper, which cannot
+        # catch peft renaming things the stand-in does not model. This runs the real
+        # thing end to end through Trainer + DynQuantCallback and asserts every stats
+        # key resolves to a module of the *unwrapped* model. Downloads Qwen3-0.6B
+        # (~1.2 GB, cached on the runner after the first run); 50 steps at 1x512 is
+        # ~13 s on an A100.
+        run: |
+          python scripts/gate_lora_stats.py \
+            --model Qwen/Qwen3-0.6B --steps 50 --batch-size 1 --seq-len 512

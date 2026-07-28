@@ -1,0 +1,168 @@
+# ---------------------------------------------------------------------------
+# Never commit
+# ---------------------------------------------------------------------------
+#
+# The supplementary PDF is a confidential NeurIPS reviewer copy: every page is
+# stamped "Unauthorized sharing, redistribution, or disclosure is strictly
+# prohibited" and "Do not distribute." Committing it -- even to a private repo --
+# puts it one visibility flip away from publication, and git keeps it in history
+# forever after. Listed by pattern rather than by filename so a re-download with a
+# different name is still caught.
+*.pdf
+20710_*
+
+# The research tree: the supplement's own source, which this package is derived
+# from but does not redistribute. Four reasons, any one of which is sufficient:
+#
+#   1. It is part of the same confidential submission as the PDF above.
+#   2. `supervised_finetuning.py` carries `token="hf_token_here"` three times, and
+#      the version someone fills in is the version that leaks.
+#   3. `inference_3bits.py` hardcodes `/home/azureuser/cloudfiles/code/...`, which
+#      names the machine the experiments ran on -- deanonymizing under double-blind.
+#   4. Nothing in the wheel needs it. What the package actually depends on is
+#      vendored into `dynquant/_legacy/`: the scorer, allocator and quantizer,
+#      which contain no paths and no credentials. `tests/test_legacy_provenance.py`
+#      ties those copies back to these originals whenever the tree is present.
+#
+# `stats/` is deliberately NOT listed -- the two collapsed stats files are test
+# fixtures and the golden tests read them. They contain measurements, not paths.
+dynquant_paper/
+fine-tuning_and_stats_hook/
+inference/
+pipeline/
+README_PIPELINE.md
+
+# Credentials. The research code had `token="hf_token_here"` inline three times;
+# the replacement reads the environment or huggingface_hub's cache, and neither
+# should ever land in the tree.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.*
+hf_token*
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+*.dylib
+.Python
+build/
+dist/
+wheelhouse/
+*.egg-info/
+.eggs/
+develop-eggs/
+sdist/
+pip-wheel-metadata/
+.installed.cfg
+MANIFEST
+
+# Editable installs and scikit-build-core scratch
+_skbuild/
+.pdm-build/
+*.dist-info/
+
+# Version files written by the build, not by hand
+packages/dynquant-kernels/src/dynquant_kernels/_build_info.py
+
+# ---------------------------------------------------------------------------
+# Virtual environments
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.conda/
+
+# ---------------------------------------------------------------------------
+# Test / lint / type caches
+# ---------------------------------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# ---------------------------------------------------------------------------
+# CMake / CUDA build artifacts
+# ---------------------------------------------------------------------------
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CMakeUserPresets.json
+Makefile
+!packages/*/Makefile
+compile_commands.json
+*.o
+*.obj
+*.cubin
+*.fatbin
+*.ptx
+*.i
+*.ii
+*.gpu
+*.cudafe*
+*.nvvp
+*.nsys-rep
+*.qdrep
+*.sqlite
+
+# ---------------------------------------------------------------------------
+# Model and run artifacts
+# ---------------------------------------------------------------------------
+#
+# These are large and machine-specific. `stats/` is deliberately NOT ignored --
+# the two shipped stats files are test fixtures and the golden tests read them.
+*.safetensors
+*.bin
+*.gguf
+*.pt
+*.ckpt
+checkpoints/
+outputs/
+runs/
+wandb/
+logs/
+out/
+!tests/**/*.safetensors
+
+# Autotuner cache, if a run is pointed at the repo instead of the user cache dir
+.dynquant_cache/
+autotune.json
+
+# ---------------------------------------------------------------------------
+# Docs
+# ---------------------------------------------------------------------------
+site/
+docs/_build/
+
+# ---------------------------------------------------------------------------
+# Editors and OS
+# ---------------------------------------------------------------------------
+.vscode/
+!.vscode/extensions.json
+.idea/
+
+# Agent tool settings. `settings.local.json` records absolute paths from the
+# machine it was written on, so it carries a real account name -- the same defect
+# audited as item 10 in the research code. The shared `settings.json` is fine.
+.claude/settings.local.json
+.claude/*.local.json
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini

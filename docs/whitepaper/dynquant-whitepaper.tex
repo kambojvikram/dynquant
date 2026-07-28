@@ -1,0 +1,1637 @@
+\documentclass[11pt]{article}
+\usepackage{fontspec}
+\usepackage[margin=1in,top=1.1in,bottom=1.1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{amsmath}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{unicode-math}
+\usepackage[hidelinks]{hyperref}
+\usepackage{microtype}
+\usepackage{tabularx}
+\usepackage{colortbl}
+\usepackage{needspace}
+\usepackage{float}
+
+\setmainfont{Times New Roman}
+\setmonofont{Consolas}[Scale=0.86]
+\setmathfont{Cambria Math}
+
+\definecolor{dqblue}{HTML}{1F3864}
+\definecolor{dqgrey}{HTML}{5A5A5A}
+\definecolor{dqrule}{HTML}{B4B4B4}
+\definecolor{rowtint}{HTML}{F2F2F2}
+\definecolor{warnbg}{HTML}{FBF3E4}
+
+\titleformat{\section}{\Large\bfseries\color{dqblue}}{\thesection}{0.7em}{}
+\titleformat{\subsection}{\large\bfseries\color{dqblue}}{\thesubsection}{0.6em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries}{\thesubsubsection}{0.5em}{}
+\titlespacing{\section}{0pt}{1.6ex plus .3ex}{0.8ex}
+\titlespacing{\subsection}{0pt}{1.3ex plus .3ex}{0.6ex}
+
+\setlength{\headheight}{21.3pt}
+\addtolength{\topmargin}{-7.3pt}
+\setlength{\emergencystretch}{3em}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\footnotesize\color{dqgrey}DynQuant --- Signal-Driven Mixed-Precision Quantization}
+\fancyhead[R]{\footnotesize\color{dqgrey}\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{dqrule}\leaders\hrule height \headrulewidth\hfill}}
+
+\captionsetup{font=small,labelfont={bf,color=dqblue}}
+\setlist{itemsep=0.25ex,topsep=0.5ex,parsep=0pt}
+
+\newcommand{\x}{$\times$}
+\newcommand{\pt}{\,pts}
+\newcommand{\pct}{\,\%}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\minus}{$-$}
+
+% keeps numeric columns aligned on the decimal point without dcolumn
+\newcolumntype{R}{>{\raggedleft\arraybackslash}p{0pt}}
+
+\begin{document}
+
+%% ============================================================ TITLE
+\begin{titlepage}
+\centering
+\vspace*{1.2in}
+{\color{dqblue}\rule{\textwidth}{1.2pt}}\\[0.8em]
+{\Huge\bfseries DynQuant\par}
+\vspace{0.5em}
+{\LARGE Signal-Driven Mixed-Precision Quantization\\for Large Language Models\par}
+\vspace{0.7em}
+{\color{dqblue}\rule{\textwidth}{1.2pt}}\\[2.0em]
+{\large A Complete Technical White Paper\par}
+\vspace{0.4em}
+{\large Method, On-Disk Format, CUDA Runtime, and Measured Results\par}
+\vspace{2.5em}
+
+\begin{minipage}{0.86\textwidth}
+\small
+\textbf{Summary.} DynQuant assigns a different numeric width to every weight tensor in a
+language model, chosen from what the model itself reveals about that tensor while it is being
+fine-tuned. Two per-channel second moments harvested by a training callback --- the mean square
+of each input activation channel and of each output-gradient channel --- combine with the
+\emph{actual} quantization error of the \emph{actual} candidate encoding to give a per-module,
+per-width sensitivity in units of loss. A greedy multiple-choice knapsack then buys bits where
+they are cheapest per unit of loss avoided, subject to soft quality floors and a small set of
+hard structural floors that no budget may breach. Weights are encoded group-wise with a float
+offset and an MSE-optimal per-group clip search, packed into \code{int32} words whose boundaries
+align to the group boundaries, and executed by CUDA kernels that never materialise the
+full-precision tensor.
+\\[0.7em]
+On Qwen3.5-2B-Base fine-tuned for legal holding selection (CaseHOLD, $n=5314$), the technique
+retains \textbf{92\pct} of the fine-tuning gain at an average of \textbf{3.25 bits} --- against
+69\pct{} for the ranking score published in the original work and 73.79\pct{} absolute for a
+uniform 3-bit control that it beats by \textbf{$+10.29$\pt} ($p = 1.3\times10^{-81}$, exact
+paired McNemar). Peak allocated VRAM falls \textbf{4.84\x}, the packed model's accuracy is
+\emph{bit-identical} to the simulated one, and 417 kernel-parity tests pass under all four
+\code{compute-sanitizer} tools with zero errors and zero hazards.
+\end{minipage}
+
+\vfill
+{\small\color{dqgrey}
+Measured on NVIDIA A100 80\,GB PCIe (108 SMs, 40\,MB L2), CUDA 13.0.88,
+PyTorch 2.13.0+cu130, Transformers 5.14.1.\\
+Every number in this document is measured, not projected. Section~\ref{sec:notestablished}
+states what is \emph{not} established.\par}
+\vspace{0.6em}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+%% ============================================================ 1
+\section{Executive summary}
+
+\subsection{What the technique does}
+
+A quantized language model is a budget-allocation problem. You have a fixed number of bits to
+spend across a few hundred weight tensors, and the tensors are not equally deserving: some
+absorb aggressive rounding with no measurable effect on the loss, others are destroyed by it.
+Uniform quantization ignores the difference. DynQuant measures it.
+
+The measurement happens during fine-tuning, which is when the model is already doing the forward
+and backward passes that expose the relevant quantities. A callback registered on the
+\code{Trainer} accumulates, per linear module, two vectors of per-channel second moments: the
+mean square of each input activation channel, $\mathbb{E}[x_c^2]$, of length \code{in\_features};
+and the mean square of each output-gradient channel, $\mathbb{E}[\delta_r^2]$, of length
+\code{out\_features}. Nothing else is needed. From those two vectors and the weight tensor
+itself, the sensitivity of the loss to quantizing module $m$ at width $b$ is
+\begin{equation}
+\mathcal{S}_m(b) \;=\; \sum_{r,c}\ \mathbb{E}[\delta_r^2]\;\mathbb{E}[x_c^2]\;
+\bigl(W_{rc} - Q_b(W)_{rc}\bigr)^2 ,
+\label{eq:sens}
+\end{equation}
+a diagonal Gauss--Newton (equivalently, empirical-Fisher) estimate of the loss increase, in loss
+units, computed by running the weight block through the \emph{real} encoder at the \emph{real}
+candidate width, clip search included. There is no surrogate error curve and no rank
+transformation. Section~\ref{sec:sens} derives it.
+
+Allocation then becomes a multiple-choice knapsack over the widths $\{2,3,4,8\}$ where the price
+of a move is the difference between two sensitivities --- what that bit actually buys:
+$\mathcal{S}_m(3) - \mathcal{S}_m(4)$. Every module starts at its floor; if the floors overrun
+the budget the allocator downgrades by cheapest damage; then it always runs an upgrade pass to
+reclaim the slack that discrete width steps leave on the table. Section~\ref{sec:alloc}.
+
+Encoding is group-wise asymmetric affine, group 128, with an unconstrained \emph{float} offset
+rather than an integer zero-point, and a per-group MSE-optimal clip search whose objective is the
+error of the real encoder--decoder round trip rather than of an idealised one.
+Section~\ref{sec:encoder}.
+
+Execution keeps the weights packed. \code{DynQuantLinear} holds \code{int32} buffers in VRAM and
+dispatches to a CUDA GEMV templated on \code{<BITS, GROUP\_SIZE>} for $M \le 8$ rows, falling back
+to tile dequant plus \code{F.linear} above that. Section~\ref{sec:runtime}.
+
+\subsection{What changed from the published formulation}
+
+The original work scored modules with an ordinal product of percentile ranks,
+\begin{equation}
+S_i \;=\; \operatorname{Rank}\!\bigl(\log(1 + \operatorname{Var}_t\lVert\nabla W_i\rVert^2)\bigr)
+\;\times\;
+\operatorname{Rank}\!\bigl(\operatorname{EMA}\lVert X_i\rVert\bigr),
+\label{eq:oldscore}
+\end{equation}
+and priced a move as $\text{score} \times \text{params} \times \Delta\text{error}$ with
+$\Delta\text{error}$ read off a universal $4^{-b}$ curve. Three things are wrong with that in
+practice, and all three were confirmed by measurement on this model:
+
+\begin{enumerate}
+\item \textbf{The activation factor points the wrong way.} $\operatorname{EMA}\lVert X_i\rVert$
+is a \emph{saliency} signal --- large activations mean the tensor is busy. Correlated against the
+measured loss damage of quantizing each module, it comes out at $\rho = -0.2059$ globally and is
+positive in only 2 of 12 roles. Large-activation modules on this architecture are the
+\emph{robust} ones. Multiplying a useful signal by it is worse than dropping it.
+\item \textbf{The rank product destroys magnitude.} Ordinal ranks answer ``which module is
+busier'' but a knapsack needs ``by how much''. The shipped rank product correlates with measured
+damage at $\rho = +0.0040$ --- statistically indistinguishable from noise.
+\item \textbf{A universal error curve is not the error.} $4^{-b}$ is right on average and wrong
+per tensor. Equation~\ref{eq:sens} substitutes the measured error of the encoding that will
+actually be written to disk.
+\end{enumerate}
+
+Equation~\ref{eq:oldscore} is retained, unchanged, behind the \code{paper-3.15} preset, so
+published numbers remain reproducible bit-for-bit. Equation~\ref{eq:sens} is the default.
+
+\subsection{Headline results}
+
+\begin{table}[H]
+\centering\small
+\caption{CaseHOLD exact match, Qwen3.5-2B-Base, $n=5314$. Chance is 20\pct{} (five-way holding
+selection). ``Retention'' is the share of the $+53.35$\pt{} fine-tuning gain that survives
+quantization.}
+\begin{tabular}{lrrrr}
+\toprule
+Arm & Stored bits & Size (GiB) & Exact match & Retention \\
+\midrule
+Base model, fp16                       & 16.000 & 3.505 & 35.13\pct & --- \\
+\rowcolor{rowtint}
+Fine-tuned, fp16                       & 16.000 & 3.505 & \textbf{88.48\pct} & 100\pct \\
+DynQuant $\approx$4.25 bits            & 4.249 & 0.931 & 86.49\pct & 96\pct \\
+Uniform 4-bit control                  & 4.255 & 0.932 & 86.62\pct & 96\pct \\
+\rowcolor{rowtint}
+\textbf{DynQuant $\approx$3.25 bits, sensitivity} & 3.249 & 0.712 & \textbf{84.08\pct} & \textbf{92\pct} \\
+Uniform 3-bit control                  & 3.256 & 0.713 & 73.79\pct & 73\pct \\
+DynQuant $\approx$3.25 bits, rank product (Eq.~\ref{eq:oldscore}) & 3.249 & 0.712 & 71.75\pct & 69\pct \\
+\midrule
+Guessing                               & --- & --- & 20.00\pct & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Three facts carry the paper. First, at 3.25 bits the sensitivity-driven allocation beats a
+uniform 3-bit baseline by $+10.29$\pt{} and the published ranking score by $+12.33$\pt, both at
+$p < 10^{-80}$ on the same 5314 problems. Second, the published ranking score is not merely
+unhelpful at this budget --- it loses to uniform by $-2.03$\pt{} ($p = 5.8\times10^{-5}$), which
+means the signal was actively misdirecting the budget. Third, at 4.25 bits neither allocation
+separates from uniform ($-0.13$\pt, $p = 0.56$): the headroom to allocate only exists once the
+budget is tight enough that some module must be hurt.
+
+On the runtime side: peak allocated VRAM $0.7237$ GiB against $3.5052$ GiB in bf16, a
+\textbf{4.84\x} reduction, with the allocator's predicted footprint landing within
+\textbf{0.03\pct} of the live measurement; accuracy through the CUDA kernels
+\emph{exactly} equal to the simulated path at $4468/5314$; worst observed relative error
+$6.96\times10^{-3}$; and 417 parity tests green under memcheck, initcheck, racecheck and
+synccheck.
+
+And, stated plainly because it matters: decode throughput at batch 1 is
+\textbf{0.90\x} of bf16, not faster. The kernel reaches 36--98\pct{} of achievable HBM bandwidth
+depending on width, missing the $\ge$70\pct{} gate at 2, 3 and 4 bits.
+Section~\ref{sec:notestablished} explains why, and why the reason is arithmetic rather than a
+defect.
+
+%% ============================================================ 2
+\newpage
+\section{The pipeline}
+
+\begin{verbatim}
+   +---------------------------------------------------------------------+
+   | 1. FINE-TUNE          DynQuantCallback on transformers.Trainer      |
+   |                       forward hook  -> E[x_c^2]   (in_features)     |
+   |                       backward hook -> E[d_r^2]   (out_features)    |
+   |                       sampled every channel_moment_every=16 steps   |
+   |                       -> channel_moments.safetensors                |
+   +---------------------------------------------------------------------+
+                                     |
+   +---------------------------------------------------------------------+
+   | 2. CLASSIFY           graph/classify.py: structural inference over  |
+   |                       the module tree -> ModuleRole per module,     |
+   |                       RowPartition list for fused projections       |
+   +---------------------------------------------------------------------+
+                                     |
+   +---------------------------------------------------------------------+
+   | 3. SCORE              for each module m, for each b in {2,3,4,8}:   |
+   |                       quantize -> measure error -> weight by the    |
+   |                       two moment vectors -> S_m(b)  [loss units]    |
+   +---------------------------------------------------------------------+
+                                     |
+   +---------------------------------------------------------------------+
+   | 4. ALLOCATE           start at floors; greedy knapsack on           |
+   |                       price = S_m(lo) - S_m(hi); downgrade if over  |
+   |                       budget; ALWAYS upgrade to reclaim slack       |
+   |                       -> bits per module, honest byte accounting    |
+   +---------------------------------------------------------------------+
+                                     |
+   +---------------------------------------------------------------------+
+   | 5. ENCODE             group 128 along in_features; float offset;    |
+   |                       per-group clip search over 8 alphas scored    |
+   |                       through the real codec; pack to int32 words   |
+   |                       -> safetensors + manifest (versioned)         |
+   +---------------------------------------------------------------------+
+                                     |
+   +---------------------------------------------------------------------+
+   | 6. RUN                DynQuantLinear holds packed int32 in VRAM.    |
+   |                       M <= 8   : gemv_nbit<BITS, GROUP_SIZE>        |
+   |                       M >  8   : dequant tile -> F.linear           |
+   +---------------------------------------------------------------------+
+\end{verbatim}
+
+Stages 1 and 6 touch the user's training and inference loops; stages 2--5 are offline and take
+minutes. Nothing in stages 2--5 needs a GPU except for speed.
+
+%% ============================================================ 3
+\needspace{7\baselineskip}
+\section{Signals collected during fine-tuning}
+\label{sec:signals}
+
+\subsection{What is collected, and why those quantities}
+
+For a linear layer $y = Wx$ with $W \in \mathbb{R}^{\,\text{out}\times\text{in}}$, the gradient
+of the loss with respect to the weight is the outer product $\nabla_W \mathcal{L} = \delta x^{\!\top}$
+where $\delta = \partial\mathcal{L}/\partial y$. That identity is the whole reason the two moment
+vectors suffice. A perturbation $\Delta W$ changes the loss, to second order, by
+\begin{equation}
+\Delta\mathcal{L} \;\approx\; \tfrac12 \operatorname{vec}(\Delta W)^{\!\top} H
+\operatorname{vec}(\Delta W),
+\end{equation}
+and the Gauss--Newton approximation to $H$ for this layer factorises as
+$H \approx \mathbb{E}[\delta\delta^{\!\top}] \otimes \mathbb{E}[xx^{\!\top}]$. Keeping only the
+diagonal of each factor --- which is what makes the estimate affordable --- collapses the
+quadratic form to exactly Equation~\ref{eq:sens}: an outer product of the two second-moment
+vectors, contracted against the squared quantization error.
+
+So the callback accumulates:
+
+\begin{table}[H]
+\centering\small
+\caption{Signals accumulated per module by \code{SignalTracker}.}
+\begin{tabular}{p{0.20\textwidth}p{0.13\textwidth}p{0.55\textwidth}}
+\toprule
+Quantity & Length & Accumulation \\
+\midrule
+$\mathbb{E}[x_c^2]$ & \code{in\_features} & Forward hook. Running mean of the squared input over
+all tokens seen on sampled steps. Stored as \code{input\_sq}. \\
+\rowcolor{rowtint}
+$\mathbb{E}[\delta_r^2]$ & \code{out\_features} & Full backward hook on the output gradient.
+Running mean of the square. Stored as \code{output\_grad\_sq}. \\
+\code{observations} & scalar & Token count behind each mean, carried in safetensors metadata so
+partial runs merge correctly. \\
+\rowcolor{rowtint}
+activation RMS EMA & scalar & Legacy saliency signal, $\beta = 0.99$. Retained for
+\code{paper-3.15} and for diagnostics. \\
+gradient variance & scalar & Legacy plasticity signal, Welford online variance of
+$\lVert\nabla W\rVert^2$ across optimizer steps. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Cost, and the sampling gate}
+
+The two reductions are cheap in FLOPs but they are extra kernel launches on tensors that are
+already in cache, and there are hundreds of modules. Measured, collecting them on \emph{every}
+step adds \textbf{2.30\pct} of step time --- which fits inside the 3\pct{} overhead budget, but
+leaves nothing for anything else. Since the moments are statistical quantities whose estimates
+change slowly, they are sampled: the \code{channel\_moment\_every} option defaults to 16, so the
+hooks fire on one step in sixteen and the overhead falls by roughly that factor. The legacy
+scalar signals are cheap enough to collect unconditionally.
+
+All accumulators are device-resident tensors indexed by module id; there is no
+\code{.cpu().item()} per module per step, which in the original research code caused roughly one
+GPU synchronisation per module per step.
+
+\subsection{Where the moments come from matters}
+
+The moments are collected on data the model has \emph{not} memorised. Three splits were
+available for CaseHOLD and only one is correct:
+
+\begin{itemize}
+\item \code{test} --- leaks the evaluation set into the allocation decision. Rejected.
+\item \code{train} --- after fine-tuning, training loss is $0.0000$ to four decimals, so
+$\mathbb{E}[\delta^2]$ collapses to $\sim 10^{-9}$ and the gradient factor carries no
+information. Rejected on measurement, not on principle.
+\item \code{validation} --- used. 512 rows, 204\,693 tokens. Split disjointness was verified:
+$|\text{validation} \cap \text{test}| = 1$ out of 5314, a duplicate present in the source
+dataset.
+\end{itemize}
+
+That the \code{train} split fails is worth dwelling on. A converged model has no gradient signal
+on its training data, so any Fisher-style importance measure harvested there degenerates. The
+signal must come from data the model still finds slightly surprising.
+
+%% ============================================================ 4
+\section{Cardinal sensitivity}
+\label{sec:sens}
+
+\subsection{The estimator}
+
+\code{score/sensitivity.py} computes, for each module and each candidate width, the scalar of
+Equation~\ref{eq:sens}. The implementation never forms the $[\text{out},\text{in}]$ weighted
+product, which for the embedding table would be a 2\,GB intermediate. Instead it exploits that
+the weighting factorises:
+
+\begin{equation}
+\mathcal{S}_m(b) \;=\; \underbrace{\Bigl[\,E^{\circ 2} \, x^2 \Bigr]}_{\text{length out}}
+\cdot\; \delta^2 ,
+\qquad E = W - Q_b(W),
+\end{equation}
+so a matrix--vector product against $\mathbb{E}[x^2]$ reduces the squared error to one number per
+output row, and a dot product against $\mathbb{E}[\delta^2]$ finishes it. Rows are independent
+because groups run along the input axis, so the computation is chunked by rows under a 64\,MiB
+budget:
+
+\begin{verbatim}
+_ROW_CHUNK_BYTES = 64 << 20   # rows are independent (groups run along input axis)
+
+def _module_sensitivity(weight, x2, d2, *, bits, group_size, symmetric) -> float:
+    rows, cols = weight.shape
+    per_row = max(cols * 4, 1)
+    chunk = max(1, min(rows, _ROW_CHUNK_BYTES // per_row))
+    total = 0.0
+    for start in range(0, rows, chunk):
+        stop  = min(start + chunk, rows)
+        block = weight[start:stop]
+        quantized, _ = quantize_with_search(block, bits=bits, group_size=group_size,
+                                           symmetric=symmetric, row_offset=start)
+        error = block.float() - quantized.dequantize(dtype=torch.float32)
+        error.mul_(error)
+        per_output = error @ x2f          # [chunk, in] @ [in] -> [chunk]
+        total += float(per_output @ d2f[start:stop])
+    return total
+\end{verbatim}
+
+The \code{row\_offset} argument matters: it makes the clip search deterministic and identical to
+what the encoder will do on the full tensor, so the sensitivity is measured on the bytes that
+will actually be written.
+
+\subsection{What the estimate is, and what it is not}
+
+\code{SensitivityTable} carries an \code{absolute: bool} flag, and it is \code{False} today.
+The reason is honesty about calibration. The estimate is first-order in the module: it prices the
+damage from quantizing module $m$ \emph{alone}, with everything else at full precision.
+Summed over a whole allocation it overshoots the measured loss increase by roughly 2\x, because
+errors in different modules partially cancel and because the quadratic model degrades at
+2-bit-sized perturbations. So the table is used as \emph{a calibrated ordering with meaningful
+proportions} --- module $A$ being three times more sensitive than module $B$ is a claim the
+numbers support --- but not as a loss prediction. Nothing in the allocator needs the absolute
+scale; the knapsack only compares prices.
+
+Two implementation details that are easy to get wrong and are handled explicitly:
+
+\begin{itemize}
+\item \textbf{Missing moments must not read as zero.} A module with no usable moment vectors
+(never routed, hook missed, shape disagreement) lands in \code{unestimable} and falls back to a
+proxy score. Treating it as zero sensitivity would make it the first thing the allocator
+destroys.
+\item \textbf{Tied embeddings need aliasing.} On a tied model, \code{embed\_tokens.weight} and
+\code{lm\_head.weight} are the same storage, but in the stored orientation only the head produces
+a moment pairing. \code{\_tie\_aliases} resolves the pair. Separately, \code{\_shapes\_agree}
+rejects wrong-axis broadcasts outright rather than letting NumPy-style broadcasting silently
+produce a plausible-looking wrong number.
+\end{itemize}
+
+\subsection{The calibration-free control}
+
+\code{weight\_only\_sensitivity} exists as the honest control: the same formula with both moment
+vectors replaced by ones, i.e.\ pure weight reconstruction error. It requires no fine-tuning
+data at all. It correlates with measured damage at $\rho = +0.0645$ globally, and in the policy
+shootout of Section~\ref{sec:shootout} it recovers $-29.46\pct$ of the recoverable damage at
+3.125 bits --- that is, it is \emph{worse than doing nothing}. This is the cleanest available
+evidence that the activation and gradient statistics are load-bearing rather than decorative.
+
+%% ============================================================ 5
+\section{Allocation}
+\label{sec:alloc}
+
+\subsection{Move pricing}
+
+The allocator's central object is the price of moving one module from width \code{lower} to
+width \code{upper}:
+
+\begin{verbatim}
+def move_value(self, lower: int, upper: int) -> float:
+    if self.sens is not None:
+        lo, hi = self.sens.get(lower), self.sens.get(upper)
+        if lo is not None and hi is not None:
+            return max(lo - hi, 0.0)
+    proxy = self.score * self.num_params * (_error_scale(lower) - _error_scale(upper))
+    return max(self.fallback_scale * proxy, 0.0)
+\end{verbatim}
+
+When a sensitivity table is present, the price \emph{is} the difference of two measured
+sensitivities. Note what disappears: the percentile rank, the $4^{-b}$ error curve
+(\code{\_error\_scale}, retained only for the proxy path), and the explicit \code{num\_params}
+factor --- parameter count is already inside the sum of Equation~\ref{eq:sens}. The proxy branch
+survives only for modules in \code{unestimable}.
+
+\subsection{The search}
+
+\code{allocate\_bits(graph, scores, budget, policy, sensitivity)} runs three passes:
+
+\begin{enumerate}
+\item \textbf{Initialise at floors.} Every module starts at its role's floor width.
+\item \textbf{Downgrade while over budget.} Repeatedly take the cheapest available downward move
+by \code{move\_value}. If minimum-everywhere plus the hard structural floors still will not fit,
+raise \code{InfeasibleTargetError} rather than silently returning something that misses the
+target.
+\item \textbf{Always upgrade.} Even when the floor map fits, run an upgrade pass buying the
+most valuable available moves until the budget is exhausted. Discrete width steps leave slack
+--- typically a few percent of the budget --- and reclaiming it is free accuracy.
+\end{enumerate}
+
+Step 3 is not an optimisation, it is a correctness fix. In the original allocator, if
+$\text{budget} - \text{base} - \text{floors}$ came out negative the function returned the floor
+map and the greedy loop never executed --- so at the published 3-bit setting the score had
+\emph{no effect at all} and the configuration was effectively hand-written. Soft floors plus a
+mandatory upgrade pass mean the score drives allocation at every target.
+
+\subsection{Floors: soft quality, hard structure}
+
+Two kinds of floor, and the distinction is the difference between a preference and an invariant.
+
+\textbf{Soft quality floors} express ``this role usually wants at least $b$ bits''. They can be
+breached if the budget demands it, and every breach is reported by role.
+
+\textbf{Hard structural floors} express ``below this width the architecture stops functioning''.
+No budget breaks them:
+
+\begin{table}[H]
+\centering\small
+\caption{\code{STRUCTURAL\_ROLES}: hard floors, unbreakable by any budget.}
+\begin{tabular}{p{0.215\textwidth}cp{0.52\textwidth}}
+\toprule
+Role & Floor & Why it is structural \\
+\midrule
+\code{MOE\_ROUTER} & 8 & $O(\text{hidden}\times\text{experts})$, often $<0.01\pct$ of the model. A
+wrong argmax routes a token through the wrong 500M parameters. \\
+\rowcolor{rowtint}
+\code{MLA\_KV\_A}, \code{MLA\_Q\_A} & 8 & The latent bottlenecks: ${\sim}1\pct$ of the block's
+parameters carrying all of its information. \\
+\code{LIN\_ATTN\_A}, \code{LIN\_ATTN\_B} & 8 & ${\sim}0.03\pct$ of a gated linear-attention block
+and they feed an exponential decay term. \\
+\rowcolor{rowtint}
+\code{SSM\_X}, \code{SSM\_DT} & 8 & Same argument: negligible size, feeds an exponential. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\code{LM\_HEAD} is \emph{deliberately excluded} from that list, and the reason is worth stating
+because it looks like an omission. Its 8-bit floor is a strong preference, not an invariant. On a
+tied model the head \emph{is} the embedding table --- 27\pct{} of Qwen3.5-2B's parameters ---
+and pinning 27\pct{} of the model at 8 bits makes every average target below ${\sim}3.9$ bits
+arithmetically impossible. A hard floor there would not protect quality; it would make the tool
+refuse to run.
+
+\subsection{Fallback calibration}
+
+Modules priced by the proxy branch and modules priced by real sensitivity live in different
+units, and mixing them naively means one population is systematically cheaper and gets destroyed
+first. \code{\_apply\_fallback\_scale} rescales the proxy population by a ratio of medians ---
+but of \emph{rung-normalised} prices, each next-step value divided by its width span. Computing
+the medians on raw step values double-counts the width-span factor and yields a scale of
+$0.332$ instead of $1.000$; see defect~3 in Section~\ref{sec:defects}, where on this
+architecture that error would have put 604\,M parameters at the front of the queue for the
+chopping block.
+
+\subsection{Default floors by role (excerpt)}
+
+\begin{table}[H]
+\centering\small
+\caption{\code{DEFAULT\_FLOOR\_BITS}, abbreviated. \code{UNQUANTIZED\_FLOOR} keeps the tensor in
+its original dtype.}
+\begin{tabular}{llp{0.50\textwidth}}
+\toprule
+Role & Floor & Rationale \\
+\midrule
+\code{EMBEDDING} & 4 & Errors here hit every token. \\
+\rowcolor{rowtint}
+\code{LM\_HEAD} & 8 & Soft; see above. \\
+\code{ATTN\_Q/K/V/O}, \code{ATTN\_QKV}, \code{ATTN\_KV} & 4 & Q/K errors compound through the
+softmax. \\
+\rowcolor{rowtint}
+\code{ATTN\_Q\_GATE} & 4 & Fused $[Q; \text{output gate}]$; refined per row partition. \\
+\code{LIN\_ATTN\_QKV/Z/OUT} & 4 & Behaves like ordinary attention. \\
+\rowcolor{rowtint}
+\code{LIN\_ATTN\_A/B} & 8 & Hard structural. \\
+\code{LIN\_ATTN\_CONV}, \code{SSM\_CONV} & --- & Unquantized. Shape $[\text{ch},1,4]$; identical
+tensors get identical answers regardless of enclosing block. \\
+\rowcolor{rowtint}
+\code{MLP\_GATE}, \code{MLP\_GATE\_UP} & 4 & The SwiGLU gate multiplies the up branch, so its
+error is amplified rather than averaged. \\
+\code{MLP\_UP}, \code{MLP\_DOWN}, \code{MLP\_FC} & 3 & The redundant bulk. \\
+\rowcolor{rowtint}
+\code{MOE\_ROUTER} & 8 & Hard structural. \\
+\code{MOE\_EXPERT\_UP/DOWN/FC} & 2 & Each expert sees a fraction of tokens. \\
+\rowcolor{rowtint}
+\code{MOE\_SHARED\_*} & 3--4 & Runs for every token, so it behaves like a dense FFN. \\
+\code{MLA\_Q\_A}, \code{MLA\_KV\_A} & 8 & Hard structural. \\
+\rowcolor{rowtint}
+\code{MLA\_Q\_B}, \code{MLA\_KV\_B} & 4 & The bulk. \\
+\code{SSM\_IN}, \code{SSM\_OUT} & 4 & The bulk. \\
+\rowcolor{rowtint}
+\code{SSM\_X}, \code{SSM\_DT} & 8 & Hard structural. \\
+\code{VISION\_PATCH\_EMBED} & 8 & A few percent of a VLM but carries all image information. \\
+\rowcolor{rowtint}
+\code{OTHER} & 4 & Conservative default; \code{dynquant inspect} warns and lists every
+unclassified module so nothing silently drops to 2 bits. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ============================================================ 6
+\newpage
+\section{The encoder}
+\label{sec:encoder}
+
+\subsection{Group-wise affine with a float offset}
+
+Weights are grouped along the input axis in blocks of \code{group\_size} (default 128,
+constrained to $\text{group\_size} \bmod 32 = 0$). Each group gets a scale and an offset, and
+values reconstruct as
+\begin{equation}
+w \;\approx\; q \cdot \text{scale} \;+\; \text{offset},
+\qquad q \in \{0, \dots, 2^b - 1\}.
+\end{equation}
+The offset is an \emph{unconstrained float}, not an integer zero-point. This is the single
+highest-leverage decision in the format and it costs nothing at runtime: the dequantization
+$q \cdot s + o$ is one FFMA either way.
+
+The integer-zero-point convention requires the representable range to include zero, which forces
+the range of any group whose values do not straddle zero to be widened all the way to it. A
+worked case from the format spec: a group measured at $[0.50, 0.52]$ --- a perfectly ordinary
+outcome for a post-\code{SiLU} activation path or a positively-biased weight block --- widens to
+$[0.00, 0.52]$. That is a \textbf{26.0\x} range inflation, discarding \textbf{4.70 bits} of
+resolution at a nominal 4-bit width. There is no reason to pay it.
+
+Scales and offsets are rounded to the storage dtype \emph{before} the integer codes are derived,
+so the codes are optimal for the parameters that will actually be read back --- not for
+higher-precision parameters that then get rounded. A degenerate group (all values equal) encodes
+as $\text{scale}=0$, $\text{offset}=\text{constant}$, $q=0$, which round-trips exactly and cannot
+divide by zero.
+
+\subsection{MSE-optimal clip search}
+
+Min/max grouping is optimal for the worst case and poor for the typical case, because one outlier
+stretches the grid for 127 well-behaved neighbours. The encoder therefore searches a clip ratio
+per group:
+
+\begin{verbatim}
+CLIP_CANDIDATES = (1.0, 0.98, 0.96, 0.94, 0.92, 0.90, 0.85, 0.80)
+\end{verbatim}
+
+Two deliberate departures from the original formulation:
+
+\begin{enumerate}
+\item \textbf{The objective is the real codec's error.} Each candidate is pushed through
+\code{QuantTensor.from\_dense} and then \code{.dequantize()}, so the winning $\alpha$ is optimal
+for the bytes that reach disk --- including the dtype rounding of scale and offset, and the
+degenerate-group handling. Scoring against an idealised affine map instead would pick a
+different, slightly wrong winner.
+\item \textbf{Selection is per group, and the ratios are returned rather than applied.} The
+caller receives the chosen ratios, which makes the search reproducible and lets the sensitivity
+estimator evaluate exactly the same encoding the quantizer will emit.
+\end{enumerate}
+
+\subsection{Packing}
+
+Codes pack into \code{uint32} words with group boundaries aligned to word boundaries. At group
+128 this gives $8 / 12 / 16 / 32$ words per group for $2 / 3 / 4 / 8$ bits. The alignment is what
+makes an efficient kernel possible at all: a thread block loads a fixed number of words with
+compile-time-constant shifts and there are no cross-lane carries. The original research code
+flattened the whole tensor before 3-bit packing, so group boundaries fell mid-word and no
+efficient kernel existed for that layout.
+
+%% ============================================================ 7
+\section{On-disk format}
+\label{sec:format}
+
+\subsection{Versioning}
+
+Four numbers are versioned independently, because they change for independent reasons:
+
+\begin{table}[H]
+\centering\small
+\begin{tabular}{lp{0.62\textwidth}}
+\toprule
+Version & Governs \\
+\midrule
+core version & The Python API surface. \\
+\rowcolor{rowtint}
+\code{CHECKPOINT\_FORMAT\_VERSION} & Layout of the weight files and manifest. A reader refuses an
+unknown value rather than guessing. \\
+\code{STATS\_SCHEMA\_VERSION} & The signals sidecar. v1 (research era) migrates to v2 losslessly. \\
+\rowcolor{rowtint}
+\code{KERNEL\_ABI\_VERSION} & The compiled extension's contract with core. Checked at import;
+mismatch is a hard error with an actionable message, not a segfault later. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\code{QuantTensor} stores \code{bits}, \code{group\_size}, \code{symmetric},
+\code{row\_partitions}, \code{layout}, \code{shape} and \code{dtype} explicitly. None of it is
+inferred. The research code stored no \code{group\_size} at all and \emph{guessed} it from
+\code{scale.numel() // out\_features} with a hardcoded 128 fallback, which breaks for
+\code{ndim} $\ne 2$ (Mamba \code{conv1d}, batched expert weights $[E,\text{out},\text{in}]$) and
+for padded \code{in\_features}.
+
+\subsection{Kernel chunk invariant}
+
+The GEMV processes values in chunks sized so that a whole number of 32-bit words maps to a whole
+number of values: $\text{kValues} \cdot \text{BITS} = \text{kWords} \cdot 32$. That single rule
+fixes the vector load type per width:
+
+\begin{table}[H]
+\centering\small
+\caption{Chunk geometry per width. The 3-bit case is the interesting one: 6 words is not a power
+of two, so it loads as \code{uint2}${}\times{}$3 rather than \code{uint4}.}
+\begin{tabular}{rrrl}
+\toprule
+Bits & Words/chunk & Values/chunk & Load type \\
+\midrule
+2 & 4 & 64 & \code{uint4} \\
+\rowcolor{rowtint}
+3 & 6 & 64 & \code{uint2} \\
+4 & 4 & 32 & \code{uint4} \\
+\rowcolor{rowtint}
+8 & 4 & 16 & \code{uint4} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Every group is word-aligned by construction (Section~\ref{sec:encoder}), so scales and offsets
+are fetched once per group into shared memory and the inner loop is pure integer unpack plus
+FFMA.
+
+%% ============================================================ 8
+\section{The packed runtime}
+\label{sec:runtime}
+
+\subsection{Dispatch}
+
+\code{DynQuantLinear} holds packed \code{int32} buffers, a scale tensor and an offset tensor, and
+never materialises the full-precision weight. Forward dispatch is on row count $M$:
+
+\begin{itemize}
+\item $M \le \code{gemv\_max\_rows()} = 8$: \code{dynquant::gemv\_nbit<BITS, GROUP\_SIZE>}, one
+templated instantiation per width so there is no runtime branching in the inner loop.
+\item $M > 8$: tile dequant into a bounded workspace, then \code{F.linear}. Correct and
+throughput-competitive immediately; the fused tensor-core path is future work.
+\end{itemize}
+
+Templating on \code{BITS} rather than branching is not cosmetic. The unpack shift sequence and
+the load type both depend on the width; a runtime branch inside the inner loop would cost more
+than the arithmetic it guards.
+
+\subsection{Accuracy through the kernels}
+
+The critical property of a quantization runtime is that it does not change the answer relative to
+the simulated path. Measured on the full CaseHOLD evaluation:
+
+\begin{table}[H]
+\centering\small
+\caption{Simulated versus packed execution, $\approx$3.25-bit sensitivity allocation.}
+\begin{tabular}{lrr}
+\toprule
+Path & Correct & Exact match \\
+\midrule
+Simulated (dequantized weights, \code{F.linear}) & 4468 / 5314 & 84.0798\pct \\
+\rowcolor{rowtint}
+Packed (CUDA GEMV + dequant fallback) & 4468 / 5314 & 84.0798\pct \\
+\midrule
+Difference & 0 & 0.0000\pct \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Not ``within noise'' --- identical, problem by problem. The evaluation script asserts
+\code{MATCH} and fails otherwise. Worst observed relative error on any single GEMV output element
+across the parity suite is $6.96\times10^{-3}$, consistent with fp16 accumulation of a
+2-bit-quantized dot product.
+
+\subsection{Memory}
+
+\begin{table}[H]
+\centering\small
+\caption{VRAM, $\approx$3.25-bit allocation versus bf16. ``Manifest'' is what the allocator
+predicted before anything was written.}
+\begin{tabular}{lrrr}
+\toprule
+Measurement & Packed (GiB) & bf16 (GiB) & Reduction \\
+\midrule
+Manifest prediction & 0.7118 & --- & --- \\
+\rowcolor{rowtint}
+Walked tensors & 0.7120 & 3.5052 & 4.92\x \\
+\code{torch.cuda.max\_memory\_allocated} & 0.7237 & 3.5052 & \textbf{4.84\x} \\
+\rowcolor{rowtint}
+\code{torch.cuda.max\_memory\_reserved} & 0.7480 & 3.5052 & 4.77\x \\
+Decode peak, batch 1 & 0.882 & 3.662 & 4.15\x \\
+\rowcolor{rowtint}
+Decode peak, batch 32 & 5.382 & 8.164 & 1.52\x \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The allocator predicted 764\,317\,696 bytes; live measurement was 764\,530\,560 bytes, an
+overshoot of \textbf{0.03\pct}. That is the number that makes \code{--target-size} usable: the
+manifest figure is the on-disk and in-VRAM figure, with scales, offsets and packing overhead all
+accounted for.
+
+At batch 32 the reduction collapses to 1.52\x{} because activations and the KV cache dominate,
+which is expected and not a weight-quantization concern.
+
+\subsection{Speed}
+
+\begin{table}[H]
+\centering\small
+\caption{Decode throughput, tokens/s. Above $M = 8$ the kernel is not used at all --- the
+dequant fallback runs, and it pays for the dequant without amortising it.}
+\begin{tabular}{rrrr}
+\toprule
+Batch & Packed & bf16 & Ratio \\
+\midrule
+1 & 29.9 & 33.1 & \textbf{0.90\x} \\
+\rowcolor{rowtint}
+4 & 116.3 & 126.2 & 0.92\x \\
+8 & 235.6 & 250.9 & 0.94\x \\
+\rowcolor{rowtint}
+32 & 610.2 & 1012.6 & 0.60\x \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Decode is slower, and the reason is not the kernel. A per-step profile isolates it:
+
+\begin{table}[H]
+\centering\small
+\caption{Per-step profile, batch 1 decode.}
+\begin{tabular}{lrrl}
+\toprule
+Metric & bf16 & Packed & \\
+\midrule
+GPU busy time & 8.801\,ms & 7.763\,ms & $-1.038$\,ms \\
+\rowcolor{rowtint}
+\quad of which matmul & 3.519\,ms & 2.486\,ms & $-1.033$\,ms, \textbf{1.42\x{} faster} \\
+matmul share of busy & 40.0\pct & 32.0\pct & \\
+\rowcolor{rowtint}
+kernel launches & 2013 & 1980 & \\
+wall-clock per step & 28.4\,ms & 35.7\,ms & $+7.3$\,ms \\
+\rowcolor{rowtint}
+busy share of wall & 31\pct & 22\pct & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The GPU does strictly less work with packed weights, and the entire $1.038$\,ms reduction in busy
+time is accounted for by the $1.033$\,ms reduction in matmul time. The loss is on the host:
+roughly \textbf{20--45\,\textmu s of Python and launch overhead per packed module per step},
+across 187 modules. At 22\pct{} busy share the decode loop is host-bound, so the fix is CUDA
+Graph capture of the decode step (planned) rather than kernel work. The 3\pct{} slowdown on full
+evaluation (355.1\,s packed versus 344.6\,s bf16) is the same story diluted by
+prefill-dominated batches; batch-32 prefill is 1605\,ms versus 1599\,ms, i.e.\ unchanged.
+
+\subsection{Isolated GEMV performance}
+
+Stripping the host overhead away and timing the kernel alone against a bf16 GEMV of the same
+shape, and against a general (non-templated) quantized kernel:
+
+\begin{table}[H]
+\centering\small
+\caption{Isolated GEMV, $M = 1$, A100. Bandwidth is against 1665\,GB/s measured achievable read
+bandwidth (datasheet peak is 1935\,GB/s). ``Gain'' is speedup over the general kernel.}
+\begin{tabular}{llrrrr}
+\toprule
+Module & Shape & Bits & Speedup vs bf16 & \pct{} of 1665\,GB/s & Gain \\
+\midrule
+\code{out\_proj}    & $2048\times2048$ & 2 & 1.23\x & 10\pct & 1.52\x \\
+                    &                  & 3 & 1.23\x & 15\pct & 1.55\x \\
+                    &                  & 4 & 1.18\x & 18\pct & 1.78\x \\
+                    &                  & 8 & 1.09\x & 33\pct & 1.94\x \\
+\rowcolor{rowtint}
+\code{in\_proj\_qkv}, \code{gate\_proj} & $6144\times2048$ & 2 & 1.26\x & 20\pct & 1.32\x \\
+\rowcolor{rowtint}
+                    &                  & 3 & 1.24\x & 29\pct & 1.53\x \\
+\rowcolor{rowtint}
+                    &                  & 4 & 1.21\x & 37\pct & 1.47\x \\
+\rowcolor{rowtint}
+                    &                  & 8 & 1.16\x & 68\pct & 1.63\x \\
+\code{down\_proj}   & $2048\times6144$ & 2 & 1.51\x & 14\pct & 1.81\x \\
+                    &                  & 3 & 1.50\x & 20\pct & 1.85\x \\
+                    &                  & 4 & 1.40\x & 25\pct & 2.09\x \\
+                    &                  & 8 & 1.29\x & 44\pct & 2.36\x \\
+\rowcolor{rowtint}
+\code{embed}/\code{lm\_head} & $248320\times2048$ & 2 & \textbf{2.56\x} & 36\pct & 1.36\x \\
+\rowcolor{rowtint}
+                    &                  & 3 & \textbf{2.53\x} & 52\pct & 1.96\x \\
+\rowcolor{rowtint}
+                    &                  & 4 & \textbf{2.51\x} & 67\pct & 1.61\x \\
+\rowcolor{rowtint}
+                    &                  & 8 & 1.89\x & 98\pct & 1.44\x \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The kernel is faster than bf16 at every width and shape, by 1.09\x{} to 2.56\x. It also beats a
+general quantized kernel by 1.32\x{} to 2.36\x, which is what the \code{<BITS, GROUP\_SIZE>}
+templating buys.
+
+But the bandwidth gate --- $\ge$70\pct{} of achievable --- is met only at 8 bits on the large
+tensor (98\pct). At 4, 3 and 2 bits the best figures are 67\pct, 52\pct{} and 36\pct.
+Section~\ref{sec:notestablished} explains why this is arithmetic, not a bug.
+
+\subsection{Verification}
+
+\begin{table}[H]
+\centering\small
+\caption{Verification of the shipping binary.}
+\begin{tabular}{lr}
+\toprule
+Check & Result \\
+\midrule
+Kernel parity vs torch oracle, all (bits, group, shape, $M$) & 417 passed \\
+\rowcolor{rowtint}
+Full test suite & 1169 passed, 34 skipped, 0 failed \\
+\code{compute-sanitizer --tool memcheck} & 417 passed, 0 errors \\
+\rowcolor{rowtint}
+\code{compute-sanitizer --tool initcheck} & 417 passed, 0 errors \\
+\code{compute-sanitizer --tool racecheck} & 417 passed, \textbf{0 hazards} (0 errors, 0 warnings) \\
+\rowcolor{rowtint}
+\code{compute-sanitizer --tool synccheck} & 417 passed, 0 errors \\
+Register usage & 64 (72 at 3 bits), \code{STACK:0} --- no spills \\
+\rowcolor{rowtint}
+Determinism & Same input $\to$ bit-identical output across runs \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+These ran against the exact binary that produced the performance numbers. The build was
+re-verified from a clean rebuild of the shipping source after late edits to \code{gemv.cu}: the
+rebuild is codegen-identical --- 1384 SASS instructions in the 2-bit $M=1$ kernel with the same
+\code{FFMA} 264 / \code{I2F.U16} 256 / \code{LOP3} 244 / \code{SHF} 240 histogram, the same 64
+registers and \code{STACK:0} --- and re-measures the \code{embed}/\code{lm\_head} row at
+2.55/2.54/2.51/1.90\x{} and 36/52/67/99\pct, the same numbers inside run-to-run noise. The 417
+parity tests are what actually validates the host-side grid-expression change, since an undersized
+grid leaves output rows untouched rather than faulting.
+
+%% ============================================================ 9
+\newpage
+\section{Experimental setup}
+
+\begin{table}[H]
+\centering\small
+\caption{Experimental configuration.}
+\begin{tabular}{ll}
+\toprule
+Model & Qwen3.5-2B-Base, \code{Qwen3\_5ForCausalLM} \\
+\rowcolor{rowtint}
+Architecture & 28 layers, hybrid gated-linear / full attention, tied embeddings, \\
+\rowcolor{rowtint}
+ & fused \code{q\_proj} $=[Q;\ \text{output gate}]$ (\code{attn\_output\_gate: true}) \\
+Parameters & 1.8821\,B total; 1.8817\,B across 187 quantizable modules \\
+\rowcolor{rowtint}
+Hardware & NVIDIA A100 80\,GB PCIe, 108 SMs, 40\,MB L2 \\
+Software & CUDA 13.0.88, PyTorch 2.13.0+cu130, Transformers 5.14.1 \\
+\rowcolor{rowtint}
+Task & CaseHOLD --- five-way legal holding selection, exact match, $n = 5314$ \\
+Calibration & CaseHOLD \code{validation}, 512 rows, 204\,693 tokens \\
+\rowcolor{rowtint}
+Group size & 128 throughout \\
+Widths & $\{2, 3, 4, 8\}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Choosing the task: the headroom screen}
+
+Before spending GPU-hours, four candidate datasets were screened for whether fine-tuning could
+move the base model at all. The rule: a dataset is only useful if the base model is well above
+chance (so the task is learnable) \emph{and} well below the supervised reference (so there is
+headroom for quantization to then lose).
+
+\begin{table}[H]
+\centering\small
+\caption{Headroom screen. Base accuracy measured; supervised reference from the literature.}
+\begin{tabular}{lrrrl}
+\toprule
+Dataset & Base & Chance & Supervised ref. & Verdict \\
+\midrule
+\rowcolor{rowtint}
+CaseHOLD & 34.3\pct & 20\pct & ${\sim}69\pct$ & \textbf{Pass} --- used \\
+sql-create-context & 54.0\pct & 0\pct & ${\sim}80\pct$ & Pass \\
+MedMCQA & 47.7\pct & 25\pct & ${\sim}45$--$50\pct$ & Reject --- base already at reference \\
+GSM8K & 66.1\pct & 0\pct & 65.1\pct measured & Reject --- base \emph{above} reference \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+GSM8K is the instructive failure. The base model already scores 66.11\pct; fine-tuning moves it
+to 65.13\pct, a change of $-0.99$\pt{} at $p = 0.48$. There is no gain, so there is nothing for
+quantization to retain, and every quantization arm on that task measures only degradation from a
+ceiling. The dataset was run anyway (Section~\ref{sec:gsm8k}) and its results are reported,
+because a flat arm is itself a finding --- but the design lesson is to measure base accuracy
+\emph{before} committing to a fine-tune.
+
+%% ============================================================ 10
+\section{Results}
+
+\subsection{Accuracy}
+
+\begin{table}[H]
+\centering\small
+\caption{CaseHOLD exact match, $n = 5314$. The base model produced 7 unparseable outputs, counted
+as wrong.}
+\begin{tabular}{lrrr}
+\toprule
+Arm & Correct & Exact match & Stored bits \\
+\midrule
+Base, fp16 & 1867 & 35.13\pct & 16.000 \\
+\rowcolor{rowtint}
+Fine-tuned, fp16 & 4702 & \textbf{88.48\pct} & 16.000 \\
+DynQuant $\approx$4.25\,b & 4596 & 86.49\pct & 4.249 \\
+Uniform 4\,b & 4603 & 86.62\pct & 4.255 \\
+\rowcolor{rowtint}
+\textbf{DynQuant $\approx$3.25\,b, sensitivity} & \textbf{4468} & \textbf{84.08\pct} & 3.249 \\
+Uniform 3\,b & 3921 & 73.79\pct & 3.256 \\
+DynQuant $\approx$3.25\,b, rank product & 3813 & 71.75\pct & 3.249 \\
+\midrule
+Guessing & --- & 20.00\pct & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Paired significance}
+
+All arms were evaluated on the same 5314 problems and per-problem correctness was recorded, so
+every comparison below is an \emph{exact} paired McNemar test, not a two-proportion
+approximation. Confidence intervals are 95\pct{} on the paired difference.
+
+\begin{table}[H]
+\centering\small
+\caption{Exact paired McNemar, same 5314 problems throughout.}
+\begin{tabular}{lrrr}
+\toprule
+Comparison & $\Delta$ (pts) & 95\pct{} CI & $p$ \\
+\midrule
+\rowcolor{rowtint}
+Fine-tune vs base & $+53.35$ & $[51.87,\ 54.83]$ & $<10^{-300}$ \\
+\midrule
+Cost of 4-bit quantization & $-1.99$ & $[-2.68,\ -1.31]$ & $1.3\times10^{-8}$ \\
+\rowcolor{rowtint}
+Allocation vs uniform @ 4\,b & $-0.13$ & $[-0.51,\ +0.25]$ & $0.56$ \emph{(not separated)} \\
+\midrule
+Cost of 3-bit quantization (sensitivity) & $-4.40$ & $[-5.23,\ -3.57]$ & $4.8\times10^{-26}$ \\
+\rowcolor{rowtint}
+Cost of 3-bit quantization (rank product) & $-16.73$ & --- & $1.1\times10^{-155}$ \\
+\midrule
+\rowcolor{rowtint}
+\textbf{Sensitivity vs uniform @ 3\,b} & $\mathbf{+10.29}$ & $[9.20,\ 11.39]$ & $1.3\times10^{-81}$ \\
+Rank product vs uniform @ 3\,b & $\mathbf{-2.03}$ & $[-3.01,\ -1.05]$ & $5.8\times10^{-5}$ \\
+\rowcolor{rowtint}
+\textbf{Sensitivity vs rank product @ 3\,b} & $\mathbf{+12.33}$ & $[11.13,\ 13.53]$ & $1.7\times10^{-96}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Reading the table in order:
+
+\begin{itemize}
+\item Fine-tuning works, enormously, and that gain is the thing being protected.
+\item At 4.25 bits, quantization costs $2$\pt{} and \emph{allocation does not matter} --- the
+$-0.13$\pt{} difference from uniform is not distinguishable from zero. When the budget is loose
+enough that nothing has to be hurt, there is nothing to allocate.
+\item At 3.25 bits, allocation is the whole game. Sensitivity-driven allocation costs $4.40$\pt{}
+where uniform costs $14.69$ and the published rank product costs $16.73$.
+\item The rank product is \emph{significantly worse than uniform} at this budget. That is a
+stronger statement than ``it does not help''. A score that loses to no score is a score pointing
+the wrong way.
+\end{itemize}
+
+\subsection{Retention of the fine-tuning gain}
+
+\begin{table}[H]
+\centering\small
+\caption{Share of the $+53.35$\pt{} fine-tuning gain surviving each arm.}
+\begin{tabular}{lr}
+\toprule
+Arm & Retention \\
+\midrule
+fp16 & 100\pct \\
+\rowcolor{rowtint}
+$\approx$4.25\,b & 96\pct \\
+\textbf{$\approx$3.25\,b, sensitivity} & \textbf{92\pct} \\
+$\approx$3.25\,b, rank product & 69\pct \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+This is the framing that matters for a practitioner. You spent a fine-tune to gain 53 points. At
+a 4.9\x{} compression ratio you keep 92\pct{} of it with the shipped estimator, or 69\pct{} with
+the published one --- and the difference is entirely in which tensors got which widths, at
+identical total size.
+
+\subsection{The answer key, and what correlates with it}
+\label{sec:answerkey}
+
+To evaluate a sensitivity estimator you need ground truth: the actual loss damage attributable to
+each module. Two such keys were built, and they answer subtly different questions. Every
+correlation in the literature and in this paper should be labelled with which one it used,
+because the numbers differ.
+
+\begin{table}[H]
+\centering\small
+\caption{The two ground-truth constructions. Neither is wrong; they measure different things.}
+\begin{tabular}{p{0.14\textwidth}p{0.38\textwidth}p{0.38\textwidth}}
+\toprule
+& \textbf{Key A} --- \code{marginal\_3to4.json} & \textbf{Key B} --- \code{sensitivity\_3bit.json} \\
+\midrule
+Construction & Whole model at 3 bits; each module \emph{restored} to 4 bits, one at a time &
+Whole model at fp16; each module quantized \emph{alone} to 3 bits \\
+\rowcolor{rowtint}
+Target & Signed \code{gain} in loss & $|\Delta\text{loss}|$, disturbance magnitude \\
+Asks & ``what does one more bit here buy, in context?'' & ``how much does this module dislike
+3 bits, in isolation?'' \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Key A is the one that matches what the allocator actually does, so it is the primary key.
+
+\begin{table}[H]
+\centering\small
+\caption{Spearman $\rho$ against \textbf{Key A} (signed 3$\to$4 gain). ``Within-role'' is the mean
+over 12 roles, with the count of roles in which the sign is positive.}
+\begin{tabular}{lrr}
+\toprule
+Candidate signal & Global $\rho$ & Within-role mean ($n$ positive / 12) \\
+\midrule
+Plasticity (gradient variance) & $+0.3131$ & $+0.266$ \ (10/12) \\
+\rowcolor{rowtint}
+\textbf{Fisher / Gauss--Newton (Eq.~\ref{eq:sens})} & $\mathbf{+0.2951}$ & $\mathbf{+0.281}$ \ (11/12) \\
+\code{num\_params} & $+0.1492$ & --- \\
+\rowcolor{rowtint}
+Weight reconstruction error only & $+0.0645$ & --- \\
+Gram (activation second moment only) & $+0.0099$ & $-0.151$ \ (4/12) \\
+\rowcolor{rowtint}
+\textbf{Shipped rank product (Eq.~\ref{eq:oldscore})} & $\mathbf{+0.0040}$ & $-0.001$ \ (5/12) \\
+Saliency ($\operatorname{EMA}\lVert X\rVert$) & $\mathbf{-0.2059}$ & $-0.214$ \ (2/12) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering\small
+\caption{Within-role Spearman $\rho$ against \textbf{Key B} ($|\Delta\text{loss}|$ from isolated
+3-bit quantization), mean over 12 roles.}
+\begin{tabular}{lrr}
+\toprule
+Candidate signal & Within-role mean & Positive roles \\
+\midrule
+\rowcolor{rowtint}
+\textbf{Gauss--Newton (Eq.~\ref{eq:sens})} & $\mathbf{+0.521}$ & 11/12 \\
+Plasticity & $+0.491$ & 11/12 \\
+\rowcolor{rowtint}
+Shipped rank product & $+0.231$ & 9/12 \\
+Weight-only & $-0.227$ & 4/12 \\
+\rowcolor{rowtint}
+Saliency & $-0.301$ & 2/12 \\
+Eq.~\ref{eq:sens} with $\mathbb{E}[\delta^2]$ removed & $\mathbf{-0.338}$ & 1/12 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The two keys agree on everything that matters, which is why both are reported:
+
+\begin{itemize}
+\item \textbf{Saliency anti-correlates}, on both keys, in 10 of 12 roles. Busy tensors are robust
+tensors on this architecture. The published formula multiplies by this.
+\item \textbf{The gradient factor is the load-bearing one.} Removing $\mathbb{E}[\delta^2]$ from
+Equation~\ref{eq:sens} does not merely weaken it --- it flips the sign, from $+0.521$ to
+$-0.338$, positive in 1 role out of 12. Activation statistics alone are worse than nothing.
+\item \textbf{The rank product is approximately noise} on the key that matches the allocator's
+decision ($+0.0040$ globally, $-0.001$ within role, positive in 5 of 12 roles --- a coin flip).
+\item \textbf{Plasticity and Gauss--Newton are the two real signals}, and they are close.
+Gauss--Newton wins on within-role consistency (11/12 on both keys) and, decisively, in the
+end-to-end shootout below.
+\end{itemize}
+
+For scale: fp16 loss on the calibration set is $0.1049$; uniform 3-bit loss is $0.1514$. So
+$0.0466$ of loss is the entire recoverable budget that any allocation policy is fighting over.
+
+\subsection{Policy shootout}
+\label{sec:shootout}
+
+Each candidate policy was run end to end --- allocate, quantize, evaluate loss --- at two tight
+budgets. The metric is the share of uniform-3-bit damage recovered, where 100\pct{} means
+matching an oracle that knows the true per-module damage. Values above 100\pct{} are possible
+because the oracle is itself greedy on a first-order key.
+
+\begin{table}[H]
+\centering\small
+\caption{Share of uniform-3-bit damage recovered. Higher is better; negative means worse than
+uniform.}
+\begin{tabular}{lrr}
+\toprule
+Policy & @ 3.125 bits & @ 3.250 bits \\
+\midrule
+Oracle (knows the true key) & 84.87\pct & 104.15\pct \\
+\midrule
+\code{fisher\_move} & 77.21\pct & \textbf{105.67\pct} \\
+\rowcolor{rowtint}
+\textbf{\code{fisher\_diff} --- ships} & \textbf{85.54\pct} & 95.76\pct \\
+Plasticity & 86.81\pct & 81.58\pct \\
+\midrule
+Shipped rank product (Eq.~\ref{eq:oldscore}) & 28.49\pct & 85.17\pct \\
+\rowcolor{rowtint}
+Weight reconstruction error only & $\mathbf{-29.46\pct}$ & 48.51\pct \\
+\code{num\_params} & 52.01\pct & 26.40\pct \\
+\midrule
+\rowcolor{rowtint}
+Role-aware floors, no signal at all & 65.58\pct & 95.08\pct \\
+Random, 5 seeds & $-6.45$ to $45.39\pct$ & $-5.86$ to $59.15\pct$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The shipping policy \code{fisher\_diff} --- Equation~\ref{eq:sens} with difference pricing --- is
+the only candidate above 85\pct{} at \emph{both} budgets. Three other readings deserve
+attention:
+
+\begin{itemize}
+\item \textbf{The tighter budget is the discriminating one.} At 3.250 bits, five policies land in
+the 85--106\pct{} band and even ``role-aware floors with no signal'' reaches 95.08\pct. At 3.125
+bits the field spreads from $-29$\pct{} to $+87$\pct. Evaluating an allocator only at a loose
+budget will fail to distinguish it from a lookup table.
+\item \textbf{Calibration-free weight error is actively harmful} at the tight budget
+($-29.46$\pct, worse than every random seed). Reconstruction error without the two moment vectors
+is not a usable importance proxy.
+\item \textbf{Random allocation can look respectable.} One seed reached $+59.15$\pct{} at
+3.250 bits. Any published allocator result at a loose budget without a random baseline should be
+treated as unvalidated.
+\end{itemize}
+
+\subsection{What the allocation actually does differently}
+
+At an identical 3.249 stored bits, here is where the sensitivity estimator puts the budget
+relative to the rank product:
+
+\begin{table}[H]
+\centering\small
+\caption{Average bits per role at $\approx$3.25 bits. Both columns are the same total size.}
+\begin{tabular}{lrrr}
+\toprule
+Role & Sensitivity & Rank product & $\Delta$ \\
+\midrule
+\rowcolor{rowtint}
+\code{k\_proj} & \textbf{4.00} & 3.17 & $+0.83$ \\
+\rowcolor{rowtint}
+\code{v\_proj} & \textbf{4.00} & 3.50 & $+0.50$ \\
+\code{q\_proj} (fused $Q$ + gate) & 3.33 & 3.00 & $+0.33$ \\
+\rowcolor{rowtint}
+\code{lin\_attn.out\_proj} & 3.33 & 3.11 & $+0.22$ \\
+\code{in\_proj\_qkv} & 3.33 & 3.17 & $+0.16$ \\
+\rowcolor{rowtint}
+\code{o\_proj} & 3.33 & 3.17 & $+0.16$ \\
+\code{in\_proj\_z} & 3.17 & 3.11 & $+0.06$ \\
+\rowcolor{rowtint}
+\code{embed\_tokens} & 3.00 & 3.00 & $0$ \\
+\code{in\_proj\_a}, \code{in\_proj\_b} & 8.00 & 8.00 & $0$ (hard floor) \\
+\rowcolor{rowtint}
+\code{gate\_proj} & 3.12 & 3.12 & $0$ \\
+\code{down\_proj} & \textbf{2.67} & 2.79 & $-0.12$ \\
+\rowcolor{rowtint}
+\code{up\_proj} & \textbf{2.67} & 2.83 & $-0.16$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The trade is legible: \textbf{take bits out of the FFN bulk and put them into K and V}. K and V
+projections go all the way to 4 bits --- their errors compound through the softmax and then
+through every subsequent token's attention --- paid for by pushing \code{up\_proj} and
+\code{down\_proj} below 2.7 bits average, where the FFN's redundancy absorbs it.
+
+The width histogram is the surprise:
+
+\begin{table}[H]
+\centering\small
+\caption{Parameters at each extreme width. The \emph{better} map is the \emph{more} aggressive
+one.}
+\begin{tabular}{lrrrr}
+\toprule
+Width & Sensitivity & \pct{} of model & Rank product & \pct{} of model \\
+\midrule
+2-bit & 440.4\,M & 23.4\pct & 220.2\,M & 11.7\pct \\
+\rowcolor{rowtint}
+4-bit & 427.8\,M & 22.7\pct & 207.6\,M & 11.0\pct \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The winning allocation puts \emph{twice} as many parameters at 2 bits and twice as many at 4
+bits: it is more polarised in both directions. This refutes a reading that came out of earlier
+experiments --- that 2-bit round-to-nearest is simply unusable and should be avoided. It is
+unusable in the wrong places. Put 23\pct{} of the model at 2 bits and spend the savings on K/V,
+and you gain 12.33 points over the map that hedged.
+
+\subsection{The GSM8K arm}
+\label{sec:gsm8k}
+
+Reported for completeness, and because it is a clean negative result.
+
+\begin{table}[H]
+\centering\small
+\caption{GSM8K, $n = 1319$, exact match.}
+\begin{tabular}{lrl}
+\toprule
+Arm & Exact match & \\
+\midrule
+Base, fp16 & 66.11\pct & \\
+\rowcolor{rowtint}
+Fine-tuned, fp16 & 65.13\pct & $-0.99$\pt, $p = 0.48$ --- no gain \\
+$\approx$4.25\,b DynQuant & 58.15\pct & (uniform 4\,b: 56.79\pct) \\
+\rowcolor{rowtint}
+$\approx$3.25\,b DynQuant & 13.57\pct & (uniform 3\,b: 21.46\pct); allocation $-7.88$\pt, $p = 1.1\times10^{-10}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Two things to take from this. First, the fine-tune produced no gain --- the base model was
+already at the supervised reference --- so the moments were harvested from a model with nothing
+to say about this task, and the allocation they produced is worse than uniform. Signals from a
+converged, gainless fine-tune are not informative signals. Second, chain-of-thought arithmetic
+degrades far more steeply under 3-bit quantization than five-way classification does: 65\pct{}
+$\to$ 14\pct{} versus 88\pct{} $\to$ 84\pct. Multi-step generative reasoning has no error
+tolerance, because a single wrong token invalidates the rest of the chain.
+
+The 3.25-bit \emph{sensitivity} arm was not run on GSM8K, so the fair comparison --- does the new
+estimator also fail on a gainless fine-tune, or does it recover? --- remains open.
+
+%% ============================================================ 11
+\newpage
+\section{What is not established}
+\label{sec:notestablished}
+
+This section exists because everything above is a measurement and measurements have scope.
+
+\subsection{Decode is slower, and the bandwidth gate is missed}
+
+At batch 1, packed decode runs at \textbf{0.90\x} bf16 throughput. The kernel itself is faster
+(Section~\ref{sec:runtime}); the loss is 20--45\,\textmu s of host overhead per module per step
+over 187 modules, with the decode loop only 22\pct{} GPU-busy. CUDA Graph capture is the fix and
+is not yet implemented.
+
+The bandwidth gate of $\ge$70\pct{} achievable is met only at 8 bits on the largest tensor. The
+reason is an issue-rate floor, not a memory-system problem. Analysis on sm\_80, where
+FFMA/FADD/integer-add/\code{LOP3}/\code{SHF} all issue at 64 per SM per clock and conversions
+from 8- and 16-bit integers at 64 while all other conversions issue at 16:
+
+\begin{itemize}
+\item The instruction mix of the 2-bit kernel gives an issue-rate floor of ${\sim}141$\,\textmu s
+against ${\sim}237$\,\textmu s measured --- roughly 60\pct{} issue efficiency. The kernel is
+\emph{instruction}-bound, and at low bit widths there are simply more unpack instructions per
+byte of memory traffic.
+\item At $K = 2048$ with 64 values per chunk, each warp executes exactly \emph{one} main-loop
+iteration. There is no second iteration to overlap with, so no intra-warp memory-level
+parallelism is available to hide the load latency. A rows-per-warp sweep confirms the ceiling is
+structural: 2 rows gives 34/50/65/98\pct, 4 rows gives 36/52/67/98--99\pct{} (shipped), 8 rows
+gives 36/49/64/97\pct{} and spills at $M \ge 4$.
+\item The fp32 magic-number dequantization trick used by Marlin and AWQ, which would eliminate
+the integer$\to$float conversions entirely, is \emph{not available} in this format. It requires
+$\text{offset}' = -(2^{23} + z)\cdot\text{scale}$, which at 2 bits produces ${\sim}17\pct$ error.
+The escape hatch those kernels use exists only in fp16, and this runtime accumulates in fp32.
+\end{itemize}
+
+So the honest statement is: the memory saving is real and verified (4.84\x); the speed claim is
+not. The kernel wins in isolation and loses in the loop.
+
+\subsection{Scope of the accuracy result}
+
+One model (Qwen3.5-2B-Base), one task (CaseHOLD), two budgets (3.25 and 4.25 bits), one
+group size (128). The $+10.29$\pt{} result is a large, robustly significant effect on that
+configuration and nothing has yet shown it generalises. Specifically not established:
+
+\begin{itemize}
+\item \textbf{Larger models.} 2B is small. The redundancy structure that makes 23\pct{} of the
+model tolerable at 2 bits may be quite different at 14B or 70B.
+\item \textbf{MoE, MLA and SSM architectures.} The roles, floors and structural invariants are
+implemented and unit-tested against tiny synthetic configs, but no MoE or MLA model has been
+quantized and evaluated end to end.
+\item \textbf{Generative reasoning tasks.} The GSM8K arm suggests 3-bit is simply too aggressive
+for chain-of-thought, independent of allocation.
+\item \textbf{Task specificity of the moments.} The central premise --- that signals harvested
+during \emph{this} fine-tune produce an allocation specialised to \emph{this} task --- is
+untested. At 4.25 bits the two tasks produced 177 of 187 identical widths, which is what a
+task-\emph{in}dependent allocation looks like. The isolating experiment (CaseHOLD moments versus
+GSM8K moments on one fixed model at one fixed budget) has not been run.
+\end{itemize}
+
+\subsection{Limits of the estimator itself}
+
+\begin{itemize}
+\item \textbf{First-order in the module.} Equation~\ref{eq:sens} prices each module as if it were
+the only one quantized. Summed over an allocation it overshoots measured loss by ${\sim}2\times$.
+This is why \code{absolute} is \code{False} and why the table is used as an ordering.
+\item \textbf{Diagonal Gauss--Newton.} Off-diagonal curvature within a module is discarded, as is
+all cross-module curvature.
+\item \textbf{Post-hoc, not streamed.} Moments are written at the end of fine-tuning and read
+back. There is no online allocation that adapts during training.
+\item \textbf{Sampled every 16 steps.} Chosen for cost, not accuracy. The sensitivity of the
+result to that interval has not been swept.
+\end{itemize}
+
+\subsection{Cost}
+
+Packing 187 modules runs on CPU in 447\,s. Full CaseHOLD evaluation takes 355.1\,s packed versus
+344.6\,s bf16.
+
+%% ============================================================ 12
+\section{Defects found and fixed}
+\label{sec:defects}
+
+Four defects are documented here because each one was silent --- it produced plausible numbers
+rather than an error --- and because each says something about where this class of system fails.
+
+\subsection{Every role's least important module was free to destroy}
+
+\code{percentile\_ranks} mapped rank to $(\text{rank} - 1)/(n - 1)$. The minimum-ranked module in
+every role therefore scored \emph{exactly} 0. Since the price of a downward move is proportional
+to the score, a zero score means zero damage, so the allocator would take that module to the
+minimum width first, every time, at no cost --- regardless of what the module was.
+
+The fix is the Hazen plotting position, $(\text{rank} - 0.5)/n$, which never reaches 0 or 1.
+
+The instructive part is how it survived: \textbf{the scorer had no test file at all}. A
+score-to-rank transformation is exactly the kind of pure function that is trivially testable ---
+ties, $n = 1$, all-equal inputs, NaN --- and the absence of the test was the defect that let the
+other defect live.
+
+\subsection{The paired test was unrecoverable after the GPU-hours were spent}
+
+The evaluation harness stored summary counts per arm: correct, total, accuracy. That is enough
+for a two-proportion test and \emph{not} enough for a paired one, and the arms differ by a couple
+of points on 5314 problems, where pairing is worth roughly an order of magnitude in statistical
+power.
+
+By the time this was noticed, the GPU-hours were spent and the per-problem outcomes were gone.
+Every arm had to be re-run.
+
+The fix is structural: the results schema now \emph{requires} an unsampled per-problem \code{hits}
+boolean array, and \code{eval/compare.py} computes exact McNemar from it. Every $p$-value in
+Section~\ref{sec:answerkey} exists because of that change.
+
+\subsection{Fallback calibration double-counted the width span}
+
+\code{\_apply\_fallback\_scale} equalises the proxy-priced and sensitivity-priced populations by a
+ratio of medians. The medians were taken over \emph{raw} next-step values --- but a next-step value
+already contains the width span of that step. Dividing by the span (rung-normalising) before
+taking the median is required; without it the computed scale came out $0.332$ instead of
+$1.000$, a factor-of-three systematic discount on one population.
+
+The consequence is not a small accuracy wobble. A three-fold underpricing means whichever
+population sat at the lower floor becomes the cheapest thing in the queue and gets cut first ---
+on this architecture, 604\,M parameters.
+
+\subsection{A tied embedding table arrived on the GPU twice}
+
+\code{nn.Module.\_apply} invokes its conversion function once per registered buffer and memoizes
+nothing. A tied vocabulary table registered as a buffer on \emph{both} \code{embed\_tokens} and
+\code{lm\_head} is therefore converted twice and \emph{two independent copies} land on the
+device. Measured directly: 8192 bytes moved for one 4096-byte tensor.
+
+On Qwen3.5-2B the vocabulary table is 27\pct{} of the model, so the headline memory number would
+have been \textbf{0.9161 GiB instead of 0.7118 GiB} --- a 27\pct{} inflation of the central
+claim of the runtime work, reported in perfect good faith, with the manifest and the live
+measurement agreeing with each other because both were wrong the same way.
+
+The fix is structural rather than a deduplication pass: the tied module registers no buffer at
+all and reaches the owner's storage through a \code{holder} property. There is one buffer, so
+there is nothing to deduplicate.
+
+\subsection{The pattern}
+
+All four are silent failures that yield plausible output: a zero that means ``free'' instead of
+``unranked''; a summary statistic that discards the pairing; a calibration constant off by 3\x;
+a memory measurement inflated by 27\pct{} with two independent sources agreeing. None would have
+been caught by inspection of the results. Each was caught by asking a specific quantitative
+question --- what \emph{exactly} does the minimum-ranked module score, what \emph{exactly} does
+the allocator predict versus what is live --- and following the answer.
+
+%% ============================================================ 13
+\section{Using it}
+
+\subsection{Collecting signals}
+
+\begin{verbatim}
+from dynquant import DynQuantCallback
+
+trainer = Trainer(
+    model=model,
+    ...,
+    callbacks=[DynQuantCallback(output_dir="stats/")],
+)
+trainer.train()
+\end{verbatim}
+
+\code{SFTTrainer} from TRL takes the same callback. For a hand-written training loop:
+
+\begin{verbatim}
+from dynquant import track_signals
+
+with track_signals(model, out="stats/"):
+    for batch in loader:
+        loss = model(**batch).loss
+        loss.backward()
+        optimizer.step(); optimizer.zero_grad()
+\end{verbatim}
+
+Under DDP / FSDP / DeepSpeed the accumulators are reduced across ranks before the sidecar is
+written.
+
+\subsection{Inspecting, allocating, quantizing}
+
+The sidecar written above drives everything downstream. \code{--moments} is what selects the
+sensitivity estimator of Section~\ref{sec:sens}; without it the allocator falls back to
+plasticity ranks, which is the right behaviour for a run whose moments were never collected and
+the wrong thing to do by accident.
+
+\begin{verbatim}
+dynquant inspect  out/merged --stats stats/ --moments stats/ \
+                  --target 3.25 --uniform 3 4 --save-map maps/
+dynquant quantize out/merged --map maps/ -o out/q3
+dynquant eval     out/merged --task casehold --out runs/bf16.json
+dynquant eval     out/q3     --task casehold --out runs/q3.json \
+                  --compare runs/bf16.json
+dynquant bench    --model out/merged
+\end{verbatim}
+
+Budgets may be given as \code{--target} (average bits), \code{--target-size 6.5GiB}, or
+\code{--target-ratio 0.2}. All three are accounted honestly --- scales, offsets and packing
+overhead included --- so the manifest number is the on-disk number, verified here to 0.03\pct.
+
+Three properties of that sequence are deliberate. Passing \code{--save-map} to \code{inspect} and
+\code{--map} to \code{quantize} means the map that was reviewed is the map that gets applied,
+with no second allocation in between that could differ from the one that was looked at.
+\code{eval --compare} takes the \emph{record} written by an earlier \code{--out}, not another
+model, because the test is paired on per-problem outcomes (Section~\ref{sec:answerkey}) and it
+refuses to run across a differing task, split, shot count, seed or limit. And \code{bench}
+measures rectangles rather than a model end to end: decode is memory-bound, so the figure that
+means something is the fraction of \emph{this card's measured} achievable bandwidth that the
+packed GEMV reaches, and a datasheet peak is the wrong denominator.
+
+\code{dynquant inspect} prints the role / parameters / sensitivity / assigned-bits table and names
+every module that fell through to \code{OTHER}, so an unrecognised architecture is loud rather
+than quietly conservative. It also reports within-role concordance of assigned width with score,
+which is the diagnostic that caught the legacy allocator ignoring its scores outright: inverting
+every one of them changed zero of Qwen3-14B's 282 assigned widths, and nothing the allocator
+printed said so.
+
+\paragraph{What \code{quantize} writes today.} The packed-checkpoint writer is not yet
+implemented, so \code{-o} produces an ordinary \code{transformers} directory in which every value
+has been encoded to its allocated width and decoded back. Those are exactly the values a packed
+checkpoint would hold, so accuracy measured on that directory is the quantized model's accuracy;
+its size is the compute dtype's size, and the command prints the packed size alongside it on
+every run. The configuration in which the weights really are packed in VRAM --- and therefore the
+only one from which a memory or throughput figure is meaningful --- is \code{dynquant eval
+out/merged --map maps/}, which swaps the modules onto the packed runtime in place. Every memory
+number in this report was measured that way.
+
+\subsection{Loading}
+
+Today a quantized model is reconstituted in one of two ways, and which one is right depends on
+what is being measured. For accuracy, the directory written by \code{quantize} loads with stock
+\code{transformers} and no DynQuant installed at all. For memory or throughput, the packed
+runtime is installed over a loaded model in process:
+
+\begin{verbatim}
+from transformers import AutoModelForCausalLM
+from dynquant.runtime.linear import pack_model
+
+model = AutoModelForCausalLM.from_pretrained("out/merged", ...)
+report = pack_model(model, bits, group_size=128)   # weights now packed in VRAM
+\end{verbatim}
+
+\code{DYNQUANT\_BACKEND=cuda|triton|torch} forces a backend; all three agree numerically, and the
+torch path is the correctness oracle that the compiled kernels are tested against.
+
+\paragraph{Not yet implemented.} The intended end state is a checkpoint that is packed on disk
+and loaded through \code{transformers} directly:
+
+\begin{verbatim}
+model = AutoModelForCausalLM.from_pretrained("my-org/qwen35-2b-dynquant-3bit")
+\end{verbatim}
+
+with \code{DynQuantHfQuantizer} registered into \code{transformers.quantizers.auto} on import and
+swapping Linears \emph{during} load, so peak host memory never reaches the full-precision size.
+That requires the packed-checkpoint writer and the streaming load path, neither of which is
+written. It is stated here as design, not as behaviour: the format
+(Section~\ref{sec:format}) was specified to admit it, and the runtime modules it would install
+are the ones measured in Section~\ref{sec:runtime}.
+
+\subsection{Reproducing the published numbers}
+
+The superseded scorer is preserved rather than deleted, because a claim that the replacement is
+better is only checkable if the thing it replaced still runs. It is reachable from the Python
+API:
+
+\begin{verbatim}
+from dynquant.score.importance import ScoreConfig, score_modules
+
+report = score_modules(graph, stats, ScoreConfig(combine="rank_product"))
+\end{verbatim}
+
+\code{combine = "rank\_product"} is Equation~\ref{eq:oldscore}, ordinal ranks and all; it is the
+ordering that scores $+0.231$ in Section~\ref{sec:answerkey} against the replacement's $+0.521$.
+
+\paragraph{Not yet implemented.} A single \code{--preset paper-3.15} flag bundling all three
+compatibility switches --- \code{combine = "rank\_product"}, \code{soft\_floors = False} (an
+over-budget floor map returned unchanged, so the greedy loop never runs, which is the defect of
+Section~\ref{sec:alloc}) and \code{use\_coherence = True} (the EMA term present in the research
+code though absent from the published formula) --- is specified but not written, and the golden
+test that would pin it does not exist. The correct implementation is the default; compatibility
+is opt-in and, for the moment, opt-in one flag at a time.
+
+%% ============================================================ 14
+\section{Conclusions}
+
+\textbf{On the method.} Replacing an ordinal rank product with a cardinal, loss-unit
+Gauss--Newton sensitivity --- measured through the real encoder at the real candidate width --- is
+worth $+12.33$\pt{} of CaseHOLD accuracy at 3.25 bits on this model, at identical file size.
+Pricing knapsack moves by the sensitivity \emph{difference} rather than by a score-times-params
+proxy removes two hand-chosen constructs (the percentile rank and the $4^{-b}$ error curve) and
+performs better than either.
+
+\textbf{On the signals.} The gradient factor $\mathbb{E}[\delta^2]$ is the load-bearing one:
+removing it flips the correlation with measured damage from $+0.521$ to $-0.338$. The activation
+factor used alone anti-correlates ($\rho = -0.2059$), which means the published formula's second
+term was subtracting information. Two per-channel second-moment vectors, sampled one step in
+sixteen during a fine-tune that already happens, are enough.
+
+\textbf{On allocation budgets.} Allocation only matters when the budget is tight. At 4.25 bits no
+policy separates from uniform. At 3.25 bits the spread between policies is 40 points of accuracy
+and even random allocation occasionally looks good. Any allocator claim made at a loose budget,
+or without a random baseline, should be treated as unvalidated.
+
+\textbf{On the runtime.} Packed execution is exact --- bit-identical accuracy to the simulated
+path --- and the memory saving is real and predictable: 4.84\x{} peak allocated, with the
+allocator's forecast within 0.03\pct{} of live. The kernel beats bf16 in isolation at every width
+(1.09\x--2.56\x) and beats a non-templated quantized kernel by up to 2.36\x. It does not yet make
+decode faster end to end, because the decode loop is host-bound at 22\pct{} GPU occupancy, and it
+misses the 70\pct{} bandwidth gate at 2, 3 and 4 bits for a structural reason: at $K = 2048$ each
+warp runs one main-loop iteration, so there is no intra-warp latency hiding, and the fp16
+magic-number dequantization shortcut is unavailable to an fp32-accumulating kernel.
+
+\textbf{The open question.} The premise that gave the method its name --- that the signals are
+\emph{dynamic}, task-specific, so that a fine-tune on task $T$ yields an allocation specialised
+to $T$ --- is the one thing not yet demonstrated. At 4.25 bits, two very different tasks produced
+177 of 187 identical widths. Either the effect appears only under tight budgets, or the
+allocation is largely a function of architecture and the ``dynamic'' framing needs revising. The
+isolating experiment is small, well-defined, and next.
+
+\vspace{1.5em}
+\noindent{\color{dqblue}\rule{\textwidth}{0.8pt}}
+\vspace{0.6em}
+
+\noindent\small
+\textbf{Provenance.} Every quantitative claim in this document traces to a measurement recorded in
+\code{experiments/}\allowbreak\code{qwen35\_2b/}\allowbreak\code{RESULTS.md} in the DynQuant
+repository, produced on the hardware and software stack named on the title page. Correlation figures are labelled with which ground-truth
+key produced them (Section~\ref{sec:answerkey}); the two keys measure different quantities and
+their numbers are not interchangeable. Statements about what is not established are in
+Section~\ref{sec:notestablished} and are not hedges on the results above --- they are the boundary
+of what was tested.
+
+\end{document}

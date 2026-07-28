@@ -1,0 +1,85 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dynquant-core"
+description = "Training-dynamics-driven mixed-precision LLM quantization: signals, scoring, allocation, packing. Pure Python."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "DynQuant authors" }]
+keywords = ["quantization", "llm", "transformers", "mixed-precision", "moe", "compression"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dynamic = ["version"]
+
+dependencies = [
+    "torch>=2.4",
+    "safetensors>=0.4.3",
+    "numpy>=1.24",
+    "pyyaml>=6.0",
+    "typing-extensions>=4.9; python_version<'3.12'",
+]
+
+[project.optional-dependencies]
+# transformers/peft/trl are optional so that `dynquant-core` stays installable in
+# a bare inference image. dynquant.integration raises an actionable ImportError
+# if they are missing.
+hf = [
+    "transformers>=4.45",
+    "accelerate>=0.34",
+]
+train = [
+    "dynquant-core[hf]",
+    "peft>=0.13",
+    "trl>=0.11",
+    "datasets>=2.20",
+]
+eval = [
+    "dynquant-core[hf]",
+    "lm-eval>=0.4.4",
+    "datasets>=2.20",
+]
+triton = ["triton>=3.0; platform_system=='Linux'"]
+dev = [
+    "dynquant-core[hf,train,eval]",
+    "pytest>=7.4",
+    "pytest-cov>=5.0",
+    "pytest-xdist>=3.5",
+    "hypothesis>=6.100",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pre-commit>=3.7",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.25",
+]
+
+[project.scripts]
+dynquant = "dynquant.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/dynquant/dynquant"
+Documentation = "https://dynquant.github.io/dynquant"
+Issues = "https://github.com/dynquant/dynquant/issues"
+Changelog = "https://github.com/dynquant/dynquant/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "src/dynquant/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dynquant"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/dynquant", "README.md", "LICENSE"]

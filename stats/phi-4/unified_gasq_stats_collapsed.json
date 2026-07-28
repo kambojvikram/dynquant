@@ -1,0 +1,1144 @@
+{
+  "activation_ema_beta": 0.99,
+  "coherence_ema_beta": 0.95,
+  "collapsed_lora_into_base": true,
+  "created_at_unix": 1766284765,
+  "eps": 1e-12,
+  "layers": {
+    "base_model.model.lm_head.base_layer": {
+      "activation_rms_ema": 3.1942368000040173,
+      "coherence_ema": 0.5761112582846082,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.036570252441868116,
+      "grad_norm_var": 0.000795895497685347
+    },
+    "base_model.model.model.embed_tokens": {
+      "activation_rms_ema": 0.007818978610106895,
+      "coherence_ema": 0.0,
+      "grad_norm_count": 0,
+      "grad_norm_mean": 0.0,
+      "grad_norm_var": 0.0
+    },
+    "base_model.model.model.layers.0.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.010699553000878081,
+      "coherence_ema": 0.9674095049453433,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0030314439987195524,
+      "grad_norm_var": 1.354464184979122e-05
+    },
+    "base_model.model.model.layers.0.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.04552489024795451,
+      "coherence_ema": 0.9442005323072554,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.002640034631151956,
+      "grad_norm_var": 1.4553579206168062e-05
+    },
+    "base_model.model.model.layers.0.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.0067635673147389665,
+      "coherence_ema": 0.9427182975543293,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.002722759234660501,
+      "grad_norm_var": 1.0943880631203235e-05
+    },
+    "base_model.model.model.layers.0.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 0.4629435131061316,
+      "coherence_ema": 0.8713581297058853,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005670725125696413,
+      "grad_norm_var": 4.804654072334296e-05
+    },
+    "base_model.model.model.layers.1.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.02469066597206379,
+      "coherence_ema": 0.876884821253699,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005390780918058276,
+      "grad_norm_var": 3.396202845528721e-05
+    },
+    "base_model.model.model.layers.1.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.06667446859580149,
+      "coherence_ema": 0.926078719125305,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0039059417924547537,
+      "grad_norm_var": 2.450610892270428e-05
+    },
+    "base_model.model.model.layers.1.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.01050831896089864,
+      "coherence_ema": 0.9393349699107422,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0038200431347732923,
+      "grad_norm_var": 1.84471222291428e-05
+    },
+    "base_model.model.model.layers.1.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 0.45218566410384914,
+      "coherence_ema": 0.8546007140481948,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005606257163378311,
+      "grad_norm_var": 4.440729394363575e-05
+    },
+    "base_model.model.model.layers.10.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.18008044477924903,
+      "coherence_ema": 0.9577371258761807,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006188274566156449,
+      "grad_norm_var": 3.2279384840876655e-05
+    },
+    "base_model.model.model.layers.10.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.3508198002215975,
+      "coherence_ema": 0.8933226345486858,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.00922060819487449,
+      "grad_norm_var": 7.403078120234379e-05
+    },
+    "base_model.model.model.layers.10.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.04077142212372777,
+      "coherence_ema": 0.9186736332404402,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005106431350842697,
+      "grad_norm_var": 2.5245995021206908e-05
+    },
+    "base_model.model.model.layers.10.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.1276123710621928,
+      "coherence_ema": 0.8998513255880116,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006599443974304843,
+      "grad_norm_var": 4.097922245104302e-05
+    },
+    "base_model.model.model.layers.11.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.1808244916803237,
+      "coherence_ema": 0.9498709551741135,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0066077155522947595,
+      "grad_norm_var": 3.520847050447857e-05
+    },
+    "base_model.model.model.layers.11.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.3714244759419144,
+      "coherence_ema": 0.8853064007032625,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.009784127561576834,
+      "grad_norm_var": 8.37733447622366e-05
+    },
+    "base_model.model.model.layers.11.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.04801615873845899,
+      "coherence_ema": 0.9118608640540191,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005766525385502707,
+      "grad_norm_var": 3.098987575466017e-05
+    },
+    "base_model.model.model.layers.11.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.1001649870131591,
+      "coherence_ema": 0.8979530175071265,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.007401052304712567,
+      "grad_norm_var": 4.5337407836578016e-05
+    },
+    "base_model.model.model.layers.12.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.16648220426711524,
+      "coherence_ema": 0.9530800695731698,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006504005172432575,
+      "grad_norm_var": 3.3733302326279724e-05
+    },
+    "base_model.model.model.layers.12.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.37166423223214173,
+      "coherence_ema": 0.8846436136147295,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.010100562177196862,
+      "grad_norm_var": 8.577173710687637e-05
+    },
+    "base_model.model.model.layers.12.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.0482647865364911,
+      "coherence_ema": 0.9185355553337334,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006166637880235382,
+      "grad_norm_var": 3.696042446488257e-05
+    },
+    "base_model.model.model.layers.12.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.0976158098903255,
+      "coherence_ema": 0.8998736018607744,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.00734392377703551,
+      "grad_norm_var": 4.704332663401971e-05
+    },
+    "base_model.model.model.layers.13.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.16306228644435777,
+      "coherence_ema": 0.9524847621569231,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006553957125720832,
+      "grad_norm_var": 3.4292331340726194e-05
+    },
+    "base_model.model.model.layers.13.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.3766960600259974,
+      "coherence_ema": 0.8803324163042557,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.010374134083668206,
+      "grad_norm_var": 9.123225032632542e-05
+    },
+    "base_model.model.model.layers.13.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.05378743746429146,
+      "coherence_ema": 0.9126562637178615,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006048122494433239,
+      "grad_norm_var": 3.6680573433466185e-05
+    },
+    "base_model.model.model.layers.13.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.062507270597565,
+      "coherence_ema": 0.9068959431365836,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.007107773053411731,
+      "grad_norm_var": 3.921859940194041e-05
+    },
+    "base_model.model.model.layers.14.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.16820704612007908,
+      "coherence_ema": 0.9525359329672684,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006383486370983607,
+      "grad_norm_var": 3.1302996497127225e-05
+    },
+    "base_model.model.model.layers.14.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.3840412876669732,
+      "coherence_ema": 0.8791006304935314,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.010447180802060467,
+      "grad_norm_var": 9.078776779091984e-05
+    },
+    "base_model.model.model.layers.14.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.057081868809435644,
+      "coherence_ema": 0.9018106160480411,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006307944474536505,
+      "grad_norm_var": 3.918535485122738e-05
+    },
+    "base_model.model.model.layers.14.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.0503480707070456,
+      "coherence_ema": 0.9115603173730317,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.007363787852273987,
+      "grad_norm_var": 4.3236403516108186e-05
+    },
+    "base_model.model.model.layers.15.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.19150745100277886,
+      "coherence_ema": 0.9583549644308211,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006389530087942929,
+      "grad_norm_var": 3.2154721713505647e-05
+    },
+    "base_model.model.model.layers.15.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.38906505967883115,
+      "coherence_ema": 0.8835407465837649,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.010360609157345067,
+      "grad_norm_var": 9.046115599556675e-05
+    },
+    "base_model.model.model.layers.15.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.06073051416753431,
+      "coherence_ema": 0.9017218321407854,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006212294874584234,
+      "grad_norm_var": 3.6733197268021656e-05
+    },
+    "base_model.model.model.layers.15.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.0682339221547286,
+      "coherence_ema": 0.8905454725300054,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.007366046131118583,
+      "grad_norm_var": 4.1047122921587976e-05
+    },
+    "base_model.model.model.layers.16.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.2036340490130073,
+      "coherence_ema": 0.958470203419669,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006380753321201887,
+      "grad_norm_var": 3.282109504084563e-05
+    },
+    "base_model.model.model.layers.16.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.4028152550195897,
+      "coherence_ema": 0.8776446329708234,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.01036780634905815,
+      "grad_norm_var": 9.426368950516805e-05
+    },
+    "base_model.model.model.layers.16.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.06911388285995815,
+      "coherence_ema": 0.9124479007918169,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006782547956349394,
+      "grad_norm_var": 4.206717017850127e-05
+    },
+    "base_model.model.model.layers.16.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.081949606964546,
+      "coherence_ema": 0.9225947025923127,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.007716894037996346,
+      "grad_norm_var": 4.561420555452277e-05
+    },
+    "base_model.model.model.layers.17.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.22234277000398553,
+      "coherence_ema": 0.9516458026563812,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006521912918585817,
+      "grad_norm_var": 3.274774247255684e-05
+    },
+    "base_model.model.model.layers.17.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.41135985505041944,
+      "coherence_ema": 0.8680610905426457,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.010540957010813406,
+      "grad_norm_var": 9.804491186061544e-05
+    },
+    "base_model.model.model.layers.17.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.07370346941605717,
+      "coherence_ema": 0.9085192971752004,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005780997036362154,
+      "grad_norm_var": 3.220195367883971e-05
+    },
+    "base_model.model.model.layers.17.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.088376423366713,
+      "coherence_ema": 0.9037996083952416,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0068262432464982325,
+      "grad_norm_var": 3.8846073969438126e-05
+    },
+    "base_model.model.model.layers.18.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.23670911028241937,
+      "coherence_ema": 0.9515234504211689,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006516186000771894,
+      "grad_norm_var": 3.206360890628723e-05
+    },
+    "base_model.model.model.layers.18.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.41926260580198377,
+      "coherence_ema": 0.8629506870664969,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.010751032425133356,
+      "grad_norm_var": 0.00010115573593703298
+    },
+    "base_model.model.model.layers.18.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.07665991617197632,
+      "coherence_ema": 0.8933181889623162,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006153022874063948,
+      "grad_norm_var": 3.4587534099448654e-05
+    },
+    "base_model.model.model.layers.18.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.0761041336395634,
+      "coherence_ema": 0.8975278140522281,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.00736002069775916,
+      "grad_norm_var": 4.030151101420103e-05
+    },
+    "base_model.model.model.layers.19.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.235806726599421,
+      "coherence_ema": 0.9543600949947697,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006323903509268912,
+      "grad_norm_var": 2.9241604551038316e-05
+    },
+    "base_model.model.model.layers.19.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.42498430977646684,
+      "coherence_ema": 0.8622473710937459,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.010678188206887335,
+      "grad_norm_var": 9.909657821704351e-05
+    },
+    "base_model.model.model.layers.19.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.07964441231679785,
+      "coherence_ema": 0.9023862219460748,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005817666305303963,
+      "grad_norm_var": 3.0739781794589134e-05
+    },
+    "base_model.model.model.layers.19.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.0832429184264598,
+      "coherence_ema": 0.9042878763383783,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006658963848955013,
+      "grad_norm_var": 3.210914059666814e-05
+    },
+    "base_model.model.model.layers.2.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.02877097923963708,
+      "coherence_ema": 0.8885016164672138,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005285777540912273,
+      "grad_norm_var": 2.840809218412867e-05
+    },
+    "base_model.model.model.layers.2.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.08159753592694775,
+      "coherence_ema": 0.9203645453257066,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.004885977827386036,
+      "grad_norm_var": 3.491039560623002e-05
+    },
+    "base_model.model.model.layers.2.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.011288450709762301,
+      "coherence_ema": 0.9395181577409806,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0033557228475335865,
+      "grad_norm_var": 1.3848427682288203e-05
+    },
+    "base_model.model.model.layers.2.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 0.48350713065512974,
+      "coherence_ema": 0.8761634623818086,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.004706251351466891,
+      "grad_norm_var": 2.9935897003656588e-05
+    },
+    "base_model.model.model.layers.20.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.2737964653192479,
+      "coherence_ema": 0.9540082433979999,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006456086019496829,
+      "grad_norm_var": 3.068591369040109e-05
+    },
+    "base_model.model.model.layers.20.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.448357761696018,
+      "coherence_ema": 0.8585865896164114,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.010624035471540236,
+      "grad_norm_var": 9.838762398480593e-05
+    },
+    "base_model.model.model.layers.20.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.08826245940088816,
+      "coherence_ema": 0.914319508345021,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005973156994955523,
+      "grad_norm_var": 3.160618636342699e-05
+    },
+    "base_model.model.model.layers.20.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.1379004643839472,
+      "coherence_ema": 0.9218955155994385,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006543473581205873,
+      "grad_norm_var": 2.908069276468036e-05
+    },
+    "base_model.model.model.layers.21.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.2789545379898339,
+      "coherence_ema": 0.9559076718758506,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.00636788548274644,
+      "grad_norm_var": 2.9940650919104358e-05
+    },
+    "base_model.model.model.layers.21.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.4578716612670278,
+      "coherence_ema": 0.8577034228217827,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.01052185845607316,
+      "grad_norm_var": 9.935662649639109e-05
+    },
+    "base_model.model.model.layers.21.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.09471096749014925,
+      "coherence_ema": 0.9282151967251329,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005049276638334755,
+      "grad_norm_var": 2.3069207031974042e-05
+    },
+    "base_model.model.model.layers.21.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.1101076340411509,
+      "coherence_ema": 0.9126607829945453,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006331715797578933,
+      "grad_norm_var": 2.754755350859893e-05
+    },
+    "base_model.model.model.layers.22.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.32992056044718937,
+      "coherence_ema": 0.9549679774264617,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006236835603639039,
+      "grad_norm_var": 2.8768984726318e-05
+    },
+    "base_model.model.model.layers.22.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.4856953548236697,
+      "coherence_ema": 0.8509525766568322,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.010393966628730704,
+      "grad_norm_var": 9.848935858577449e-05
+    },
+    "base_model.model.model.layers.22.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.10032551840087114,
+      "coherence_ema": 0.9238344258579343,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005003668483801075,
+      "grad_norm_var": 2.141352407149805e-05
+    },
+    "base_model.model.model.layers.22.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.123855653885184,
+      "coherence_ema": 0.9158565953663304,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006225619990281912,
+      "grad_norm_var": 2.5288066417720217e-05
+    },
+    "base_model.model.model.layers.23.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.38392366905896563,
+      "coherence_ema": 0.9586950173703264,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006153400188723112,
+      "grad_norm_var": 2.8521483089314025e-05
+    },
+    "base_model.model.model.layers.23.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.503773598970339,
+      "coherence_ema": 0.8476311134444505,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.010293731338275809,
+      "grad_norm_var": 9.569416595481873e-05
+    },
+    "base_model.model.model.layers.23.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.10536716227425433,
+      "coherence_ema": 0.9371817595163646,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.004597737868601615,
+      "grad_norm_var": 1.8435244993378712e-05
+    },
+    "base_model.model.model.layers.23.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.1466664913118143,
+      "coherence_ema": 0.9096956990904732,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005972910532898069,
+      "grad_norm_var": 2.3518416144029278e-05
+    },
+    "base_model.model.model.layers.24.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.4364426969325165,
+      "coherence_ema": 0.9559239167508292,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005989098584634091,
+      "grad_norm_var": 2.695523406554879e-05
+    },
+    "base_model.model.model.layers.24.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.5165923962963702,
+      "coherence_ema": 0.8456901839096195,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.010270816928945218,
+      "grad_norm_var": 9.672874904945935e-05
+    },
+    "base_model.model.model.layers.24.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.11748362146917744,
+      "coherence_ema": 0.9265109987326567,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.004490556765538729,
+      "grad_norm_var": 1.7065957011322186e-05
+    },
+    "base_model.model.model.layers.24.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.1285136670633726,
+      "coherence_ema": 0.9092071606125959,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0055191556624942465,
+      "grad_norm_var": 2.0382229381096314e-05
+    },
+    "base_model.model.model.layers.25.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.4872630347292676,
+      "coherence_ema": 0.9582190753048191,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005838302991930314,
+      "grad_norm_var": 2.585639533307766e-05
+    },
+    "base_model.model.model.layers.25.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.5539774923965513,
+      "coherence_ema": 0.8440094054823881,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.010063181089595072,
+      "grad_norm_var": 9.526072399932092e-05
+    },
+    "base_model.model.model.layers.25.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.11860336272180758,
+      "coherence_ema": 0.9385601196466511,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.004092448685851632,
+      "grad_norm_var": 1.5337395733496305e-05
+    },
+    "base_model.model.model.layers.25.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.0986028704199753,
+      "coherence_ema": 0.9163770214453437,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005598421110660251,
+      "grad_norm_var": 2.068504387646317e-05
+    },
+    "base_model.model.model.layers.26.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.47485887276570415,
+      "coherence_ema": 0.957008854594558,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.00568773146771226,
+      "grad_norm_var": 2.4365961917742333e-05
+    },
+    "base_model.model.model.layers.26.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.5744467034282705,
+      "coherence_ema": 0.8341516146866504,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.009884893660116956,
+      "grad_norm_var": 9.019950516154486e-05
+    },
+    "base_model.model.model.layers.26.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.14029153564643654,
+      "coherence_ema": 0.9357196050953588,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.003691581132942469,
+      "grad_norm_var": 1.2253977564992033e-05
+    },
+    "base_model.model.model.layers.26.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.1234168752781732,
+      "coherence_ema": 0.8998096294998948,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0051985782491425145,
+      "grad_norm_var": 1.870666136079364e-05
+    },
+    "base_model.model.model.layers.27.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.49856002857153425,
+      "coherence_ema": 0.9550760815474502,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005440708116609749,
+      "grad_norm_var": 2.2732786408333925e-05
+    },
+    "base_model.model.model.layers.27.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.5901119475976206,
+      "coherence_ema": 0.8288603859516832,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.009595051281165145,
+      "grad_norm_var": 8.700031042571617e-05
+    },
+    "base_model.model.model.layers.27.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.14658860174368454,
+      "coherence_ema": 0.9143772704624265,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.003940042177886462,
+      "grad_norm_var": 1.3361799153319127e-05
+    },
+    "base_model.model.model.layers.27.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.1252034940798097,
+      "coherence_ema": 0.8920796615307454,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.004935295592334653,
+      "grad_norm_var": 1.5923858955410695e-05
+    },
+    "base_model.model.model.layers.28.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.4953106470675576,
+      "coherence_ema": 0.9547826131500371,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005339080048300786,
+      "grad_norm_var": 2.2082594077703524e-05
+    },
+    "base_model.model.model.layers.28.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.615771981212984,
+      "coherence_ema": 0.8277021321181636,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.00946936428897772,
+      "grad_norm_var": 8.740995995388634e-05
+    },
+    "base_model.model.model.layers.28.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.15207997549963376,
+      "coherence_ema": 0.931300564903368,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.003162654097067472,
+      "grad_norm_var": 8.571298833282846e-06
+    },
+    "base_model.model.model.layers.28.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.1406108270885507,
+      "coherence_ema": 0.8936734180819904,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.004495401010460326,
+      "grad_norm_var": 1.3343076536965819e-05
+    },
+    "base_model.model.model.layers.29.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.5333720179771292,
+      "coherence_ema": 0.9529220044160257,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0051420490573314435,
+      "grad_norm_var": 2.0710116115888863e-05
+    },
+    "base_model.model.model.layers.29.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.6350564339022998,
+      "coherence_ema": 0.8208524263023879,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.009303705899350409,
+      "grad_norm_var": 8.652337806766502e-05
+    },
+    "base_model.model.model.layers.29.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.14327863457766726,
+      "coherence_ema": 0.9427449125249996,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.002794880315533501,
+      "grad_norm_var": 6.677742752108711e-06
+    },
+    "base_model.model.model.layers.29.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.1362012502609233,
+      "coherence_ema": 0.8905507993203456,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.004208555615242313,
+      "grad_norm_var": 1.1148686536230118e-05
+    },
+    "base_model.model.model.layers.3.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.02931150654933969,
+      "coherence_ema": 0.9308273884167042,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.004815455584497143,
+      "grad_norm_var": 2.2410057532251072e-05
+    },
+    "base_model.model.model.layers.3.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.09428034879036415,
+      "coherence_ema": 0.9182275048238665,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005519515521428695,
+      "grad_norm_var": 4.2212792969961824e-05
+    },
+    "base_model.model.model.layers.3.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.01326378468876037,
+      "coherence_ema": 0.9469717170180948,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0031245963210017064,
+      "grad_norm_var": 1.529629364911727e-05
+    },
+    "base_model.model.model.layers.3.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 0.4982360212157262,
+      "coherence_ema": 0.87742127908342,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0050053640396824275,
+      "grad_norm_var": 3.688340867793528e-05
+    },
+    "base_model.model.model.layers.30.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.596572818218387,
+      "coherence_ema": 0.9560575259081686,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005020909267534782,
+      "grad_norm_var": 2.0198006797373674e-05
+    },
+    "base_model.model.model.layers.30.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.6543085403151181,
+      "coherence_ema": 0.8191173369207216,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.009264588549918627,
+      "grad_norm_var": 8.692250728571282e-05
+    },
+    "base_model.model.model.layers.30.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.1615408129326118,
+      "coherence_ema": 0.9516312445007408,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.002673176772541912,
+      "grad_norm_var": 7.033117277399689e-06
+    },
+    "base_model.model.model.layers.30.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.146770779455295,
+      "coherence_ema": 0.8902723090924669,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.004596472712350665,
+      "grad_norm_var": 1.4599525140359405e-05
+    },
+    "base_model.model.model.layers.31.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.6274016211042692,
+      "coherence_ema": 0.9554811031976579,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.004901832983715165,
+      "grad_norm_var": 1.9350725505503306e-05
+    },
+    "base_model.model.model.layers.31.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.6788333604902455,
+      "coherence_ema": 0.8164832900481146,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.008920165918212562,
+      "grad_norm_var": 8.09186117297251e-05
+    },
+    "base_model.model.model.layers.31.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.1609043091361846,
+      "coherence_ema": 0.9458394212655404,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.002315323363339348,
+      "grad_norm_var": 4.916555910479302e-06
+    },
+    "base_model.model.model.layers.31.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.1403744150787272,
+      "coherence_ema": 0.8749394292010301,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.004046002190963771,
+      "grad_norm_var": 1.0553954246362662e-05
+    },
+    "base_model.model.model.layers.32.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.6750915547291673,
+      "coherence_ema": 0.9558321025523677,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005039674480480923,
+      "grad_norm_var": 2.0845955430586228e-05
+    },
+    "base_model.model.model.layers.32.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.7031557992553804,
+      "coherence_ema": 0.8287609643631313,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.008724316643740588,
+      "grad_norm_var": 7.737476423604665e-05
+    },
+    "base_model.model.model.layers.32.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.2011769957850249,
+      "coherence_ema": 0.9314193538745602,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0028975668058777372,
+      "grad_norm_var": 8.006686933279362e-06
+    },
+    "base_model.model.model.layers.32.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.174060061972253,
+      "coherence_ema": 0.8797173725619413,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.004174957390276301,
+      "grad_norm_var": 1.1392490449621786e-05
+    },
+    "base_model.model.model.layers.33.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.7179975767849947,
+      "coherence_ema": 0.9565956365475871,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.004683733437296533,
+      "grad_norm_var": 1.798746610510044e-05
+    },
+    "base_model.model.model.layers.33.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.7354560939933505,
+      "coherence_ema": 0.8164785662220673,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.008576757955231128,
+      "grad_norm_var": 7.707614872856429e-05
+    },
+    "base_model.model.model.layers.33.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.18726257750560918,
+      "coherence_ema": 0.9320203282669188,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.002291740531836536,
+      "grad_norm_var": 3.9744019718037225e-06
+    },
+    "base_model.model.model.layers.33.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.0924851952273174,
+      "coherence_ema": 0.8697623338137802,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.003779011682111192,
+      "grad_norm_var": 7.918563795182936e-06
+    },
+    "base_model.model.model.layers.34.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.8676888771187833,
+      "coherence_ema": 0.9551284866077675,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.004695063771849625,
+      "grad_norm_var": 1.8355673306805383e-05
+    },
+    "base_model.model.model.layers.34.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.7654399590251875,
+      "coherence_ema": 0.8091752086862646,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.00833003456305737,
+      "grad_norm_var": 6.9329827002569e-05
+    },
+    "base_model.model.model.layers.34.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.20533050981062556,
+      "coherence_ema": 0.9424162624419057,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0023315375770763835,
+      "grad_norm_var": 4.646851777487222e-06
+    },
+    "base_model.model.model.layers.34.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.1109092269966574,
+      "coherence_ema": 0.8844508578482391,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.00378404685699498,
+      "grad_norm_var": 1.169981231995634e-05
+    },
+    "base_model.model.model.layers.35.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.9088315291758186,
+      "coherence_ema": 0.9526282088583683,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.004608134118528152,
+      "grad_norm_var": 1.7414621470767104e-05
+    },
+    "base_model.model.model.layers.35.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.8100598184449063,
+      "coherence_ema": 0.7895010354625399,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.008155006573253548,
+      "grad_norm_var": 6.582276856181172e-05
+    },
+    "base_model.model.model.layers.35.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.23571889752575675,
+      "coherence_ema": 0.9413456069171449,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0024834171385872384,
+      "grad_norm_var": 5.19811464020682e-06
+    },
+    "base_model.model.model.layers.35.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.1529427437833712,
+      "coherence_ema": 0.8842916748683591,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.003942749406065996,
+      "grad_norm_var": 1.1951840157585254e-05
+    },
+    "base_model.model.model.layers.36.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.9254065070386849,
+      "coherence_ema": 0.951776059773036,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.004639862438110298,
+      "grad_norm_var": 1.821576158144978e-05
+    },
+    "base_model.model.model.layers.36.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.8571351803762364,
+      "coherence_ema": 0.7405074088094646,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.00823398665533957,
+      "grad_norm_var": 6.68105433911243e-05
+    },
+    "base_model.model.model.layers.36.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.2329918086244844,
+      "coherence_ema": 0.9483927718469002,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0022798239633387415,
+      "grad_norm_var": 3.833034781084605e-06
+    },
+    "base_model.model.model.layers.36.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.1195164316873736,
+      "coherence_ema": 0.8845730423162252,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0034666560693608194,
+      "grad_norm_var": 7.292047539837515e-06
+    },
+    "base_model.model.model.layers.37.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.9312203580451758,
+      "coherence_ema": 0.93912837454568,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005040572496561556,
+      "grad_norm_var": 2.0528695117460727e-05
+    },
+    "base_model.model.model.layers.37.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.912300388562255,
+      "coherence_ema": 0.719667915859394,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.008402715430166727,
+      "grad_norm_var": 6.54347177039746e-05
+    },
+    "base_model.model.model.layers.37.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.24326285755613908,
+      "coherence_ema": 0.942507677127966,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.002171647485530381,
+      "grad_norm_var": 3.6919081977253124e-06
+    },
+    "base_model.model.model.layers.37.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.1353138940278689,
+      "coherence_ema": 0.8662450223553151,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0033391565015334075,
+      "grad_norm_var": 7.5319496899697765e-06
+    },
+    "base_model.model.model.layers.38.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 1.1294252522313128,
+      "coherence_ema": 0.9404564628024206,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005851035448635789,
+      "grad_norm_var": 2.319903602649485e-05
+    },
+    "base_model.model.model.layers.38.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.9450436381116528,
+      "coherence_ema": 0.7273480061137624,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.008862259696380671,
+      "grad_norm_var": 6.567174272598128e-05
+    },
+    "base_model.model.model.layers.38.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.24954806134768875,
+      "coherence_ema": 0.9459061283270885,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0023342568007231517,
+      "grad_norm_var": 4.650069280077272e-06
+    },
+    "base_model.model.model.layers.38.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.1212950235266688,
+      "coherence_ema": 0.9150307044137289,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0032802709865828814,
+      "grad_norm_var": 6.691286857447362e-06
+    },
+    "base_model.model.model.layers.39.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 2.0440169082282136,
+      "coherence_ema": 0.9548672457787073,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005670200107777919,
+      "grad_norm_var": 2.242048861200767e-05
+    },
+    "base_model.model.model.layers.39.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 1.1523661021247849,
+      "coherence_ema": 0.723953756008793,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.008939595539340766,
+      "grad_norm_var": 5.473565169034592e-05
+    },
+    "base_model.model.model.layers.39.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.25354911106860295,
+      "coherence_ema": 0.9409473519636562,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.002134699416917192,
+      "grad_norm_var": 2.6813110242057005e-06
+    },
+    "base_model.model.model.layers.39.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.1312646659973205,
+      "coherence_ema": 0.894319199627945,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0033909099381077192,
+      "grad_norm_var": 6.772735732677497e-06
+    },
+    "base_model.model.model.layers.4.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.03245772896446378,
+      "coherence_ema": 0.9605793336188558,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.004681914644439148,
+      "grad_norm_var": 2.0668470895605247e-05
+    },
+    "base_model.model.model.layers.4.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.10966276905417431,
+      "coherence_ema": 0.9110937699931888,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.00598514291943649,
+      "grad_norm_var": 4.2520804501115404e-05
+    },
+    "base_model.model.model.layers.4.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.020129651489321304,
+      "coherence_ema": 0.9419990931932214,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.003765027477808375,
+      "grad_norm_var": 1.598678512219803e-05
+    },
+    "base_model.model.model.layers.4.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 0.4886206700411164,
+      "coherence_ema": 0.8816117791064964,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005477104616709107,
+      "grad_norm_var": 3.581649632629118e-05
+    },
+    "base_model.model.model.layers.5.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.035544637890791084,
+      "coherence_ema": 0.956673058812081,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.004754192737512245,
+      "grad_norm_var": 2.1528268552180905e-05
+    },
+    "base_model.model.model.layers.5.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.12271263350302326,
+      "coherence_ema": 0.9086721993948822,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006523600065885527,
+      "grad_norm_var": 4.668624527538042e-05
+    },
+    "base_model.model.model.layers.5.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.020149551929642417,
+      "coherence_ema": 0.9489091030691353,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.00360680503492101,
+      "grad_norm_var": 1.855346996699501e-05
+    },
+    "base_model.model.model.layers.5.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 0.5164983742324465,
+      "coherence_ema": 0.8733928610184213,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005704720648539234,
+      "grad_norm_var": 4.488714309164203e-05
+    },
+    "base_model.model.model.layers.6.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.709686921218138,
+      "coherence_ema": 0.9601180128884708,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005157053702485138,
+      "grad_norm_var": 2.5211852872354777e-05
+    },
+    "base_model.model.model.layers.6.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.29587890395428235,
+      "coherence_ema": 0.9066763553191313,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.007037981912884858,
+      "grad_norm_var": 5.2235804455547746e-05
+    },
+    "base_model.model.model.layers.6.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.023973159937469294,
+      "coherence_ema": 0.937088208418391,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.004024720546170474,
+      "grad_norm_var": 1.8872504426793258e-05
+    },
+    "base_model.model.model.layers.6.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 0.987222621359823,
+      "coherence_ema": 0.8794046840299482,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0058326707943278065,
+      "grad_norm_var": 4.298957637763557e-05
+    },
+    "base_model.model.model.layers.7.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.2695367947867736,
+      "coherence_ema": 0.9581335320291656,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005368805032151661,
+      "grad_norm_var": 2.590884867548273e-05
+    },
+    "base_model.model.model.layers.7.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.27786487387124775,
+      "coherence_ema": 0.9044026147744917,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.007626889786168102,
+      "grad_norm_var": 5.861003165853225e-05
+    },
+    "base_model.model.model.layers.7.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.026074840067515172,
+      "coherence_ema": 0.9368591462052509,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.003843260258602722,
+      "grad_norm_var": 1.739230577677628e-05
+    },
+    "base_model.model.model.layers.7.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.1966191796729477,
+      "coherence_ema": 0.8684664988380282,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.00575360289630311,
+      "grad_norm_var": 3.865184790767673e-05
+    },
+    "base_model.model.model.layers.8.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.33316087864196614,
+      "coherence_ema": 0.958502325765887,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005692407975741843,
+      "grad_norm_var": 2.8269876795290364e-05
+    },
+    "base_model.model.model.layers.8.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.2947998919348417,
+      "coherence_ema": 0.9005505881325457,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.008303768880669662,
+      "grad_norm_var": 6.804445953853193e-05
+    },
+    "base_model.model.model.layers.8.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.03171414019261469,
+      "coherence_ema": 0.9383380569927308,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.0044182929483920184,
+      "grad_norm_var": 2.205200248686174e-05
+    },
+    "base_model.model.model.layers.8.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.1363401540082094,
+      "coherence_ema": 0.879352724377441,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.005929268754006315,
+      "grad_norm_var": 3.983382579395429e-05
+    },
+    "base_model.model.model.layers.9.mlp.down_proj.base_layer": {
+      "activation_rms_ema": 0.29009011849978517,
+      "coherence_ema": 0.9589864869400658,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006012685637557706,
+      "grad_norm_var": 3.105739197734653e-05
+    },
+    "base_model.model.model.layers.9.mlp.gate_up_proj.base_layer": {
+      "activation_rms_ema": 0.33326250155302817,
+      "coherence_ema": 0.8939442259487231,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.00865817895121367,
+      "grad_norm_var": 6.815026373088882e-05
+    },
+    "base_model.model.model.layers.9.self_attn.o_proj.base_layer": {
+      "activation_rms_ema": 0.03419457819666157,
+      "coherence_ema": 0.933004867586086,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.004436832840005752,
+      "grad_norm_var": 2.084024751648304e-05
+    },
+    "base_model.model.model.layers.9.self_attn.qkv_proj.base_layer": {
+      "activation_rms_ema": 1.1253647914068627,
+      "coherence_ema": 0.8893803989873394,
+      "grad_norm_count": 117552,
+      "grad_norm_mean": 0.006100898027428691,
+      "grad_norm_var": 3.8973626349129566e-05
+    }
+  },
+  "schema": "unified_gasq_stats_v1"
+}

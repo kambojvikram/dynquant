@@ -1,0 +1,128 @@
+# Repo-root tooling configuration for the DynQuant monorepo.
+#
+# This file intentionally declares NO [project] table -- it is not a
+# distribution. The installable distributions live under packages/:
+#
+#   packages/dynquant-core/     -> import package `dynquant`      (pure Python)
+#   packages/dynquant-kernels/  -> import package `dynquant_kernels` (CUDA C++)
+#   packages/dynquant/          -> meta-distribution `dynquant`   (no code)
+#
+# Local dev install:
+#   pip install -e packages/dynquant-core[dev]
+#   pip install -e packages/dynquant-kernels    # needs nvcc + cmake
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [
+    "dynquant_paper",
+    "fine-tuning_and_stats_hook",
+    "inference",
+    "pipeline",
+    "**/_legacy/**",
+    "**/_cutlass/**",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "W",    # pycodestyle warnings
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # comprehensions
+    "SIM",  # simplify
+    "RUF",  # ruff-specific
+    "TID",  # tidy imports
+    "PTH",  # use pathlib
+    # Blind `except Exception` is load-bearing in exactly two places -- backend
+    # detection and `dynquant doctor` -- because both exist to survive a broken
+    # install, and both are annotated with why. Selecting the rule makes every
+    # *other* one visible instead of letting the pattern spread by imitation.
+    "BLE",  # blind except
+]
+ignore = [
+    "E501",    # line length is handled by the formatter
+    "B008",    # function call in default argument (torch idioms)
+    "N812",    # lowercase imported as non-lowercase (`import torch.nn.functional as F`)
+    "SIM108",  # ternary is not always more readable
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["N802", "N806"]
+"**/csrc/**" = ["ALL"]
+
+[tool.ruff.lint.isort]
+# Without this, `dynquant` sorts as third-party and lands in the same block as
+# pytest, which hides at a glance whether a test is exercising the package or its
+# dependencies. `_oracle` is a test-local helper module, not a distribution.
+known-first-party = ["dynquant", "dynquant_kernels"]
+known-local-folder = ["_oracle"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unreachable = true
+disallow_untyped_decorators = false   # torch decorators are untyped
+files = ["packages/dynquant-core/src/dynquant"]
+exclude = "(_legacy|_cutlass)"
+
+[[tool.mypy.overrides]]
+# Third-party packages without complete stubs.
+module = [
+    "safetensors.*",
+    "transformers.*",
+    "peft.*",
+    "trl.*",
+    "yaml.*",
+    "datasets.*",
+    "dynquant_kernels.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Vendored research code is kept verbatim for golden tests; it is not type-clean
+# and must not be "fixed" -- that would defeat the purpose of the compat preset.
+module = ["dynquant._legacy.*"]
+ignore_errors = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+# `--import-mode=importlib` deliberately does not touch `sys.path`, but the DDP tests
+# spawn subprocesses that must import `tests.test_signals_reduce` for real; the child
+# inherits `sys.path`, so the repo root has to be on it. See tests/__init__.py.
+pythonpath = ["."]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--import-mode=importlib",
+]
+markers = [
+    "cuda: requires a working CUDA device and the compiled dynquant_kernels extension",
+    "gpu_slow: long-running GPU benchmark or full-model test (nightly only)",
+    "needs_hf: downloads or instantiates a transformers model",
+    "golden: reproduces published paper numbers from the vendored research code",
+]
+filterwarnings = [
+    "error::DeprecationWarning:dynquant.*",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["dynquant"]
+omit = ["*/_legacy/*", "*/cli.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@overload",
+]

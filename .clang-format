@@ -1,0 +1,19 @@
+# Google style, widened to 100 columns to match the Python side.
+#
+# CUDA kernels are wide by nature -- a templated launch config or an inline PTX
+# constraint list wrapped at 80 columns is harder to read than the same line
+# unwrapped. 100 is what the Python config uses, so a reader moving between
+# `quant/pack.py` and `csrc/gemv/` sees one measure.
+---
+Language: Cpp
+BasedOnStyle: Google
+ColumnLimit: 100
+IndentWidth: 2
+AccessModifierOffset: -1
+AllowShortFunctionsOnASingleLine: Inline
+DerivePointerAlignment: false
+PointerAlignment: Left
+IncludeBlocks: Preserve
+# `#include <cuda_fp16.h>` before torch headers matters in a few translation
+# units, so include order is left to the author rather than re-sorted.
+SortIncludes: false
