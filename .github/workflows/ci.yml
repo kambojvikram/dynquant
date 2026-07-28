@@ -34,6 +34,17 @@ env:
   # install, or contributors get failures they cannot reproduce locally.
   RUFF_VERSION: "0.16.0"
   MYPY_VERSION: "2.3.0"
+  # The same reasoning extends to the third-party surfaces mypy reads, which is
+  # less obvious and bit this branch. `strict = true` enables warn_unused_ignores,
+  # so a library that *starts* shipping types for a symbol makes an existing
+  # `# type: ignore` unused and fails a branch that changed nothing. That is how
+  # safetensors 0.8 (typed `safe_open`) broke a tree calibrated against 0.5.3
+  # (untyped). These are the reference versions every `# type: ignore` in the tree
+  # is calibrated against; bumping one is a commit that also adjusts the ignores it
+  # invalidates. Runtime floors stay `>=` in the package metadata -- this pins only
+  # what the type check reads.
+  TYPES_TRANSFORMERS_VERSION: "4.53.2"
+  TYPES_SAFETENSORS_VERSION: "0.5.3"
   # The CPU wheel index: ~200MB instead of ~2.5GB of CUDA libraries that no hosted
   # runner can use.
   TORCH_CPU_INDEX: "https://download.pytorch.org/whl/cpu"
@@ -99,8 +110,18 @@ jobs:
         # core is installed for its dependencies (safetensors, numpy, pyyaml).
         # mypy checks the source tree directly, per `files` in pyproject.toml, but
         # it can only follow imports it can resolve.
+        #
+        # transformers is installed even though it is an optional extra. Without it,
+        # `ignore_missing_imports` for `transformers.*` makes every transformers
+        # symbol `Any` -- so the transformers-facing code, the training callback and
+        # the eval harness, where the version risk actually lives, was not being
+        # type-checked at all, and the ignores it legitimately needs registered as
+        # unused. Installing it is what makes this job check that code rather than
+        # skip it. Both are pinned; see the note on the versions in `env`.
         run: |
           pip install ./packages/dynquant-core
+          pip install "transformers==${{ env.TYPES_TRANSFORMERS_VERSION }}" \
+                      "safetensors==${{ env.TYPES_SAFETENSORS_VERSION }}"
           pip install mypy==${{ env.MYPY_VERSION }}
 
       - name: mypy (strict)

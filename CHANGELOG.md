@@ -261,6 +261,32 @@ where the mistakes live.
   Python combination behind a `find-links` URL, with PyPI holding only the pure-Python
   core plus whichever single combination is chosen as the default.
 
+### Fixed — P0, the CPU-only kernels build never worked
+
+- `CMakeLists.txt` read the torch probe's third line to get the CUDA version, but
+  on a CPU-only torch `torch.version.cuda` is `None`, so that line was empty and
+  `OUTPUT_STRIP_TRAILING_WHITESPACE` removed it. The list had two elements and
+  configuration died with `list index: 2 out of range`. The field now carries a
+  `cuda=` prefix so the line is never empty, the line count is asserted before
+  indexing, and `\r` is stripped so Windows cannot produce a variant of the same
+  failure.
+
+  This broke exactly the configuration the cheap CI runner exists to exercise, and
+  it went unnoticed because every manual build so far ran on a CUDA box, where the
+  third line is non-empty. The CPU-only path is not a lesser build — it is the one
+  that catches CMake and operator-registration mistakes before a GPU runner is
+  needed — so it had been silently absent from the gate it was written for.
+
+- The `types` job could not reproduce a local mypy run. `strict = true` enables
+  `warn_unused_ignores`, and the job installed neither `transformers` (an optional
+  extra) nor a pinned `safetensors`. Absent transformers, `ignore_missing_imports`
+  made every transformers symbol `Any` — so the callback and eval harness were not
+  type-checked at all, and the ignores they need reported as unused; meanwhile
+  safetensors 0.8 types `safe_open`, which retired an ignore calibrated against
+  0.5.3. Both are now pinned in `env` as the reference surfaces the tree's
+  `# type: ignore` comments are written against, and transformers is installed so
+  that code is actually checked. Runtime floors stay `>=` in package metadata.
+
 ### Changed — P0, PyPI publication is one job per distribution
 
 - `publish-pypi` is replaced by three jobs — `publish-core`, `publish-kernels`,

@@ -53,9 +53,15 @@ find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Module)
 # relying on CMAKE_PREFIX_PATH being set by the caller is how extensions end up
 # linked against a different libtorch than the one they run with -- which
 # manifests as an undefined-symbol ImportError, or worse, as a crash inside ATen.
+#
+# The CUDA field is printed with a `cuda=` prefix so that the line is never empty.
+# On a CPU-only torch `torch.version.cuda` is None, and an empty final line is
+# removed by OUTPUT_STRIP_TRAILING_WHITESPACE -- which left a two-element list and
+# failed with `list index: 2 out of range` on exactly the CPU-only configuration
+# the cheap CI runner exists to exercise. A non-empty sentinel survives stripping.
 execute_process(
   COMMAND "${Python_EXECUTABLE}" -c
-          "import torch,os;print(torch.utils.cmake_prefix_path);print(torch.__version__);print(torch.version.cuda or '')"
+          "import torch;print(torch.utils.cmake_prefix_path);print(torch.__version__);print('cuda='+(torch.version.cuda or ''))"
   OUTPUT_VARIABLE _dq_torch_probe
   OUTPUT_STRIP_TRAILING_WHITESPACE
   RESULT_VARIABLE _dq_torch_rc)
@@ -66,10 +72,20 @@ if(NOT _dq_torch_rc EQUAL 0)
       "created an isolated build environment, torch there may differ from yours; "
       "build with `pip install --no-build-isolation` instead.")
 endif()
+string(REPLACE "\r" "" _dq_torch_probe "${_dq_torch_probe}")
 string(REPLACE "\n" ";" _dq_torch_lines "${_dq_torch_probe}")
+# Assert the shape rather than indexing hopefully: a probe that returns fewer
+# lines than expected should say so, not fail with a bare list-index error.
+list(LENGTH _dq_torch_lines _dq_torch_nlines)
+if(_dq_torch_nlines LESS 3)
+  message(FATAL_ERROR
+      "The torch probe returned ${_dq_torch_nlines} lines, expected 3. Output was:\n"
+      "${_dq_torch_probe}")
+endif()
 list(GET _dq_torch_lines 0 _dq_torch_cmake_dir)
 list(GET _dq_torch_lines 1 DYNQUANT_TORCH_VERSION)
-list(GET _dq_torch_lines 2 DYNQUANT_TORCH_CUDA_VERSION)
+list(GET _dq_torch_lines 2 _dq_torch_cuda_field)
+string(REGEX REPLACE "^cuda=" "" DYNQUANT_TORCH_CUDA_VERSION "${_dq_torch_cuda_field}")
 message(STATUS "torch ${DYNQUANT_TORCH_VERSION} (CUDA '${DYNQUANT_TORCH_CUDA_VERSION}')")
 
 list(APPEND CMAKE_PREFIX_PATH "${_dq_torch_cmake_dir}")
