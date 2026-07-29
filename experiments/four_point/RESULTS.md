@@ -7,6 +7,12 @@ quantize, and measure the same benchmark at every stage.
 Everything below is measured on this repository's own code. Nothing is taken from the
 paper, and nothing is extrapolated.
 
+> A second, independent run — **Mistral-7B-Instruct-v0.3 on Banking77**, under LoRA rather
+> than a full fine-tune — is written up in
+> [`RESULTS-mistral7b-banking77.md`](RESULTS-mistral7b-banking77.md). It is the first
+> end-to-end measurement of the `plasticity` default this document's diagnosis put in
+> place, on a different model, task, architecture family and training regime.
+
 **In short.** Both runs are complete, and they resolve in two stages.
 
 *Stage one is a result against the method as implemented,* and it is the same on both

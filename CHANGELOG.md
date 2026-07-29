@@ -19,6 +19,45 @@ ones that invalidate artifacts a user has already produced.
 
 ## [Unreleased]
 
+### Added — Mistral-7B-Instruct-v0.3 on Banking77, the second end-to-end run
+
+`experiments/four_point/RESULTS-mistral7b-banking77.md`. All six stages on a model,
+task, architecture family and training regime that share nothing with the Qwen3.5-2B
+runs: 7.25 B dense GQA with untied embeddings, LoRA r=32 instead of a full fine-tune,
+77-way intent classification instead of 5-way multiple choice or grade-school maths.
+
+The fine-tune moved Banking77 **+58.25 points** (36.27% → 94.51%, above the ~93%
+BERT-base supervised reference), which is the headroom the dataset screen predicted and
+what makes the quantization arms readable. At a 4.25-bit budget quantization costs
+nothing measurable (−0.19 pts, p = 0.345) and allocation has nothing to recover (+0.10,
+p = 0.375, five discordant pairs out of 3 080). At 3.25 bits allocation beats a
+same-size uniform control by **+1.36 points (p = 3.2e−05, 71 problems fixed against
+29)**, recovering 53.8% of the damage uniform quantization does, at 4.92× smaller than
+bf16.
+
+This is the first **end-to-end** measurement of the `combine="plasticity"` default. That
+default was chosen on an in-batch loss proxy after the paper's rank-product score lost
+to uniform by 2.03 points on CaseHOLD; it had never been confirmed on accuracy, on any
+model. It is *not* a replication of the Gauss-Newton `fisher_diff` result (+10.29 pts on
+CaseHOLD) — that allocator was not run here, and the in-batch screen puts it well above
+plasticity, so +1.36 is a floor rather than the method's ceiling on this model.
+
+### Fixed — the fp16 size column described whichever model the script was written for
+
+`results_table.py --params` defaulted to a literal `1.8821e9`, Qwen3.5-2B's parameter
+count. No caller ever passed the flag, so the Mistral-7B run printed **3.506 GiB** for
+its fp16 rows — not merely wrong but *smaller* than the 4.25-bit arm beneath it, which
+inverts the one comparison a size column exists to support.
+
+The count is now inferred from any quantized row, since `quantized_gib` is
+`params × average_bits / 8` and inverts exactly. That also makes the column internally
+consistent — fp16 and quantized rows count the same tensors, so the ratio between them
+is a real ratio — and it removes the class of bug rather than the instance: a size
+column that has to be *told* which model it is describing will eventually describe the
+wrong one. With no quantized arm run yet the cell prints `--` instead of a number
+derived from a constant. The published Qwen table is unaffected: its own 4.249-bit /
+0.931 GiB row infers 1.8821 B and reproduces 3.506.
+
 ### Changed — the experiment harness is no longer tied to one model
 
 `experiments/qwen35_2b/` is now `experiments/four_point/`, and the model is read from
