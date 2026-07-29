@@ -1,0 +1,1818 @@
+{
+  "target": "4.25",
+  "uniform": null,
+  "average_bits": 4.25,
+  "nbytes": 3850371072,
+  "group_size": 128,
+  "quantize_seconds": 15.1,
+  "layers": {
+    "lm_head": {
+      "bits": 8,
+      "num_params": 134217728,
+      "rmse": 2.5905816073645838e-05,
+      "relative_error": 0.006142306152368117,
+      "clipped_fraction": 0.0,
+      "clip_improvement": 0.0
+    },
+    "model.embed_tokens": {
+      "bits": 4,
+      "num_params": 134217728,
+      "rmse": 0.0002540439018048346,
+      "relative_error": 0.09508870286928837,
+      "clipped_fraction": 0.9277000427246094,
+      "clip_improvement": 0.11165421431656433
+    },
+    "model.layers.0.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00028132417355664074,
+      "relative_error": 0.09680217948649131,
+      "clipped_fraction": 0.9545092582702637,
+      "clip_improvement": 0.11159998114931394
+    },
+    "model.layers.0.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00031091109849512577,
+      "relative_error": 0.09714520962832102,
+      "clipped_fraction": 0.9551544785499573,
+      "clip_improvement": 0.11130747140810092
+    },
+    "model.layers.0.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002906662120949477,
+      "relative_error": 0.09642029570030541,
+      "clipped_fraction": 0.9546400308609009,
+      "clip_improvement": 0.11131225769981483
+    },
+    "model.layers.0.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0005851686000823975,
+      "relative_error": 0.13288263662228716,
+      "clipped_fraction": 0.878082275390625,
+      "clip_improvement": 0.22672458400527948
+    },
+    "model.layers.0.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00020164085435681045,
+      "relative_error": 0.1019079749699468,
+      "clipped_fraction": 0.9567413330078125,
+      "clip_improvement": 0.11046978885073427
+    },
+    "model.layers.0.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0005726855015382171,
+      "relative_error": 0.13738653596414058,
+      "clipped_fraction": 0.848052978515625,
+      "clip_improvement": 0.2650969029472619
+    },
+    "model.layers.0.self_attn.v_proj": {
+      "bits": 8,
+      "num_params": 4194304,
+      "rmse": 1.4667684808955528e-05,
+      "relative_error": 0.007404616589410391,
+      "clipped_fraction": 0.0,
+      "clip_improvement": 0.0
+    },
+    "model.layers.1.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00028151943115517497,
+      "relative_error": 0.09620751046324735,
+      "clipped_fraction": 0.9546313285827637,
+      "clip_improvement": 0.11233347373384193
+    },
+    "model.layers.1.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0003047474892809987,
+      "relative_error": 0.09618196938547484,
+      "clipped_fraction": 0.9548514485359192,
+      "clip_improvement": 0.11185468584879814
+    },
+    "model.layers.1.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002856166393030435,
+      "relative_error": 0.09598460985447861,
+      "clipped_fraction": 0.9544416666030884,
+      "clip_improvement": 0.11169008480046688
+    },
+    "model.layers.1.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0005961122806183994,
+      "relative_error": 0.12116883732125666,
+      "clipped_fraction": 0.90802001953125,
+      "clip_improvement": 0.1525404784377653
+    },
+    "model.layers.1.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00023733881243970245,
+      "relative_error": 0.0969280029176461,
+      "clipped_fraction": 0.9541473388671875,
+      "clip_improvement": 0.11131385429394554
+    },
+    "model.layers.1.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0004613448109012097,
+      "relative_error": 0.11494221943857202,
+      "clipped_fraction": 0.9129562377929688,
+      "clip_improvement": 0.14331989006830462
+    },
+    "model.layers.1.self_attn.v_proj": {
+      "bits": 8,
+      "num_params": 4194304,
+      "rmse": 1.6480211343150586e-05,
+      "relative_error": 0.0067392432653477045,
+      "clipped_fraction": 0.0,
+      "clip_improvement": 0.0
+    },
+    "model.layers.10.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.000280042557278648,
+      "relative_error": 0.09738568003989435,
+      "clipped_fraction": 0.9553637504577637,
+      "clip_improvement": 0.11187894917377146
+    },
+    "model.layers.10.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00031103056971915066,
+      "relative_error": 0.09717182908584661,
+      "clipped_fraction": 0.9544808864593506,
+      "clip_improvement": 0.11173367305899085
+    },
+    "model.layers.10.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00028214347548782825,
+      "relative_error": 0.09696141473439483,
+      "clipped_fraction": 0.9549233913421631,
+      "clip_improvement": 0.11154527456024638
+    },
+    "model.layers.10.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0005292862770147622,
+      "relative_error": 0.09767532765510957,
+      "clipped_fraction": 0.95538330078125,
+      "clip_improvement": 0.11135432359551778
+    },
+    "model.layers.10.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00024098755966406316,
+      "relative_error": 0.09473780974594252,
+      "clipped_fraction": 0.9534378051757812,
+      "clip_improvement": 0.11181024086107787
+    },
+    "model.layers.10.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0003840074350591749,
+      "relative_error": 0.09723233360400951,
+      "clipped_fraction": 0.9550933837890625,
+      "clip_improvement": 0.11127775914502022
+    },
+    "model.layers.10.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00022516916214954108,
+      "relative_error": 0.09713644025500502,
+      "clipped_fraction": 0.9559326171875,
+      "clip_improvement": 0.11111967188098523
+    },
+    "model.layers.11.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00028191215824335814,
+      "relative_error": 0.09767554179396731,
+      "clipped_fraction": 0.9555969834327698,
+      "clip_improvement": 0.11175914401329715
+    },
+    "model.layers.11.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0003109887184109539,
+      "relative_error": 0.09761363934501946,
+      "clipped_fraction": 0.9553027153015137,
+      "clip_improvement": 0.11190854603636308
+    },
+    "model.layers.11.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002846354036591947,
+      "relative_error": 0.09718211168305699,
+      "clipped_fraction": 0.9550846815109253,
+      "clip_improvement": 0.11175351424885574
+    },
+    "model.layers.11.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0005094800726510584,
+      "relative_error": 0.09859663374675547,
+      "clipped_fraction": 0.95513916015625,
+      "clip_improvement": 0.11124547000961467
+    },
+    "model.layers.11.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00025201847893185914,
+      "relative_error": 0.09514184110403483,
+      "clipped_fraction": 0.9546432495117188,
+      "clip_improvement": 0.11180524214166633
+    },
+    "model.layers.11.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00037928734673187137,
+      "relative_error": 0.09727303495424332,
+      "clipped_fraction": 0.9554061889648438,
+      "clip_improvement": 0.1117434788430379
+    },
+    "model.layers.11.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00024348344595637172,
+      "relative_error": 0.09726475005901437,
+      "clipped_fraction": 0.955230712890625,
+      "clip_improvement": 0.11096406629632684
+    },
+    "model.layers.12.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00028106500394642353,
+      "relative_error": 0.09709050598311854,
+      "clipped_fraction": 0.9556994438171387,
+      "clip_improvement": 0.11199449607091065
+    },
+    "model.layers.12.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00030687745311297476,
+      "relative_error": 0.09736955902151481,
+      "clipped_fraction": 0.9545658826828003,
+      "clip_improvement": 0.11187617208488207
+    },
+    "model.layers.12.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002842116227839142,
+      "relative_error": 0.09679289004827672,
+      "clipped_fraction": 0.9544852375984192,
+      "clip_improvement": 0.1113926963543411
+    },
+    "model.layers.12.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0005120180430822074,
+      "relative_error": 0.10006112367088378,
+      "clipped_fraction": 0.95574951171875,
+      "clip_improvement": 0.11078062169628411
+    },
+    "model.layers.12.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00024242137442342937,
+      "relative_error": 0.09518989031958253,
+      "clipped_fraction": 0.9542617797851562,
+      "clip_improvement": 0.11160494569764906
+    },
+    "model.layers.12.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0003805373271461576,
+      "relative_error": 0.09992765098983009,
+      "clipped_fraction": 0.9543838500976562,
+      "clip_improvement": 0.11117332216383745
+    },
+    "model.layers.12.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00022991614241618663,
+      "relative_error": 0.09813036323095263,
+      "clipped_fraction": 0.959136962890625,
+      "clip_improvement": 0.1112645380265006
+    },
+    "model.layers.13.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002852167235687375,
+      "relative_error": 0.09766920740215113,
+      "clipped_fraction": 0.9553135633468628,
+      "clip_improvement": 0.11172575552612482
+    },
+    "model.layers.13.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.000304812885588035,
+      "relative_error": 0.09774698753890732,
+      "clipped_fraction": 0.9553506374359131,
+      "clip_improvement": 0.11186999092040345
+    },
+    "model.layers.13.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00028651132015511394,
+      "relative_error": 0.09697347564805318,
+      "clipped_fraction": 0.9547054171562195,
+      "clip_improvement": 0.11141097467231174
+    },
+    "model.layers.13.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0005157157429493964,
+      "relative_error": 0.09862233292352421,
+      "clipped_fraction": 0.95501708984375,
+      "clip_improvement": 0.1123119098489644
+    },
+    "model.layers.13.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00025025170180015266,
+      "relative_error": 0.09439332240298083,
+      "clipped_fraction": 0.954071044921875,
+      "clip_improvement": 0.1116851247355862
+    },
+    "model.layers.13.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00037324512959457934,
+      "relative_error": 0.09674358968169361,
+      "clipped_fraction": 0.9556121826171875,
+      "clip_improvement": 0.11165862165082492
+    },
+    "model.layers.13.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0002454768109600991,
+      "relative_error": 0.09685227430146638,
+      "clipped_fraction": 0.957366943359375,
+      "clip_improvement": 0.11142848910461092
+    },
+    "model.layers.14.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00028758557164110243,
+      "relative_error": 0.09779196647441918,
+      "clipped_fraction": 0.954507052898407,
+      "clip_improvement": 0.11191134241327244
+    },
+    "model.layers.14.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00030860010883770883,
+      "relative_error": 0.09844632528121317,
+      "clipped_fraction": 0.9554945230484009,
+      "clip_improvement": 0.11182127644363231
+    },
+    "model.layers.14.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00029026775155216455,
+      "relative_error": 0.0971326521763622,
+      "clipped_fraction": 0.9548035264015198,
+      "clip_improvement": 0.11141390128929808
+    },
+    "model.layers.14.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0004606207075994462,
+      "relative_error": 0.1001999325467126,
+      "clipped_fraction": 0.95623779296875,
+      "clip_improvement": 0.11177637253349347
+    },
+    "model.layers.14.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0002665571228135377,
+      "relative_error": 0.09463177103235917,
+      "clipped_fraction": 0.9532241821289062,
+      "clip_improvement": 0.11148735520698629
+    },
+    "model.layers.14.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00036090242792852223,
+      "relative_error": 0.09755677742637113,
+      "clipped_fraction": 0.956024169921875,
+      "clip_improvement": 0.11147750631185101
+    },
+    "model.layers.14.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00028144827228970826,
+      "relative_error": 0.09808942617402339,
+      "clipped_fraction": 0.955078125,
+      "clip_improvement": 0.11058363616781086
+    },
+    "model.layers.15.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00028355687391012907,
+      "relative_error": 0.0966704902497045,
+      "clipped_fraction": 0.9552329182624817,
+      "clip_improvement": 0.11169935796840835
+    },
+    "model.layers.15.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0003107024822384119,
+      "relative_error": 0.09780410434278874,
+      "clipped_fraction": 0.9551609754562378,
+      "clip_improvement": 0.11205451502603568
+    },
+    "model.layers.15.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002870785538107157,
+      "relative_error": 0.09656490145860036,
+      "clipped_fraction": 0.9550912380218506,
+      "clip_improvement": 0.1114583946186582
+    },
+    "model.layers.15.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00047135609202086926,
+      "relative_error": 0.1026123832364515,
+      "clipped_fraction": 0.956207275390625,
+      "clip_improvement": 0.11282539118327771
+    },
+    "model.layers.15.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0002637201687321067,
+      "relative_error": 0.09466048505716387,
+      "clipped_fraction": 0.953704833984375,
+      "clip_improvement": 0.11158775806282965
+    },
+    "model.layers.15.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00036545158945955336,
+      "relative_error": 0.09896278555312198,
+      "clipped_fraction": 0.9546585083007812,
+      "clip_improvement": 0.1116967963538132
+    },
+    "model.layers.15.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0002731113345362246,
+      "relative_error": 0.09802696174597336,
+      "clipped_fraction": 0.9569091796875,
+      "clip_improvement": 0.11093512980501025
+    },
+    "model.layers.16.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00028181957895867527,
+      "relative_error": 0.0965854970206982,
+      "clipped_fraction": 0.9548405408859253,
+      "clip_improvement": 0.11174176167293866
+    },
+    "model.layers.16.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0003178469487465918,
+      "relative_error": 0.09828968214197052,
+      "clipped_fraction": 0.9551588296890259,
+      "clip_improvement": 0.11179065464544762
+    },
+    "model.layers.16.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002860651584342122,
+      "relative_error": 0.0967071688378623,
+      "clipped_fraction": 0.9554421901702881,
+      "clip_improvement": 0.11161851733984042
+    },
+    "model.layers.16.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00047422669013030827,
+      "relative_error": 0.10003073060380646,
+      "clipped_fraction": 0.95440673828125,
+      "clip_improvement": 0.11198659469767366
+    },
+    "model.layers.16.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00026454022736288607,
+      "relative_error": 0.09450500538363102,
+      "clipped_fraction": 0.9535140991210938,
+      "clip_improvement": 0.11186792664655472
+    },
+    "model.layers.16.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00035887653939425945,
+      "relative_error": 0.09690821181321478,
+      "clipped_fraction": 0.9543991088867188,
+      "clip_improvement": 0.11193878334924659
+    },
+    "model.layers.16.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0002743883233051747,
+      "relative_error": 0.09802467192408817,
+      "clipped_fraction": 0.95452880859375,
+      "clip_improvement": 0.11111115771625582
+    },
+    "model.layers.17.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00028450789977796376,
+      "relative_error": 0.09688234549772401,
+      "clipped_fraction": 0.9547315835952759,
+      "clip_improvement": 0.11167207109642759
+    },
+    "model.layers.17.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0003190409915987402,
+      "relative_error": 0.09784176035545103,
+      "clipped_fraction": 0.9546116590499878,
+      "clip_improvement": 0.11170298108573612
+    },
+    "model.layers.17.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00028695244691334665,
+      "relative_error": 0.0964067286181582,
+      "clipped_fraction": 0.9546771049499512,
+      "clip_improvement": 0.11161425742560378
+    },
+    "model.layers.17.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0004567326686810702,
+      "relative_error": 0.09972329119844238,
+      "clipped_fraction": 0.95684814453125,
+      "clip_improvement": 0.11154712211353117
+    },
+    "model.layers.17.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00027025476447306573,
+      "relative_error": 0.09475943902031833,
+      "clipped_fraction": 0.9541549682617188,
+      "clip_improvement": 0.11154737507090717
+    },
+    "model.layers.17.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0003600589989218861,
+      "relative_error": 0.09693721528515316,
+      "clipped_fraction": 0.9553451538085938,
+      "clip_improvement": 0.1115513695618448
+    },
+    "model.layers.17.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0002770992286968976,
+      "relative_error": 0.09888710556422499,
+      "clipped_fraction": 0.95556640625,
+      "clip_improvement": 0.110742808596472
+    },
+    "model.layers.18.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00028405190096236765,
+      "relative_error": 0.09699177831379707,
+      "clipped_fraction": 0.9552264213562012,
+      "clip_improvement": 0.11181949552326916
+    },
+    "model.layers.18.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00031856499845162034,
+      "relative_error": 0.09722573375525735,
+      "clipped_fraction": 0.9548449516296387,
+      "clip_improvement": 0.11187878343396906
+    },
+    "model.layers.18.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002863043628167361,
+      "relative_error": 0.09612452371309414,
+      "clipped_fraction": 0.9547489881515503,
+      "clip_improvement": 0.11166319137712814
+    },
+    "model.layers.18.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0004442481731530279,
+      "relative_error": 0.10000493595910809,
+      "clipped_fraction": 0.95550537109375,
+      "clip_improvement": 0.11138027882789446
+    },
+    "model.layers.18.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00026285331114195287,
+      "relative_error": 0.09474468284200553,
+      "clipped_fraction": 0.9532394409179688,
+      "clip_improvement": 0.11140426917832216
+    },
+    "model.layers.18.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0003634619642980397,
+      "relative_error": 0.09702533169513011,
+      "clipped_fraction": 0.9557037353515625,
+      "clip_improvement": 0.11160131921355605
+    },
+    "model.layers.18.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0002744610537774861,
+      "relative_error": 0.09953028392275215,
+      "clipped_fraction": 0.956634521484375,
+      "clip_improvement": 0.11086118330083014
+    },
+    "model.layers.19.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00028299426776356995,
+      "relative_error": 0.0967385751168033,
+      "clipped_fraction": 0.9545288681983948,
+      "clip_improvement": 0.11175806117208642
+    },
+    "model.layers.19.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0003203245287295431,
+      "relative_error": 0.09657580478001959,
+      "clipped_fraction": 0.9550716280937195,
+      "clip_improvement": 0.11162172877357479
+    },
+    "model.layers.19.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002847352297976613,
+      "relative_error": 0.09580155494309306,
+      "clipped_fraction": 0.9542847275733948,
+      "clip_improvement": 0.11156342168190952
+    },
+    "model.layers.19.self_attn.k_proj": {
+      "bits": 8,
+      "num_params": 4194304,
+      "rmse": 2.7466165192890912e-05,
+      "relative_error": 0.006310815466837457,
+      "clipped_fraction": 0.0,
+      "clip_improvement": 0.0
+    },
+    "model.layers.19.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00027270615100860596,
+      "relative_error": 0.09444822053615629,
+      "clipped_fraction": 0.9533538818359375,
+      "clip_improvement": 0.11154052297135578
+    },
+    "model.layers.19.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00034805291215889156,
+      "relative_error": 0.09674443634470595,
+      "clipped_fraction": 0.9542236328125,
+      "clip_improvement": 0.11157097747611322
+    },
+    "model.layers.19.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.000297119579045102,
+      "relative_error": 0.09819748791748609,
+      "clipped_fraction": 0.956390380859375,
+      "clip_improvement": 0.11113216053992357
+    },
+    "model.layers.2.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002789099817164242,
+      "relative_error": 0.09576002366842715,
+      "clipped_fraction": 0.9541931748390198,
+      "clip_improvement": 0.11167268246489094
+    },
+    "model.layers.2.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002992774243466556,
+      "relative_error": 0.09564742080432467,
+      "clipped_fraction": 0.9542585611343384,
+      "clip_improvement": 0.11167731657697332
+    },
+    "model.layers.2.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002802757662720978,
+      "relative_error": 0.09536201752089306,
+      "clipped_fraction": 0.9537811875343323,
+      "clip_improvement": 0.11136659848090401
+    },
+    "model.layers.2.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0005780867068096995,
+      "relative_error": 0.10313844316111327,
+      "clipped_fraction": 0.95770263671875,
+      "clip_improvement": 0.11100044669009294
+    },
+    "model.layers.2.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00021867739269509912,
+      "relative_error": 0.09583703610280592,
+      "clipped_fraction": 0.95428466796875,
+      "clip_improvement": 0.11145311242133253
+    },
+    "model.layers.2.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00042698279139585793,
+      "relative_error": 0.09886369884983733,
+      "clipped_fraction": 0.9552078247070312,
+      "clip_improvement": 0.11126872474964393
+    },
+    "model.layers.2.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00021980717428959906,
+      "relative_error": 0.09772201408260009,
+      "clipped_fraction": 0.95489501953125,
+      "clip_improvement": 0.11007051108891444
+    },
+    "model.layers.20.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00027865770971402526,
+      "relative_error": 0.09581783905959633,
+      "clipped_fraction": 0.9546748995780945,
+      "clip_improvement": 0.11187148791026585
+    },
+    "model.layers.20.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0003200570063199848,
+      "relative_error": 0.0957447166027955,
+      "clipped_fraction": 0.9543566703796387,
+      "clip_improvement": 0.11183056572719577
+    },
+    "model.layers.20.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00028024689527228475,
+      "relative_error": 0.09535314612770297,
+      "clipped_fraction": 0.9539294242858887,
+      "clip_improvement": 0.11176343633737029
+    },
+    "model.layers.20.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00042852049227803946,
+      "relative_error": 0.10097706511009547,
+      "clipped_fraction": 0.9541015625,
+      "clip_improvement": 0.11132171105885848
+    },
+    "model.layers.20.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00027646240778267384,
+      "relative_error": 0.09434741245965851,
+      "clipped_fraction": 0.9543685913085938,
+      "clip_improvement": 0.1120176678961538
+    },
+    "model.layers.20.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00034724228316918015,
+      "relative_error": 0.09728574402191671,
+      "clipped_fraction": 0.954986572265625,
+      "clip_improvement": 0.11191567367467152
+    },
+    "model.layers.20.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0003023198223672807,
+      "relative_error": 0.09747262167902852,
+      "clipped_fraction": 0.9559326171875,
+      "clip_improvement": 0.11130861307058572
+    },
+    "model.layers.21.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002733276633080095,
+      "relative_error": 0.0951836508180137,
+      "clipped_fraction": 0.9540274739265442,
+      "clip_improvement": 0.11155947596357293
+    },
+    "model.layers.21.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0003249903966207057,
+      "relative_error": 0.09528015574136023,
+      "clipped_fraction": 0.9538748860359192,
+      "clip_improvement": 0.1117317859639262
+    },
+    "model.layers.21.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00027461140416562557,
+      "relative_error": 0.09504832773910443,
+      "clipped_fraction": 0.9541822671890259,
+      "clip_improvement": 0.11163505888529288
+    },
+    "model.layers.21.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00042644108179956675,
+      "relative_error": 0.10030505807237121,
+      "clipped_fraction": 0.955291748046875,
+      "clip_improvement": 0.11191201550446775
+    },
+    "model.layers.21.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00027844737633131444,
+      "relative_error": 0.09435857489105257,
+      "clipped_fraction": 0.9540328979492188,
+      "clip_improvement": 0.1120496395847223
+    },
+    "model.layers.21.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0003444434842094779,
+      "relative_error": 0.09672520409488262,
+      "clipped_fraction": 0.95428466796875,
+      "clip_improvement": 0.11136212272374517
+    },
+    "model.layers.21.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00030723397503606975,
+      "relative_error": 0.09778160138321157,
+      "clipped_fraction": 0.95428466796875,
+      "clip_improvement": 0.11165515304907525
+    },
+    "model.layers.22.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002736503956839442,
+      "relative_error": 0.09501290369102798,
+      "clipped_fraction": 0.9541255831718445,
+      "clip_improvement": 0.11174403618647284
+    },
+    "model.layers.22.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00032395817106589675,
+      "relative_error": 0.09521707895199126,
+      "clipped_fraction": 0.9535806179046631,
+      "clip_improvement": 0.11181993289287986
+    },
+    "model.layers.22.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00027515957481227815,
+      "relative_error": 0.09501412587789276,
+      "clipped_fraction": 0.9542389512062073,
+      "clip_improvement": 0.11165574332165475
+    },
+    "model.layers.22.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00040921539766713977,
+      "relative_error": 0.0998206392049456,
+      "clipped_fraction": 0.9544677734375,
+      "clip_improvement": 0.11251387479045659
+    },
+    "model.layers.22.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00028144012321718037,
+      "relative_error": 0.09428194782489326,
+      "clipped_fraction": 0.9538955688476562,
+      "clip_improvement": 0.1121540382073806
+    },
+    "model.layers.22.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00033355990308336914,
+      "relative_error": 0.09668408319576634,
+      "clipped_fraction": 0.9540023803710938,
+      "clip_improvement": 0.11156150567601548
+    },
+    "model.layers.22.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0003101128968410194,
+      "relative_error": 0.09614147381945748,
+      "clipped_fraction": 0.956207275390625,
+      "clip_improvement": 0.11190232629249225
+    },
+    "model.layers.23.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00027336389757692814,
+      "relative_error": 0.09480574934710921,
+      "clipped_fraction": 0.9542999863624573,
+      "clip_improvement": 0.11178104965346221
+    },
+    "model.layers.23.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0003241802623961121,
+      "relative_error": 0.0950179820827483,
+      "clipped_fraction": 0.9545004963874817,
+      "clip_improvement": 0.11195593131855539
+    },
+    "model.layers.23.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00027469577617011964,
+      "relative_error": 0.09491062318811083,
+      "clipped_fraction": 0.9536307454109192,
+      "clip_improvement": 0.11181038027595781
+    },
+    "model.layers.23.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.000417423463659361,
+      "relative_error": 0.09993795337529848,
+      "clipped_fraction": 0.955474853515625,
+      "clip_improvement": 0.1127614733502056
+    },
+    "model.layers.23.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00028432978433556855,
+      "relative_error": 0.09429734609475376,
+      "clipped_fraction": 0.95416259765625,
+      "clip_improvement": 0.1114419971012159
+    },
+    "model.layers.23.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0003380147973075509,
+      "relative_error": 0.09701197665771943,
+      "clipped_fraction": 0.9550094604492188,
+      "clip_improvement": 0.11205846784213462
+    },
+    "model.layers.23.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0003219410718884319,
+      "relative_error": 0.09634677145528231,
+      "clipped_fraction": 0.9560546875,
+      "clip_improvement": 0.11160063020999265
+    },
+    "model.layers.24.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00027278144261799753,
+      "relative_error": 0.09470118487687582,
+      "clipped_fraction": 0.9541277885437012,
+      "clip_improvement": 0.11178301823328783
+    },
+    "model.layers.24.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0003266157873440534,
+      "relative_error": 0.09497418413197825,
+      "clipped_fraction": 0.9542890787124634,
+      "clip_improvement": 0.11197410403824043
+    },
+    "model.layers.24.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00027418715762905777,
+      "relative_error": 0.09494234486675177,
+      "clipped_fraction": 0.9539904594421387,
+      "clip_improvement": 0.11171985055841023
+    },
+    "model.layers.24.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0004117830249015242,
+      "relative_error": 0.100300506869012,
+      "clipped_fraction": 0.955413818359375,
+      "clip_improvement": 0.11268024377155816
+    },
+    "model.layers.24.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00028583838138729334,
+      "relative_error": 0.09424456814205624,
+      "clipped_fraction": 0.9540252685546875,
+      "clip_improvement": 0.11183665171610178
+    },
+    "model.layers.24.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00033484699088148773,
+      "relative_error": 0.09679045261628091,
+      "clipped_fraction": 0.9548797607421875,
+      "clip_improvement": 0.11188780135620281
+    },
+    "model.layers.24.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0003227250708732754,
+      "relative_error": 0.09590980112584689,
+      "clipped_fraction": 0.955169677734375,
+      "clip_improvement": 0.11170385995651003
+    },
+    "model.layers.25.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002745272358879447,
+      "relative_error": 0.09470350234580995,
+      "clipped_fraction": 0.9537637233734131,
+      "clip_improvement": 0.11164492491089764
+    },
+    "model.layers.25.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0003267428546678275,
+      "relative_error": 0.09510492852779441,
+      "clipped_fraction": 0.9542389512062073,
+      "clip_improvement": 0.11200599511191697
+    },
+    "model.layers.25.mlp.up_proj": {
+      "bits": 3,
+      "num_params": 58720256,
+      "rmse": 0.0005429440643638372,
+      "relative_error": 0.18702852418646462,
+      "clipped_fraction": 0.9998496174812317,
+      "clip_improvement": 0.25010456705603124
+    },
+    "model.layers.25.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00039522434235550463,
+      "relative_error": 0.10010324935980178,
+      "clipped_fraction": 0.9544677734375,
+      "clip_improvement": 0.11260336032988114
+    },
+    "model.layers.25.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00029473024187609553,
+      "relative_error": 0.09430899630089584,
+      "clipped_fraction": 0.954498291015625,
+      "clip_improvement": 0.11179209874806706
+    },
+    "model.layers.25.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0003266499552410096,
+      "relative_error": 0.09677329265723658,
+      "clipped_fraction": 0.9544448852539062,
+      "clip_improvement": 0.11202966304147291
+    },
+    "model.layers.25.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00033490973873995245,
+      "relative_error": 0.09651780524253042,
+      "clipped_fraction": 0.9532470703125,
+      "clip_improvement": 0.11063653743897434
+    },
+    "model.layers.26.mlp.down_proj": {
+      "bits": 3,
+      "num_params": 58720256,
+      "rmse": 0.000547156436368823,
+      "relative_error": 0.18650288723975816,
+      "clipped_fraction": 0.999825656414032,
+      "clip_improvement": 0.2508153246073835
+    },
+    "model.layers.26.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0003250758454669267,
+      "relative_error": 0.09514137234325276,
+      "clipped_fraction": 0.9544525742530823,
+      "clip_improvement": 0.11173934203440064
+    },
+    "model.layers.26.mlp.up_proj": {
+      "bits": 3,
+      "num_params": 58720256,
+      "rmse": 0.000549235031940043,
+      "relative_error": 0.18716023874222293,
+      "clipped_fraction": 0.9998518228530884,
+      "clip_improvement": 0.2502253689826724
+    },
+    "model.layers.26.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0003857205156236887,
+      "relative_error": 0.10116805820376876,
+      "clipped_fraction": 0.9560546875,
+      "clip_improvement": 0.1122189275755482
+    },
+    "model.layers.26.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0002959896228276193,
+      "relative_error": 0.09413682396620905,
+      "clipped_fraction": 0.9535293579101562,
+      "clip_improvement": 0.11168011010851055
+    },
+    "model.layers.26.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00032324230414815247,
+      "relative_error": 0.09703025007224947,
+      "clipped_fraction": 0.954620361328125,
+      "clip_improvement": 0.11167644977894967
+    },
+    "model.layers.26.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00034747205791063607,
+      "relative_error": 0.09725117453587456,
+      "clipped_fraction": 0.955780029296875,
+      "clip_improvement": 0.11142101309780968
+    },
+    "model.layers.27.mlp.down_proj": {
+      "bits": 3,
+      "num_params": 58720256,
+      "rmse": 0.0005531631177291274,
+      "relative_error": 0.18703227515001913,
+      "clipped_fraction": 0.9998474717140198,
+      "clip_improvement": 0.2503927757276059
+    },
+    "model.layers.27.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0003263692487962544,
+      "relative_error": 0.09541642578489679,
+      "clipped_fraction": 0.9545092582702637,
+      "clip_improvement": 0.11193680119557986
+    },
+    "model.layers.27.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002813491737470031,
+      "relative_error": 0.09512918405356269,
+      "clipped_fraction": 0.9540296792984009,
+      "clip_improvement": 0.1116914079305396
+    },
+    "model.layers.27.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0003944972704630345,
+      "relative_error": 0.09895052960796186,
+      "clipped_fraction": 0.955230712890625,
+      "clip_improvement": 0.11202333914163139
+    },
+    "model.layers.27.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0002926753368228674,
+      "relative_error": 0.0943708819330764,
+      "clipped_fraction": 0.9536972045898438,
+      "clip_improvement": 0.1119166327799485
+    },
+    "model.layers.27.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00032814298174344003,
+      "relative_error": 0.09736203612284819,
+      "clipped_fraction": 0.9541244506835938,
+      "clip_improvement": 0.11185351046988415
+    },
+    "model.layers.27.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00033396403887309134,
+      "relative_error": 0.09598113419656476,
+      "clipped_fraction": 0.956787109375,
+      "clip_improvement": 0.11161915951852179
+    },
+    "model.layers.28.mlp.down_proj": {
+      "bits": 3,
+      "num_params": 58720256,
+      "rmse": 0.0005604150355793536,
+      "relative_error": 0.18737486100424453,
+      "clipped_fraction": 0.9998169541358948,
+      "clip_improvement": 0.25085320953065726
+    },
+    "model.layers.28.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0003247862041462213,
+      "relative_error": 0.09544504458926803,
+      "clipped_fraction": 0.9548056721687317,
+      "clip_improvement": 0.11197026145305536
+    },
+    "model.layers.28.mlp.up_proj": {
+      "bits": 3,
+      "num_params": 58720256,
+      "rmse": 0.0005619530566036701,
+      "relative_error": 0.18722447054866465,
+      "clipped_fraction": 0.9998016953468323,
+      "clip_improvement": 0.2503622484385843
+    },
+    "model.layers.28.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0003765723085962236,
+      "relative_error": 0.10479346296275419,
+      "clipped_fraction": 0.954071044921875,
+      "clip_improvement": 0.11252452867239938
+    },
+    "model.layers.28.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0003109606623183936,
+      "relative_error": 0.09433517325525266,
+      "clipped_fraction": 0.9532318115234375,
+      "clip_improvement": 0.1118309751423053
+    },
+    "model.layers.28.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0003187423280905932,
+      "relative_error": 0.09777695621710533,
+      "clipped_fraction": 0.9548110961914062,
+      "clip_improvement": 0.11195238359640385
+    },
+    "model.layers.28.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0003956284199375659,
+      "relative_error": 0.09839688737336232,
+      "clipped_fraction": 0.954986572265625,
+      "clip_improvement": 0.11053104810438485
+    },
+    "model.layers.29.mlp.down_proj": {
+      "bits": 3,
+      "num_params": 58720256,
+      "rmse": 0.000564169546123594,
+      "relative_error": 0.1877966426025124,
+      "clipped_fraction": 0.9998169541358948,
+      "clip_improvement": 0.2505904942132944
+    },
+    "model.layers.29.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0003226705885026604,
+      "relative_error": 0.09540347054604813,
+      "clipped_fraction": 0.9541691541671753,
+      "clip_improvement": 0.11186535612429833
+    },
+    "model.layers.29.mlp.up_proj": {
+      "bits": 3,
+      "num_params": 58720256,
+      "rmse": 0.0005697431624867022,
+      "relative_error": 0.1871255477106138,
+      "clipped_fraction": 0.9998518228530884,
+      "clip_improvement": 0.250554315078345
+    },
+    "model.layers.29.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0003535292053129524,
+      "relative_error": 0.10391449200686642,
+      "clipped_fraction": 0.955718994140625,
+      "clip_improvement": 0.11307645205167799
+    },
+    "model.layers.29.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00032635926618240774,
+      "relative_error": 0.09438632127225839,
+      "clipped_fraction": 0.9541549682617188,
+      "clip_improvement": 0.11180327375404503
+    },
+    "model.layers.29.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0003127979871351272,
+      "relative_error": 0.09970521825601066,
+      "clipped_fraction": 0.9556884765625,
+      "clip_improvement": 0.11225001866386337
+    },
+    "model.layers.29.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0004462163196876645,
+      "relative_error": 0.09885503128981765,
+      "clipped_fraction": 0.9549560546875,
+      "clip_improvement": 0.11103495305715687
+    },
+    "model.layers.3.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002778184716589749,
+      "relative_error": 0.09567940065284071,
+      "clipped_fraction": 0.9547795057296753,
+      "clip_improvement": 0.11174320373487585
+    },
+    "model.layers.3.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002985646715387702,
+      "relative_error": 0.09548384469004817,
+      "clipped_fraction": 0.9545353651046753,
+      "clip_improvement": 0.11197805054955332
+    },
+    "model.layers.3.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002778354682959616,
+      "relative_error": 0.09539005912965125,
+      "clipped_fraction": 0.9543588161468506,
+      "clip_improvement": 0.1116515977916843
+    },
+    "model.layers.3.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0005741396453231573,
+      "relative_error": 0.09995654611320791,
+      "clipped_fraction": 0.957672119140625,
+      "clip_improvement": 0.11134887380907411
+    },
+    "model.layers.3.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.000241052417550236,
+      "relative_error": 0.09493466338710548,
+      "clipped_fraction": 0.9534683227539062,
+      "clip_improvement": 0.11159893788135533
+    },
+    "model.layers.3.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0004194433568045497,
+      "relative_error": 0.09698759492452393,
+      "clipped_fraction": 0.954437255859375,
+      "clip_improvement": 0.11175596030305504
+    },
+    "model.layers.3.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00024226223467849195,
+      "relative_error": 0.09588364150698936,
+      "clipped_fraction": 0.95538330078125,
+      "clip_improvement": 0.11087076940895892
+    },
+    "model.layers.30.mlp.down_proj": {
+      "bits": 3,
+      "num_params": 58720256,
+      "rmse": 0.0005735222948715091,
+      "relative_error": 0.19076536558464355,
+      "clipped_fraction": 0.999825656414032,
+      "clip_improvement": 0.25271514456320215
+    },
+    "model.layers.30.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00032506135175935924,
+      "relative_error": 0.09552415068608247,
+      "clipped_fraction": 0.9548449516296387,
+      "clip_improvement": 0.11186636741262446
+    },
+    "model.layers.30.mlp.up_proj": {
+      "bits": 3,
+      "num_params": 58720256,
+      "rmse": 0.000578750332351774,
+      "relative_error": 0.18732199158717378,
+      "clipped_fraction": 0.9998409152030945,
+      "clip_improvement": 0.2503087623363167
+    },
+    "model.layers.30.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.000343710562447086,
+      "relative_error": 0.10375840588751609,
+      "clipped_fraction": 0.95562744140625,
+      "clip_improvement": 0.11328146874573009
+    },
+    "model.layers.30.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00033135779085569084,
+      "relative_error": 0.09432834418619757,
+      "clipped_fraction": 0.9539871215820312,
+      "clip_improvement": 0.11171555020059082
+    },
+    "model.layers.30.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00030858267564326525,
+      "relative_error": 0.09839581748592126,
+      "clipped_fraction": 0.9545211791992188,
+      "clip_improvement": 0.11218082954738025
+    },
+    "model.layers.30.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0004681246937252581,
+      "relative_error": 0.10119445713064541,
+      "clipped_fraction": 0.956787109375,
+      "clip_improvement": 0.11115773523864111
+    },
+    "model.layers.31.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002876961953006685,
+      "relative_error": 0.10008092599129176,
+      "clipped_fraction": 0.9559958577156067,
+      "clip_improvement": 0.1108597908729492
+    },
+    "model.layers.31.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00033904833253473043,
+      "relative_error": 0.09546183729824267,
+      "clipped_fraction": 0.9543936848640442,
+      "clip_improvement": 0.11182776754983745
+    },
+    "model.layers.31.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00030126370256766677,
+      "relative_error": 0.09533128105094463,
+      "clipped_fraction": 0.9548035264015198,
+      "clip_improvement": 0.1119562773276634
+    },
+    "model.layers.31.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00034317438257858157,
+      "relative_error": 0.1044262803570319,
+      "clipped_fraction": 0.954833984375,
+      "clip_improvement": 0.11298634270542403
+    },
+    "model.layers.31.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0003386186726856977,
+      "relative_error": 0.09324357502958669,
+      "clipped_fraction": 0.9542160034179688,
+      "clip_improvement": 0.11249664243795632
+    },
+    "model.layers.31.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.000305135763483122,
+      "relative_error": 0.09840334330821018,
+      "clipped_fraction": 0.9544830322265625,
+      "clip_improvement": 0.11225556608348444
+    },
+    "model.layers.31.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0004818952293135226,
+      "relative_error": 0.10159664694251033,
+      "clipped_fraction": 0.958984375,
+      "clip_improvement": 0.11248240442721394
+    },
+    "model.layers.4.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002751090796664357,
+      "relative_error": 0.09618232716095611,
+      "clipped_fraction": 0.9539795517921448,
+      "clip_improvement": 0.11186643824847282
+    },
+    "model.layers.4.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00030496667022816837,
+      "relative_error": 0.09592251006957159,
+      "clipped_fraction": 0.9545964002609253,
+      "clip_improvement": 0.11218491837559227
+    },
+    "model.layers.4.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00027509202482178807,
+      "relative_error": 0.09577925552138034,
+      "clipped_fraction": 0.9544285535812378,
+      "clip_improvement": 0.11189611303494026
+    },
+    "model.layers.4.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0005180211737751961,
+      "relative_error": 0.09954864750854105,
+      "clipped_fraction": 0.95318603515625,
+      "clip_improvement": 0.11170471394916491
+    },
+    "model.layers.4.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0002377532364334911,
+      "relative_error": 0.09514138265038302,
+      "clipped_fraction": 0.9551162719726562,
+      "clip_improvement": 0.11138976246684638
+    },
+    "model.layers.4.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00039513586671091616,
+      "relative_error": 0.09774086900040511,
+      "clipped_fraction": 0.9555740356445312,
+      "clip_improvement": 0.11152352564857844
+    },
+    "model.layers.4.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00023916404461488128,
+      "relative_error": 0.09602461841917685,
+      "clipped_fraction": 0.954864501953125,
+      "clip_improvement": 0.11106844418256581
+    },
+    "model.layers.5.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002714481088332832,
+      "relative_error": 0.09624636050779568,
+      "clipped_fraction": 0.9538313150405884,
+      "clip_improvement": 0.1119019477804417
+    },
+    "model.layers.5.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00031068696989677846,
+      "relative_error": 0.09587817685871827,
+      "clipped_fraction": 0.9538117051124573,
+      "clip_improvement": 0.1119041062095588
+    },
+    "model.layers.5.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00027137488359585404,
+      "relative_error": 0.09586738320476675,
+      "clipped_fraction": 0.9541212320327759,
+      "clip_improvement": 0.11168166828025597
+    },
+    "model.layers.5.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0005284250946715474,
+      "relative_error": 0.09863903107103066,
+      "clipped_fraction": 0.954315185546875,
+      "clip_improvement": 0.11112799954401231
+    },
+    "model.layers.5.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00023578654509037733,
+      "relative_error": 0.09471497978260632,
+      "clipped_fraction": 0.9544143676757812,
+      "clip_improvement": 0.11205391993922648
+    },
+    "model.layers.5.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0004005883529316634,
+      "relative_error": 0.09691320415281982,
+      "clipped_fraction": 0.9539871215820312,
+      "clip_improvement": 0.11164397108017901
+    },
+    "model.layers.5.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00022320690914057195,
+      "relative_error": 0.0957706274459854,
+      "clipped_fraction": 0.955902099609375,
+      "clip_improvement": 0.11148478970093371
+    },
+    "model.layers.6.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00027566091739572585,
+      "relative_error": 0.09707062781932725,
+      "clipped_fraction": 0.9547054171562195,
+      "clip_improvement": 0.11188488237434563
+    },
+    "model.layers.6.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00031167431734502316,
+      "relative_error": 0.0961280661026365,
+      "clipped_fraction": 0.954537570476532,
+      "clip_improvement": 0.11186461818531439
+    },
+    "model.layers.6.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002750194107647985,
+      "relative_error": 0.09639919399066758,
+      "clipped_fraction": 0.9542410969734192,
+      "clip_improvement": 0.11166652869183455
+    },
+    "model.layers.6.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0005350368446670473,
+      "relative_error": 0.0995508944421614,
+      "clipped_fraction": 0.954864501953125,
+      "clip_improvement": 0.11167226250101868
+    },
+    "model.layers.6.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0002387714193901047,
+      "relative_error": 0.09499663255670394,
+      "clipped_fraction": 0.9551315307617188,
+      "clip_improvement": 0.111657894731015
+    },
+    "model.layers.6.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0003952497208956629,
+      "relative_error": 0.0975594640548508,
+      "clipped_fraction": 0.9548416137695312,
+      "clip_improvement": 0.11189705888411951
+    },
+    "model.layers.6.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00023044267436489463,
+      "relative_error": 0.09627775073520771,
+      "clipped_fraction": 0.9547119140625,
+      "clip_improvement": 0.1117083675835829
+    },
+    "model.layers.7.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002736200694926083,
+      "relative_error": 0.09679545389963146,
+      "clipped_fraction": 0.9546836018562317,
+      "clip_improvement": 0.11171227590804991
+    },
+    "model.layers.7.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0003141691558994353,
+      "relative_error": 0.09619839031310494,
+      "clipped_fraction": 0.9545441269874573,
+      "clip_improvement": 0.11185128856128078
+    },
+    "model.layers.7.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00027404387947171926,
+      "relative_error": 0.09639437972068624,
+      "clipped_fraction": 0.9547141194343567,
+      "clip_improvement": 0.11164550726842812
+    },
+    "model.layers.7.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0005339636118151248,
+      "relative_error": 0.10000642985497003,
+      "clipped_fraction": 0.954742431640625,
+      "clip_improvement": 0.11126054848348925
+    },
+    "model.layers.7.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00024178711464628577,
+      "relative_error": 0.0949103834452872,
+      "clipped_fraction": 0.9541015625,
+      "clip_improvement": 0.11169470214076709
+    },
+    "model.layers.7.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00039118819404393435,
+      "relative_error": 0.09797159201369715,
+      "clipped_fraction": 0.9556808471679688,
+      "clip_improvement": 0.11174166373286198
+    },
+    "model.layers.7.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00023725369828753173,
+      "relative_error": 0.09662687488952831,
+      "clipped_fraction": 0.956268310546875,
+      "clip_improvement": 0.11093277557824593
+    },
+    "model.layers.8.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00027491559740155935,
+      "relative_error": 0.09645489783980063,
+      "clipped_fraction": 0.9548187851905823,
+      "clip_improvement": 0.11171153372617064
+    },
+    "model.layers.8.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00031469602254219353,
+      "relative_error": 0.09654064029240274,
+      "clipped_fraction": 0.9548144340515137,
+      "clip_improvement": 0.1117801427675391
+    },
+    "model.layers.8.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002772390434984118,
+      "relative_error": 0.09660345372831897,
+      "clipped_fraction": 0.9546814560890198,
+      "clip_improvement": 0.11167669571204344
+    },
+    "model.layers.8.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0005077748792245984,
+      "relative_error": 0.09830156734295604,
+      "clipped_fraction": 0.954193115234375,
+      "clip_improvement": 0.1114173362546017
+    },
+    "model.layers.8.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0002466580190230161,
+      "relative_error": 0.09473972441645524,
+      "clipped_fraction": 0.9545669555664062,
+      "clip_improvement": 0.11167790855271403
+    },
+    "model.layers.8.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0003795862721744925,
+      "relative_error": 0.09678079509449289,
+      "clipped_fraction": 0.9535369873046875,
+      "clip_improvement": 0.1115566754443736
+    },
+    "model.layers.8.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00024106678029056638,
+      "relative_error": 0.09658717389114126,
+      "clipped_fraction": 0.95526123046875,
+      "clip_improvement": 0.1109783526970756
+    },
+    "model.layers.9.mlp.down_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002766333054751158,
+      "relative_error": 0.09633642484025161,
+      "clipped_fraction": 0.9556275010108948,
+      "clip_improvement": 0.1118078051790043
+    },
+    "model.layers.9.mlp.gate_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.00031142044463194907,
+      "relative_error": 0.09658426491894534,
+      "clipped_fraction": 0.9547969698905945,
+      "clip_improvement": 0.11172697961718538
+    },
+    "model.layers.9.mlp.up_proj": {
+      "bits": 4,
+      "num_params": 58720256,
+      "rmse": 0.0002791625738609582,
+      "relative_error": 0.09638464373681638,
+      "clipped_fraction": 0.9548776149749756,
+      "clip_improvement": 0.11170234724488672
+    },
+    "model.layers.9.self_attn.k_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.0005111353821121156,
+      "relative_error": 0.09915517931185808,
+      "clipped_fraction": 0.954498291015625,
+      "clip_improvement": 0.1123024232857934
+    },
+    "model.layers.9.self_attn.o_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.00024122577451635152,
+      "relative_error": 0.09460125906823418,
+      "clipped_fraction": 0.9535598754882812,
+      "clip_improvement": 0.11168632683056463
+    },
+    "model.layers.9.self_attn.q_proj": {
+      "bits": 4,
+      "num_params": 16777216,
+      "rmse": 0.0003758730017580092,
+      "relative_error": 0.09783007468868202,
+      "clipped_fraction": 0.9548873901367188,
+      "clip_improvement": 0.11164442873363564
+    },
+    "model.layers.9.self_attn.v_proj": {
+      "bits": 4,
+      "num_params": 4194304,
+      "rmse": 0.00022309328778646886,
+      "relative_error": 0.09671858737609229,
+      "clipped_fraction": 0.954254150390625,
+      "clip_improvement": 0.11117316131848443
+    }
+  }
+}

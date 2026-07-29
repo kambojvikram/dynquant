@@ -1,0 +1,17 @@
+{
+  "model": "mistralai/Mistral-7B-Instruct-v0.3",
+  "task": "banking77",
+  "regime": "lora",
+  "lora_rank": 32,
+  "estimator": "outer_exact",
+  "examples": 9999,
+  "epochs": 2.0,
+  "lr": 0.0001,
+  "effective_batch": 32,
+  "steps": 626,
+  "train_loss": 0.14053965290895284,
+  "seconds": 3623.7,
+  "tracked_modules": 226,
+  "stats_dir": "/workspace/runs/mistral_7b_instruct_v0_3_banking77/stats",
+  "output": "/workspace/runs/mistral_7b_instruct_v0_3_banking77/finetuned"
+}
