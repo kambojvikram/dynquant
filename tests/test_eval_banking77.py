@@ -33,6 +33,7 @@ from dynquant.eval.banking77 import (
     Banking77Example,
     Banking77Result,
     build_prompt,
+    deterministic_order,
     extract_answer,
     format_training_text,
 )
@@ -178,6 +179,54 @@ def test_training_splits_prompt_from_completion() -> None:
     prompt, completion = format_training_text(EXAMPLES[1])
     assert completion.strip() == EXAMPLES[1].answer
     assert EXAMPLES[1].answer not in prompt.rsplit("Intent:", 1)[1]
+
+
+# --------------------------------------------------------------------------
+# Load order
+# --------------------------------------------------------------------------
+
+# Upstream ships both splits sorted by label: the test split is 77 contiguous
+# blocks of 40. This reproduces that shape so the shuffle can be tested without a
+# network round trip -- which is the whole reason deterministic_order is separate
+# from the loader.
+LABEL_SORTED = [
+    Banking77Example(text=f"query {label}/{i}", answer=str(label))
+    for label in range(N_INTENTS)
+    for i in range(40)
+]
+
+
+def test_a_prefix_of_the_raw_order_is_a_single_intent() -> None:
+    """Not a test of our code -- a record of the trap. A ``--limit 32`` smoke run
+    against the raw order scored 3.12% where the real figure was 41%, because it
+    had asked the model 32 questions with the same answer."""
+    assert len({e.answer for e in LABEL_SORTED[:32]}) == 1
+
+
+def test_shuffling_makes_a_prefix_representative() -> None:
+    """The property ``--limit`` depends on: a prefix is a sample of the split, not
+    a sample of one class.
+
+    Thirty-two draws over 77 equally sized classes hit ~26 of them in expectation;
+    the bar is set well below that because what is being tested is the difference
+    between "a sample" and "one block", not the seed's particular draw."""
+    prefix = deterministic_order(LABEL_SORTED)[:32]
+    assert len({e.answer for e in prefix}) >= 20
+
+
+def test_the_order_is_the_same_on_every_call() -> None:
+    """The paired analysis compares per-problem hit vectors position by position, so
+    an order that varied between arms would pair each problem with a different one
+    and report a quantization effect that is a shuffling artifact."""
+    first = deterministic_order(LABEL_SORTED)
+    second = deterministic_order(LABEL_SORTED)
+    assert [e.text for e in first] == [e.text for e in second]
+
+
+def test_shuffling_neither_drops_nor_duplicates() -> None:
+    shuffled = deterministic_order(LABEL_SORTED)
+    assert sorted(e.text for e in shuffled) == sorted(e.text for e in LABEL_SORTED)
+    assert [e.answer for e in LABEL_SORTED[:40]] == ["0"] * 40, "input was mutated in place"
 
 
 # --------------------------------------------------------------------------

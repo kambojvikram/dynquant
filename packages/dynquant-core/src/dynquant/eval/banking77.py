@@ -68,9 +68,11 @@ if TYPE_CHECKING:
 
 __all__ = [
     "INTENTS",
+    "SHUFFLE_SEED",
     "Banking77Example",
     "Banking77Result",
     "build_prompt",
+    "deterministic_order",
     "evaluate_banking77",
     "extract_answer",
     "format_training_text",
@@ -194,6 +196,10 @@ _SOURCE = "legacy-datasets/banking77"
 to fall back to. This repo is the same 10,003 train / 3,080 test rows as parquet
 with the 77-way ``ClassLabel`` intact."""
 
+SHUFFLE_SEED = 0
+"""Fixes the load order. Both splits arrive sorted by label -- see :func:`load_banking77`
+for why that has to be undone, and why it has to be undone the same way every time."""
+
 _LEADING_INDEX = re.compile(r"^\W*(\d+)")
 _ANY_INDEX = re.compile(r"\d+")
 
@@ -245,8 +251,23 @@ class Banking77Result:
         )
 
 
-def load_banking77(split: str = "test", *, cache_dir: str | None = None) -> list[Banking77Example]:
-    """Load a Banking77 split. Requires ``datasets``."""
+def load_banking77(
+    split: str = "test", *, cache_dir: str | None = None, seed: int = SHUFFLE_SEED
+) -> list[Banking77Example]:
+    """Load a Banking77 split, deterministically shuffled. Requires ``datasets``.
+
+    The shuffle is not a nicety. Upstream ships both splits in *label order* -- the test
+    split is 77 contiguous blocks of 40 -- so any prefix of it is a single-intent sample.
+    Evaluating with ``--limit 32`` on the raw order scores the model on intent 11 and
+    nothing else, which reads as 3% accuracy against a real figure ten times that, and
+    reads as a destroyed model when the arm is a quantized one. Measured, not supposed:
+    that is exactly what the first smoke run reported.
+
+    A fixed seed rather than no shuffle, because the paired design needs the same
+    problems in the same order at every measurement point -- the per-problem ``hits``
+    vectors are compared position by position, and an order that varied between arms
+    would silently pair each problem with a different one.
+    """
     from datasets import load_dataset
 
     raw = load_dataset(_SOURCE, split=split, cache_dir=cache_dir)
@@ -257,7 +278,23 @@ def load_banking77(split: str = "test", *, cache_dir: str | None = None) -> list
             f"INTENTS is indexed by the gold label, so a taxonomy that has moved "
             f"would score every answer against the wrong intent."
         )
-    return [Banking77Example(text=row["text"].strip(), answer=str(row["label"])) for row in raw]
+    return deterministic_order(
+        [Banking77Example(text=row["text"].strip(), answer=str(row["label"])) for row in raw],
+        seed=seed,
+    )
+
+
+def deterministic_order(
+    examples: list[Banking77Example], *, seed: int = SHUFFLE_SEED
+) -> list[Banking77Example]:
+    """Return ``examples`` shuffled by a fixed seed. Separate from the loader so the
+    property that matters -- a prefix is class-diverse, and two calls agree -- can be
+    tested without a network round trip."""
+    import random
+
+    shuffled = list(examples)
+    random.Random(seed).shuffle(shuffled)
+    return shuffled
 
 
 def _question(example: Banking77Example) -> str:

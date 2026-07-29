@@ -54,6 +54,15 @@ it, the widest of four candidates, and a 1.3% chance floor — the most sensitiv
 three tasks to quantization damage, because there is no cushion for a small regression
 to hide under. `dynquant.eval.banking77` holds the screen table.
 
+`load_banking77` shuffles under a fixed seed. Upstream ships both splits in *label
+order* — the test split is 77 contiguous blocks of 40 — so any prefix of it is a
+single-intent sample and `--limit` silently stops meaning what it says. Measured, not
+supposed: a 32-row smoke run reported 3.12% against a real base figure of 41%, which on
+a quantized arm would have read as a destroyed model. The seed is fixed rather than
+absent because the paired analysis compares per-problem hit vectors position by
+position, and an order that varied between arms would pair each problem with a
+different one.
+
 ### Fixed — the kernels wheel let pip pair it with a torch it cannot load
 
 `pip install dynquant` on Linux x86_64 — the one command the meta-package exists to
