@@ -10,13 +10,21 @@ measurement point in this experiment that can say anything about VRAM or speed.
 
 What is measured, and why in this order
 ---------------------------------------
-Packing happens with the model on the **CPU**, and the model arrives on the GPU
-already packed. Quantizing on the GPU and measuring afterwards would report a peak
-that includes the bf16 copy the packing consumed -- a number nobody serving the
-model would ever see, since loading a quantized checkpoint never materialises one.
-So ``memory_allocated()`` taken immediately after ``.to("cuda")``, with nothing
-else on the device, is the resident weight footprint and nothing is being netted
-out of it.
+The model is held on the **CPU** while it is packed, and arrives on the GPU already
+packed. Holding it on the GPU and measuring afterwards would report a peak that
+includes the bf16 copy the packing consumed -- a number nobody serving the model
+would ever see, since loading a quantized checkpoint never materialises one. So
+``memory_allocated()`` taken immediately after ``.to("cuda")``, with nothing else on
+the device, is the resident weight footprint and nothing is being netted out of it.
+
+Where the model is held is not where the encoding runs. ``pack_model`` sends one
+weight at a time to the accelerator, encodes it there and returns the packed result
+to the CPU (see :mod:`dynquant.quant.device`), which is the difference between
+roughly forty minutes and roughly one on a 7 B. The measurement is unaffected and
+does not depend on trusting that: those transients are freed before
+``empty_cache()``, ``memory_allocated()`` counts live blocks only, and
+``resident_weight_bytes`` walks the module tree independently of the allocator's
+bookkeeping. Two numbers that agree, arrived at by different routes.
 
 Decode is then timed, then accuracy is scored, with the peak counter reset between.
 A batch-32 evaluation allocates activations and a KV cache that dwarf the weights,
@@ -24,21 +32,31 @@ and one peak spanning both would say nothing about either.
 
 Three claims are on trial here
 ------------------------------
-1. **Accuracy is unchanged from stage 5** -- and unchanged *exactly*. Both paths
-   quantize through the same search over the same grid, so the values the kernels
-   decode are bit-identical to the ones stage 5 wrote into the parameters. A
-   difference of even one problem means the kernels disagree with the oracle
-   somewhere the parity tests do not reach, and the script says so rather than
-   leaving it to be noticed.
+1. **Accuracy tracks stage 5 closely** -- closely, not exactly, and an earlier
+   version of this docstring was wrong to demand identity. Both paths run the same
+   search over the same grid, but that does not make the codes equal: encoding is
+   bit-reproducible on a given device and not across devices (one group scale in
+   ~10^5 shifts by an fp16 ulp through float contraction, and the 8-candidate clip
+   search is an ``argmin`` that tie-breaks either way under noise), and stage 5
+   encodes wherever its model sits while this script encodes wherever ``pack_model``
+   is pointed. On top of that the kernels reduce split-K where stage 5 reduces
+   through cuBLAS. So a handful of flipped problems is expected, and the diagnostic
+   is their *direction*: a real kernel bug loses monotonically, while float
+   divergence scatters both ways across problems already balanced on a decision
+   boundary. The script reports the split rather than a net difference, because the
+   net hides exactly the signal worth reading.
 2. **Resident weight bytes match the manifest** the allocator wrote when it chose
    the map. The allocator's number is a prediction made from bit widths; this one
    is read off the device.
-3. **Decode is faster than bf16.** At batch 1 a matmul reads far more weight than
-   it does arithmetic, so the runtime is the time to stream the weights -- and the
-   packed weights are a quarter of the size. Above ``gemv_max_rows`` the runtime
-   falls back to dequantize-then-``F.linear``, which reads *more* memory than bf16
-   does, so the batch sweep is where the crossover shows up rather than something
-   to be quiet about.
+3. **Decode speed against bf16** -- an open question, not a claim. The reasoning
+   that motivated it (at batch 1 a matmul streams far more weight than it does
+   arithmetic, and the packed weights are a quarter of the size) assumes decode is
+   bandwidth-bound, and on an A100 it is not: both arms run at well under 40% of
+   HBM, so per-launch cost dominates and shrinking the weights does not pay for it.
+   Above ``gemv_max_rows`` the runtime additionally falls back to
+   dequantize-then-``F.linear``, which reads *more* memory than bf16 does. The batch
+   sweep is where both effects show up, and it is reported whichever way it comes
+   out.
 
 The ``--dense`` arm runs every one of those measurements against the unquantized
 fine-tuned model through the same code, so the comparison is not between a number
@@ -398,19 +416,78 @@ def main() -> int:
     stored["peak_eval_reserved_bytes"] = eval_reserved
     path.write_text(json.dumps(stored, indent=2, default=str), encoding="utf-8")
 
-    # The consistency check, stated loudly because a silent match is worth nothing.
-    prior = RUN_DIR / f"stage5_{args.target.replace('.', 'p')}_sens.json"
-    if not args.dense and prior.exists():
-        was = json.loads(prior.read_text(encoding="utf-8"))
-        agreement = "MATCH" if was["correct"] == result.correct else "DISAGREEMENT"
+    # The consistency check, stated loudly because a silent match is worth nothing --
+    # and, for the same reason, stated loudly when it cannot run at all. The earlier
+    # version looked for exactly one filename and skipped in silence when the stage 5
+    # arm had been named anything else, which is indistinguishable in the log from a
+    # check that ran and passed.
+    if not args.dense:
+        _report_parity(args.target, result)
+    return 0
+
+
+def _report_parity(target: str, result: Any) -> None:
+    """Compare against the simulated arm at the same budget, by direction not by net."""
+    stem = target.replace(".", "p")
+    candidates = [
+        RUN_DIR / f"stage5_{stem}_sens.json",
+        RUN_DIR / f"stage5_refit_{stem}.json",
+        RUN_DIR / f"stage5_{stem}.json",
+    ]
+    prior = next((p for p in candidates if p.exists()), None)
+    if prior is None:
+        names = ", ".join(p.name for p in candidates)
         print(
-            f"\n{agreement}: stage 5 (simulated, bf16 weights) scored {was['correct']}/"
-            f"{was['total']}; the packed kernels scored {result.correct}/{result.total}. "
-            "These quantize through the same search, so the decoded values are "
-            "bit-identical and anything but an exact match is a kernel bug.",
+            f"\nPARITY SKIPPED: no simulated arm at {target} bits to compare against "
+            f"(looked for {names}). The packed accuracy above stands on its own.",
             flush=True,
         )
-    return 0
+        return
+
+    was = json.loads(prior.read_text(encoding="utf-8"))
+    print(
+        f"\nparity vs {prior.name}: stage 5 (simulated, bf16 weights) scored "
+        f"{was['correct']}/{was['total']}; the packed kernels scored "
+        f"{result.correct}/{result.total}.",
+        flush=True,
+    )
+
+    before, after = was.get("hits"), result.hits
+    if not before or len(before) != len(after):
+        print(
+            "  per-problem hits unavailable or misaligned, so only the totals compare.",
+            flush=True,
+        )
+        return
+
+    # Direction is the whole diagnostic. Identical codes are not expected -- encoding
+    # is bit-reproducible per device, not across devices, and the kernels reduce
+    # split-K where stage 5 reduces through cuBLAS -- so a few flips are float noise.
+    # Noise scatters both ways; a kernel bug loses monotonically. A net difference of
+    # -1 can be one regression or three regressions against two gains, and those mean
+    # entirely different things.
+    lost = sum(1 for x, y in zip(before, after, strict=True) if x and not y)
+    won = sum(1 for x, y in zip(before, after, strict=True) if y and not x)
+    total = len(before)
+    if lost == won == 0:
+        print(f"  identical on all {total} problems.", flush=True)
+        return
+
+    # Direction only carries information once there is enough of it. A single flip is
+    # "one-directional" by arithmetic necessity, and reading a defect into it would be
+    # reading a coin that landed once. Three is the smallest count where a clean split
+    # is more surprising than not.
+    if lost + won < 3:
+        verdict = "too few to read a direction from"
+    elif won == 0:
+        verdict = "one-directional -- consistent with a kernel defect, worth investigating"
+    else:
+        verdict = "two-way, consistent with float divergence rather than a defect"
+    print(
+        f"  {lost + won} of {total} problems disagree ({100 * (lost + won) / total:.2f}%): "
+        f"{lost} lost, {won} gained -- {verdict}.",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

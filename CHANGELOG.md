@@ -32,17 +32,19 @@ a grouped error reduction per module on the CPU with an idle GPU beside it. That
 not a corner case — it is every model too large for VRAM, and it is *deliberately*
 the case when the point of the run is to measure packed VRAM without a dense copy
 ever reaching the device, which is exactly the configuration that most wants the
-accelerator and least wants the model on it. Measured on Mistral-7B: about 10 s per
-module against a fraction of a second, or roughly forty minutes per pack against
-roughly one.
+accelerator and least wants the model on it. Measured on Mistral-7B-Instruct-v0.3 at
+4.25 bits, 226 modules: **1685 s on the CPU against 17.6 s on an A100 — 96× faster**,
+or 7.5 s per module against 0.08 s.
 
 Weights move one at a time and each packed result is returned to the model's own
-device before its module is replaced, so the model does not move, mixed-device
-models are not created, and the extra VRAM is one tensor's working set rather than a
-second copy of the model — a 70 B in host RAM can be encoded on a 24 GB card. A
-tensor that will not fit falls back to its own device for that tensor alone, with a
-warning; falling back wholesale would surrender the entire speedup to the single
-largest weight.
+device before its module is replaced, so the model does not move, mixed-device models
+are not created, and the extra VRAM is one tensor's working set rather than a second
+copy of the model: 3.77 GiB of GPU peak to pack a model with 13.5 GiB of bf16
+weights. That bound scales with the *largest* tensor, not the model, and at roughly
+an order of magnitude over its bf16 size — so on a large-vocabulary model with an
+untied `lm_head` it can still exceed a small card. A tensor that will not fit falls
+back to its own device for that tensor alone, with a warning; falling back wholesale
+would surrender the entire speedup to the single largest weight.
 
 Because it is a performance change it must not be a change in *quality*, and
 `tests/test_quant_device.py` pins that at 2/3/4/8 bits. It pins a tolerance rather

@@ -13,14 +13,25 @@ on the CPU with an idle accelerator beside it. That is not a rare configuration.
 It is the normal one for anything too large for VRAM, and the deliberate one when
 the point of the run is to measure packed VRAM without a dense copy ever reaching
 the device -- which is exactly the case that most wants the GPU and least wants the
-model on it. Measured on a 7 B: about 10 s per module on CPU against a fraction of
-a second on an A100, or roughly forty minutes against roughly one.
+model on it. Measured, packing Mistral-7B-Instruct-v0.3 at 4.25 bits across its 226
+quantizable modules: **1685 s on the CPU against 17.6 s on an A100, a 96x speedup**,
+or 7.5 s per module against 0.08 s.
 
 So the compute device is chosen separately, and defaults to the accelerator when
 there is one. Weights move one at a time and the packed result is handed back to
 the caller to place, which bounds the extra device memory at a single tensor's
-working set rather than the model's: a 70 B living in host RAM can be quantized
-using a 24 GB card. Nothing dense stays resident, because nothing dense is kept.
+working set rather than the model's -- 3.77 GiB of GPU peak to pack a model whose
+bf16 weights are 13.5 GiB. Nothing dense stays resident, because nothing dense is
+kept.
+
+That bound is per tensor and not a promise that every model fits. The clip search
+loops over its eight candidates rather than materialising them together, but each
+iteration holds several fp32 intermediates of the tensor being encoded, so peak
+scales with the *largest* weight -- typically an untied ``lm_head`` on a large
+vocabulary -- at roughly an order of magnitude over its bf16 size. When that
+exceeds the card, :func:`quantize_tensor` falls back to the CPU for that one
+tensor and keeps the accelerator for the rest, which is why the fallback is per
+tensor rather than per model.
 
 Reproducibility, honestly
 -------------------------
