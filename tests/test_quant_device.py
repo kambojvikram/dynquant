@@ -35,18 +35,26 @@ on CPU and on GPU yields two encodings of equal quality that are not the same fi
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import pytest
 import torch
 from torch import nn
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+from dynquant.cli import build_parser
 from dynquant.errors import DynQuantError
+from dynquant.quant import device as device_module
+from dynquant.quant import grid
 from dynquant.quant.device import (
     COMPUTE_DEVICE_ENV,
     quantize_tensor,
     resolve_compute_device,
 )
 from dynquant.quant.quantizer import quantize_model
-from dynquant.runtime.linear import pack_model
+from dynquant.runtime.linear import DynQuantEmbedding, pack_model
 
 requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
 
@@ -204,6 +212,171 @@ def test_pack_model_of_a_cpu_model_using_the_gpu() -> None:
     assert _rmse(borrowed[0].weight_qt, original) == pytest.approx(
         _rmse(reference[0].weight_qt, original), rel=RMSE_TOLERANCE
     )
+
+
+@requires_cuda
+def test_embedding_packs_on_the_gpu_and_comes_home() -> None:
+    original = torch.randn(512, 128)
+    home = nn.Embedding(512, 128)
+    away = nn.Embedding(512, 128)
+    home.weight.data.copy_(original)
+    away.weight.data.copy_(original)
+
+    packed_here = DynQuantEmbedding.from_embedding(home, 4, group_size=128, compute_device=None)
+    packed_there = DynQuantEmbedding.from_embedding(away, 4, group_size=128, compute_device="cuda")
+
+    assert packed_there.qweight.device == torch.device("cpu")
+    assert _rmse(packed_there.weight_qt, original) == pytest.approx(
+        _rmse(packed_here.weight_qt, original), rel=RMSE_TOLERANCE
+    )
+
+
+# --------------------------------------------------------------------------
+# the out-of-memory fallback
+# --------------------------------------------------------------------------
+#
+# Error handling that runs only when a card is full, which is to say only when
+# nobody is watching. Nothing else in the suite reaches it, and it is where the
+# per-tensor design claim lives -- one oversized weight costs its own encode and
+# not the whole model's speedup. Untested, that claim is a sentence in a commit
+# message rather than a property of the code.
+#
+# None of this needs a GPU: the encoder is replaced by one that fails on command,
+# so the tests exercise the recovery rather than the arithmetic.
+
+_OOM_MESSAGE = "CUDA out of memory. Tried to allocate 2.00 GiB"
+
+
+def _record_encoder(
+    monkeypatch: pytest.MonkeyPatch,
+    fails: Callable[[torch.Tensor, torch.device | None], bool],
+    message: str = _OOM_MESSAGE,
+) -> list[tuple[int, str | None]]:
+    """Swap in an encoder that records each call and fails when told to.
+
+    Calls are recorded as ``(rows, device type)`` so a test can assert *which*
+    tensors reached the accelerator, rather than merely that one of them did.
+    ``fails`` is asked per call rather than once, so a test can fail the device
+    attempt and let the retry succeed -- otherwise a wrongly-swallowed error is
+    indistinguishable from a correctly-propagated one, both arriving as the same
+    exception from the second call.
+    """
+    calls: list[tuple[int, str | None]] = []
+    real = grid.quantize_with_search
+
+    def fake(weight: torch.Tensor, **kwargs: Any) -> Any:
+        device = kwargs.pop("device", None)
+        calls.append((weight.shape[0], None if device is None else device.type))
+        if fails(weight, device):
+            raise RuntimeError(message)
+        return real(weight, **kwargs)
+
+    monkeypatch.setattr("dynquant.quant.device.quantize_with_search", fake)
+    return calls
+
+
+def test_out_of_memory_retries_on_the_weights_own_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _record_encoder(monkeypatch, lambda _weight, device: device is not None)
+    weight = _weight()
+
+    quantized, _ = quantize_tensor(weight, bits=4, group_size=128, device=torch.device("cuda"))
+
+    assert calls == [(64, "cuda"), (64, None)], "should try the card once, then the weight"
+    assert quantized.device == weight.device
+
+    # And the fallback is a real encode, not a degraded one.
+    expected, _ = quantize_tensor(weight, bits=4, group_size=128, device=None)
+    assert torch.equal(quantized.packed, expected.packed)
+    assert torch.equal(quantized.scales, expected.scales)
+
+
+def test_the_fallback_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Silence here would be a run that is slower than asked for and never explains why."""
+    _record_encoder(monkeypatch, lambda _weight, device: device is not None)
+    said: list[str] = []
+    monkeypatch.setattr(
+        device_module._log, "warning", lambda message, *args: said.append(message % args)
+    )
+
+    quantize_tensor(_weight(), bits=4, group_size=128, device=torch.device("cuda"))
+
+    assert len(said) == 1
+    assert "out of memory" in said[0]
+    assert "cuda" in said[0]
+
+
+def test_a_genuine_error_is_not_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Failing only the device attempt is what gives this test teeth: if the error
+    # were misread as an allocation failure, the retry would succeed on the CPU and
+    # the bug would vanish into a slower run instead of raising.
+    calls = _record_encoder(
+        monkeypatch,
+        lambda _weight, device: device is not None,
+        message="group_size 128 does not divide in_features 100",
+    )
+
+    with pytest.raises(RuntimeError, match="does not divide"):
+        quantize_tensor(_weight(), bits=4, group_size=128, device=torch.device("cuda"))
+
+    assert calls == [(64, "cuda")], "a real bug must not be retried anywhere"
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("CUDA out of memory. Tried to allocate 2.00 GiB", True),
+        ("CUDA OUT OF MEMORY", True),
+        ("group_size does not divide in_features", False),
+        ("expected scalar type Half but found Float", False),
+    ],
+)
+def test_out_of_memory_is_read_from_the_message(message: str, expected: bool) -> None:
+    assert device_module._is_out_of_memory(RuntimeError(message)) is expected
+
+
+def test_the_typed_error_is_recognised_whatever_it_says() -> None:
+    """The reason the type is checked and not only the message."""
+    oom = getattr(torch.cuda, "OutOfMemoryError", None)
+    if oom is None:
+        pytest.skip("this torch predates torch.cuda.OutOfMemoryError")
+    assert device_module._is_out_of_memory(oom("allocation failed")) is True
+
+
+def test_the_fallback_is_per_tensor_and_not_per_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One oversized weight must not cost every other module the accelerator."""
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    calls = _record_encoder(
+        monkeypatch, lambda weight, device: device is not None and weight.shape[0] >= 256
+    )
+
+    model = nn.Sequential(nn.Linear(256, 256, bias=False), nn.Linear(256, 8, bias=False))
+    quantize_model(model, {"0": 4, "1": 4}, group_size=128, compute_device="cuda")
+
+    assert (256, "cuda") in calls, "the big weight should have been tried on the card"
+    assert (256, None) in calls, "and retried on its own device"
+    assert (8, "cuda") in calls, "the small weight should still get the card"
+    assert (8, None) not in calls, "and must not be dragged onto the CPU with it"
+
+
+# --------------------------------------------------------------------------
+# CLI wiring
+# --------------------------------------------------------------------------
+
+
+def test_the_flag_reaches_the_commands_that_encode() -> None:
+    parser = build_parser()
+    assert parser.parse_args(["quantize", "m", "-o", "o"]).compute_device == "auto"
+    argv = ["quantize", "m", "-o", "o", "--compute-device", "cpu"]
+    assert parser.parse_args(argv).compute_device == "cpu"
+    assert parser.parse_args(["eval", "m", "--task", "gsm8k"]).compute_device == "auto"
+
+
+def test_the_flag_is_absent_where_nothing_is_encoded() -> None:
+    # ``inspect`` reads shapes and scores. A knob that silently does nothing is worse
+    # than no knob: it is one a user can set, and then wonder about.
+    assert not hasattr(build_parser().parse_args(["inspect", "m"]), "compute_device")
 
 
 @requires_cuda
