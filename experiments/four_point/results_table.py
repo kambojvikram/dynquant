@@ -2,7 +2,9 @@
 
 Reads only what is on disk. Nothing here recomputes an accuracy or a size, so every
 number in the table is a number some run produced, and a run that has not happened
-shows up as a missing row rather than as a gap the reader has to notice.
+shows up as a missing row rather than as a gap the reader has to notice. The single
+derived number is the fp16 size column, and it is derived from the quantized rows'
+own accounting rather than from a constant -- see :func:`infer_params`.
 
 The standard-error column is not decoration. At GSM8K's n=1319 one binomial SE is
 about 1.3 points, so two arms seven points apart are separated and two arms one point
@@ -39,6 +41,8 @@ from __future__ import annotations
 import argparse
 import math
 import sys
+from collections.abc import Mapping
+from typing import Any
 
 from common import TASK, read_record
 
@@ -69,18 +73,45 @@ def standard_error(accuracy: float, total: int) -> float:
     return math.sqrt(accuracy * (1.0 - accuracy) / total) * 100.0
 
 
+def infer_params(records: Mapping[str, Any]) -> float | None:
+    """Recover the parameter count the quantized rows were already sized against.
+
+    ``quantized_gib`` is ``params * average_bits / 8``, so any quantized row inverts
+    to the count that produced it. Taking it from the data is the whole point. The
+    default here used to be a literal ``1.8821e9`` -- Qwen3.5-2B's parameter count,
+    correct for the runs this script was written against and silently wrong for every
+    model after them. A 7 B run that did not pass ``--params`` printed 3.506 GiB for
+    its fp16 rows: not merely wrong, but *smaller* than the 4.25-bit arm underneath
+    it, which inverts the one comparison the column exists to support. A size column
+    that has to be told which model it is describing will eventually describe the
+    wrong one.
+
+    Inferring also makes the column internally consistent: fp16 and quantized rows
+    then count the same tensors, so the ratio between them is a real ratio. The count
+    covers quantizable modules only -- norms stay fp16 and are outside this
+    accounting, about 0.3 M parameters on a 7 B, which is below the printed precision.
+    """
+    for record in records.values():
+        if record and record.get("quantized_gib") and record.get("average_bits"):
+            return record["quantized_gib"] * 2**30 * 8 / record["average_bits"]
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--params",
         type=float,
-        default=1.8821e9,
-        help="parameter count for the fp16 size column",
+        default=None,
+        help="parameter count for the fp16 size column; inferred from a quantized row when omitted",
     )
     args = parser.parse_args()
-    fp16_gib = args.params * FP16_BYTES_PER_PARAM / 2**30
 
     from dynquant.eval.compare import compare_paired
+
+    records = {name: read_record(name) for name, _ in ROWS}
+    params = args.params or infer_params(records)
+    fp16_gib = params * FP16_BYTES_PER_PARAM / 2**30 if params else None
 
     header = (
         f"{'measurement point':32s} {'bits':>6s} {'GiB':>6s} {'exact match':>12s} "
@@ -93,7 +124,7 @@ def main() -> int:
     found: dict[str, tuple[float, float]] = {}
     hits: dict[str, list[bool]] = {}
     for name, what in ROWS:
-        data = read_record(name)
+        data = records[name]
         if data is None or "accuracy" not in data:
             print(f"{what:32s} {'--':>6s} {'--':>6s} {'not run':>12s}")
             continue
@@ -109,7 +140,7 @@ def main() -> int:
         print(
             f"{what:32s} "
             f"{(f'{bits:.3f}' if bits else '16.000'):>6s} "
-            f"{(f'{gib:.3f}' if gib else f'{fp16_gib:.3f}'):>6s} "
+            f"{(f'{gib:.3f}' if gib else f'{fp16_gib:.3f}' if fp16_gib else '--'):>6s} "
             f"{accuracy * 100:11.2f}% {se:5.2f} "
             f"{data['correct']:5d}/{total:<4d} {data['unparseable']:8d}"
         )
