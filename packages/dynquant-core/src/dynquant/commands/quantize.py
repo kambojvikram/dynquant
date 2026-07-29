@@ -169,6 +169,7 @@ def run(args: argparse.Namespace) -> int:
         group_size=args.group_size,
         symmetric=args.symmetric,
         in_place=True,
+        compute_device=getattr(args, "compute_device", "auto"),
         progress=None if args.quiet else _shared.progress_printer("quantize"),
     )
     elapsed = time.time() - started

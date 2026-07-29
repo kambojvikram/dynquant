@@ -149,10 +149,23 @@ def quantize_with_search(
     candidates: Sequence[float] = CLIP_CANDIDATES,
     compute_dtype: torch.dtype | None = None,
     row_offset: int = 0,
+    device: torch.device | str | None = None,
 ) -> tuple[QuantTensor, ClipSearchResult]:
-    """Search, then encode once with the per-group winners."""
+    """Search, then encode once with the per-group winners.
+
+    ``device`` runs the arithmetic somewhere other than where ``weight`` lives --
+    see :mod:`dynquant.quant.device` for why that is worth separating. The weight is
+    moved once and the result comes back on the device that did the work, because
+    the caller knows where it belongs and this function does not. ``None`` leaves
+    everything where it is.
+
+    Prefer :func:`dynquant.quant.device.quantize_tensor` over passing ``device``
+    here: it is this call plus the out-of-memory fallback, and a bare fallback-less
+    move turns a tensor that does not fit into a failed run rather than a slow one.
+    """
+    work = weight if device is None else weight.to(device)
     result = search_clip_ratios(
-        weight,
+        work,
         bits=bits,
         group_size=group_size,
         symmetric=symmetric,
@@ -160,7 +173,7 @@ def quantize_with_search(
         compute_dtype=compute_dtype,
     )
     quantized = QuantTensor.from_dense(
-        weight,
+        work,
         bits=bits,
         group_size=group_size,
         symmetric=symmetric,

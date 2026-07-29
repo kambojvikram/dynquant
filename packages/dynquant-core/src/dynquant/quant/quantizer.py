@@ -36,7 +36,8 @@ from dynquant._logging import get_logger
 from dynquant.constants import DEFAULT_GROUP_SIZE
 from dynquant.errors import DynQuantError
 
-from .grid import CLIP_CANDIDATES, quantize_with_search
+from .device import quantize_tensor, resolve_compute_device
+from .grid import CLIP_CANDIDATES
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -99,9 +100,18 @@ def quantize_model(
     symmetric: bool = False,
     candidates: Sequence[float] = CLIP_CANDIDATES,
     in_place: bool = True,
+    compute_device: str | torch.device | None = "auto",
     progress: Callable[[int, int], None] | None = None,
 ) -> QuantizationReport:
     """Encode every module named in ``bits`` and write the result back.
+
+    ``compute_device`` decides where the encoding arithmetic runs, independently of
+    where the model sits; it defaults to the accelerator when there is one. A model
+    on the CPU is still a model on the CPU afterwards -- weights move one at a time
+    and the reconstruction is copied back across the device boundary -- so this
+    changes how long the call takes and nothing about what it produces. Pass
+    ``None`` to keep the arithmetic on the weights' own device. See
+    :mod:`dynquant.quant.device`.
 
     Raises:
         DynQuantError: A name in the bit map does not resolve to a module with a
@@ -112,13 +122,14 @@ def quantize_model(
     """
     report = QuantizationReport()
     total = len(bits)
+    device = resolve_compute_device(compute_device)
 
     for index, (name, width) in enumerate(sorted(bits.items())):
         weight = _target_tensor(model, name)
 
         with torch.no_grad():
             original = weight.detach()
-            quantized, search = quantize_with_search(
+            quantized, search = quantize_tensor(
                 original,
                 bits=width,
                 group_size=group_size,
@@ -127,9 +138,14 @@ def quantize_model(
                 compute_dtype=original.dtype
                 if original.dtype in (torch.float16, torch.bfloat16)
                 else None,
+                device=device,
             )
+            # Scored where the encoding happened rather than where the weight
+            # lives: the error metrics are a reduction over the same tensors the
+            # search just built, and dragging them back first would spend the
+            # transfer to compute two scalars.
             recon = quantized.dequantize(dtype=torch.float32)
-            reference = original.to(torch.float32)
+            reference = original.to(device=recon.device, dtype=torch.float32)
             rmse = float(torch.sqrt(torch.mean((reference - recon) ** 2)))
             rms = float(torch.sqrt(torch.mean(reference**2)))
 
@@ -137,7 +153,9 @@ def quantize_model(
                 # copy_ rather than assignment: it preserves both the parameter
                 # object and, critically, any tying -- an lm_head sharing storage
                 # with the embedding sees the change without being quantized again.
-                weight.copy_(recon.to(weight.dtype))
+                # It also crosses devices and casts, which is what carries the
+                # reconstruction back to a model the accelerator never held.
+                weight.copy_(recon)
 
             del recon, reference
 
