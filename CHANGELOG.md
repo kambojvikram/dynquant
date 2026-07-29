@@ -19,6 +19,57 @@ ones that invalidate artifacts a user has already produced.
 
 ## [Unreleased]
 
+### Changed — encoding runs on the accelerator, wherever the model lives
+
+`quantize_model` and `pack_model` grew a `compute_device` argument, defaulting to
+`"auto"`, exposed as `--compute-device` on `dynquant quantize` and `dynquant eval`
+and as `$DYNQUANT_QUANTIZE_DEVICE`. New module: `dynquant.quant.device`.
+
+Encoding a weight reads one tensor and writes one tensor, so it gives the same
+answer wherever it is evaluated. The search followed its input's device anyway,
+which meant a model held in host RAM did eight candidate encodes, eight decodes and
+a grouped error reduction per module on the CPU with an idle GPU beside it. That is
+not a corner case — it is every model too large for VRAM, and it is *deliberately*
+the case when the point of the run is to measure packed VRAM without a dense copy
+ever reaching the device, which is exactly the configuration that most wants the
+accelerator and least wants the model on it. Measured on Mistral-7B-Instruct-v0.3 at
+4.25 bits, 226 modules: **1685 s on the CPU against 17.6 s on an A100 — 96× faster**,
+or 7.5 s per module against 0.08 s.
+
+Weights move one at a time and each packed result is returned to the model's own
+device before its module is replaced, so the model does not move, mixed-device models
+are not created, and the extra VRAM is one tensor's working set rather than a second
+copy of the model: 3.77 GiB of GPU peak to pack a model with 13.5 GiB of bf16
+weights. That bound scales with the *largest* tensor, not the model, and at roughly
+an order of magnitude over its bf16 size — so on a large-vocabulary model with an
+untied `lm_head` it can still exceed a small card. A tensor that will not fit falls
+back to its own device for that tensor alone, with a warning; falling back wholesale
+would surrender the entire speedup to the single largest weight.
+
+Because it is a performance change it must not be a change in *quality*, and
+`tests/test_quant_device.py` pins that at 2/3/4/8 bits. It pins a tolerance rather
+than byte-equality, which is worth stating plainly because byte-equality is what an
+earlier draft of this entry claimed and measurement refuted. CPU and CUDA encodings
+differ in two ways, both negligible and neither fixable by asserting harder: one
+group scale in ~10^5 differs by a single fp16 ulp (floating-point contraction in the
+clip arithmetic — group min/max and chosen ratios agree exactly, so it is not
+reduction order), and the eight-candidate clip search tie-breaks differently on
+groups whose top two candidates sit within float noise — 2 groups in 131,072 at 4
+bits, none at 2, 3 or 8. Relative reconstruction error differs by at most 1e-6.
+
+The consequence is documented rather than papered over: **a packed checkpoint is
+bit-reproducible on a given device, not across devices.** Anything comparing two
+encodings for identity — a parity check between a simulated arm and a packed one
+most of all — has to encode both on the same device to be measuring what it thinks
+it is measuring.
+
+`dynquant eval --map` now records `cuda_pack_peak_bytes` and `cuda_resident_bytes`
+in place of `cuda_peak_bytes`. The old key spanned the encode working set, which was
+harmless while encoding happened on whatever device the model already sat on and
+would have quietly become an overstatement now that it does not. What a reader wants
+from a packed model is what it holds; that is measured after the transients are
+released, and separately from the peak.
+
 ### Added — Mistral-7B-Instruct-v0.3 on Banking77, the second end-to-end run
 
 `experiments/four_point/RESULTS-mistral7b-banking77.md`. All six stages on a model,

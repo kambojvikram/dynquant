@@ -41,7 +41,8 @@ from torch import nn
 from dynquant._logging import get_logger
 from dynquant.constants import DEFAULT_GROUP_SIZE, QUANT_TENSOR_SUFFIXES
 from dynquant.errors import DynQuantError
-from dynquant.quant.grid import CLIP_CANDIDATES, quantize_with_search
+from dynquant.quant.device import quantize_tensor, resolve_compute_device
+from dynquant.quant.grid import CLIP_CANDIDATES
 from dynquant.quant.tensor import QuantLayout, QuantTensor
 
 from . import ops
@@ -190,16 +191,18 @@ class DynQuantLinear(_PackedModule):
         group_size: int = DEFAULT_GROUP_SIZE,
         symmetric: bool = False,
         candidates: Sequence[float] = CLIP_CANDIDATES,
+        compute_device: str | torch.device | None = "auto",
     ) -> DynQuantLinear:
-        quantized, _ = quantize_with_search(
+        quantized, _ = quantize_tensor(
             linear.weight.detach(),
             bits=bits,
             group_size=group_size,
             symmetric=symmetric,
             candidates=candidates,
             compute_dtype=_storage_dtype(linear.weight),
+            device=resolve_compute_device(compute_device),
         )
-        return cls(quantized, linear.bias)
+        return cls(quantized.to(linear.weight.device), linear.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return ops.quantized_matmul(x, self.weight_qt, self.bias)
@@ -236,16 +239,18 @@ class DynQuantEmbedding(_PackedModule):
         group_size: int = DEFAULT_GROUP_SIZE,
         symmetric: bool = False,
         candidates: Sequence[float] = CLIP_CANDIDATES,
+        compute_device: str | torch.device | None = "auto",
     ) -> DynQuantEmbedding:
-        quantized, _ = quantize_with_search(
+        quantized, _ = quantize_tensor(
             embedding.weight.detach(),
             bits=bits,
             group_size=group_size,
             symmetric=symmetric,
             candidates=candidates,
             compute_dtype=_storage_dtype(embedding.weight),
+            device=resolve_compute_device(compute_device),
         )
-        return cls(quantized, padding_idx=embedding.padding_idx)
+        return cls(quantized.to(embedding.weight.device), padding_idx=embedding.padding_idx)
 
     def forward(self, ids: torch.Tensor) -> torch.Tensor:
         return ops.embedding_lookup(self.weight_qt, ids)
@@ -310,6 +315,7 @@ def pack_model(
     group_size: int = DEFAULT_GROUP_SIZE,
     symmetric: bool = False,
     candidates: Sequence[float] = CLIP_CANDIDATES,
+    compute_device: str | torch.device | None = "auto",
     progress: Callable[[int, int], None] | None = None,
 ) -> PackReport:
     """Replace every module named in ``bits`` with its packed equivalent, in place.
@@ -317,6 +323,17 @@ def pack_model(
     Modules are replaced one at a time and the dense weight is dropped as soon as
     its packed form exists, so peak memory is the model plus one weight -- not the
     model plus a second copy of it.
+
+    Where the encoding runs
+    -----------------------
+    ``compute_device`` defaults to the accelerator and is independent of where the
+    model sits, which matters most for the case this function exists to serve:
+    packing a CPU-resident model precisely so that no dense weight ever reaches the
+    GPU. Doing the arithmetic there anyway costs one tensor's working set,
+    transiently, and each packed result is returned to the model's own device before
+    the module is replaced -- so the model does not move and a subsequent
+    ``model.to("cuda")`` still carries packed buffers and nothing else. The saving
+    is large: a 7 B that took forty minutes to pack takes about one.
 
     Tied weights
     ------------
@@ -331,6 +348,7 @@ def pack_model(
     """
     report = PackReport()
     targets = sorted(bits.items())
+    device = resolve_compute_device(compute_device)
 
     # Snapshot the storage identity of every candidate weight before anything is
     # replaced. Once a module is swapped out its Parameter may be freed, and a
@@ -348,14 +366,20 @@ def pack_model(
         dense_bytes = weight.numel() * weight.element_size()
 
         with torch.no_grad():
-            quantized, _ = quantize_with_search(
+            quantized, _ = quantize_tensor(
                 weight.detach(),
                 bits=width,
                 group_size=group_size,
                 symmetric=symmetric,
                 candidates=candidates,
                 compute_dtype=_storage_dtype(weight),
+                device=device,
             )
+            # Back to the model's device before the swap. Leaving it where the
+            # arithmetic happened would build a model whose modules sit on
+            # different devices depending on which ones were quantized, and the
+            # first forward pass would be where that is discovered.
+            quantized = quantized.to(weight.device)
         replacement = _wrap(module, quantized)
         owner_by_ptr[ptr] = (name, quantized, replacement)
         _replace(model, name, replacement)

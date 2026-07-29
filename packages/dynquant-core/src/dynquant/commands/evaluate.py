@@ -256,6 +256,7 @@ def _pack(model: Any, args: argparse.Namespace) -> dict[str, Any]:
         model,
         bits,
         group_size=group_size,
+        compute_device=getattr(args, "compute_device", "auto"),
         progress=None if args.quiet else _shared.progress_printer("pack"),
     )
     print("\n" + report.summary(), flush=True)
@@ -270,6 +271,17 @@ def _pack(model: Any, args: argparse.Namespace) -> dict[str, Any]:
             f"unaffected; anything timed here is the fallback. Run `dynquant doctor`.",
             flush=True,
         )
+    # Two different numbers, and conflating them would misreport the headline claim.
+    # Encoding may borrow the GPU even for a CPU-resident model (see
+    # `dynquant.quant.device`), so the peak spans a one-time working set that is gone
+    # by the time anything runs. What a reader wants from a packed model is what it
+    # *holds*, so that is recorded separately and after the transients are released.
+    memory: dict[str, int | None] = {"cuda_pack_peak_bytes": None, "cuda_resident_bytes": None}
+    if torch.cuda.is_available():
+        memory["cuda_pack_peak_bytes"] = int(torch.cuda.max_memory_allocated())
+        torch.cuda.empty_cache()
+        memory["cuda_resident_bytes"] = int(torch.cuda.memory_allocated())
+
     return {
         "map": args.map,
         "group_size": group_size,
@@ -278,9 +290,7 @@ def _pack(model: Any, args: argparse.Namespace) -> dict[str, Any]:
         "tied": len(report.tied),
         "fp16_bytes": report.fp16_bytes,
         "packed_bytes": report.packed_bytes,
-        "cuda_peak_bytes": (
-            int(torch.cuda.max_memory_allocated()) if torch.cuda.is_available() else None
-        ),
+        **memory,
     }
 
 

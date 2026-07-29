@@ -49,6 +49,26 @@ EXIT_INTERRUPTED = 130
 # you were about to write.
 
 
+def _add_compute_device(parser: argparse.ArgumentParser) -> None:
+    """For commands that encode weights, as opposed to merely reading their shapes.
+
+    Separate from ``--device`` on purpose: that one says where the model lives, and
+    the two answers differ exactly when it matters most. A model too large for VRAM
+    is loaded onto the CPU and its encoding still belongs on the GPU.
+    """
+    parser.add_argument(
+        "--compute-device",
+        default="auto",
+        metavar="DEVICE",
+        help=(
+            "where the encoding arithmetic runs, independent of --device: 'auto' "
+            "(default) uses CUDA when present, 'none' keeps it on whichever device "
+            "holds the weights, or name one. Weights move one at a time, so this "
+            "costs one tensor of VRAM and not a second copy of the model"
+        ),
+    )
+
+
 def _add_loading(parser: argparse.ArgumentParser, *, device: str = "cuda") -> None:
     parser.add_argument(
         "--device",
@@ -289,6 +309,7 @@ def _add_quantize(subparsers: _SubParsers) -> None:
     parser.add_argument("model", help="checkpoint directory or Hub id")
     parser.add_argument("-o", "--output", help="directory to write (required unless --dry-run)")
     _add_loading(parser)
+    _add_compute_device(parser)
     _add_allocation(parser)
     _add_map_input(parser)
     parser.add_argument("--target", type=float, metavar="BITS", help="average bits per weight")
@@ -348,6 +369,7 @@ def _add_eval(subparsers: _SubParsers) -> None:
         help="which task to score",
     )
     _add_loading(parser)
+    _add_compute_device(parser)
     _add_map_input(parser)
     parser.add_argument(
         "--group-size",

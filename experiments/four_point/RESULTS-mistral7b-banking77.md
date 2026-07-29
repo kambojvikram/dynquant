@@ -90,14 +90,24 @@ the same convention as a "4-bit g128" GPTQ checkpoint.
 
 ### What these numbers are not
 
-Accuracy here is real: the quantizer writes dequantized values back in place, and those
-are bit-for-bit the values a packed checkpoint reconstructs (pinned by
-`tests/test_quantizer.py`). **Memory and speed are not measured in this run and are not
-claimed.** The GiB column is the size the packed checkpoint would occupy on disk, computed
-from the format's own accounting; the model as evaluated sat in memory at bf16. Those two
-claims are measured for the packed-kernel path in
-[`RESULTS.md`](RESULTS.md#running-it-packed-the-kernels-and-what-they-buy), which also
-establishes that simulated quantization tells the truth about accuracy — exactly.
+Accuracy in the table below is real, but it is *simulated* quantization: the quantizer
+writes dequantized values back in place, so the arithmetic is the quantized arithmetic
+while the memory footprint stays bf16. The GiB column is therefore the size the packed
+checkpoint *would* occupy, computed from the format's own accounting, not a measurement of
+this run. **Memory and speed are measured separately**, on the packed-kernel path, in
+[Running it packed](#running-it-packed-vram-speed-and-whether-the-simulation-told-the-truth)
+below.
+
+Simulated and packed reconstruct the same values bit-for-bit **on a given device**, which
+is what `tests/test_quantizer.py` pins and is narrower than it sounds. Encoding is not
+bit-reproducible *across* devices: one group scale in ~10⁵ differs by a single fp16 ulp
+(floating-point contraction — the `centre ± half` clip arithmetic fusing into an FMA on one
+device and not the other), and the 8-candidate clip search is an `argmin`, so groups whose
+top two candidates sit within float noise tie-break either way. The two encodings are of
+equal quality — relative reconstruction error differs by at most 1e−6 — but they are not
+the same file, and anything comparing two arms for *identity* has to encode both on the
+same device. That matters here because it is exactly what these arms do not do; the
+consequence is quantified below.
 
 ## What the allocator chose
 
@@ -235,6 +245,127 @@ is run the honest claim for Mistral/Banking77 is the +1.36 that was measured.
 allocated arm is still separated from fp16 (−1.17, p = 1.4e−05). Anyone choosing 3.25 bits
 is spending about a point of accuracy for 4.92× compression, and the allocator's
 contribution is that the point is one and not two and a half.
+
+## Running it packed: VRAM, speed, and whether the simulation told the truth
+
+Every arm above holds bf16 weights. This section is the packed path — weights stored as
+`int32` words, the compiled `gemv_nbit` kernels doing the arithmetic, nothing dense ever
+materialised — which is the only configuration that can speak to memory or speed at all.
+
+**These arms are a different checkpoint, and the tables must not be merged.** The
+fine-tuned model was re-trained between the two campaigns and written to the same path, so
+`stage3_finetuned` and `stage3_refit` are two different adapters at one location: 2911 and
+2907 of 3080, four problems apart, well inside the ±13-problem standard error. Everything
+above is the first adapter; everything here is the second. Comparisons are only made
+within a set.
+
+One check comes free from that split. The packed harness run with `--dense` scores
+**2907/3080 — identical to `stage3_refit` under the ordinary evaluator**, so the harness
+itself contributes nothing to the numbers below.
+
+| arm | resident VRAM | manifest | vs bf16 | exact match | vs fp16 |
+|---|---|---|---|---|---|
+| dense bf16 | 13.5005 GiB | — | — | 94.38% (2907/3080) | — |
+| packed 4.25 | **3.5864 GiB** | 3.5859 GiB | **3.77×** | 94.16% (2900/3080) | −0.23 |
+| packed 3.25 | **2.7427 GiB** | 2.7422 GiB | **4.92×** | 93.54% (2881/3080) | −0.84 |
+
+### VRAM: the claim the method could not previously make
+
+**3.77× and 4.92× smaller, with zero modules left dense.** The measured resident figure
+exceeds the manifest by 0.0005 GiB in both arms — **+0.014% and +0.018%** — which is the
+packing metadata and the handful of `fp16` norms the format keeps unquantized, and is the
+tightest statement available that the on-disk accounting is not lying. Both ratios land on
+the figures the GiB column of the accuracy table predicted from bit widths alone, so the
+allocator's size arithmetic is now confirmed against a device rather than trusted.
+
+Two independent routes agree on it, which is the point of measuring it twice: allocator
+bookkeeping (`memory_allocated()` after `empty_cache()`, which counts only *live* blocks,
+so transient encode buffers cannot inflate it) and an independent walk of the module tree
+summing buffer bytes. A discrepancy between them would mean a dense copy was still
+resident somewhere; there is none.
+
+Peak allocation across the full 3080-row evaluation falls from **19.49 GiB** to 9.58 and
+8.73 GiB, a 2.04× and 2.23× reduction. The gap between 3.77× on weights and 2.04× at peak
+is activations and KV cache, which quantization does not touch — worth stating, because the
+weight ratio is the number that gets quoted and the peak is the number that decides whether
+a model fits.
+
+### Speed: slower, and not for the reason you would guess
+
+| batch | dense bf16 | packed 4.25 | packed 3.25 |
+|---|---|---|---|
+| 1 | 42.41 tok/s | 36.90 (0.87×) | 36.93 (0.87×) |
+| 4 | 165.50 | 145.15 (0.88×) | 149.30 (0.90×) |
+| 8 | 328.01 | 294.03 (0.90×) | 280.01 (0.85×) |
+| 32 | 1244.41 | 400.48 (**0.32×**) | 220.30 (**0.18×**) |
+
+**Packed decode is slower than bf16 at every batch size tested, in both arms.** That is the
+honest headline and it should not be softened; 3.77× less weight traffic bought nothing.
+
+The two packed arms are what make the diagnosis rather than a guess. At batch 1 they decode
+in **27.099 ms and 27.078 ms** — 0.08% apart — while carrying 3.5864 and 2.7427 GiB of
+weights. A quarter less weight traffic produced no measurable change in decode time. If
+this kernel were bandwidth-bound that alone would be impossible, and no arithmetic about
+theoretical peaks is needed to see it.
+
+The shape of the deficit agrees. At batches 1–8 it is a *fixed additive* 2.6–4.2 ms per
+step — flat while throughput varies eightfold — which is the signature of per-launch cost.
+Spread over 226 quantized modules that is ~15 µs each, about what a kernel launch plus
+dispatch costs. The bandwidth figures confirm it from the third direction: dense moves
+14.50 GB in 23.6 ms = **615 GB/s**, packed 3.85 GB in 27.1 ms = **142 GB/s**, against
+roughly 1935 GB/s of A100 HBM. Neither arm is within reach of the memory ceiling — packed
+sits at 7% of it — so shrinking the weights of a latency-bound kernel cannot make it
+faster. This is precisely the case CUDA Graphs (P8) exists for: capture the decode step
+once, replay per token, and the per-launch tax disappears.
+
+Batch 32 is a different phenomenon and not a worse version of the same one. `GEMV_MAX_ROWS`
+is **8**, and decode dispatches on batch×1 rows, so batches 1–8 use the packed GEMV and 32
+does not — it falls back to dequantise-then-`F.linear`, which materialises a bf16 copy per
+call and therefore reads *more* memory than the dense arm does. That the bound is 8 is not a
+tuning choice: the kernel indexes its accumulator registers by a compile-time row count, so
+above it the path is unimplemented rather than merely slow. The 0.32× and 0.18× are that
+fallback, and 3.25 is the worse of the two because 3-bit unpacking costs three words per 32
+values, so dequantising the whole tensor is more expensive than at 4-bit.
+
+Two things follow that the batch-32 numbers would otherwise obscure. Batch 8 sits exactly
+*on* the boundary and still runs at 0.85–0.90× of bf16, so the kernel is slower than dense
+across its entire supported range — the cliff is not hiding a win. And prefill shows the
+boundary from the other side: 1.75× slower than bf16 at batch 1 (0.118 s vs 0.068 s), but
+**1.8013 s vs 1.7924 s at batch 32 — within 0.5%** — because the large-`M` path is already
+the dequant-then-cuBLAS route that P7 specifies, and it performs as designed.
+
+### Did the simulation tell the truth about accuracy?
+
+Near enough, and the residual is instructive. Both arms come out at net −1 against their
+simulated counterpart — and in the 4.25 case *that net conceals a two-way scatter*:
+
+| | packed 4.25 | packed 3.25 |
+|---|---|---|
+| simulated-only correct | 3 | 1 |
+| packed-only correct | 2 | 0 |
+| **total disagreement** | **5 of 3080 (0.16%)** | **1 of 3080 (0.03%)** |
+| agreement | 99.84% | **99.97%** |
+
+At 4.25 bits, three down and two up is the signature of a perturbation small enough to move
+only problems already balanced on a decision boundary — a large population when the argmax
+is over 77 classes. A kernel computing something wrong, or an encoding that was genuinely
+worse, loses in one direction; you do not win problems back.
+
+The 3.25 arm's single flip is *formally* one-directional and that should be read as saying
+nothing at all. One disagreement is one-directional by arithmetic necessity, so the
+direction test carries no information at n = 1 — it needs at least three before a clean
+split is more surprising than not. What the 3.25 arm does contribute is the tighter
+agreement: 99.97% on the arm with **more** aggressive quantization, which is the opposite
+of what a systematic kernel defect would produce.
+
+Two mechanisms contribute and this run cannot separate them, which is worth stating rather
+than picking the flattering one. The simulated arm encoded on the GPU (`load_model`
+defaults to CUDA) and the packed arm encoded on the CPU, so by the cross-device result
+above they carry genuinely different codes on a handful of groups *before any kernel runs*.
+The kernels then use a split-K reduction where the simulated arm uses cuBLAS, which is a
+second, independent source of float divergence. Re-encoding both arms on the same device
+would isolate the second term — but it would not drive the count to zero, because the two
+reduction orders remain different however the weights were encoded.
 
 ## What replicated
 
