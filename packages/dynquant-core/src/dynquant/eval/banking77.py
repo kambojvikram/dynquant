@@ -6,21 +6,30 @@ Chosen by measurement, not by reputation. The rule comes from GSM8K, where a
 six-arm run was spent before anyone checked that the base model already scored
 66% and there was therefore no fine-tuning gain for quantization to be measured
 against. So four unused open datasets were screened against *base*
-Mistral-7B-Instruct-v0.3 first, 300 rows each, in the same harness that scores the
-real runs:
+Mistral-7B-Instruct-v0.3 first, a few hundred rows each, in the same harness that
+scores the real runs:
 
 ===========  ==============  ========  =====================  ==========
 candidate    base few-shot   chance    supervised reference   headroom
 ===========  ==============  ========  =====================  ==========
-Banking77    41.0%             1.3%    ~93% (BERT-base)       ~52 pts
-MNLI         71.0%            33.3%    ~90% (BERT-large)      ~19 pts
-PubMedQA     57.5%            33.3%    ~73%                   ~15 pts
-LogiQA       41.3%            25.0%    ~40% (RoBERTa-large)   none
+Banking77    36.3%  [1]        1.3%    ~93% (BERT-base)       ~57 pts
+MNLI         71.0%  (300)     33.3%    ~90% (BERT-large)      ~19 pts
+PubMedQA     57.5%  (200)     33.3%    ~73%                   ~15 pts
+LogiQA       41.3%  (300)     25.0%    ~40% (RoBERTa-large)   none
 ===========  ==============  ========  =====================  ==========
+
+[1] Full 3,080-row test set, not the screen's 300. The screen reported 41.0%, and
+that figure was wrong for the reason :func:`load_banking77` now exists to prevent:
+this split alone of the four ships in label order, so its first 300 rows cover 8
+intents of 77. The other three interleave (540, 116 and 6,515 label changes
+respectively) and their numbers stand as screened. The correction moves Banking77
+in the direction that widens its lead, so the choice below is unaffected -- but it
+was luck that it did, and the ranking was made on a number that had not been
+earned.
 
 LogiQA is the interesting rejection: at 41.3% the *base* model is already above
 the supervised reference, so a fine-tune there could only move the number down.
-Banking77 wins on every axis that matters here. Fifty-two points of headroom is
+Banking77 wins on every axis that matters here. Fifty-seven points of headroom is
 the widest gap the screen found; the distinctions the task turns on
 (``card_payment_fee_charged`` against ``extra_charge_on_statement``, six separate
 top-up failure modes) are label semantics no pre-training corpus teaches, so a

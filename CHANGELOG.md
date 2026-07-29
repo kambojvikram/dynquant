@@ -49,7 +49,7 @@ combine.
 ### Added — Banking77 in the experiment task registry
 
 Selected by re-running the headroom screen against Mistral-7B-Instruct-v0.3, since
-headroom is a property of the model/dataset pair and not of the dataset. ~52 points of
+headroom is a property of the model/dataset pair and not of the dataset. ~57 points of
 it, the widest of four candidates, and a 1.3% chance floor — the most sensitive of the
 three tasks to quantization damage, because there is no cushion for a small regression
 to hide under. `dynquant.eval.banking77` holds the screen table.
