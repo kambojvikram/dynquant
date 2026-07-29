@@ -10,10 +10,17 @@ while ``pip install dynquant-kernels`` still resolves the default build.
 
 Not required to match ``dynquant-core``'s version -- see the pin comment in
 ``packages/dynquant/pyproject.toml``. Compatibility is the ABI number's job.
+
+It moves with every tagged release anyway, for a duller reason: ``publish-kernels``
+uploads this project's sdist to PyPI, and PyPI refuses a filename it already holds.
+A release that left this string alone would build the whole wheel matrix, publish
+``dynquant-core``, then fail on the kernels upload and skip the meta package --
+which ``publish-meta`` needs, so ``pip install dynquant`` would still resolve to the
+previous release while ``dynquant-core`` had moved on.
 """
 
 from __future__ import annotations
 
 __all__ = ["__version__"]
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"

@@ -24,7 +24,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dynquant"
-version = "0.1.0"
+version = "0.1.1"
 description = "Training-dynamics-driven mixed-precision LLM quantization, with prebuilt CUDA kernels."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -42,7 +42,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "dynquant-core==0.1.0",
+    "dynquant-core==0.1.1",
     # Prebuilt kernels exist only where we can build and test them. Elsewhere this
     # resolves to nothing, `dynquant doctor` reports backend=torch with the reason,
     # and quantization still works -- rather than pip failing to find a wheel and
@@ -60,21 +60,25 @@ dependencies = [
     # ABI handshake (see csrc/include/dynquant/abi.h), which is a much stronger
     # check than a version equality: a mismatched ABI refuses to load, whereas a
     # matching version number proves nothing about the packed layout.
-    "dynquant-kernels>=0.1.0,<0.2; platform_system=='Linux' and platform_machine=='x86_64'",
+    # Floor raised to 0.1.1 for a reason unrelated to the cadence above: 0.1.0's
+    # wheels are the ones declaring an open `torch>=2.4` against a binary linked to one
+    # minor, which is the failure 0.1.1 exists to close. Leaving the floor at 0.1.0
+    # would let this release resolve the very wheel it fixes.
+    "dynquant-kernels>=0.1.1,<0.2; platform_system=='Linux' and platform_machine=='x86_64'",
 ]
 
 [project.optional-dependencies]
 # Mirrors of dynquant-core's extras, so users never have to know that `core`
 # exists as a separate name.
-hf = ["dynquant-core[hf]==0.1.0"]
-train = ["dynquant-core[train]==0.1.0"]
-eval = ["dynquant-core[eval]==0.1.0"]
-triton = ["dynquant-core[triton]==0.1.0"]
-dev = ["dynquant-core[dev]==0.1.0"]
+hf = ["dynquant-core[hf]==0.1.1"]
+train = ["dynquant-core[train]==0.1.1"]
+eval = ["dynquant-core[eval]==0.1.1"]
+triton = ["dynquant-core[triton]==0.1.1"]
+dev = ["dynquant-core[dev]==0.1.1"]
 
 # Force the compiled kernels regardless of platform marker. Falls back to an sdist
 # build, which needs nvcc, cmake and a C++ toolchain.
-kernels = ["dynquant-kernels>=0.1.0,<0.2"]
+kernels = ["dynquant-kernels>=0.1.1,<0.2"]
 
 [project.urls]
 # See the note in dynquant-core: no Documentation key until the site exists.

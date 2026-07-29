@@ -162,6 +162,7 @@ index. The plan's mkdocs site is still not written; this README and
 [docs/format-spec.md](docs/format-spec.md) are the docs.
 
 [v010]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.0
+[v011]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.1
 
 **What "done" means for P6, precisely.** The published research prototype dequantized
 back to fp16 at load time — storage savings only, no VRAM reduction and no speedup.
@@ -198,27 +199,31 @@ in this repository reports them from the other.
 
 ## Install
 
-On Linux x86_64 with CPython 3.10–3.13, **pin torch when installing 0.1.0**:
+On Linux x86_64 with CPython 3.10–3.13:
 
 ```bash
-pip install dynquant 'torch==2.7.*'               # core + kernels
+pip install dynquant                              # core + kernels
 ```
 
-The pin is doing real work and leaving it out is the difference between having the
-kernels and not. 0.1.0's kernels wheel declares an open `torch>=2.4` while the binary
-is linked against torch 2.7.1's C++ ABI, so a bare `pip install dynquant` resolves
-torch 2.13 next to it, the extension fails an undefined-symbol import, and DynQuant
-falls back to the torch backend — `pip` reporting success the whole way. Run
-`dynquant doctor`; it says which backend it actually got. Fixed at source for 0.1.1,
-where each wheel pins the minor it was built against; see
+**Use 0.1.1 or newer.** From 0.1.1 each kernels wheel declares the torch minor it was
+built against, so pip either resolves a torch the binary can load or tells you it
+cannot — the one thing it can no longer do is pair them silently wrong. Either way,
+run `dynquant doctor`: it reports which backend you actually got, which is the only
+statement about kernels that `pip install` output does not make.
+
+0.1.0 needs `pip install dynquant 'torch==2.7.*'` instead, and the pin is load-bearing.
+That wheel declares an open `torch>=2.4` while the binary is linked against torch
+2.7.1's C++ ABI, so a bare install resolves torch 2.13 beside it, the extension fails
+an undefined-symbol import, and DynQuant falls back to the torch backend — correct
+results, no VRAM saving, no speedup, `pip` reporting success the whole way. See
 [CHANGELOG.md](CHANGELOG.md#known-issues-in-010).
 
 There is one wheel on PyPI — the cu126 / torch 2.7 build. For other combinations the
-[v0.1.0 release][v010] is a `--find-links` variant index:
+[v0.1.1 release][v011] is a `--find-links` variant index:
 
 ```bash
-pip install 'torch==2.8.*' && pip install dynquant-kernels==0.1.0+cu128torch28 \
-  --find-links https://github.com/kambojvikram/dynquant/releases/expanded_assets/v0.1.0
+pip install 'torch==2.8.*' && pip install dynquant-kernels==0.1.1+cu128torch28 \
+  --find-links https://github.com/kambojvikram/dynquant/releases/expanded_assets/v0.1.1
 ```
 
 Anywhere else — Windows, macOS, CPU-only, ARM, glibc older than 2.34 — `dynquant-core`

@@ -19,6 +19,20 @@ ones that invalidate artifacts a user has already produced.
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-07-29
+
+A point release for one reason above the others: **install this instead of 0.1.0**,
+which shipped a kernels wheel pip would happily pair with a torch it cannot load.
+0.1.0 needed `pip install dynquant 'torch==2.7.*'` to work; 0.1.1 carries the bound
+in the wheel metadata, so the wrong pairing is now unresolvable rather than silently
+degraded.
+
+Everything else here is Python-side. No kernel source changed, `KERNEL_ABI_VERSION`
+is still 2, and the checkpoint and stats formats are untouched — a 0.1.0 checkpoint
+reads unchanged, and a 0.1.0 kernels wheel still loads against this core.
+`dynquant-kernels` moves to 0.1.1 with the others only because PyPI will not accept
+a second upload under a filename it already holds.
+
 ### Changed — encoding runs on the accelerator, wherever the model lives
 
 `quantize_model` and `pack_model` grew a `compute_device` argument, defaulting to
@@ -218,8 +232,8 @@ Without the pin the kernels install but never load: the wheel is built against t
 extension fails its import. DynQuant falls back to the torch backend — correct
 results, no VRAM saving, no speedup — and `pip` reports success. `dynquant doctor`
 is what tells you which backend you actually got; run it. Fixed at source in
-Unreleased above, where every wheel carries the bound of the minor it was built
-against.
+[0.1.1] above, where every wheel carries the bound of the minor it was built
+against — so the simplest response to this entry is to install 0.1.1.
 
 Two more things to know before installing:
 
@@ -1035,5 +1049,6 @@ and `mma.sync` accumulation — the AWQ/Marlin route — which is P7.
   Python costs. CUDA Graphs (P8) and a `flash-linear-attention` fast path are what address
   it. `experiments/qwen35_2b/RESULTS.md` has the measurement.
 
-[Unreleased]: https://github.com/kambojvikram/dynquant/compare/v0.1.0...main
+[Unreleased]: https://github.com/kambojvikram/dynquant/compare/v0.1.1...main
+[0.1.1]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.1
 [0.1.0]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.0
