@@ -1,0 +1,818 @@
+\documentclass[11pt]{article}
+\usepackage{fontspec}
+\usepackage[margin=1in,top=1.1in,bottom=1.1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{amsmath}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{unicode-math}
+\usepackage[hidelinks]{hyperref}
+\usepackage{microtype}
+\usepackage{tabularx}
+\usepackage{colortbl}
+\usepackage{needspace}
+\usepackage{float}
+
+\setmainfont{Times New Roman}
+\setmonofont{Consolas}[Scale=0.86]
+\setmathfont{Cambria Math}
+
+\definecolor{dqblue}{HTML}{1F3864}
+\definecolor{dqgrey}{HTML}{5A5A5A}
+\definecolor{dqrule}{HTML}{B4B4B4}
+\definecolor{rowtint}{HTML}{F2F2F2}
+\definecolor{warnbg}{HTML}{FBF3E4}
+\definecolor{winbg}{HTML}{EAF1E4}
+\definecolor{ctlbg}{HTML}{F7E9E9}
+
+\titleformat{\section}{\Large\bfseries\color{dqblue}}{\thesection}{0.7em}{}
+\titleformat{\subsection}{\large\bfseries\color{dqblue}}{\thesubsection}{0.6em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries}{\thesubsubsection}{0.5em}{}
+\titlespacing{\section}{0pt}{1.6ex plus .3ex}{0.8ex}
+\titlespacing{\subsection}{0pt}{1.3ex plus .3ex}{0.6ex}
+
+\setlength{\headheight}{21.3pt}
+\addtolength{\topmargin}{-7.3pt}
+\setlength{\emergencystretch}{3em}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\footnotesize\color{dqgrey}DynQuant Phase 2 --- Beating GPTQ at 3 Bits}
+\fancyhead[R]{\footnotesize\color{dqgrey}\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{dqrule}\leaders\hrule height \headrulewidth\hfill}}
+
+\captionsetup{font=small,labelfont={bf,color=dqblue}}
+\setlist{itemsep=0.25ex,topsep=0.5ex,parsep=0pt}
+
+\newcommand{\x}{\texorpdfstring{$\times$}{x}}
+\newcommand{\pt}{\,pts}
+\newcommand{\pct}{\,\%}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\minus}{$-$}
+\newcommand{\e}[2]{$#1\!\times\!10^{#2}$}
+\newcommand{\best}[1]{\textbf{#1}}
+
+\newsavebox{\asidebox}
+\newenvironment{aside}%
+{\par\needspace{4\baselineskip}\vspace{0.8ex}%
+\begin{lrbox}{\asidebox}\begin{minipage}{\dimexpr\textwidth-18pt\relax}\small}%
+{\end{minipage}\end{lrbox}%
+\noindent\setlength{\fboxsep}{9pt}\colorbox{warnbg}{\usebox{\asidebox}}%
+\vspace{0.6ex}\par}
+
+\begin{document}
+
+%% ============================================================ TITLE
+\begin{titlepage}
+\centering
+\vspace*{1.0in}
+{\color{dqblue}\rule{\textwidth}{1.2pt}}\\[0.8em]
+{\Huge\bfseries DynQuant --- Phase 2\par}
+\vspace{0.5em}
+{\LARGE Beating GPTQ at 3 Bits\par}
+\vspace{0.35em}
+{\large Four stacked levers, no error feedback, no calibration set\par}
+\vspace{0.7em}
+{\color{dqblue}\rule{\textwidth}{1.2pt}}\\[1.8em]
+{\large 17 experimental arms, 2 negative controls, 6 frontier rungs\par}
+\vspace{0.3em}
+{\large Qwen3.5-2B-Base / CaseHOLD, $n = 5{,}314$\par}
+\vspace{2.0em}
+
+\begin{minipage}{0.86\textwidth}
+\small
+\textbf{Summary.} Phase 1 closed with one unfavourable finding that replicated on every panel it
+was measured on: \emph{GPTQ wins the 3-bit tier}. At matched bytes GPTQ was simultaneously
+3.1\pct{} smaller and 1.34 points better. Phase 2 set out to reverse that on the panel where it
+was measured most sharply, under a hard constraint --- \textbf{do not copy GPTQ's mechanism}. No
+error feedback, no inverse Hessian, no sequential column compensation, and above all no
+calibration set, since a fine-tune-time signal hook exists precisely to avoid needing one.
+\\[0.7em]
+It is reversed. \code{p2\_rb\_agg} scores \textbf{89.57\pct{} at 708{,}087{,}808 bytes} against
+\code{gptq\_3b\_head}'s \textbf{88.03\pct{} at 741{,}475{,}927} --- \textbf{$+1.54$ points,
+203/121 discordant, exact McNemar $p < 0.0001$, CI $[+0.88, +2.21]$, at 4.5\pct{} fewer bytes}.
+It stays ahead at 8.3\pct{} fewer bytes ($+1.05$, $p = 0.0026$) and level at 16.4\pct{} fewer
+($-0.19$, $p = 0.64$). The final arm gives up \textbf{0.17 points against full precision at 3.01
+stored bits}.
+\\[0.7em]
+The margin comes from four levers, each isolated at byte-identical budgets: a Gauss--Newton
+sensitivity model, a row-partitioned tied embedding, an $\mathbb{E}[x^2]$-weighted clip
+objective, and per-row body allocation. The last of those is also the report's central finding,
+and it is not the flattering reading of itself: \textbf{allocation granularity is a multiplier on
+the signal, not a gain of its own.} With the row widths shuffled, per-row allocation \emph{loses}
+1.28 points at identical bytes; with the signal's ordering it wins 2.31 against that control.
+\end{minipage}
+
+\vfill
+{\small\color{dqgrey}
+Measured 2026-07-30 on a single NVIDIA A100 80\,GB. All arms score the same 5{,}314 items in the
+same order, so every comparison is a paired exact McNemar test on stored per-item hits.\\
+\textbf{Scope: one panel.} \S\ref{sec:notoverturn} states what this does \emph{not} overturn.\par}
+\vspace{0.6em}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+%% ============================================================ 1
+\section{The result}
+
+\subsection{What had to be reversed}
+
+Phase 1's scorecard had one unambiguous row, and it was the unfavourable one. At a matched 3-bit
+budget on Qwen3.5-2B-Base / CaseHOLD:
+
+\begin{center}\small
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+Phase 1, matched bytes & delta & $p$ & \\
+\midrule
+\code{dq\_3p25} vs \code{gptq\_3b\_head} & \best{$-1.34$} & \best{\e{4.2}{-4}} & GPTQ 3.1\pct{} smaller \emph{and} 1.34 better \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+It replicated on all three panels ($-2.28$ / $-1.04$ / $-0.78$ against the shipped-convention
+GPTQ arms) and was described in the Phase 1 report as the most robust conclusion the campaign
+produced. The diagnosis was equally clear: \emph{DynQuant chooses widths well and then rounds
+naively; GPTQ chooses nothing and then rounds cleverly. At 3 bits the second matters more.}
+
+\subsection{The headline}
+
+\begin{center}\small
+\begin{tabular}{@{}llrrrrr@{}}
+\toprule
+ & arm & acc \% & bytes & avg bits & vs \code{gptq\_3b\_head} & $p$ \\
+\midrule
+before & \code{dq\_3p25} (shipped) & 86.70 & 764{,}290{,}013 & 3.2494 & \best{$-1.34$} & \best{0.0004} \\
+tie & \code{p2\_wc\_agg} (per-module body) & 88.54 & 708{,}087{,}808 & 3.0104 & $+0.51$ & 0.16 (ns) \\
+\rowcolor{winbg}
+\textbf{after} & \code{p2\_rb\_agg} (per-row body) & \best{89.57} & \best{708{,}087{,}808} & 3.0104 & \best{$+1.54$} & \best{$<0.0001$} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\code{rb\_agg} vs \code{dq\_3p25} is $+2.87$ points end to end, at \textbf{7.4\pct{} fewer bytes}
+than the shipped arm. The fp16 ceiling on this panel is 89.74\pct, so the final arm gives up
+\textbf{0.17 points against full precision at 3.01 stored bits}.
+
+Both endpoints are significant in their own right: GPTQ really did win before ($-1.34$,
+$p = 0.0004$), and it really is beaten now ($+1.54$, 203/121 discordant, CI $[+0.88, +2.21]$).
+
+\begin{aside}
+\textbf{The middle row stays in the table.} At the time it was the best arm available and it was
+$+0.51$ at $p = 0.16$ --- a tie --- and it was written up as a tie for several days while it was
+the best result in hand. It never did become significant. The win came from a \emph{different
+mechanism} landing underneath it, not from re-reading the same number more favourably. Had
+$+0.51$ been promoted to ``beats'' then, the actual result would have had nothing left to report.
+\end{aside}
+
+\subsection{The constraint the solution had to satisfy}
+
+The obvious fix for ``rounds naively'' is GPTQ's own fix: propagate the quantization error of each
+column into the not-yet-quantized columns using an inverse Hessian estimated from calibration
+activations. It was considered and rejected, for two reasons that are worth stating because they
+shaped everything that follows.
+
+\begin{enumerate}[leftmargin=1.4em]
+\item \textbf{It would make the method a reimplementation.} Signal-driven allocation plus
+GPTQ's compensation is GPTQ with a preprocessing step. The interesting question --- how much is
+left on the table by DynQuant's \emph{own} components --- would go unanswered.
+\item \textbf{It requires a calibration dataset.} Hessian estimation needs activation statistics
+over a held-out corpus. The entire premise of the fine-tune-time hook is that those statistics are
+already being produced for free by the training run, and that no separate calibration pass is
+needed. Adopting error feedback would have reintroduced the dependency the method exists to
+remove.
+\end{enumerate}
+
+So the brief for Phase 2 was: \textbf{fix ours}. Every lever below acts on a component DynQuant
+already owns --- the sensitivity model, the allocation partition, or the encoder's clip objective
+--- and every input to every lever is a moment the \code{transformers} fine-tune hook already
+accumulates online.
+
+%% ============================================================ 2
+\section{Statistical method}
+
+Every number in this report is an exact paired McNemar test on the stored per-item \code{hits}
+arrays. All arms score the same 5{,}314 items in the same order, so the arms are paired.
+
+This matters more than it sounds. The unpaired binomial standard deviation used earlier in the
+campaign is $\sigma = 0.419$ points, so an unpaired comparison of two arms carries
+$\sqrt{2}\,\sigma \approx 0.59$ points of noise. The paired standard error of a \emph{difference}
+is
+\[
+\mathrm{SE} \;=\; \frac{\sqrt{\,b + c - (b-c)^2/N\,}}{N},
+\]
+where $b$ and $c$ are the discordant counts, and here it runs 0.21--0.37 points --- roughly half
+the unpaired figure, because two arms built from the same checkpoint agree on the overwhelming
+majority of items and the pairing removes exactly that shared variance. The reported $p$ is a
+two-sided exact binomial test on $b$ against $c$; the CI is the normal interval on the paired
+difference.
+
+\begin{aside}
+Nothing was re-run to get this. The sharper test came free from per-item hit arrays already
+written to disk. Its practical consequence cuts both ways: it promoted a $+1.07$ lever to
+$p = 0.0002$, and it \emph{refused} to promote a $+0.60$ comparison against GPTQ's larger
+configuration, which lands at $p = 0.069$ and is reported as a tie (\S\ref{sec:discipline}).
+\end{aside}
+
+%% ============================================================ 3
+\section{The four levers}
+
+Each lever was isolated at a \textbf{byte-identical} budget, so allocation or encoding is the only
+difference between the two sides of every A/B. None of them is GPTQ's mechanism.
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}llrrr@{}}
+\toprule
+lever & A/B & $\Delta$ & $b/c$ & $p$ \\
+\midrule
+Row-partitioned tied embedding vs uniform 2b & \code{tie\_u2\_ctl} $\to$ \code{rows\_agg}, $+7.00$ MiB & \best{$+2.90$} & 245/91 & \best{$<0.0001$} \\
+Gauss--Newton sensitivity vs rank-product & \code{rows\_agg} $\to$ \code{combo\_agg} @ 708.1 MB & \best{$+1.07$} & 141/84 & \best{0.0002} \\
+\textbf{Per-row body allocation vs per-module} & \code{wc\_agg} $\to$ \code{rb\_agg} @ 708.1 MB & \best{$+1.04$} & 122/67 & \best{0.0001} \\
+$\mathbb{E}[x^2]$-weighted clip (encoder only) & \code{combo\_iso} $\to$ \code{wclip\_enc} @ 739.5 MB & $+0.70$ & 147/110 & 0.025 \\
+\quad --- replication on a second map & \code{combo\_agg} $\to$ \code{wc\_agg} @ 708.1 MB & $+0.41$ & 135/113 & 0.18 \\
+\quad --- \textbf{pooled over both replications} & & & 282/223 & \best{0.0098} \\
+\midrule
+\emph{(null)} re-pricing on weighted encoding & \code{wc\_agg} $\to$ \code{wc\_both\_agg} & $-0.09$ & 18/23 & 0.53 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Lever 1 --- Gauss--Newton sensitivity allocation}
+
+The shipped scorer ranked each module on a product of two percentile ranks --- activation
+saliency and gradient plasticity --- and fed the rank product to a greedy ROI knapsack. A rank is
+ordinal: it says module $A$ matters more than module $B$, but not by how much, and not how much
+worse $A$ gets between 3 bits and 2.
+
+The replacement scores in units of loss. From the two per-channel second moments the hook already
+accumulates --- $\mathbb{E}[x_c^2]$ over input channels and $\mathbb{E}[\delta_r^2]$ over
+output-gradient channels --- the loss increase from quantizing module $m$ at width $b$ is the
+diagonal Gauss--Newton (equivalently, empirical-Fisher) estimate
+\begin{equation}
+\mathcal{S}_m(b) \;=\; \sum_{r,c} \mathbb{E}[\delta_r^2]\,\mathbb{E}[x_c^2]\,
+\bigl(W_{rc} - Q_b(W)_{rc}\bigr)^2 .
+\label{eq:sens}
+\end{equation}
+The error term is not a surrogate curve: the weight block is run through the \emph{real} encoder
+at the \emph{real} candidate width, clip search included. Allocation then becomes a
+multiple-choice knapsack over $\{2,3,4,8\}$ in which the price of a move is the difference between
+two sensitivities --- what that bit actually buys --- rather than a rank.
+
+\textbf{Measured, byte-identical, one substitution:} \code{rows\_agg} 87.05\pct{} $\to$
+\code{combo\_agg} 88.13\pct{} at the same 708{,}087{,}808 bytes. \best{$+1.07$ points, 141/84
+discordant, $p = 0.0002$}. This is the cleanest single result in the phase: one component swapped,
+byte-identical output.
+
+\subsection{Lever 2 --- Row-partitioned tied embedding}
+
+On Qwen3.5-2B the embedding and the LM head are the same $[248320, 2048]$ tensor, 27.05\pct{} of
+the model. The shipped allocator gives that tensor one width. It does not have to: the format
+already stores one fp16 scale and offset \emph{per row per group}, so splitting the rows into
+width classes costs nothing extra in metadata.
+
+The plan is \code{8b:2048, 4b:8192, 2b:*} --- the 2{,}048 most important rows by the signal at 8
+bits, the next 8{,}192 at 4, everything else at 2.
+
+\textbf{Measured against a flat 2-bit tie control} (\code{tie\_u2\_ctl} $\to$ \code{rows\_agg},
+with the rank-product body held fixed on both sides so the comparison isolates the tie and
+nothing else): \best{$+2.90$ points, 245/91, $p < 0.0001$}, for 7.00 MiB. That is 0.41 points per
+MiB against the body's 0.011 --- roughly \textbf{37\x} the return per byte.
+
+\textbf{This is the lever GPTQ structurally cannot pull}, and it is why the size gap exists at all.
+See \S\ref{sec:tie}.
+
+\subsection{Lever 3 --- $\mathbb{E}[x^2]$-weighted clip objective}
+
+The encoder's per-group clip search minimised plain reconstruction error
+$\lVert W - Q(W) \rVert^2$. But the quantity that matters is the error in the layer's
+\emph{output}, and an input channel that carries large activations contributes proportionally
+more to it. The objective becomes
+\[
+\min_{\alpha} \; \sum_{r,c} \mathbb{E}[x_c^2]\,\bigl(W_{rc} - Q_\alpha(W)_{rc}\bigr)^2 ,
+\]
+using the same per-channel second moment the sensitivity model already consumes. The clip grid was
+also deepened, its floor moved from $\alpha = 0.80$ to $0.40$.
+
+\textbf{Measured twice at byte parity, encoder only:} $+0.70$ ($p = 0.025$) on one map and
+$+0.41$ ($p = 0.18$) on another. Neither replication clears 5\pct{} alone; \textbf{pooled over both,
+282 vs 223 discordant, $p = 0.0098$.} The mechanism separates even though one instance of it does
+not, and it is reported that way rather than by quoting the favourable replication.
+\S\ref{sec:clip} decomposes where in the pipeline each clip change pays.
+
+\subsection{Lever 4 --- Per-row body allocation}
+
+The same idea as lever 2, applied to the body instead of the embedding: allocate a width to each
+of the model's \textbf{571{,}968 body rows} rather than to each of its 187 modules. Same solver,
+same sensitivity table, same 5{,}664{,}702{,}464-bit budget, same encoder, same clip grid, same
+group size. Only the decision variable changes.
+
+\textbf{Measured, byte-identical:} \code{wc\_agg} 88.54\pct{} $\to$ \code{rb\_agg} 89.57\pct{} at
+708{,}087{,}808 bytes. \best{$+1.04$ points, 122/67, $p = 0.0001$}. This is the lever that turned
+the tie into a win.
+
+It also has the most misleading $\Delta$ in the table, and the next section is entirely about why.
+
+%% ============================================================ 4
+\section{Granularity is a multiplier on the signal, not a gain of its own}
+\label{sec:granularity}
+
+Reporting lever 4 as ``row allocation pays $+1.04$'' would have been wrong about which component
+paid.
+
+\subsection{The control}
+
+The control permutes each module's width vector under a fixed seed. The width \emph{histogram} is
+preserved exactly --- so the byte count is identical by construction, not by tuning --- and only
+the question of \emph{which} rows get the wide ones changes. 196{,}071 of 571{,}968 rows
+(34.3\pct) end up at a different width.
+
+\begin{center}\small
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+body allocation at 708{,}087{,}808 B & acc \% & vs module body & $b/c$ & $p$ \\
+\midrule
+per-module widths (\code{p2\_wc\_agg}) & 88.54 & --- & & \\
+\rowcolor{ctlbg}
+per-row, \textbf{shuffled within module} (\code{p2\_rb\_shuf}) & 87.26 & \best{$-1.28$} & 125/193 & \best{0.0002} \\
+\rowcolor{winbg}
+per-row, ordered by sensitivity (\code{p2\_rb\_agg}) & \best{89.57} & \best{$+1.04$} & 122/67 & \best{0.0001} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\code{rb\_agg} vs \code{rb\_shuf} --- the signal's ordering, with everything else including the
+histogram held fixed --- is \best{$+2.31$, 228/105, $p < 0.0001$, CI $[+1.64, +2.98]$}. The
+decomposition is additive to 0.01 points: $-1.28$ (structure) $+$ 2.31 (signal) $= +1.03$ against
+a measured $+1.04$.
+
+\begin{aside}
+\textbf{Row granularity on its own is negative.} Going from 187 decisions to 571{,}968 buys no
+structural advantage --- it buys \emph{more decisions}, and more decisions made badly are worse
+than fewer. This is the opposite of the natural intuition, which is that finer granularity must be
+close to free because a module's rows are heterogeneous.
+\end{aside}
+
+They \emph{are} heterogeneous: the width the module allocator picks covers only \textbf{42.5\pct{}
+of that module's rows at the median}, and under half the rows in \textbf{99 of 186 modules}. The
+heterogeneity is real, and exploiting it still requires being right about which rows are which.
+
+\subsection{What the row allocator does with the freedom: a barbell}
+
+Same solver, same table, same 5{,}664{,}702{,}464-bit budget --- only the decision variable
+changes:
+
+\begin{center}\small
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+width & per-row params & per-module params & delta \\
+\midrule
+2 b & 628.0 M & 390.1 M & $+237.9$ M \\
+3 b & 280.8 M & 612.4 M & \best{$-331.6$ M} \\
+4 b & 424.6 M & 367.0 M & $+57.6$ M \\
+8 b & 39.4 M & 3.3 M & \best{$+36.1$ M (12\x)} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A per-module width is forced to the \emph{mean} of its rows' sensitivities; a per-row width serves
+the \emph{distribution}. Loss is convex in width, so the optimum protects a small set of rows at 8
+bits --- twelve times as many parameters as the module map could afford there --- and pays for it
+by dumping the bulk from 3 to 2.
+
+Per role: \code{self\_attn.k\_proj} gains 0.87 average bits, \code{o\_proj} 0.74,
+\code{mlp.down\_proj} 0.51, while \code{linear\_attn.in\_proj\_qkv} gives up 0.59 and the tiny
+\code{linear\_attn.in\_proj\_a} / \code{in\_proj\_b} give up 4.06 and 2.50 --- the module allocator
+had those pinned at an 8-bit floor that most of their rows turn out not to need.
+
+\subsection{Two costs the tables do not show}
+
+\textbf{The per-row width code is not in the byte accounting.} The accounting charges payload plus
+one fp16 scale and offset per row per group --- partition-invariant, so the A/Bs are honest --- but
+not the width code itself: 4 distinct widths is 2 bits $\times$ 571{,}968 rows $=$
+\textbf{142{,}992 B, 0.0202\pct{} of the checkpoint, 0.0006 average bits}. Three orders of
+magnitude too small to explain any result here, but it is a real debit and it is stated rather than
+buried.
+
+\textbf{The arm was audited for materialization, and the audit was not optional.} 89.57\pct{} sits
+0.17 under the fp16 ceiling and 0.13 \emph{above} the tie-only arm that leaves the body in bf16
+(\code{p2\_tieonly}, 89.44\pct) --- which is exactly where a body that silently never got quantized
+would land. \code{nbytes} is computed analytically from the plan, so the byte count cannot rule
+that out. The arm was therefore re-encoded and inspected directly, counting distinct values inside
+each group:
+
+\begin{center}\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+row width & distinct values per group & relative reconstruction error \\
+\midrule
+2 b & exactly 4 & 0.0090 (an all-8b \code{out\_proj}) \\
+3 b & exactly 8 & \quad \dots \\
+4 b & exactly 16 & \quad \dots \\
+8 b & 80--99 (of a possible 256) & 0.3799 (\code{in\_proj\_qkv}, layer 18) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Verdict: materialized.} No arm in this report is believed without this check.
+
+\begin{aside}
+\textbf{Operating rule: never ship a granularity change without the shuffled control.} It is one
+extra evaluation, it preserves the byte count exactly by construction, and here it converted ``row
+allocation is worth $+1.04$'' into ``the signal is worth $+2.31$ and the structure costs 1.28'' ---
+a different claim about a different component. The same control is the honest test for any future
+partitioning: per-group, per-column, per-expert.
+\end{aside}
+
+\subsection{What this does to Phase 1's headline attribution}
+
+Phase 1 measured the training signal at \textbf{12\pct{} of the margin} over byte-matched RTN ---
+22.62 points of allocator against 3.16 points of signal --- and concluded that the architectural
+prior does most of the work. That measurement was taken at \emph{module} granularity, where there
+are only 187 decisions and the architecture dominates them.
+
+At row granularity the same signal is handed 571{,}968 decisions, and the shuffled control shows
+its ordering carrying $+2.31$ of a $+1.04$ net. Both readings are true of what they measured, and
+they are consistent: \textbf{granularity sets how much room the signal has to be right in.} Quote
+the one that matches the granularity being shipped.
+
+Note also what this rules out: the gain is \textbf{not} an artifact of finer \emph{encoding}. Every
+arm here shares one encoder, one clip grid and one group size. Only the width vector differs.
+
+%% ============================================================ 5
+\section{The frontier}
+\label{sec:frontier}
+
+The recipe was walked down in roughly 30 MB steps to find where it breaks.
+\code{gptq\_3b\_head} sits at 88.03\pct{} / 741{,}475{,}927 B throughout. Both descents are given,
+because the second relocates the cliff rather than merely lifting the curve, and that is only
+visible with the first one next to it.
+
+\subsection{Per-module body --- the recipe as it stood before row allocation}
+
+\begin{center}\small
+\begin{tabular}{@{}lrrrrrrr@{}}
+\toprule
+arm & acc \% & bytes & avg bits & vs GPTQ & $p$ & vs rung above & $p$ \\
+\midrule
+\code{p2\_wc\_agg} & 88.54 & 708{,}087{,}808 ($-4.5\%$) & 3.0104 & $+0.51$ & 0.16 & --- & \\
+\code{p2\_wc\_680} & 88.22 & 679{,}776{,}256 ($-8.3\%$) & 2.8900 & $+0.19$ & 0.63 & $-0.32$ & 0.14 \\
+\code{p2\_wc\_650} & 87.22 & 649{,}891{,}840 ($-12.3\%$) & 2.7630 & \best{$-0.81$} & \best{0.034} & \best{$-1.00$} & \best{0.0004} \\
+\code{p2\_wc\_620} & 86.41 & 619{,}876{,}352 ($-16.4\%$) & 2.6354 & \best{$-1.62$} & \best{$<0.0001$} & \best{$-0.81$} & \best{0.0058} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The floor here is 680 MB. $708 \to 680$ is free ($-0.32$, only 68/51 discordant, not separated);
+$680 \to 650$ is a cliff ($-1.00$, $p = 0.0004$), and 650 is the first rung that loses to GPTQ
+significantly. The defensible statement was \emph{GPTQ's 3-bit accuracy at 8.3\pct{} fewer bytes},
+with 12.3\pct{} measurably too far.
+
+\subsection{Per-row body --- same targets, same pricer, same encoder}
+
+\begin{center}\small
+\begin{tabular}{@{}lrrrrrrr@{}}
+\toprule
+arm & acc \% & bytes & avg bits & vs GPTQ & $p$ & vs rung above & $p$ \\
+\midrule
+\rowcolor{winbg}
+\code{p2\_rb\_agg} & \best{89.57} & 708{,}087{,}808 ($-4.5\%$) & 3.0104 & \best{$+1.54$} & \best{$<0.0001$} & --- & \\
+\rowcolor{winbg}
+\code{p2\_rb\_680} & \best{89.09} & 680{,}000{,}000 ($-8.3\%$) & 2.8910 & \best{$+1.05$} & \best{0.0026} & $-0.49$ & 0.014 \\
+\code{p2\_rb\_650} & 88.61 & 649{,}999{,}872 ($-12.3\%$) & 2.7634 & $+0.58$ & 0.11 & $-0.47$ & 0.027 \\
+\code{p2\_rb\_620} & 87.84 & 619{,}999{,}744 ($-16.4\%$) & 2.6358 & $-0.19$ & 0.64 & $-0.77$ & 0.0003 \\
+\code{p2\_rb\_590} & 87.00 & 589{,}999{,}872 ($-20.4\%$) & 2.5084 & \best{$-1.04$} & \best{0.0065} & $-0.85$ & 0.0042 \\
+\rowcolor{ctlbg}
+\code{p2\_rb\_560} & 83.74 & 560{,}000{,}000 ($-24.5\%$) & 2.3809 & \best{$-4.29$} & \best{$<0.0001$} & \best{$-3.26$} & \best{$<0.0001$} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{The gain grows as the budget tightens}
+
+Row body against module body at byte parity, rung by rung:
+
+\begin{center}\small
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+budget & 708 MB & 680 MB & 650 MB $\dagger$ & 620 MB \\
+\midrule
+row $-$ module & $+1.04$ & $+0.87$ & $+1.39$ & $+1.43$ \\
+$p$ & 0.0001 & 0.0022 & $<0.0001$ & 0.0001 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+$\dagger$ \textbf{The 650 rung is not a clean single-variable A/B.} \code{rb\_650} inherits its
+clip metadata from the \code{wc\_650} map, which was priced with the weighted objective, but its
+\emph{row} sensitivities were priced unweighted --- so that rung mixes granularity with pricing
+objective. The 680 and 620 rungs are clean, and they bracket it at $+0.87$ and $+1.43$.
+
+That ordering is the same mechanism as the barbell: the tighter the budget, the more the
+module-uniform constraint costs, because forcing a whole module to the mean of its rows is exactly
+the wrong move when there are not enough bits to go around.
+
+\subsection{Three thresholds, all moved}
+
+\begin{itemize}[leftmargin=1.4em]
+\item \textbf{Beats GPTQ down to 680 MB} ($-8.3\%$), significantly, where the module recipe managed
+$+0.19$ at $p = 0.63$.
+\item \textbf{Ties GPTQ down to 620 MB} ($-16.4\%$, $-0.19$ at $p = 0.64$) --- a budget at which the
+module recipe was losing by 1.62 with $p < 0.0001$.
+\item \textbf{The cliff moved from 650 to below 590.} The module descent broke by a full point at
+the first step past its floor; the row descent gives up 0.47--0.85 per 30 MB rung all the way down
+to 590, then falls 3.26 in one step at 560.
+\end{itemize}
+
+So the claim the frontier supports is \textbf{GPTQ's 3-bit accuracy at 16.4\pct{} fewer bytes, and
+better accuracy at 8.3\pct{} fewer}. The 560 MB rung is over the edge and it is reported because
+\emph{a descent that never finds its own floor has not located anything}.
+
+\subsection{Where the module cliff comes from, and an instrumentation gap}
+
+The allocator's own diagnostics locate the module cliff: floors breached climb $60 \to 75 \to
+\mathbf{92}$ of 187 modules across the first three rungs. The break arrives when about half the
+model is pushed below its architectural floor --- which is also the point at which the soft-floor
+path, the fix for the original allocator's silent \code{return floor\_map}, is doing nearly all the
+work. That the curve degrades gracefully rather than collapsing is itself the soft-floor design
+being vindicated: the shipped allocator would have returned the floor map unchanged and reported
+nothing.
+
+\begin{aside}
+\textbf{The row descent has no equivalent diagnostic.} Role floors are defined per module and the
+row allocator does not consult them. This is flagged as a gap rather than a feature: \textbf{the
+reason 560 MB collapses is not currently instrumented.}
+\end{aside}
+
+%% ============================================================ 6
+\section{Every arm}
+
+The complete phase-2 ladder, all on Qwen3.5-2B-Base / CaseHOLD, $n = 5{,}314$, bf16 ceiling
+89.74\pct.
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}llrrr@{}}
+\toprule
+arm & what it is & acc \% & bytes & avg bits \\
+\midrule
+\rowcolor{winbg}
+\code{p2\_rb\_agg} & final recipe: per-row body + row tie + weighted clip & \best{89.57} & 708{,}087{,}808 & 3.0104 \\
+\code{p2\_rb\_680} & same recipe, 680 MB rung & 89.09 & 680{,}000{,}000 & 2.8910 \\
+\code{p2\_rb\_650} & same recipe, 650 MB rung (mixed pricing $\dagger$) & 88.61 & 649{,}999{,}872 & 2.7634 \\
+\code{p2\_wc\_agg} & per-module body, weighted clip encoder & 88.54 & 708{,}087{,}808 & 3.0104 \\
+\code{p2\_wclip\_enc} & weighted clip, encoder only, iso budget & 88.45 & 739{,}545{,}088 & 3.1442 \\
+\code{p2\_wc\_both\_agg} & weighted clip priced \emph{and} encoded & 88.45 & 708{,}087{,}808 & 3.0104 \\
+\code{p2\_wc\_680} & per-module body, 680 MB rung & 88.22 & 679{,}776{,}256 & 2.8900 \\
+\code{p2\_combo\_agg} & sensitivity allocator, unweighted clip & 88.13 & 708{,}087{,}808 & 3.0104 \\
+\code{p2\_rb\_620} & per-row body, 620 MB rung & 87.84 & 619{,}999{,}744 & 2.6358 \\
+\code{p2\_combo\_iso} & sensitivity allocator, iso budget & 87.75 & 739{,}545{,}088 & 3.1442 \\
+\rowcolor{ctlbg}
+\code{p2\_rb\_shuf} & \textbf{control} --- row widths shuffled within module & 87.26 & 708{,}087{,}808 & 3.0104 \\
+\code{p2\_wc\_650} & per-module body, 650 MB rung & 87.22 & 649{,}891{,}840 & 2.7630 \\
+\code{p2\_rows\_agg} & row tie + rank-product body & 87.05 & 708{,}087{,}808 & 3.0104 \\
+\code{p2\_rb\_590} & per-row body, 590 MB rung & 87.00 & 589{,}999{,}872 & 2.5084 \\
+\code{p2\_wc\_620} & per-module body, 620 MB rung & 86.41 & 619{,}876{,}352 & 2.6354 \\
+\rowcolor{ctlbg}
+\code{p2\_tie\_u2\_ctl} & \textbf{control} --- tie at uniform 2 b & 84.16 & 700{,}747{,}776 & 2.9792 \\
+\code{p2\_rb\_560} & per-row body, 560 MB rung --- past the cliff & 83.74 & 560{,}000{,}000 & 2.3809 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+$\dagger$ See \S\ref{sec:frontier}: row sensitivities priced unweighted, clip metadata from a
+weighted map.
+
+\subsection{Reference arms}
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}llrrr@{}}
+\toprule
+arm & what it is & acc \% & bytes & avg bits \\
+\midrule
+\code{bf16} & full precision ceiling & 89.74 & --- & 16 \\
+\code{p2\_tieonly} & row-partitioned tie, body left in bf16 & 89.44 & --- & --- \\
+\code{gptq\_3b} & llm-compressor, \code{ignore=["lm\_head"]}, tie left fp16 & 88.97 & 1{,}558{,}371{,}533 & 6.6253 \\
+\code{gptq\_3b\_head} & llm-compressor, \code{ignore=[]} --- the like-for-like baseline & 88.03 & 741{,}475{,}927 & 3.1522 \\
+\code{dq\_3p25} & DynQuant as shipped in Phase 1 & 86.70 & 764{,}290{,}013 & 3.2494 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\code{p2\_tieonly} is the arm that makes the materialization audit in \S\ref{sec:granularity}
+necessary: the final result sits 0.13 points \emph{above} it, which is precisely where an
+unquantized body would land.
+
+%% ============================================================ 7
+\section{The clip objective pays in the encoder --- and the deep grid did not}
+\label{sec:clip}
+
+Both clip knobs were decomposed into (priced-old, encoded-new) against (priced-new, encoded-new).
+They came out \textbf{opposite}, which is the useful part:
+
+\begin{center}\small
+\begin{tabular}{@{}lrr@{}}
+\toprule
+knob & encoder-only & $+$ re-pricing \\
+\midrule
+deep grid (floor $0.80 \to 0.40$) & $+0.09$ & \best{$+0.58$} \\
+$\mathbb{E}[x^2]$-weighted objective & \best{$+0.41$} & $-0.09$ ($p = 0.53$) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Re-pricing on top of the weighted encoder is \emph{nothing} --- 18 against 23 discordant items, the
+smallest disagreement of any pair measured in the phase. Diffing the two maps says why:
+\textbf{4 of 187 module widths changed.} The weighted objective cuts sensitivity 38.6\pct{} at 2 b
+and 44.7\pct{} at 3 b, a near-common factor, and an allocator reads only \emph{ratios} --- between
+modules and across widths --- so a common factor cancels and the ROI ordering survives.
+
+The deep grid instead un-clamped only the low widths, moving \code{mlp.gate} L0's 2b/3b ratio from
+4.69 to 3.47: roughly three times the ratio distortion, which is exactly where its $+0.58$ came
+from.
+
+\begin{aside}
+So the question that predicts which half of the pipeline a clip change pays through is not ``grid
+or objective'' but \textbf{does it distort sensitivity ratios, or merely scale them?} Scaling pays
+in the encoder; distorting ratios pays in the allocator.
+\end{aside}
+
+This also corrects a generalisation made earlier in the campaign. The deep grid's $+0.09$
+encoder-only result had been read as ``the encoder is not where the points are.'' That was right
+about that change and wrong as a rule --- the second split was run anyway, out of routine rather
+than expectation, and it returned $+0.70$. \textbf{Run the decomposition every time, especially
+when a previous one makes it look like a formality.}
+
+%% ============================================================ 8
+\section{The mechanism behind the size advantage: the tie}
+\label{sec:tie}
+
+The clearest explanation of \emph{why} there are bytes to save is visible in GPTQ's own two
+configurations --- same algorithm on both sides:
+
+\begin{center}\small
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+GPTQ 3-bit & acc \% & bytes & note \\
+\midrule
+\code{ignore=["lm\_head"]} & 88.97 & 1{,}558{,}371{,}533 & tie left fp16 $=$ 65.3\pct{} of stored bits \\
+\code{ignore=[]} & 88.03 & 741{,}475{,}927 & tie quantized uniformly at 3 bits \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The difference is \best{$+0.94$, 106/56, $p = 0.0001$, CI $[+0.47, +1.41]$}. \textbf{Quantizing
+the tied embedding at 3 bits costs GPTQ a full point.}
+
+Compare the 4-bit RTN pair measured in Phase 1: 0.13 points at $p = 0.48$, \emph{not separated},
+for a 43\pct{} byte saving. \textbf{The convention is one fact at 4 bits and a different one at
+3} --- at 4 bits the tie survives quantization and \code{ignore=["lm\_head"]} is an unexamined
+default worth dropping for free; at 3 bits the tie is where the damage concentrates.
+
+GPTQ has no per-row width mechanism, so its only two options are a 2.2\x{} larger checkpoint or
+that full point. The row plan \code{8b:2048, 4b:8192, 2b:*} is a third option neither reaches, and
+metadata is one fp16 scale and offset per row per group regardless of how the rows are split ---
+so the granularity is nearly free. \textbf{That asymmetry is the size advantage.}
+
+Note that this is the \emph{same} asymmetry the body exploits in \S\ref{sec:granularity}: the
+format prices metadata per row per group either way, so a per-row width vector is close to free
+wherever it is applied, and the only question is whether the ordering handed to it is any good.
+
+%% ============================================================ 9
+\section{Claim discipline: what is a win and what is a tie}
+\label{sec:discipline}
+
+\begin{center}\small
+\begin{tabular}{@{}llr@{}}
+\toprule
+claim & numbers & $p$ \\
+\midrule
+\rowcolor{winbg}
+\textbf{beats GPTQ at 4.5\pct{} fewer bytes} & \code{rb\_agg} 89.57 @ 708.1 MB vs 88.03 @ 741.5 MB & \best{$<0.0001$} \\
+\rowcolor{winbg}
+\textbf{beats GPTQ at 8.3\pct{} fewer bytes} & \code{rb\_680} 89.09 @ 680.0 MB vs 88.03 & \best{0.0026} \\
+ties GPTQ at 16.4\pct{} fewer bytes & \code{rb\_620} 87.84 @ 620.0 MB vs 88.03, $-0.19$ & 0.64 \\
+ties GPTQ's fp16-tie config at 45\pct{} of its size & 89.57 @ 708.1 MB vs 88.97 @ 1{,}558.4 MB, $+0.60$ & 0.069 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Only the first two rows survive as wins.}
+
+The last row deserves its own paragraph, because it is exactly the situation in which a favourable
+result invites over-claiming. \code{rb\_agg} 89.57\pct{} at 708{,}087{,}808 B against
+\code{gptq\_3b} 88.97\pct{} at 1{,}558{,}371{,}533 B is \best{$+0.60$, 161/129, $p = 0.069$, CI
+$[-0.03, +1.23]$}. That interval includes zero. The direction \emph{reversed} when the row body
+landed --- it was $-0.43$ with the module body --- and it is tempting to promote on that basis. It
+does not clear the threshold. The correct phrasing is \emph{indistinguishable from the best GPTQ
+configuration available, at 45\pct{} of its size} --- never ``beats.''
+
+%% ============================================================ 10
+\section{What this does not overturn}
+\label{sec:notoverturn}
+
+Phase 2 was built and measured on \textbf{one panel}: Qwen3.5-2B-Base / CaseHOLD. The new recipe
+has not been run on Mistral-7B / Banking77 or on Qwen / Banking77. The Phase 1 scorecard rows for
+those panels stand as written, and so does the campaign's broader reading that DynQuant's advantage
+tracks the \emph{baselines'} inconsistency rather than its own.
+
+Three specific reasons to expect less elsewhere, all established above:
+
+\begin{itemize}[leftmargin=1.4em]
+\item \textbf{The tie lever cannot transfer to an untied model.} On Mistral the head is 3.71\pct{}
+of the checkpoint, not 27.05\pct, so the row-partitioned embedding --- the largest single lever
+here at $+2.90$ --- has almost nothing to work with. Expect the Mistral gap to close by much less.
+
+\item \textbf{The allocator lever needs budget pressure.} At 4.25 bits the knapsack is barely
+constrained and the map is close to a fixed architectural prior; Phase 1 measured the signal as
+worth nothing there ($+0.19$, $p = 0.15$). \textbf{These gains are a 3-bit-tier phenomenon by
+construction.}
+
+\item \textbf{The row-body lever is only as good as the signal on that panel.} Its shuffled control
+\emph{loses} 1.28 points, so it is not a structural improvement that travels --- it is an
+amplifier, and on a panel where the sensitivity table is less informative it amplifies less, or
+amplifies the wrong thing. \textbf{The control has to be re-run wherever the recipe is re-run.}
+\end{itemize}
+
+Two further limits carry over from Phase 1 unchanged and are not addressed here: the evaluation is
+classification accuracy on a fixed answer set, with no generative, perplexity or long-context
+measurement; and the baselines remain one library's implementation at one untuned configuration
+(256 calibration rows, \code{group\_size} 128, \code{dampening\_frac} 0.01). A better-tuned GPTQ
+would narrow these margins.
+
+\subsection{The honest one-line update to the Phase 1 scorecard}
+
+\begin{aside}
+\textbf{``Beats GPTQ at 3 b''} moves from \emph{fails on all three panels} to \emph{reversed on
+Qwen/CaseHOLD --- $+1.54$ at 4.5\pct{} fewer bytes ($p < 0.0001$), still ahead at 8.3\pct{} fewer,
+level at 16.4\pct{} fewer; untested with the new recipe on the other two.}
+\end{aside}
+
+That is a stronger claim than the section originally carried, and it is worth being explicit about
+how it was reached, because \textbf{the sequence matters more than the endpoint}. The intermediate
+arm was $+0.51$ at $p = 0.16$ and was written up as a tie, over several days, while it was the best
+result available. Had it been promoted to ``beats'' then, the actual result --- which came from a
+different mechanism landing underneath it, not from re-reading the same number more favourably ---
+would have had nothing left to report.
+
+%% ============================================================ 11
+\section{What ships, and what is still open}
+
+\subsection{Promote into \code{dynquant-core}}
+
+Four components, in the order their measured value justifies:
+
+\begin{enumerate}[leftmargin=1.4em]
+\item \textbf{Row-partitioned tied embedding} ($+2.90$, 37\x{} the body's return per byte). Applies
+to every tied-embedding model and is nearly free in metadata.
+\item \textbf{Gauss--Newton sensitivity allocator} ($+1.07$, $p = 0.0002$) replacing the
+rank-product scorer. The cleanest substitution in the phase.
+\item \textbf{Per-row body allocation} ($+1.04$, $p = 0.0001$) --- \emph{shipped together with its
+shuffled control as a required regression test}, because without the signal it is a 1.28-point
+regression.
+\item \textbf{$\mathbb{E}[x^2]$-weighted clip objective with the deep grid} (pooled $p = 0.0098$
+for the objective, $+0.58$ for the grid through re-pricing).
+\end{enumerate}
+
+The allocator has one integration requirement that cost a day to find and is worth stating: it must
+be given the tie's cost via \code{--reserve-embed-bits}. A map allocated to a whole-model average
+puts the embedding at a narrow width and spends the savings on the body; substituting a row plan
+afterwards does not hand the body's share back, and the checkpoint lands about 24 MB over target
+with nothing reporting why.
+
+\subsection{Open}
+
+\begin{itemize}[leftmargin=1.4em]
+\item \textbf{Ablate the row signal itself.} The row sensitivities are currently a
+max-of-ranks composite. Gradient-only, frequency-only and rank-product variants have not been
+compared at row granularity, and \S\ref{sec:granularity} predicts the comparison is now
+\emph{more} sensitive than it was at module granularity, not less.
+\item \textbf{Instrument the row descent.} The 560 MB collapse has no diagnostic. Role floors are
+per module; a per-row analogue does not exist.
+\item \textbf{Re-run the recipe on the other two panels}, with the shuffled control alongside it in
+both cases.
+\item \textbf{Finer partitions.} Per-group and per-column allocation are the natural next steps and
+the format prices their metadata identically --- but each one needs its own shuffled control before
+any number from it is quoted.
+\end{itemize}
+
+\vspace{1.5em}
+\begin{center}
+{\color{dqblue}\rule{0.5\textwidth}{0.8pt}}
+\end{center}
+\vspace{0.5em}
+
+{\small\itshape
+Every arm in this report was scored on the same 5{,}314 CaseHOLD items in the same order, every
+$p$-value is an exact paired McNemar test on stored per-item hits, every byte-identical A/B is
+byte-identical by construction rather than by tuning, and the winning arm was re-encoded and
+audited for materialization before its number was believed. The two negative controls
+(\code{rb\_shuf}, \code{tie\_u2\_ctl}) are reported at the same weight as the wins, because in this
+phase they were the more informative measurements.\par}
+
+\end{document}
