@@ -97,10 +97,29 @@ def load_model(
     transformers = _require_transformers()
     return transformers.AutoModelForCausalLM.from_pretrained(
         path,
-        dtype=resolve_dtype(dtype),
         device_map=device,
         trust_remote_code=trust_remote_code,
+        **{_dtype_kwarg(transformers): resolve_dtype(dtype)},
     )
+
+
+def _dtype_kwarg(transformers: Any) -> str:
+    """``"dtype"`` or ``"torch_dtype"``, whichever this transformers understands.
+
+    4.56 renamed the argument. The old name still works there but warns; the new
+    name on an older release is not an error at the call site -- it falls through
+    ``**kwargs`` into the model constructor and surfaces as
+    ``LlamaForCausalLM.__init__() got an unexpected keyword argument 'dtype'``,
+    which names neither transformers nor the argument that is actually wrong.
+    Since ``dynquant-core`` declares ``transformers>=4.45``, both halves of that
+    range have to work.
+    """
+    version = getattr(transformers, "__version__", "")
+    try:
+        major, minor = (int(part) for part in version.split(".")[:2])
+    except ValueError:  # a dev build like "5.0.0.dev0" still parses; "" does not
+        return "dtype"
+    return "dtype" if (major, minor) >= (4, 56) else "torch_dtype"
 
 
 def load_tokenizer(path: str, *, trust_remote_code: bool = False) -> Any:

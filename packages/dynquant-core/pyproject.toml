@@ -69,6 +69,14 @@ dev = [
 [project.scripts]
 dynquant = "dynquant.cli:main"
 
+# vLLM discovers this group at startup and calls the function in every process,
+# which is how `vllm serve <a dynquant checkpoint>` works with no fork of vLLM and
+# no flag. Costs nothing when vLLM is absent -- entry points are only read by the
+# host that declares the group -- and `register()` does its vLLM imports inside
+# the function body, so nothing here is on `import dynquant`'s path.
+[project.entry-points."vllm.general_plugins"]
+dynquant = "dynquant.integration.vllm_plugin:register"
+
 [project.urls]
 # No Documentation key until the mkdocs site of P10 exists. PyPI renders whatever
 # is listed here as a link on the project page, and a 404 next to the install

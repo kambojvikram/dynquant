@@ -36,7 +36,7 @@ from dynquant.constants import ALLOCATION_FILENAME, ALLOCATION_SCHEMA, BIT_OPTIO
 from dynquant.errors import DynQuantError
 from dynquant.graph import ModuleRole, classify_model
 
-COMMANDS = ("inspect", "quantize", "eval", "bench", "doctor", "version")
+COMMANDS = ("inspect", "quantize", "export", "eval", "bench", "doctor", "version")
 
 
 # --------------------------------------------------------------------------
@@ -98,6 +98,35 @@ def test_a_dynquant_error_exits_one_with_the_message_and_no_traceback(capsys) ->
     assert captured.err.startswith("error: ")
     assert "Traceback" not in captured.err
     assert "--dry-run" in captured.err  # the message names the way out
+
+
+def test_export_defaults_to_cpu_because_it_streams_the_weights() -> None:
+    """Export encodes one module at a time, so the model need not be resident."""
+    assert build_parser().parse_args(["export", "m", "-o", "o"]).device == "cpu"
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [
+        ("4.45.0", "torch_dtype"),
+        ("4.55.4", "torch_dtype"),
+        ("4.56.0", "dtype"),
+        ("4.57.1", "dtype"),
+        ("5.0.0.dev0", "dtype"),
+        ("", "dtype"),
+    ],
+)
+def test_the_dtype_argument_is_named_the_way_this_transformers_names_it(
+    version: str, expected: str
+) -> None:
+    """4.56 renamed `torch_dtype` to `dtype`, and core declares `>=4.45`.
+
+    The failure mode this guards is not a clean TypeError at the call site: the
+    new name on an older release falls through `**kwargs` into the model
+    constructor and comes out as `LlamaForCausalLM.__init__() got an unexpected
+    keyword argument 'dtype'`, which names neither transformers nor the version.
+    """
+    assert _shared._dtype_kwarg(argparse.Namespace(__version__=version)) == expected
 
 
 def test_inspect_defaults_to_cpu_and_quantize_to_cuda() -> None:

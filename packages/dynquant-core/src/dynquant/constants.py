@@ -26,7 +26,11 @@ __all__ = [
     "DEFAULT_GROUP_SIZE",
     "FP16_WEIGHTS_FILENAME",
     "GEMV_MAX_ROWS",
+    "HF_CONFIG_FILENAME",
     "HF_QUANT_METHOD",
+    "HF_SHARD_PATTERN",
+    "HF_WEIGHTS_FILENAME",
+    "HF_WEIGHTS_INDEX_FILENAME",
     "KERNELS_DISTRIBUTION",
     "KERNELS_IMPORT_NAME",
     "LEGACY_STATS_FILENAMES",
@@ -293,6 +297,28 @@ HF_QUANT_METHOD: Final = "dynquant"
 
 Registered into ``transformers.quantizers.auto`` so that
 ``AutoModelForCausalLM.from_pretrained`` dispatches to DynQuant natively.
+"""
+
+HF_CONFIG_FILENAME: Final = "config.json"
+"""Owned by transformers, named here because the exporter writes one."""
+
+HF_WEIGHTS_FILENAME: Final = "model.safetensors"
+HF_SHARD_PATTERN: Final = "model-{index:05d}-of-{total:05d}.safetensors"
+HF_WEIGHTS_INDEX_FILENAME: Final = "model.safetensors.index.json"
+"""Standard HF weight-file layout, which ``dynquant export`` writes rather than
+:data:`PACKED_WEIGHTS_FILENAME`.
+
+Deliberate, and the reason is interoperability rather than taste. vLLM's default
+loader globs ``*.safetensors`` and, when it finds more than one file, keeps only
+those listed in ``model.safetensors.index.json``; a directory whose weights are
+called ``dynquant_packed_weights-*.safetensors`` with a differently-named index
+loads every shard including ones the index would have excluded. Writing the
+standard names means no special case in vLLM, in transformers, or in any Hub
+tool -- the tensors inside are what identify the checkpoint as DynQuant's, along
+with ``quantization_config`` in ``config.json``.
+
+:data:`PACKED_WEIGHTS_FILENAME` remains the name for DynQuant's own
+self-contained artifacts, which are not HF model directories.
 """
 
 # --------------------------------------------------------------------------

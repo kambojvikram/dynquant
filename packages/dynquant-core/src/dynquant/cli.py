@@ -339,6 +339,68 @@ def _add_quantize(subparsers: _SubParsers) -> None:
 
 
 # --------------------------------------------------------------------------
+# export
+# --------------------------------------------------------------------------
+
+
+def _cmd_export(args: argparse.Namespace) -> int:
+    from .commands import export
+
+    return export.run(args)
+
+
+def _add_export(subparsers: _SubParsers) -> None:
+    parser = subparsers.add_parser(
+        "export",
+        help="write the packed checkpoint a server loads",
+        description=(
+            "Write the model in packed form: one qweight/scales/offsets triple per "
+            "module at the width the allocator chose, in a standard Hugging Face "
+            "directory. `vllm serve` reads it with no flag and no patch, because "
+            "installing dynquant registers the method through vLLM's plugin entry "
+            "point. Same encoder as `quantize` -- the values are identical, the "
+            "container is the one that is actually smaller."
+        ),
+    )
+    parser.add_argument("model", help="checkpoint directory or Hub id")
+    parser.add_argument("-o", "--output", help="directory to write (required unless --dry-run)")
+    # --device defaults to cpu here and cuda for `quantize`: export streams each
+    # weight to the encoder and straight into the write buffer, so the model never
+    # needs to be resident on the accelerator, and the machine that exports a 70B
+    # is often not the machine that serves it.
+    _add_loading(parser, device="cpu")
+    _add_compute_device(parser)
+    _add_allocation(parser)
+    _add_map_input(parser)
+    parser.add_argument("--target", type=float, metavar="BITS", help="average bits per weight")
+    parser.add_argument("--target-size", metavar="SIZE", help="a size budget, e.g. 6.5GiB")
+    parser.add_argument(
+        "--target-ratio", type=float, metavar="R", help="a fraction of the fp16 size"
+    )
+    parser.add_argument(
+        "--uniform",
+        type=int,
+        choices=BIT_OPTIONS,
+        metavar="BITS",
+        help="every module at one width, structural roles excepted",
+    )
+    parser.add_argument("--tokenizer", help="where to copy the tokenizer from (default: the model)")
+    parser.add_argument(
+        "--max-shard-size",
+        metavar="SIZE",
+        help="split the weights across files of at most this size (default: 4GiB)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="allocate and report, then stop before touching a weight",
+    )
+    parser.add_argument("--quiet", action="store_true", help="suppress per-module progress")
+    parser.add_argument("--json", action="store_true", help="also emit a JSON summary")
+    parser.set_defaults(handler=_cmd_export)
+
+
+# --------------------------------------------------------------------------
 # eval
 # --------------------------------------------------------------------------
 
@@ -529,6 +591,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND", required=True)
     _add_inspect(subparsers)
     _add_quantize(subparsers)
+    _add_export(subparsers)
     _add_eval(subparsers)
     _add_bench(subparsers)
     _add_doctor(subparsers)
