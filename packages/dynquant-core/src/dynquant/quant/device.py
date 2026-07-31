@@ -150,6 +150,7 @@ def quantize_tensor(
     candidates: Sequence[float] = CLIP_CANDIDATES,
     compute_dtype: torch.dtype | None = None,
     row_offset: int = 0,
+    channel_weight: torch.Tensor | None = None,
     device: torch.device | None = None,
 ) -> tuple[QuantTensor, ClipSearchResult]:
     """Encode one weight on ``device``, falling back to its own device if it will not fit.
@@ -174,6 +175,7 @@ def quantize_tensor(
             candidates=candidates,
             compute_dtype=compute_dtype,
             row_offset=row_offset,
+            channel_weight=channel_weight,
         )
 
     try:
@@ -185,6 +187,7 @@ def quantize_tensor(
             candidates=candidates,
             compute_dtype=compute_dtype,
             row_offset=row_offset,
+            channel_weight=channel_weight,
             device=device,
         )
     except RuntimeError as exc:
@@ -210,6 +213,7 @@ def quantize_tensor(
             candidates=candidates,
             compute_dtype=compute_dtype,
             row_offset=row_offset,
+            channel_weight=channel_weight,
         )
 
 

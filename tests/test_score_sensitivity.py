@@ -31,7 +31,7 @@ from test_graph_classify import Qwen3_5ForCausalLM
 
 from dynquant.graph.classify import classify_model
 from dynquant.graph.roles import ModuleRole
-from dynquant.quant.grid import quantize_with_search
+from dynquant.quant.grid import CLIP_CANDIDATES, DEEP_CLIP_CANDIDATES, quantize_with_search
 from dynquant.score import sensitivity as sens_mod
 from dynquant.score.sensitivity import (
     SensitivityTable,
@@ -284,6 +284,104 @@ def test_weight_only_and_gauss_newton_disagree(table34, control34) -> None:
     by_data = sorted(shared, key=lambda n: -(data.gain(n, 3, 4) or 0.0))
     by_control = sorted(shared, key=lambda n: -(control.gain(n, 3, 4) or 0.0))
     assert by_data != by_control
+
+
+# --------------------------------------------------------------------------
+# Pricing against the grid the quantizer will actually run
+# --------------------------------------------------------------------------
+#
+# The estimate is the quantizer's own error weighted by the channel moments, so a
+# table priced against one clip grid and spent against another measures a checkpoint
+# that will never exist -- and the two disagree most at exactly the widths the
+# allocator is deciding between. Measured on Qwen3.5-2B at a byte-identical
+# 740,724,736 B: encoding with the deep grid but pricing with the shipped one was
+# worth +0.09 points, and pricing with it too was worth +0.67. The gain is in the
+# price, not the encoding, which is the entire reason these two arguments exist.
+
+
+def test_the_clip_grid_changes_the_price_not_just_the_encoding() -> None:
+    """A 2-bit sensitivity priced on a floor-bound grid is an overestimate.
+
+    ``CLIP_CANDIDATES`` stops at 0.80 and a 2-bit group's optimum is far below it, so
+    the shipped grid reports an error 2 bits does not have to incur. The allocator
+    reads that as *2 bits is catastrophic here* and buys 3 bits it did not need.
+    """
+    torch.manual_seed(0)
+    weight = torch.randn(64, 256)
+    x2 = torch.rand(256) + 0.1
+    d2 = torch.rand(64) + 0.1
+
+    shipped = sens_mod._module_sensitivity(weight, x2, d2, bits=2, group_size=128, symmetric=False)
+    deep = sens_mod._module_sensitivity(
+        weight,
+        x2,
+        d2,
+        bits=2,
+        group_size=128,
+        symmetric=False,
+        candidates=DEEP_CLIP_CANDIDATES,
+    )
+    assert deep < shipped
+    assert deep / shipped < 0.9, "the deep grid moved 2-bit price by less than 10%"
+
+
+def test_the_default_grid_is_still_the_shipped_one() -> None:
+    """``candidates=None`` must mean ``CLIP_CANDIDATES``, or ``paper-3.15`` moves."""
+    torch.manual_seed(0)
+    weight = torch.randn(32, 128)
+    x2 = torch.rand(128) + 0.1
+    d2 = torch.rand(32) + 0.1
+
+    implicit = sens_mod._module_sensitivity(weight, x2, d2, bits=3, group_size=128, symmetric=False)
+    explicit = sens_mod._module_sensitivity(
+        weight, x2, d2, bits=3, group_size=128, symmetric=False, candidates=CLIP_CANDIDATES
+    )
+    assert implicit == pytest.approx(explicit)
+
+
+def test_weighted_clip_selection_changes_the_estimate(graph, moments, weights) -> None:
+    """Selecting on the objective being measured is not the same as approximating it.
+
+    Off by default because it changes the bytes a checkpoint contains: a table built
+    with it and spent without is precisely the mismatch these arguments exist to make
+    visible.
+    """
+    plain = estimate_sensitivity(graph, moments, weights, bit_options=(2,), group_size=GROUP)
+    weighted = estimate_sensitivity(
+        graph, moments, weights, bit_options=(2,), group_size=GROUP, weighted_clip=True
+    )
+    assert set(plain.values) == set(weighted.values)
+    assert any(
+        plain.values[name][2] != pytest.approx(weighted.values[name][2]) for name in plain.values
+    )
+
+
+def test_weighted_clip_is_not_a_uniform_improvement(graph, moments, weights) -> None:
+    """It lowers reconstruction error and can still raise weighted sensitivity.
+
+    Measured on Qwen3.5-2B: the deeper clip cut ``k_proj``'s 2-bit reconstruction
+    error by 16% while its Gauss-Newton sensitivity rose 6.7%, because the search
+    minimises error per group and a tighter clip trades away exactly the
+    large-magnitude weights the channel moments say matter. Asserting a uniform win
+    here would be asserting something that was measured to be false.
+    """
+    plain = estimate_sensitivity(graph, moments, weights, bit_options=(2,), group_size=GROUP)
+    weighted = estimate_sensitivity(
+        graph, moments, weights, bit_options=(2,), group_size=GROUP, weighted_clip=True
+    )
+    ratios = [weighted.values[n][2] / plain.values[n][2] for n in plain.values]
+    assert min(ratios) < 1.0, "weighted selection helped nothing at all"
+
+
+def test_the_control_takes_the_grid_too(graph, weights) -> None:
+    """The calibration-free baseline has to be priced on the same grid or it is not one."""
+    shipped = weight_only_sensitivity(graph, weights, bit_options=(2,), group_size=GROUP)
+    deep = weight_only_sensitivity(
+        graph, weights, bit_options=(2,), group_size=GROUP, candidates=DEEP_CLIP_CANDIDATES
+    )
+    assert set(shipped.values) == set(deep.values)
+    assert all(deep.values[n][2] <= shipped.values[n][2] + 1e-9 for n in shipped.values)
+    assert any(deep.values[n][2] < shipped.values[n][2] for n in shipped.values)
 
 
 # --------------------------------------------------------------------------

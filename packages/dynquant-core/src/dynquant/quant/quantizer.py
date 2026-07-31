@@ -99,6 +99,7 @@ def quantize_model(
     group_size: int = DEFAULT_GROUP_SIZE,
     symmetric: bool = False,
     candidates: Sequence[float] = CLIP_CANDIDATES,
+    channel_weights: Mapping[str, torch.Tensor] | None = None,
     in_place: bool = True,
     compute_device: str | torch.device | None = "auto",
     progress: Callable[[int, int], None] | None = None,
@@ -113,19 +114,47 @@ def quantize_model(
     ``None`` to keep the arithmetic on the weights' own device. See
     :mod:`dynquant.quant.device`.
 
+    ``channel_weights`` maps a module name to a per-input-channel weight of length
+    ``in_features`` -- in practice ``E[x_c^2]`` from the training-time moments -- and
+    switches that module's clip search from plain MSE to the error the layer output
+    actually sees. It is opt-in and all-or-nothing: when supplied it must cover every
+    name in ``bits``. That is deliberate rather than convenient. The allocator prices
+    a bit map against one clip objective, and a module encoded on a different
+    objective than it was priced with is mispriced in a way nothing downstream can
+    detect -- the checkpoint is the right size and simply worse. A module with no
+    usable moments is not an exception to feed through the gap: pass it a vector of
+    ones, which is the unweighted objective written explicitly.
+
     Raises:
         DynQuantError: A name in the bit map does not resolve to a module with a
             weight. Raised rather than skipped: the bit map came from the same
             graph as the model, so a miss means the two have diverged, and
             silently leaving that tensor at fp16 would produce a checkpoint
-            larger than the target with no indication why.
+            larger than the target with no indication why. Also raised when
+            ``channel_weights`` is supplied but does not cover ``bits``, or when a
+            weight vector's length does not match the module's ``in_features``.
     """
     report = QuantizationReport()
     total = len(bits)
     device = resolve_compute_device(compute_device)
 
+    if channel_weights is not None:
+        missing = sorted(set(bits) - set(channel_weights))
+        if missing:
+            raise DynQuantError(
+                f"channel_weights is missing {len(missing)} of {len(bits)} modules in the "
+                f"bit map, starting with {missing[:5]}. Pass a vector of ones for any "
+                f"module that should keep the unweighted clip objective."
+            )
+
     for index, (name, width) in enumerate(sorted(bits.items())):
         weight = _target_tensor(model, name)
+        cweight = None if channel_weights is None else channel_weights[name]
+        if cweight is not None and cweight.numel() != weight.shape[-1]:
+            raise DynQuantError(
+                f"{name}: channel weight has {cweight.numel()} entries but the weight has "
+                f"{weight.shape[-1]} input channels"
+            )
 
         with torch.no_grad():
             original = weight.detach()
@@ -138,6 +167,7 @@ def quantize_model(
                 compute_dtype=original.dtype
                 if original.dtype in (torch.float16, torch.bfloat16)
                 else None,
+                channel_weight=cweight,
                 device=device,
             )
             # Scored where the encoding happened rather than where the weight

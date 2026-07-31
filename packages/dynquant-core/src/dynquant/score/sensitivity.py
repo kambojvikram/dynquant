@@ -170,6 +170,8 @@ def estimate_sensitivity(
     bit_options: Sequence[int] = BIT_OPTIONS,
     group_size: int = DEFAULT_GROUP_SIZE,
     symmetric: bool = False,
+    candidates: Sequence[float] | None = None,
+    weighted_clip: bool = False,
 ) -> SensitivityTable:
     """Estimate ``dLoss`` for every module at every candidate width.
 
@@ -180,6 +182,21 @@ def estimate_sensitivity(
             module references -- deliberately, so it can be built, saved, and
             reasoned about without the model resident -- and because the fine-tune
             and the quantization commonly happen on different machines.
+        candidates: Clip ratios the search may choose from, defaulting to
+            :data:`~dynquant.quant.grid.CLIP_CANDIDATES`. **Pass whatever grid the
+            quantizer will actually run.** The estimate is the quantizer's own error
+            weighted by the channel moments, so a table priced against one grid and
+            spent against another is measuring a checkpoint that will never exist --
+            and the two disagree most at exactly the widths the allocator is
+            deciding between. See :data:`~dynquant.quant.grid.DEEP_CLIP_CANDIDATES`,
+            which changes 2-bit sensitivity by -20 to -50% on large modules and so
+            moves the width the knapsack picks, not merely the error it predicts.
+        weighted_clip: Choose each group's clip ratio by ``E[x_c^2]``-weighted error
+            instead of plain MSE -- the same objective this function then measures,
+            rather than a proxy for it. Off by default because it changes the bytes
+            a checkpoint contains, so the quantizer must be told to do it too; a
+            table built with it and spent without is the mismatch this argument and
+            ``candidates`` both exist to make visible.
     """
     import torch
 
@@ -204,6 +221,8 @@ def estimate_sensitivity(
                     bits=bits,
                     group_size=group_size,
                     symmetric=symmetric,
+                    candidates=candidates,
+                    weighted_clip=weighted_clip,
                 )
                 for bits in widths
             }
@@ -227,6 +246,7 @@ def weight_only_sensitivity(
     bit_options: Sequence[int] = BIT_OPTIONS,
     group_size: int = DEFAULT_GROUP_SIZE,
     symmetric: bool = False,
+    candidates: Sequence[float] | None = None,
 ) -> SensitivityTable:
     """``sum_rc (W - Q_b(W))^2`` -- the same shape with no data in it at all.
 
@@ -257,6 +277,7 @@ def weight_only_sensitivity(
                     bits=bits,
                     group_size=group_size,
                     symmetric=symmetric,
+                    candidates=candidates,
                 )
                 for bits in widths
             }
@@ -333,11 +354,13 @@ def _module_sensitivity(
     bits: int,
     group_size: int,
     symmetric: bool,
+    candidates: Sequence[float] | None = None,
+    weighted_clip: bool = False,
 ) -> float:
     """One module, one width. Row-chunked so peak memory is bounded by the chunk."""
     import torch
 
-    from dynquant.quant.grid import quantize_with_search
+    from dynquant.quant.grid import CLIP_CANDIDATES, quantize_with_search
 
     rows, cols = weight.shape
     per_row = max(cols * 4, 1)
@@ -355,7 +378,10 @@ def _module_sensitivity(
             bits=bits,
             group_size=group_size,
             symmetric=symmetric,
+            candidates=CLIP_CANDIDATES if candidates is None else candidates,
             row_offset=start,
+            # Per input channel, so it is the same vector for every row chunk.
+            channel_weight=x2f if weighted_clip else None,
         )
         error = block.float() - quantized.dequantize(dtype=torch.float32)
         error.mul_(error)
