@@ -19,6 +19,114 @@ ones that invalidate artifacts a user has already produced.
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-07-30
+
+DynQuant beats GPTQ at 3 bits. On Qwen3.5-2B / CaseHOLD: **89.57 % at
+708,087,808 B against GPTQ's 88.03 % at 741,475,927 B** — +1.54 points on 203/121
+discordant pairs, exact McNemar *p* < 0.0001, CI [+0.88, +2.21], at 4.5 % fewer
+bytes and 0.17 points under fp16. No error feedback, no inverse Hessian, no
+sequential column compensation, and no calibration set: everything the allocation
+uses was collected by the fine-tune's own hook.
+
+Two of the four levers that produced it ship in this release as opt-in encoder
+arguments. The other two — row-partitioning the tied embedding, and per-row body
+allocation — are experiment code here and are the next thing to land in core.
+
+Python-side only. `KERNEL_ABI_VERSION` is still 2, `CHECKPOINT_FORMAT_VERSION` and
+`STATS_SCHEMA_VERSION` are untouched, and no kernel source changed — a 0.1.1
+checkpoint reads unchanged and a 0.1.1 kernels wheel still loads against this core.
+`dynquant-kernels` moves to 0.1.2 with the others only because PyPI will not accept
+a second upload under a filename it already holds.
+
+### Added — `DEEP_CLIP_CANDIDATES`, a clip grid that reaches the answer at 2 bits
+
+`CLIP_CANDIDATES` stops at 0.80. That is a defensible floor at 4 bits and cannot be
+one at 2: with four levels, the MSE-optimal shrink for a roughly Gaussian group sits
+well below 0.80, so the search returns the floor on essentially every 2-bit group and
+reports it as a win. `DEEP_CLIP_CANDIDATES` continues the same spacing rule down to
+0.40. Measured mean chosen ratio: **0.52–0.59 at 2 bits, 0.73–0.86 at 3, 0.88–0.93 at
+4** — and at 4 bits and above the extension is *inert*, returning ratios and errors
+bit-identical to the shipped grid. The first eight entries are unchanged, so any
+difference is attributable to the extension rather than to a re-tuning of what was
+already there.
+
+Opt in with `candidates=DEEP_CLIP_CANDIDATES` on `search_clip_ratios`,
+`quantize_with_search`, `quantize_tensor` and `quantize_model`. The default is
+unchanged, so an existing call reproduces its previous checkpoint exactly.
+
+### Added — a channel-weighted clip objective
+
+`channel_weight` on the search minimises E[x²]-weighted reconstruction error instead
+of plain MSE, so a group containing an input channel the network actually drives hard
+is allowed to keep its outliers. The vector is **padded to the group boundary, not
+broadcast**: a tensor whose input width is not a multiple of `group_size` would
+otherwise weight the padding lanes of its last group. A vector of ones reproduces the
+unweighted search exactly — bit-identical, asserted in the tests.
+
+`quantize_model(channel_weights=...)` is **all-or-nothing** and raises on a partial
+map naming the missing modules. Half a checkpoint encoded against one objective and
+half against another is not something anyone can price afterwards, and it is the kind
+of mistake that yields a plausible number rather than an error. Pass ones for any
+module that should keep the unweighted objective.
+
+### Added — the allocator can price against the grid the quantizer will run
+
+`estimate_sensitivity` and `weight_only_sensitivity` take `candidates=`, and
+`estimate_sensitivity` also takes `weighted_clip=`. Pricing widths on the shipped grid
+and then encoding on the deep one is a silent mismatch — the estimator reports a cost
+the encoder never pays.
+
+This matters more than it sounds, because **the two changes pay through different
+stages**, and which one is which is not guessable from the code:
+
+| Change | Re-encode at a fixed map | Re-price, then encode |
+|---|---:|---:|
+| Deeper clip grid | +0.09 pts | **+0.58 pts** |
+| E[x²]-weighted objective | **+0.41 pts** | −0.09 pts |
+
+The grid pays through the allocator: it changes what each width *costs*, so the map
+moves. The objective pays through the encoder: it changes what a given width *stores*,
+and only 4 of 187 widths move. A change that pays through the allocator and is only
+plumbed into the encoder delivers roughly a sixth of its value, silently.
+
+### Changed — the reference experiments
+
+`experiments/four_point/` gains the phase-2 arms (`p2*.py`), the external-baseline
+drivers (`stage8_baselines.py`, `stage8_bnb.py`, `run_baselines.sh`) and the full
+result ladder in `RESULTS-external-comparison.md` and
+`REPORT-quantization-comparison.md`: 17 arms, 2 negative controls, 6 frontier rungs.
+
+`stage5_quantize.py` gains a provenance check, from two failures that each produced a
+wrong published number without producing an error. `RUN_DIR` derives from `DQ_MODEL`
+and `DQ_TASK`, not from `--model`, so pinning the input pins nothing — four Mistral
+arms landed in the Qwen directory, and were evaluated with the Qwen tokenizer, before
+anything complained. And a bit map older than the weights it describes is invisible to
+every skip-if-output-exists resume guard, because the output does exist; existence
+cannot detect a stale map, but ordering can. `--allow-stale` downgrades the check to a
+warning for the one legitimate case: deliberately measuring what the staleness cost.
+
+### Added — `docs/reports/`
+
+Phase 1 (the external comparison against GPTQ, AWQ, RTN and bitsandbytes on two
+models) and phase 2 (beating GPTQ at 3 bits) as xelatex sources. Built PDFs are
+attached to the release rather than committed — the repository-wide `*.pdf` rule
+exists to keep a confidential document out of history and is not worth a hole.
+
+### Notes
+
+- The **negative control ships with the feature.** Per-row allocation with a *shuffled*
+  row order loses 1.28 points at identical bytes (125/193, *p* = 0.0002) and wins 1.04
+  with the real signal. Finer granularity is a multiplier on the signal, not a gain in
+  itself, and a granularity change without its shuffled control does not distinguish
+  the two.
+- **A claim that did not survive its own test is not in here.** `rb_agg` against
+  `gptq_3b` is +0.60 with *p* = 0.0685 and is reported as a tie, not a win.
+- The largest single lever is not in this release: row-partitioning the tied
+  embedding/LM-head tensor is worth **+2.90 points for 7.00 MiB** — 0.41 pts/MiB
+  against 0.011 for the model body, 37×. It needs a row-partitioned checkpoint path in
+  core, and it needs the allocator to be told the tie's cost up front or the result
+  lands ~24 MB over target.
+
 ## [0.1.1] — 2026-07-29
 
 A point release for one reason above the others: **install this instead of 0.1.0**,
@@ -1049,6 +1157,7 @@ and `mma.sync` accumulation — the AWQ/Marlin route — which is P7.
   Python costs. CUDA Graphs (P8) and a `flash-linear-attention` fast path are what address
   it. `experiments/qwen35_2b/RESULTS.md` has the measurement.
 
-[Unreleased]: https://github.com/kambojvikram/dynquant/compare/v0.1.1...main
+[Unreleased]: https://github.com/kambojvikram/dynquant/compare/v0.1.2...main
+[0.1.2]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.2
 [0.1.1]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.1
 [0.1.0]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.0

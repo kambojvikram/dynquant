@@ -24,7 +24,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dynquant"
-version = "0.1.1"
+version = "0.1.2"
 description = "Training-dynamics-driven mixed-precision LLM quantization, with prebuilt CUDA kernels."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -42,7 +42,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "dynquant-core==0.1.1",
+    "dynquant-core==0.1.2",
     # Prebuilt kernels exist only where we can build and test them. Elsewhere this
     # resolves to nothing, `dynquant doctor` reports backend=torch with the reason,
     # and quantization still works -- rather than pip failing to find a wheel and
@@ -70,11 +70,11 @@ dependencies = [
 [project.optional-dependencies]
 # Mirrors of dynquant-core's extras, so users never have to know that `core`
 # exists as a separate name.
-hf = ["dynquant-core[hf]==0.1.1"]
-train = ["dynquant-core[train]==0.1.1"]
-eval = ["dynquant-core[eval]==0.1.1"]
-triton = ["dynquant-core[triton]==0.1.1"]
-dev = ["dynquant-core[dev]==0.1.1"]
+hf = ["dynquant-core[hf]==0.1.2"]
+train = ["dynquant-core[train]==0.1.2"]
+eval = ["dynquant-core[eval]==0.1.2"]
+triton = ["dynquant-core[triton]==0.1.2"]
+dev = ["dynquant-core[dev]==0.1.2"]
 
 # Force the compiled kernels regardless of platform marker. Falls back to an sdist
 # build, which needs nvcc, cmake and a C++ toolchain.

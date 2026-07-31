@@ -113,6 +113,47 @@ moments were never collected.
 The rank product remains reachable (`ScoreConfig(combine="rank_product")`), because
 reproducing the published numbers requires reproducing this too.
 
+### Measured against GPTQ
+
+Fine-tuned Qwen3.5-2B, CaseHOLD, 5,314 test items. Every arm scores the same items in
+the same order, so every comparison is a paired exact McNemar test on the stored
+per-item hits — never a difference of two independent accuracies.
+
+| 3-bit tier | accuracy | on disk | vs GPTQ |
+|---|---:|---:|---|
+| fine-tuned bf16 | 89.74 % | 3,763 MB | — |
+| **DynQuant** | **89.57 %** | **708.1 MB** | **+1.54 pts, *p* < 0.0001** |
+| GPTQ | 88.03 % | 741.5 MB | — |
+| AWQ | 83.31 % | 741.5 MB | −4.72 |
+| RTN | 60.91 % | 741.5 MB | −27.12 |
+
++1.54 points on 203/121 discordant pairs, CI [+0.88, +2.21], at 4.5 % fewer bytes and
+0.17 points below bf16. Every baseline row here quantizes the tied embedding/head too,
+which is *not* their default — left at `ignore=["lm_head"]` a "3-bit" GPTQ checkpoint
+measures 7.36 stored bits on this model, and comparing against that number instead
+would flatter DynQuant by 2.2×. Walking the budget down: still ahead at 680 MB (+1.05,
+*p* = 0.0026), a tie at 650 and 620, behind by 590.
+
+No error feedback, no inverse Hessian, no sequential column compensation, and **no
+calibration set** — everything the allocation uses came from the fine-tune's own hook.
+Four independent levers, priced separately: row-partitioning the tied embedding
+(+2.90), the Gauss–Newton estimate above over the rank product (+1.07), per-row rather
+than per-module allocation (+1.04), and an E[x²]-weighted clip objective (+0.70 /
++0.41, pooled *p* = 0.0098). The first two of those ship in `dynquant-core`; the other
+two are `experiments/four_point/` for now.
+
+Finer granularity is a multiplier on the signal and not a gain in itself, which the
+shuffled control says out loud: per-row allocation with a *random* row order **loses**
+1.28 points at identical bytes, and wins 1.04 with the real ordering. A granularity
+change shipped without its shuffled control cannot tell those two apart.
+
+**At 4 bits none of this matters.** Five arms span 0.81 points there and not one
+adjacent pair separates — DynQuant's +0.45 over plain round-to-nearest is *p* = 0.17.
+Choosing widths earns its keep only once the budget is tight enough that the role
+floors stop being affordable and something actually has to be given up.
+[docs/reports/](docs/reports/) has both write-ups; `experiments/four_point/` has the
+arms, including the ones that lost.
+
 ## Status
 
 Early. The table below is the honest state of each phase. Each has a hard exit gate that
@@ -133,7 +174,7 @@ partly met the table says so rather than rounding up.
 | P9 | Packed checkpoint writer + `from_pretrained` load path | |
 | P10 | Eval, benchmarks, docs | partial: `eval` and `bench` ship, docs site does not |
 
-1275 tests. 856 of them run anywhere — CPU only, no GPU, no download, no checkpoint
+1363 tests. 944 of them run anywhere — CPU only, no GPU, no download, no checkpoint
 — and the remaining 419 need the compiled kernels on a CUDA device, where they pass.
 
 Two of P2's gate items still need a multi-GPU box: tracker step-time overhead under
@@ -163,6 +204,7 @@ index. The plan's mkdocs site is still not written; this README and
 
 [v010]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.0
 [v011]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.1
+[v012]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.2
 
 **What "done" means for P6, precisely.** The published research prototype dequantized
 back to fp16 at load time — storage savings only, no VRAM reduction and no speedup.
@@ -219,11 +261,11 @@ results, no VRAM saving, no speedup, `pip` reporting success the whole way. See
 [CHANGELOG.md](CHANGELOG.md#known-issues-in-010).
 
 There is one wheel on PyPI — the cu126 / torch 2.7 build. For other combinations the
-[v0.1.1 release][v011] is a `--find-links` variant index:
+[v0.1.2 release][v012] is a `--find-links` variant index:
 
 ```bash
-pip install 'torch==2.8.*' && pip install dynquant-kernels==0.1.1+cu128torch28 \
-  --find-links https://github.com/kambojvikram/dynquant/releases/expanded_assets/v0.1.1
+pip install 'torch==2.8.*' && pip install dynquant-kernels==0.1.2+cu128torch28 \
+  --find-links https://github.com/kambojvikram/dynquant/releases/expanded_assets/v0.1.2
 ```
 
 Anywhere else — Windows, macOS, CPU-only, ARM, glibc older than 2.34 — `dynquant-core`
