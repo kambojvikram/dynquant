@@ -205,6 +205,7 @@ index. The plan's mkdocs site is still not written; this README and
 [v010]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.0
 [v011]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.1
 [v012]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.2
+[v020]: https://github.com/kambojvikram/dynquant/releases/tag/v0.2.0
 
 **What "done" means for P6, precisely.** The published research prototype dequantized
 back to fp16 at load time — storage savings only, no VRAM reduction and no speedup.
@@ -261,11 +262,11 @@ results, no VRAM saving, no speedup, `pip` reporting success the whole way. See
 [CHANGELOG.md](CHANGELOG.md#known-issues-in-010).
 
 There is one wheel on PyPI — the cu126 / torch 2.7 build. For other combinations the
-[v0.1.2 release][v012] is a `--find-links` variant index:
+[v0.2.0 release][v020] is a `--find-links` variant index:
 
 ```bash
-pip install 'torch==2.8.*' && pip install dynquant-kernels==0.1.2+cu128torch28 \
-  --find-links https://github.com/kambojvikram/dynquant/releases/expanded_assets/v0.1.2
+pip install 'torch==2.8.*' && pip install dynquant-kernels==0.2.0+cu128torch28 \
+  --find-links https://github.com/kambojvikram/dynquant/releases/expanded_assets/v0.2.0
 ```
 
 Anywhere else — Windows, macOS, CPU-only, ARM, glibc older than 2.34 — `dynquant-core`

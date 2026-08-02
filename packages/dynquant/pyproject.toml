@@ -24,7 +24,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dynquant"
-version = "0.1.2"
+version = "0.2.0"
 description = "Training-dynamics-driven mixed-precision LLM quantization, with prebuilt CUDA kernels."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -42,7 +42,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "dynquant-core==0.1.2",
+    "dynquant-core==0.2.0",
     # Prebuilt kernels exist only where we can build and test them. Elsewhere this
     # resolves to nothing, `dynquant doctor` reports backend=torch with the reason,
     # and quantization still works -- rather than pip failing to find a wheel and
@@ -64,21 +64,27 @@ dependencies = [
     # wheels are the ones declaring an open `torch>=2.4` against a binary linked to one
     # minor, which is the failure 0.1.1 exists to close. Leaving the floor at 0.1.0
     # would let this release resolve the very wheel it fixes.
-    "dynquant-kernels>=0.1.1,<0.2; platform_system=='Linux' and platform_machine=='x86_64'",
+    #
+    # Ceiling raised to <0.3 at 0.2.0 for a duller reason: the kernels wheel moves with
+    # every tagged release whether or not a kernel changed, because PyPI refuses a
+    # filename it already holds -- so this release publishes 0.2.0 wheels, and a `<0.2`
+    # ceiling would have excluded them. The floor stays at 0.1.1 because it can: the
+    # ABI is still 2, so a 0.1.x wheel a user already has keeps working.
+    "dynquant-kernels>=0.1.1,<0.3; platform_system=='Linux' and platform_machine=='x86_64'",
 ]
 
 [project.optional-dependencies]
 # Mirrors of dynquant-core's extras, so users never have to know that `core`
 # exists as a separate name.
-hf = ["dynquant-core[hf]==0.1.2"]
-train = ["dynquant-core[train]==0.1.2"]
-eval = ["dynquant-core[eval]==0.1.2"]
-triton = ["dynquant-core[triton]==0.1.2"]
-dev = ["dynquant-core[dev]==0.1.2"]
+hf = ["dynquant-core[hf]==0.2.0"]
+train = ["dynquant-core[train]==0.2.0"]
+eval = ["dynquant-core[eval]==0.2.0"]
+triton = ["dynquant-core[triton]==0.2.0"]
+dev = ["dynquant-core[dev]==0.2.0"]
 
 # Force the compiled kernels regardless of platform marker. Falls back to an sdist
 # build, which needs nvcc, cmake and a C++ toolchain.
-kernels = ["dynquant-kernels>=0.1.1,<0.2"]
+kernels = ["dynquant-kernels>=0.1.1,<0.3"]
 
 [project.urls]
 # See the note in dynquant-core: no Documentation key until the site exists.

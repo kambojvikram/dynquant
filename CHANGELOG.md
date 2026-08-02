@@ -19,6 +19,106 @@ ones that invalidate artifacts a user has already produced.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-02
+
+A DynQuant checkpoint serves on vLLM. No fork, no patch, no `--quantization` flag,
+no code in the user's project:
+
+```bash
+pip install dynquant
+vllm serve my-org/qwen3-2b-dynquant-3bit
+```
+
+and it is measurably the same model. Qwen3.5-2B at 3.25 bits, CaseHOLD, 5,314 items
+with per-item hits stored so every comparison is paired (exact two-sided McNemar):
+
+| arm | accuracy | vs the direct run | 95 % CI |
+|---|---|---|---|
+| direct run | 86.96 % (4621) | — | — |
+| vLLM, eager | 86.96 % (4621) | +0.00, *p* = 1.0000 | [−0.13, +0.13] |
+| vLLM, inductor + FULL CUDA graphs | 87.00 % (4623) | +0.04, *p* = 0.7905 | [−0.10, +0.18] |
+| fine-tuned bf16 | 89.74 % (4769) | −2.75, *p* < 0.0001 | [−3.45, −2.04] |
+
+The bound only means something beside the last row: the serving gap is under a fifth
+of a point where quantization itself costs 2.75. An equivalence claim with no
+quantization-effect arm beside it is unfalsifiable, which is why that row is in the
+table rather than in a footnote.
+
+Python-side only. `KERNEL_ABI_VERSION` is still 2, `CHECKPOINT_FORMAT_VERSION` and
+`STATS_SCHEMA_VERSION` are untouched, and no kernel source changed — a 0.1.x
+checkpoint serves unchanged and a 0.1.x kernels wheel still loads against this core.
+`dynquant-kernels` moves to 0.2.0 with the others only because PyPI will not accept a
+second upload under a filename it already holds, and the meta package's kernels
+ceiling widens from `<0.2` to `<0.3` so this release can resolve its own wheels.
+
+### Added — `dynquant.integration.vllm_plugin`, reached through vLLM's own entry point
+
+`register()` is wired to the `vllm.general_plugins` entry-point group, so vLLM calls
+it once per process during startup — engine, workers and API server alike — and
+`quant_method: "dynquant"` in a checkpoint's `config.json` then resolves. Everything
+this package touches inside vLLM is a supported extension point or a documented base
+class. The one thing that looked like it would force a patch,
+`WEIGHT_LOADER_V2_SUPPORTED` being a hardcoded list, has a public decorator for
+exactly this case.
+
+The hard part is that **bit width varies per module and vLLM fuses modules**. `q_proj`
+at 4 bits and `k_proj` at 3 have 512- and 384-word rows over the same 4096 inputs, so
+the fused `qkv_proj` parameter is not a rectangle and no `narrow` expresses it — which
+is what every other quantization method relies on. `geometry.py` lays each shard's
+packed rows end to end in one flat buffer and hands out views; `parameter.py` overrides
+the four placement hooks to translate vLLM's *output row ranges* into flat spans.
+Neither imports vLLM, so the arithmetic is unit-tested on a laptop.
+
+Tensor parallelism is covered at the placement level: `tests/test_vllm_tp_placement.py`
+builds both ranks of a `tp_size=2` layer and requires them to reassemble the checkpoint
+exactly — fused QKV at three different widths, replicated KV heads, `gate_up_proj`, and
+row-parallel word-axis splits at all four bit widths, plus the two refusals. A
+row-parallel split off a group boundary and a fused row-parallel layer both fail at
+`create_weights`, naming the module, before a weight is read. What is **not** covered is
+a real two-rank engine, which needs a second GPU; the uncovered part is vLLM's
+all-reduce rather than DynQuant's arithmetic, but it is uncovered.
+
+### Added — `fuse.py`, because inductor cancels `split(cat(...))`
+
+A fused layer computes one matmul per shard and joins them. Written as `torch.cat`,
+that is correct eagerly and an illegal memory access under `torch.compile`: the caller
+splits the result straight back apart, inductor cancels the pair, and vLLM records its
+piecewise-boundary strides from fake-tensor propagation which runs *before* the
+cancellation. Qwen3.5's gated delta net traced `z` at stride 8192 and got contiguous
+stride 2048.
+
+`dynquant::fused_shard_concat` is an opaque custom op with a `register_fake` meta
+implementation, so the join survives as a real tensor across the boundary. This is not
+a vLLM-specific bug and any port inherits it — anywhere a serving framework splits a
+compiled graph and records strides across the split.
+
+### Fixed — the MoE refusal was not firing on vLLM 0.26
+
+DynQuant does not serve a fused MoE layer (the packed grouped GEMM is phase 8), and the
+guard that says so by name had stopped matching. Through vLLM 0.25 `FusedMoE` was the
+class owning expert weights; in 0.26 it is a factory returning a `MoERunner`, and the
+object handed to `get_quant_method` is a `RoutedExperts`. A probe keyed on the class
+name matched nothing.
+
+That failure is silent rather than loud, which is why it is worth a release note:
+returning `None` from `get_quant_method` means "use vLLM's unquantized method", and
+`RoutedExperts._get_quant_method` substitutes `UnquantizedFusedMoEMethod` on `None` —
+so a probe that stops matching does not fall through to an error, it falls through to
+fp16 experts built for a checkpoint that holds packed words. The probe now keys on the
+defining module, and `tests/test_vllm_moe_guard.py` sweeps every `nn.Module` subclass in
+the installed vLLM's `fused_moe` package rather than naming classes one by one.
+
+### Fixed — lint and mypy strict pass on the new package
+
+`ruff` at the pinned 0.16.0 and `mypy --strict` are both green again. Every finding was
+fixed at the source rather than silenced; the one `noqa` added is a `BLE001` on a
+deliberately blind `except` in a test sweep, which is the escape hatch the rule's config
+comment describes. `vllm.*` joins the `ignore_missing_imports` list — the `types` job
+runs on a CPU runner that deliberately does not install a serving stack — and
+`disallow_subclassing_any` is switched off for this package alone, because subclassing
+`QuantizationConfig`, `LinearMethodBase` and `BasevLLMParameter` *is* the extension
+contract.
+
 ## [0.1.2] — 2026-07-30
 
 DynQuant beats GPTQ at 3 bits. On Qwen3.5-2B / CaseHOLD: **89.57 % at
@@ -1157,7 +1257,8 @@ and `mma.sync` accumulation — the AWQ/Marlin route — which is P7.
   Python costs. CUDA Graphs (P8) and a `flash-linear-attention` fast path are what address
   it. `experiments/qwen35_2b/RESULTS.md` has the measurement.
 
-[Unreleased]: https://github.com/kambojvikram/dynquant/compare/v0.1.2...main
+[Unreleased]: https://github.com/kambojvikram/dynquant/compare/v0.2.0...main
+[0.2.0]: https://github.com/kambojvikram/dynquant/releases/tag/v0.2.0
 [0.1.2]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.2
 [0.1.1]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.1
 [0.1.0]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.0
