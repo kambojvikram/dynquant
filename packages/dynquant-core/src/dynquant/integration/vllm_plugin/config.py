@@ -101,6 +101,18 @@ class DynQuantConfig(QuantizationConfig):
             DynQuantLinearMethod,
         )
 
+        # Asked before the linear cases, not after. The layer that owns expert
+        # weights has changed class twice in vLLM's history and could plausibly
+        # acquire a linear base; being wrong in that direction quantizes an MoE
+        # with a method that cannot run it, and being wrong in this one costs a
+        # `__mro__` walk per layer.
+        if _is_fused_moe(layer):
+            raise DynQuantError(
+                f"{prefix or type(layer).__name__} is a fused MoE layer, which DynQuant "
+                f"does not serve through vLLM yet: the packed grouped GEMM is phase 8. "
+                f"Serve an MoE model unquantized, or quantize a dense model."
+            )
+
         if isinstance(layer, ParallelLMHead):
             if not self.schema.lm_head_quantized:
                 return UnquantizedEmbeddingMethod()
@@ -115,13 +127,6 @@ class DynQuantConfig(QuantizationConfig):
                 return UnquantizedLinearMethod()
             return DynQuantLinearMethod(self, shards)
 
-        if _is_fused_moe(layer):
-            raise DynQuantError(
-                f"{prefix or type(layer).__name__} is a fused MoE layer, which DynQuant "
-                f"does not serve through vLLM yet: the packed grouped GEMM is phase 8. "
-                f"Serve an MoE model unquantized, or quantize a dense model."
-            )
-
         # Everything else -- plain VocabParallelEmbedding, norms, rotary caches --
         # keeps vLLM's own unquantized method. Returning None is how the caller
         # is told that, and it is the correct answer rather than an omission: the
@@ -129,11 +134,41 @@ class DynQuantConfig(QuantizationConfig):
         return None
 
 
+#: Every class vLLM has used to own expert weights lives under this package --
+#: ``FusedMoE`` when it was a class, ``RoutedExperts`` and ``MoERunner`` since it
+#: became a factory. Matching the defining module rather than the class name is
+#: what makes the guard survive that kind of reorganisation, and it is specific:
+#: the base these layers share with every linear layer, ``PluggableLayer``, is
+#: defined in ``vllm.model_executor.custom_op`` and so does not match.
+_MOE_PACKAGE = "vllm.model_executor.layers.fused_moe"
+
+
 def _is_fused_moe(layer: torch.nn.Module) -> bool:
     """True for vLLM's MoE layer, without importing it.
 
-    ``FusedMoE`` drags in the whole MoE kernel stack on import, which is a real
-    cost to pay in every worker process just to answer a type question for models
-    that do not have one.
+    The MoE module tree drags in the whole kernel stack on import, which is a
+    real cost to pay in every worker process just to answer a type question for
+    models that do not have one -- hence a walk over ``__mro__`` rather than
+    ``isinstance``.
+
+    Getting this wrong is not a crash, which is why it is worth stating what the
+    check is for. ``get_quant_method`` returning ``None`` means "vLLM's own
+    unquantized method", and ``RoutedExperts._get_quant_method`` substitutes
+    ``UnquantizedFusedMoEMethod`` on ``None``. A probe that failed to match would
+    therefore not fall through to the error below -- it would fall through to
+    fp16 experts being built for a checkpoint that holds packed words.
     """
-    return any(base.__name__ == "FusedMoE" for base in type(layer).__mro__)
+    return _class_is_fused_moe(type(layer))
+
+
+def _class_is_fused_moe(cls: type) -> bool:
+    """The question :func:`_is_fused_moe` actually asks, on the type itself.
+
+    Separate because several of vLLM's MoE classes are abstract, and
+    ``PluggableLayer.__new__`` refuses to build those -- so a test that wants to
+    sweep every class in the package cannot get an instance to ask about.
+    """
+    return any(
+        base.__module__ == _MOE_PACKAGE or base.__module__.startswith(_MOE_PACKAGE + ".")
+        for base in cls.__mro__
+    )

@@ -236,3 +236,44 @@ completeness/negative-branch contract; a happy-path "it registers" test does not
 Not started until the vLLM side is actually tested: accuracy through vLLM (CaseHOLD on
 Qwen3.5-2B, paired McNemar against the stored direct-run hits), TP>1 on a real model,
 and MoE on a real model. All three can invalidate the layout this port copies.
+
+### Status, 2026-08-02
+
+**Accuracy — done, both execution paths.** Qwen3.5-2B at 3.25 bits, CaseHOLD, 5,314
+items, per-item hits stored so every comparison is paired (McNemar, exact two-sided):
+
+| arm | accuracy | vs direct run | 95% CI | agree |
+|---|---|---|---|---|
+| direct run (`p2_bodyonly`) | 86.96% (4621) | — | — | — |
+| vLLM, eager | 86.96% (4621) | +0.00, p=1.0000 | [−0.13, +0.13] | 5,302 / 5,314 |
+| vLLM, inductor + FULL CUDA graphs | 87.00% (4623) | +0.04, p=0.7905 | [−0.10, +0.18] | 5,300 / 5,314 |
+| fine-tuned bf16 | 89.74% (4769) | −2.75, p<0.0001 | [−3.45, −2.04] | — |
+
+The bound only means something beside the last row: the serving gap is under a fifth of
+a point where quantization itself costs 2.75. Getting the compiled path there needed
+[`fuse.py`](../packages/dynquant-core/src/dynquant/integration/vllm_plugin/fuse.py) —
+inductor cancels `split(cat(...))`, and vLLM's piecewise boundaries record the stride
+from before the cancellation. **This is the finding SGLang inherits**: any port that
+joins per-shard matmuls hits it wherever the serving framework splits a compiled graph
+and records strides across the split. Do not port the `torch.cat`.
+
+**TP>1 — placement verified, engine run outstanding.** `tests/test_vllm_tp_placement.py`
+builds both ranks of a `tp_size=2` layer and requires them to reassemble the checkpoint
+exactly: fused qkv with three different widths, replicated KV heads, `gate_up_proj`, and
+row-parallel word-axis splits at all four bit widths, plus the two refusals (a split off
+a group boundary, a fused row-parallel layer). What is *not* covered is a real two-rank
+engine, which needs a second GPU the current box does not have. The uncovered part is
+vLLM's all-reduce, not DynQuant's arithmetic, but it is uncovered and should be run
+before this port claims TP support.
+
+**MoE — out of scope, and now genuinely fails closed.** DynQuant does not serve a fused
+MoE through vLLM; the packed grouped GEMM is P8. So there is no MoE layout for this port
+to copy, and the S-phases should not invent one. Testing the refusal found it was not
+firing: through vLLM 0.25 `FusedMoE` was the class that owned expert weights, in 0.26 it
+is a factory returning a `MoERunner` and the object passed to `get_quant_method` is a
+`RoutedExperts`. The name-keyed probe matched nothing, and because `None` means "use
+vLLM's unquantized method", the failure mode was fp16 experts built against packed
+weights rather than an error. The probe now keys on the defining module and is swept
+over every MoE class in the installed vLLM. **SGLang needs the same guard**, keyed on
+whatever SGLang's equivalent is, and the same sweep — its MoE layer has been
+reorganised at least as often.
