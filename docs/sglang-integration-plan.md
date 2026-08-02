@@ -3,9 +3,27 @@
 Serve DynQuant checkpoints on SGLang without patching SGLang, the same way
 `dynquant.integration.vllm_plugin` does for vLLM.
 
-Written against SGLang `131bd51b0` (2026-08-01). Every claim below cites the file
-it came from; re-check the citations before starting, because none of these
-surfaces are covered by a compatibility guarantee.
+Written against SGLang `131bd51b0` (2026-08-01), **re-verified 2026-08-02 against the
+released `sglang==0.5.16` wheel**; line citations below are the 0.5.16 ones. Every
+claim cites the file it came from; re-check the citations before starting, because
+none of these surfaces are covered by a compatibility guarantee.
+
+Two claims did not survive re-verification and are corrected in place — see S3.
+Both were in the direction of "SGLang hands us more than vLLM does"; it does not.
+
+### Install constraint, found during re-verification
+
+SGLang stopped shipping `py3-none-any` after 0.5.10.post1. 0.5.16 publishes
+**manylinux_2_34 wheels only** (cp310–cp313 × x86_64/aarch64), so a Windows or macOS
+`pip install sglang` silently resolves to 0.5.10.post1 — a release that predates the
+plugin system entirely and has no `srt/plugins/` at all. Consequences:
+
+- Every SGLang-importing test skips off Linux. Unlike the vLLM plugin, whose
+  `geometry.py`/`schema.py` are laptop-testable, S2–S4's shim tests can only *run* on
+  the Linux box. This is the reason S1 exists, and it raises the stakes on it: the
+  framework-free half is the only half that gets exercised on a laptop.
+- Do not read API surfaces out of a locally-installed SGLang on a dev box. It will be
+  the stale one and it will disagree.
 
 ## Why this is mostly a port and not a rewrite
 
@@ -20,17 +38,22 @@ classes `BasevLLMParameter`. The consequences:
 | Parameter classes | `BasevLLMParameter` &co. | same names | **signature drift, see S4** |
 | Layer dispatch | `get_quant_method(layer, prefix)` | same, from Linear / FusedMoE / VocabParallelEmbedding / RadixAttention | none |
 | Checkpoint-driven selection | `_verify_quantization` | same, ported | none |
-| `from_config` payload | the `quantization_config` dict | the dict **plus `packed_modules_mapping` and `hf_config`** | simplification |
+| `from_config` payload | the `quantization_config` dict | the same single dict, but with `packed_modules_mapping` **injected into it** | ~~simplification~~ **see S3** |
 | Method registration | `@register_quantization_config` | **no public API** | S2 |
 | v2 weight loader opt-in | `register_weight_loader_v2_supported_method()` | **no public API** | S2 + S8 |
 
 ### The three containers a plugin must mutate
 
-| Container | Location | Public setter |
+| Container | Location (0.5.16) | Public setter |
 |---|---|---|
-| `QUANTIZATION_METHODS` | `layers/quantization/__init__.py:143` | none — read live by `get_quantization_config` and by `ModelConfig._verify_quantization` (`configs/model_config.py:1372`), so in-place insert works |
-| `QUANTIZATION_CHOICES` | `server_args.py:137` | **yes** — `add_quantization_method_choices()` at `server_args.py:359` |
-| `WEIGHT_LOADER_V2_SUPPORTED` | `layers/linear.py:57` | none — a list of class-name *strings*, matched at `linear.py:369` and `:1453` |
+| `QUANTIZATION_METHODS` | `layers/quantization/__init__.py:139` | none — read live by `get_quantization_config` and by `ModelConfig._verify_quantization` (`configs/model_config.py:1409`), so in-place insert works |
+| `QUANTIZATION_CHOICES` | `server_args.py:153` | **yes** — `add_quantization_method_choices()` at `server_args.py:359` |
+| `WEIGHT_LOADER_V2_SUPPORTED` | `layers/linear.py:58` | none — a list of class-name *strings*, matched at `linear.py:368` and `:1450` |
+
+`QUANTIZATION_METHODS` is built as `{**BASE_QUANTIZATION_METHODS}` (0.5.16 split the
+dict in two to let NPU/MPS/CPU override entries). Insert into `QUANTIZATION_METHODS`,
+the one both readers actually consult — writing to `BASE_` would be a no-op, since the
+copy has already been taken by the time any plugin runs.
 
 `WEIGHT_LOADER_V2_SUPPORTED` is the load-bearing one. The v1 loader places shards
 with `param.data.narrow(output_dim, ...)`; on DynQuant's flat buffers that narrows
@@ -42,11 +65,19 @@ model that loads, serves, and is quietly wrong.
 `load_plugins()` (`srt/plugins/__init__.py:103`) runs before anything reads the
 containers, in every process that matters:
 
-- `cli/serve.py:99` — before `prepare_server_args`, so argparse sees our choice
-- `entrypoints/engine.py:220` — before `ServerArgs` construction, by explicit comment
-- `entrypoints/engine.py:1013` — defensive re-entry
-- `managers/scheduler.py:4781` — **in the spawned scheduler process**, which is where
-  `ModelConfig` and `_get_quantization_config` actually run
+- `launch_server.py:66` — before `prepare_server_args` at `:68`, so argparse sees our choice
+- `cli/serve.py:99` — before `prepare_server_args` at `:139`, same reason
+- `entrypoints/engine.py:212` — first thing in `Engine.__init__`
+- `entrypoints/engine.py:790` — defensive re-entry
+- `managers/scheduler.py:4590` — the **first statement** of `run_scheduler_process()`,
+  which is the one that matters: the scheduler is a *spawned* process, so it does not
+  inherit the parent's registry mutations, and it is where `ModelConfig` (`:578`) and
+  the quantization-config resolution actually run
+
+One cosmetic gap: `sglang serve --help` calls `prepare_server_args(["--help"])` at
+`cli/serve.py:74`, which is *before* the `load_plugins()` at `:99`. So `dynquant` will
+not appear in the `--help` choice list even though `--quantization dynquant` works.
+Not worth a patch; worth not being confused by.
 
 That last one is better than vLLM, which relies on fork inheritance for the manual
 `import my_plugin` path. `load_plugins()` is idempotent (`_plugins_loaded` guard) but
@@ -77,12 +108,22 @@ pointed at the new venv — the three traps in its comments still apply.
 
 ### S1 — Extract the framework-free core
 
-`geometry.py` (419 lines) and `schema.py` (288) import nothing from vLLM. That is 707
-of 1384 lines, and it is the half that fails silently rather than loudly.
+`geometry.py` (547 lines), `schema.py` (310) and `fuse.py` (45) import nothing from
+vLLM. That is 902 of 1660 lines, and it is the half that fails silently rather than
+loudly.
 
-1. Move both to `dynquant/integration/serving_common/`.
+`fuse.py` was not in the original list and belongs there for a reason stronger than
+tidiness: it registers a **process-global** `torch.library` op, `dynquant::fused_shard_concat`.
+Two copies under two plugin packages is a duplicate-registration error the moment
+anything imports both — which a parity harness comparing the two backends in one
+process would do immediately. It also has to move on the merits: SGLang compiles with
+inductor too, so the `split(cat(...))` cancellation the op exists to defeat is not a
+vLLM-specific bug.
+
+1. Move all three to `dynquant/integration/serving_common/`.
 2. `vllm_plugin/` imports them from the new location; **no behavior change**.
-3. Rename `tests/test_vllm_geometry.py` → `test_serving_geometry.py`, same for schema.
+3. Rename `tests/test_vllm_geometry.py` → `test_serving_geometry.py`, same for schema
+   and fuse.
 
 **Gate:** existing suite green, and the A100 four-arm parity sweep reproduces its
 previous numbers exactly (fp16 0.006304 / dynquant 0.009147 / effect 2.461067). A
@@ -129,15 +170,68 @@ is missing or the wrong type.
 
 - base classes from `sglang.srt.layers.quantization.base_config` and
   `sglang.srt.layers.linear`
-- `from_config` now receives `packed_modules_mapping` and `hf_config`
-  (`model_loader/weight_utils.py:281-282`). Consume the mapping instead of
-  re-deriving fusion from module names — delete that derivation on this path.
+
+**Correction 1 — `from_config` is single-arg, and the mapping does not arrive by
+itself.** `QuantizationConfig.from_config(cls, config: Dict[str, Any])`
+(`base_config.py:163`) is byte-identical to vLLM's, so our existing implementation
+ports unchanged. What differs is the *caller*: SGLang mutates the dict on the way in,
+
+```python
+# model_loader/weight_utils.py:278  (and again at :345 for the sidecar path)
+hf_quant_config["packed_modules_mapping"] = packed_modules_mapping
+return quant_cls.from_config(hf_quant_config)
+```
+
+but nothing then copies that key onto the instance. `QuantizationConfig.__init__`
+sets `self.packed_modules_mapping = dict()` (`base_config.py:131`) and the only
+writer of `update_packed_modules_mapping()` in the whole tree is
+`models/deepseek_v2.py:2707`. Neither `GPTQConfig` nor `AWQConfig` reads the key,
+because neither needs fusion structure to build a layer — DynQuant does, since
+`resolve_shards` is how a fused `qkv_proj` learns it is three modules at three widths.
+
+So the SGLang config must lift it itself:
+
+```python
+self.packed_modules_mapping = config.get("packed_modules_mapping", {}) or {}
+```
+
+Left out, every fused layer resolves to no shards and takes the unquantized path
+against a checkpoint full of packed words. Worth a direct test: `from_config` on a
+dict carrying the key must expose it on the instance.
+
 - `get_quant_method`: `LinearBase` → `DynQuantLinearMethod`; `VocabParallelEmbedding` →
   our embedding method; `FusedMoE` → deferred to S7; `RadixAttention` → `None`.
 - `VocabParallelEmbedding` (but not `ParallelLMHead`) requires the method to implement
   `embedding()` — `vocab_parallel_embedding.py:305-311`, same rule as vLLM.
-- `override_quantization_method` returns `None`. It is called on **every** registered
-  config during detection (`model_config.py:1459`), so it must be cheap and total.
+- `get_scaled_act_names()` is still `@abstractmethod` in SGLang (`base_config.py:230`)
+  though vLLM has dropped it. Return `[]`. Omitting it makes `DynQuantConfig`
+  abstract, and the failure surfaces as an unrelated-looking `TypeError` at
+  instantiation inside a scheduler subprocess.
+- `apply_vllm_mapper` is named `apply_weight_name_mapper(self, hf_to_sglang_mapper)`
+  here (`base_config.py:244`). Same `WeightsMapper`, same body; rename only.
+
+**Correction 2 — `override_quantization_method` is polled for every checkpoint, not
+just ours, and it is a hijack risk rather than a cheapness concern.** The detection
+loop asks *every* registered config, ours included, about *every* model someone
+serves:
+
+```python
+# configs/model_config.py:1409
+for _, method in QUANTIZATION_METHODS.items():
+    quantization_override = method.override_quantization_method(quant_cfg, self.quantization)
+    if quantization_override:
+        quant_method = quantization_override
+        self.quantization = quantization_override
+        break
+```
+
+First truthy answer wins and breaks the loop. Returning anything but `None` for a
+checkpoint that is not ours would silently redirect someone else's GPTQ model into
+DynQuant's loader — and because we are inserted into a dict, our position in that
+iteration order is not something we control. Inheriting the base's `return None`
+(`base_config.py:171`) is therefore the correct implementation, and the test that
+matters is the negative one: pass GPTQ, AWQ and bitsandbytes `quantization_config`
+dicts and assert `None` for each.
 
 **Gate, CPU only:** construct `ModelConfig` on the exported checkpoint with no
 `--quantization` and assert `quantization == "dynquant"`, resolved from `config.json`.
@@ -148,19 +242,33 @@ The one real semantic difference. vLLM's parameter classes read tensor-parallel 
 from globals; SGLang passes it in:
 
 ```python
-# sglang/srt/layers/parameter.py:145
+# sglang/srt/layers/parameter.py:145   (_ColumnvLLMParameter)
 def load_column_parallel_weight(self, loaded_weight, tp_rank, use_presharded_weights=False)
-# and :293 load_row_parallel_weight(self, loaded_weight, tp_rank, use_presharded_weights=False)
+# :293  (RowvLLMParameter)
+def load_row_parallel_weight(self, loaded_weight, tp_rank, use_presharded_weights=False)
+# :226  (_ColumnvLLMParameter) -- tp_rank positional here too
+def load_qkv_weight(self, loaded_weight, tp_rank, use_presharded_weights=False, **kwargs)
 ```
 
-and the call sites pass `tp_rank=self.tp_rank, tp_size=self.tp_size` explicitly
-(`linear.py:866-878`). Our flat-buffer overrides must accept and honour those instead
-of calling `get_tensor_model_parallel_rank()`. A subclass that silently ignores the
-kwarg still runs — and shards wrong on every rank but 0.
+Confirmed against 0.5.16. Our flat-buffer overrides must accept and honour those
+instead of calling `get_tensor_model_parallel_rank()`. A subclass that silently
+ignores the kwarg still runs — and shards wrong on every rank but 0.
+
+Two asymmetries to copy exactly, both visible in `parameter.py`:
+
+- `load_merged_column_weight` (`:177`) takes `tp_rank` **through `**kwargs`**
+  (`kwargs.get("tp_rank")`), not positionally, unlike its three siblings. A uniform
+  `(self, loaded_weight, tp_rank, ...)` signature across all four would break it.
+- `PerTensorScaleParameter` (`:406`, `:417`) *pops* `tp_rank` and
+  `use_presharded_weights` before delegating. That is the shape of an override that
+  legitimately ignores rank; ours is not one, and the S4 gate exists to prove it.
 
 Also: `create_weights` takes an extra `skip_block_quant_check` kwarg
-(`linear.py:358-370`); SGLang uses `copy_with_check` rather than a bare `copy_`; and
-there are `_is_cpu` padding branches we should assert we never enter.
+(`linear.py:330`, forwarded at `:365`; `ColumnParallelLinear` at `:961`/`:1013`) —
+only `fp8.py` reads it, so accepting and ignoring it via `**extra_weight_attrs` is
+correct, but the signature must not choke on it. SGLang uses `copy_with_check` rather
+than a bare `copy_`; and there are `_is_cpu` padding branches we should assert we
+never enter.
 
 **Gate, CPU only:**
 1. Geometry oracle tests at TP ∈ {1, 2, 4} exercising the `tp_rank` argument

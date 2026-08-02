@@ -19,21 +19,21 @@ from vllm.model_executor.layers.linear import (
 from vllm.model_executor.utils import set_weight_attrs
 
 from dynquant.errors import DynQuantError
-from dynquant.integration.vllm_plugin.fuse import fused_shard_concat
-from dynquant.integration.vllm_plugin.geometry import (
+from dynquant.integration.serving_common.fuse import fused_shard_concat
+from dynquant.integration.serving_common.geometry import (
     FusedPackedGeometry,
     match_shards_to_partitions,
     row_parallel_split,
 )
+from dynquant.integration.serving_common.schema import ModuleQuantSpec
 from dynquant.integration.vllm_plugin.parameter import DynQuantPackedParameter
-from dynquant.integration.vllm_plugin.schema import ModuleQuantSpec
 from dynquant.quant.pack import row_geometry
 from dynquant.quant.tensor import QuantLayout, QuantTensor
 from dynquant.runtime import ops
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from dynquant.integration.serving_common.geometry import TensorParallelSplit
     from dynquant.integration.vllm_plugin.config import DynQuantConfig
-    from dynquant.integration.vllm_plugin.geometry import TensorParallelSplit
 
 __all__ = ["DynQuantEmbeddingMethod", "DynQuantLinearMethod"]
 

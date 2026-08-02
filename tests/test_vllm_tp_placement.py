@@ -29,8 +29,8 @@ import torch
 pytest.importorskip("vllm", reason="the vLLM plugin needs vLLM to import at all")
 
 from dynquant.errors import DynQuantError
+from dynquant.integration.serving_common.schema import ModuleQuantSpec
 from dynquant.integration.vllm_plugin.linear import DynQuantLinearMethod
-from dynquant.integration.vllm_plugin.schema import ModuleQuantSpec
 from dynquant.quant.pack import row_geometry
 
 TP = 2

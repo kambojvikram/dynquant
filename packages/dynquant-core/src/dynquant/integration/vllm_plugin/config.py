@@ -22,7 +22,7 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
 
 from dynquant.constants import HF_QUANT_METHOD
 from dynquant.errors import DynQuantError
-from dynquant.integration.vllm_plugin.schema import QuantizationConfigSchema
+from dynquant.integration.serving_common.schema import QuantizationConfigSchema
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from vllm.model_executor.models.utils import WeightsMapper
@@ -78,7 +78,7 @@ class DynQuantConfig(QuantizationConfig):
         vLLM uses this list to look for a sidecar next to the weights, but
         ``from_config`` is handed only the parsed dict, with no path to resolve a
         sidecar against for a Hub model. See
-        :mod:`dynquant.integration.vllm_plugin.schema`.
+        :mod:`dynquant.integration.serving_common.schema`.
         """
         return []
 

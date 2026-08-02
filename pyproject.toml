@@ -86,20 +86,30 @@ module = [
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-# vLLM is a Linux + CUDA wheel with a multi-gigabyte dependency tree, and the
-# `types` job runs on a CPU runner that deliberately does not install it -- type
-# checking the plugin must not be contingent on being able to build a serving
-# stack. What the plugin borrows from vLLM is checked by tests/test_vllm_*.py,
-# which skip where vLLM is absent and run for real where it is not.
-module = ["vllm.*"]
+# vLLM and SGLang are Linux + CUDA wheels with multi-gigabyte dependency trees, and
+# the `types` job runs on a CPU runner that deliberately does not install either --
+# type checking a plugin must not be contingent on being able to build a serving
+# stack. SGLang additionally publishes manylinux-only wheels from 0.5.11 on, so it
+# cannot be installed on a developer's Windows or macOS box at all. What the plugins
+# borrow from each is checked by tests/test_vllm_*.py and tests/test_sglang_*.py,
+# which skip where the framework is absent and run for real where it is not.
+module = ["vllm.*", "sglang.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-# Consequence of the above: every vLLM base class reads as `Any` here, and
+# Consequence of the above: every vLLM and SGLang base class reads as `Any` here, and
 # `QuantizationConfig`, `LinearMethodBase` and `BasevLLMParameter` are all
-# subclassed by design -- that is the entire extension contract. Scoped to this
-# package so the rule keeps its teeth everywhere else.
-module = ["dynquant.integration.vllm_plugin.*"]
+# subclassed by design -- that is the entire extension contract.
+#
+# Scoped to the two framework-facing packages so the rule keeps its teeth everywhere
+# else, and `dynquant.integration.serving_common.*` is deliberately not listed: it
+# imports no framework, so nothing in it subclasses `Any`, and it stays under full
+# strict checking. That is the whole reason the split exists -- see that package's
+# docstring.
+module = [
+    "dynquant.integration.vllm_plugin.*",
+    "dynquant.integration.sglang_plugin.*",
+]
 disallow_subclassing_any = false
 
 [[tool.mypy.overrides]]

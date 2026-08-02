@@ -23,14 +23,17 @@ public decorator for exactly this case; see
 
 Layout of this package
 ----------------------
-* :mod:`~dynquant.integration.vllm_plugin.geometry` -- flat-buffer and
-  tensor-parallel arithmetic. No vLLM import, so it is unit-testable on a laptop.
-* :mod:`~dynquant.integration.vllm_plugin.schema` -- the ``quantization_config``
-  block. Also vLLM-free.
 * :mod:`~dynquant.integration.vllm_plugin.config` -- the ``QuantizationConfig``.
 * :mod:`~dynquant.integration.vllm_plugin.parameter` -- flat packed parameter.
 * :mod:`~dynquant.integration.vllm_plugin.linear` -- the linear and embedding
   methods.
+
+Everything above imports vLLM. The half that does not -- the flat-buffer and
+tensor-parallel arithmetic, the ``quantization_config`` block, and the anti-inductor
+custom op -- lives in :mod:`dynquant.integration.serving_common`, because SGLang's
+quantization layer is a fork of vLLM's and needs the identical arithmetic. That
+package is importable with nothing but torch, which is what makes it testable on a
+laptop; this one is not, and its tests skip where vLLM is absent.
 
 The package is named ``vllm_plugin`` and not ``vllm``: a submodule called
 ``dynquant.integration.vllm`` shadows the real ``vllm`` for any relative-looking

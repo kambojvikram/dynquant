@@ -1,10 +1,11 @@
 """The join at the output of a fused layer must stay opaque to the compiler.
 
-This is the CPU half of a bug that only bites on a GPU. A fused vLLM layer is
-always consumed by a split, and ``split(cat(...))`` is a pair inductor cancels --
-correctly, arithmetically, and fatally, because vLLM records each piece boundary's
-stride from fake-tensor propagation, which runs *before* the cancellation. See
-:mod:`dynquant.integration.vllm_plugin.fuse` for the full account.
+This is the CPU half of a bug that only bites on a GPU. A fused layer is always
+consumed by a split, and ``split(cat(...))`` is a pair inductor cancels --
+correctly, arithmetically, and fatally, because the server records each piece
+boundary's stride from fake-tensor propagation, which runs *before* the
+cancellation. Caught on vLLM; the rewrite is inductor's, so SGLang inherits it. See
+:mod:`dynquant.integration.serving_common.fuse` for the full account.
 
 What is checkable without a GPU is the contract the fix rests on: the op computes a
 concatenation, its fake declares a single contiguous buffer, and it survives tracing
@@ -18,7 +19,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from dynquant.integration.vllm_plugin.fuse import fused_shard_concat
+from dynquant.integration.serving_common.fuse import fused_shard_concat
 
 
 def shards(rows: int = 7) -> list[torch.Tensor]:

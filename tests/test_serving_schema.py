@@ -1,8 +1,9 @@
-"""The ``quantization_config`` block: what the exporter writes and vLLM reads back.
+"""The ``quantization_config`` block: what the exporter writes and a server reads back.
 
 This is the whole contract between the two halves. ``from_config`` receives the
 parsed dict and nothing else -- no model path, no files -- so anything the loader
-needs has to survive this round trip or it does not exist.
+needs has to survive this round trip or it does not exist. That signature is the same
+in vLLM and in SGLang, so this contract is one contract, not two.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import pytest
 
 from dynquant.constants import DEFAULT_GROUP_SIZE, HF_QUANT_METHOD
 from dynquant.errors import DynQuantError, FormatVersionError, PackingError
-from dynquant.integration.vllm_plugin.schema import (
+from dynquant.integration.serving_common.schema import (
     CHECKPOINT_FORMAT,
     SCHEMA_VERSION,
     ModuleQuantSpec,

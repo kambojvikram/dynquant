@@ -49,7 +49,7 @@ from dynquant.constants import (
     MANIFEST_SCHEMA,
 )
 from dynquant.errors import DynQuantError
-from dynquant.integration.vllm_plugin.schema import (
+from dynquant.integration.serving_common.schema import (
     ModuleQuantSpec,
     QuantizationConfigSchema,
 )

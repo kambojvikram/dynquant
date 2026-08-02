@@ -1,13 +1,16 @@
-"""Where each shard's packed words live inside one vLLM parameter.
+"""Where each shard's packed words live inside one fused serving parameter.
 
 The problem this module exists to solve
 ---------------------------------------
-vLLM fuses projections that the checkpoint stores separately: ``q_proj``,
-``k_proj`` and ``v_proj`` become one ``qkv_proj`` layer holding one parameter,
-and ``gate_proj``/``up_proj`` become one ``gate_up_proj``. Every other
+Inference servers fuse projections that the checkpoint stores separately:
+``q_proj``, ``k_proj`` and ``v_proj`` become one ``qkv_proj`` layer holding one
+parameter, and ``gate_proj``/``up_proj`` become one ``gate_up_proj``. Every other
 quantization method gets away with this because its bit width is a property of
 the *checkpoint*, so all three shards have identical rows and the fused parameter
 is a plain concatenation along the output dimension.
+
+vLLM and SGLang fuse identically -- SGLang's layer stack is a fork of vLLM's -- so
+this arithmetic is shared by both plugins and lives here rather than in either.
 
 DynQuant allocates width per module. ``q_proj`` at 4 bits and ``k_proj`` at 3
 bits produce rows of *different word counts* -- 4-bit rows of 4096 inputs are 512
@@ -31,12 +34,13 @@ Flat rather than padded-to-a-common-width because padding is not free: padding
 projection's VRAM, and the kernel would still need a per-shard launch to know
 which shift table to use. The launches are unavoidable; the waste is not.
 
-Nothing here imports vLLM. Every size is resolved through
+Nothing here imports a serving framework. Every size is resolved through
 :func:`dynquant.quant.pack.row_geometry` -- the same resolver the encoder and
 :meth:`QuantTensor.validate` use -- so a disagreement between what the exporter
 wrote and what the loader expects is not expressible. This module is therefore
-importable and testable on a laptop with no GPU and no vLLM, which is where its
-arithmetic actually gets checked.
+importable and testable on a laptop with no GPU, no vLLM and no SGLang, which is
+where its arithmetic actually gets checked -- and given that neither server ships a
+wheel that installs off Linux, it is the only place it *can* be checked there.
 """
 
 from __future__ import annotations
@@ -46,7 +50,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from dynquant.errors import DynQuantError
-from dynquant.integration.vllm_plugin.schema import ModuleQuantSpec
+from dynquant.integration.serving_common.schema import ModuleQuantSpec
 from dynquant.quant.pack import RowGeometry, row_geometry
 
 if TYPE_CHECKING:  # pragma: no cover - typing only

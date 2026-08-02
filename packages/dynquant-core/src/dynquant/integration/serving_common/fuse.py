@@ -21,6 +21,14 @@ Making the join opaque removes the pattern to cancel. Inductor must materialise 
 contiguous buffer, so the recorded strides describe what the consumer actually gets.
 The cost is one fusion boundary per fused layer, against a copy that was already
 being paid.
+
+The diagnosis above is vLLM's because vLLM is where it was caught, but nothing in it
+is vLLM-specific: the rewrite is inductor's, and any server that traces a piecewise
+graph and records boundary strides ahead of it inherits the same bug. SGLang does.
+Hence this module lives in ``serving_common`` -- and it *has* to, for a second and
+harder reason: ``torch.library.custom_op`` registers ``dynquant::fused_shard_concat``
+in a process-global namespace, so a per-plugin copy would raise on whichever import
+came second.
 """
 
 from __future__ import annotations

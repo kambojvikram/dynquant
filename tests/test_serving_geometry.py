@@ -1,9 +1,11 @@
-"""The flat-buffer and tensor-parallel arithmetic behind the vLLM plugin.
+"""The flat-buffer and tensor-parallel arithmetic behind the serving plugins.
 
-Everything here runs on CPU with no vLLM installed, which is the point of keeping
-:mod:`dynquant.integration.vllm_plugin.geometry` free of vLLM imports: the layout
-maths is what breaks silently -- an off-by-one offset loads plausible weights into
-the wrong rows -- and it is exactly the part that does not need a GPU to check.
+Everything here runs on CPU with no serving framework installed, which is the point
+of keeping :mod:`dynquant.integration.serving_common.geometry` free of their imports:
+the layout maths is what breaks silently -- an off-by-one offset loads plausible
+weights into the wrong rows -- and it is exactly the part that does not need a GPU to
+check. Neither vLLM nor SGLang ships a wheel that installs off Linux, so this file is
+also the only coverage of that arithmetic that runs on a development machine.
 """
 
 from __future__ import annotations
@@ -14,13 +16,13 @@ import pytest
 
 from dynquant.constants import PER_ROW_GROUP_SIZE
 from dynquant.errors import DynQuantError
-from dynquant.integration.vllm_plugin.geometry import (
+from dynquant.integration.serving_common.geometry import (
     FusedPackedGeometry,
     ShardSpec,
     match_shards_to_partitions,
     row_parallel_split,
 )
-from dynquant.integration.vllm_plugin.schema import ModuleQuantSpec
+from dynquant.integration.serving_common.schema import ModuleQuantSpec
 from dynquant.quant.pack import row_geometry
 
 

@@ -1,24 +1,34 @@
-"""The ``quantization_config`` block, parsed without importing vLLM.
+"""The ``quantization_config`` block, parsed without importing a serving framework.
 
 A DynQuant checkpoint's widths are per module, so ``config.json`` has to carry the
 whole map -- there is no ``"bits": 4`` that describes the model. That is the one
-real difference from every other entry in vLLM's quantization registry and it
+real difference from every other entry in a server's quantization registry and it
 forces a design choice this module makes explicit.
 
 Why the map is embedded rather than read from a sidecar file
 ------------------------------------------------------------
 ``QuantizationConfig.from_config`` receives the parsed ``quantization_config``
-dict and nothing else -- no model path, no revision, no filesystem handle. A
-sidecar (``dynquant_manifest.json``, which the exporter also writes) is therefore
-unreachable from inside vLLM without re-deriving the download location, which
-would mean reimplementing the Hub cache lookup and getting it wrong for local
-paths, remote revisions and offline mode. So the map goes in ``config.json``.
-For a 2B model that is roughly 15 KB of JSON and for a 70B model roughly 40 KB;
-``config.json`` is read once at startup, and 40 KB is not a cost worth a fragile
-second file for. The manifest stays on disk as the human-readable record and as
-what ``dynquant inspect`` reads -- it is simply not on vLLM's path.
+dict and nothing else -- no model path, no revision, no filesystem handle. This is
+true of both servers: vLLM's signature and SGLang's are the same one, SGLang's
+having been forked from it. A sidecar (``dynquant_manifest.json``, which the
+exporter also writes) is therefore unreachable from inside the server without
+re-deriving the download location, which would mean reimplementing the Hub cache
+lookup and getting it wrong for local paths, remote revisions and offline mode. So
+the map goes in ``config.json``. For a 2B model that is roughly 15 KB of JSON and
+for a 70B model roughly 40 KB; ``config.json`` is read once at startup, and 40 KB is
+not a cost worth a fragile second file for. The manifest stays on disk as the
+human-readable record and as what ``dynquant inspect`` reads -- it is simply not on
+the server's path.
 
-Nothing here imports vLLM or torch, so the round-trip is testable anywhere.
+One caller-side difference worth knowing here, though this module is unaffected by
+it: SGLang injects ``packed_modules_mapping`` *into* that same dict before calling
+``from_config`` (``model_loader/weight_utils.py:278``), whereas vLLM sets it on the
+instance. :meth:`QuantizationConfigSchema.from_dict` ignores unknown keys, so the
+injected entry passes through harmlessly; lifting it onto the config object is the
+SGLang plugin's job, not this module's.
+
+Nothing here imports a serving framework or torch, so the round-trip is testable
+anywhere.
 """
 
 from __future__ import annotations
@@ -147,8 +157,8 @@ class QuantizationConfigSchema:
         fmt = config.get("checkpoint_format", CHECKPOINT_FORMAT)
         if fmt != CHECKPOINT_FORMAT:
             raise DynQuantError(
-                f"checkpoint_format is {fmt!r}, not {CHECKPOINT_FORMAT!r}. vLLM can only "
-                f"serve a packed DynQuant checkpoint; a directory written by "
+                f"checkpoint_format is {fmt!r}, not {CHECKPOINT_FORMAT!r}. Only a packed "
+                f"DynQuant checkpoint can be served; a directory written by "
                 f"`dynquant quantize` stores dense compute-dtype weights and has to be "
                 f"re-exported with `dynquant export`."
             )

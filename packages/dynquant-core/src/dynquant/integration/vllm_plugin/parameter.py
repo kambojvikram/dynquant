@@ -9,7 +9,7 @@ have the same bits, so the same number of packed words per row, so
 Under per-module allocation it is not. ``q_proj`` at 4 bits and ``k_proj`` at 3
 bits have 512- and 384-word rows over the same 4096 inputs, and no ``narrow``
 expresses that. So the buffer is flat (see
-:mod:`~dynquant.integration.vllm_plugin.geometry`) and this class overrides the
+:mod:`~dynquant.integration.serving_common.geometry`) and this class overrides the
 four placement hooks to translate *output row ranges* -- which is what vLLM
 actually hands us, in every one of the four -- into flat spans.
 
@@ -28,12 +28,12 @@ import torch
 from vllm.model_executor.parameter import BasevLLMParameter
 
 from dynquant.errors import DynQuantError
-from dynquant.integration.vllm_plugin.geometry import FusedPackedGeometry, TensorParallelSplit
+from dynquant.integration.serving_common.geometry import FusedPackedGeometry, TensorParallelSplit
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Callable
 
-    from dynquant.integration.vllm_plugin.geometry import ShardPlan
+    from dynquant.integration.serving_common.geometry import ShardPlan
 
 __all__ = ["DynQuantPackedParameter"]
 
@@ -147,7 +147,7 @@ class DynQuantPackedParameter(BasevLLMParameter):
 
         The input dimension is what got packed, so "this rank's slice of the
         input" is a slice of the *word* axis -- and it is only a clean slice
-        because :func:`~dynquant.integration.vllm_plugin.geometry.row_parallel_split`
+        because :func:`~dynquant.integration.serving_common.geometry.row_parallel_split`
         refused the layer at ``create_weights`` time otherwise.
         """
         rows = self._geometry.total_out_features
