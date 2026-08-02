@@ -159,14 +159,34 @@ def test_the_stub_leaves_no_trace():
     Checked on both routes a later test could take, because they are not the same
     lookup: ``sys.modules`` and the attribute the import system leaves on the parent
     package.
+
+    Compared against a snapshot rather than asserted absent. Absence is the right
+    answer only where nothing has imported SGLang, and the machine where this test
+    matters most is the other kind: there
+    :mod:`test_sglang_stub_conformance` has already imported a real SGLang and built
+    a real ``DynQuantConfig`` against it, and ``fake_sglang`` is required to
+    *restore* both, not evict them. The snapshot still catches a leak -- a
+    stub-built module left behind is a different object at the same key -- and it
+    catches over-eager teardown as well, which "not in sys.modules" cannot.
     """
     import dynquant.integration.sglang_plugin as plugin
+
+    def snapshot():
+        # Top-level segment, not a prefix: `sglang_router` is a different distribution.
+        modules = {
+            name: module
+            for name, module in sys.modules.items()
+            if name.split(".")[0] == "sglang"
+            or name == plugin.__name__
+            or name.startswith(plugin.__name__ + ".")
+        }
+        return modules, getattr(plugin, "config", None)
+
+    before = snapshot()
 
     with fake_sglang():
         register()
         assert "dynquant.integration.sglang_plugin.config" in sys.modules
 
-    assert not [name for name in sys.modules if name.split(".")[0] == "sglang"]
-    assert "dynquant.integration.sglang_plugin.config" not in sys.modules
-    assert sys.modules["dynquant.integration.sglang_plugin"] is plugin
-    assert not hasattr(plugin, "config")
+    assert snapshot() == before
+    assert sys.modules[plugin.__name__] is plugin

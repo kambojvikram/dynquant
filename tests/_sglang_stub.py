@@ -36,8 +36,11 @@ Fidelity notes -- each of these mirrors something verified in the 0.5.16 wheel:
   *every* checkpoint by ``ModelConfig._verify_quantization``.
 * ``add_quantization_method_choices`` is ``QUANTIZATION_CHOICES.extend(choices)``
   with no dedup, so idempotence is the caller's problem.
-* ``UnquantizedEmbeddingMethod`` derives from ``UnquantizedLinearMethod`` and adds
-  ``embedding()``, which ``method_has_implemented_embedding`` tests for by identity
+* ``UnquantizedEmbeddingMethod`` derives from ``QuantizeMethodBase``, *not* from
+  ``UnquantizedLinearMethod``. The vLLM twin does derive, and this stub asserted the
+  vLLM relationship until a real SGLang contradicted it on the Linux box. What both
+  frameworks agree on is the part that is load-bearing: ``embedding()`` is defined in
+  the class body, and ``method_has_implemented_embedding`` tests for it by identity
   against the base.
 * The parameter base classes take ``tp_rank`` as an *argument* rather than caching
   it in ``__init__`` the way vLLM does, and ``_ColumnvLLMParameter`` /
@@ -161,6 +164,24 @@ class LinearBase(torch.nn.Module):
     """``layers/linear.py``. The plugin only ever asks ``isinstance`` of this."""
 
 
+class ColumnParallelLinear(LinearBase):
+    """``layers/linear.py:292``. Here only to carry the two fused classes below.
+
+    Their real base, and worth reproducing rather than flattening: the plugin's
+    fused-layer guard tests ``isinstance`` against the *subclasses*, so a stub that
+    made them siblings of ``ColumnParallelLinear`` would let an over-broad guard --
+    one that matched the parent and so caught every column-parallel layer -- pass.
+    """
+
+
+class MergedColumnParallelLinear(ColumnParallelLinear):
+    """``layers/linear.py:491``. ``gate_up_proj``: two checkpoint modules, one layer."""
+
+
+class QKVParallelLinear(ColumnParallelLinear):
+    """``layers/linear.py:920``. ``qkv_proj``: three checkpoint modules, one layer."""
+
+
 class VocabParallelEmbedding(torch.nn.Module):
     """``layers/vocab_parallel_embedding.py``."""
 
@@ -186,7 +207,7 @@ class FusedMoE(torch.nn.Module):
     __module__ = "sglang.srt.layers.moe.fused_moe_triton.layer"
 
 
-class UnquantizedLinearMethod(QuantizeMethodBase):
+class UnquantizedLinearMethod(LinearMethodBase):
     """``layers/quantization/unquant.py:172`` -- *not* ``linear.py``, as in vLLM."""
 
     def create_weights(self, layer: torch.nn.Module, *args: Any, **kwargs: Any) -> None:
@@ -196,8 +217,19 @@ class UnquantizedLinearMethod(QuantizeMethodBase):
         raise NotImplementedError
 
 
-class UnquantizedEmbeddingMethod(UnquantizedLinearMethod):
-    """``layers/quantization/unquant.py:134``."""
+class UnquantizedEmbeddingMethod(QuantizeMethodBase):
+    """``layers/quantization/unquant.py:134``, and a sibling of the linear method.
+
+    vLLM derives this from ``UnquantizedLinearMethod``; SGLang does not, so here it
+    is not a ``LinearMethodBase`` at all. Written out rather than inherited so the
+    stub cannot make a plugin that confuses the two look correct.
+    """
+
+    def create_weights(self, layer: torch.nn.Module, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def apply(self, layer: torch.nn.Module, *args: Any, **kwargs: Any) -> torch.Tensor:
+        raise NotImplementedError
 
     def embedding(self, layer: torch.nn.Module, input_: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
@@ -425,6 +457,9 @@ def _build_modules() -> dict[str, types.ModuleType]:
 
     linear = modules["sglang.srt.layers.linear"]
     linear.LinearBase = LinearBase  # type: ignore[attr-defined]
+    linear.ColumnParallelLinear = ColumnParallelLinear  # type: ignore[attr-defined]
+    linear.MergedColumnParallelLinear = MergedColumnParallelLinear  # type: ignore[attr-defined]
+    linear.QKVParallelLinear = QKVParallelLinear  # type: ignore[attr-defined]
     # A copy of the real 0.5.16 contents, not an empty list: `register()` appends to
     # whatever is here, and a test that asserted on a list it had also emptied would
     # not notice the plugin clobbering the entries SGLang ships with.

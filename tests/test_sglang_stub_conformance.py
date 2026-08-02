@@ -118,13 +118,28 @@ def test_the_mapper_hook_is_still_spelled_sglangs_way():
 
 def test_the_unquantized_methods_are_where_the_plugin_imports_them_from():
     """``quantization/unquant.py``, which is where SGLang moved them; vLLM keeps
-    them in ``linear.py`` and ``vocab_parallel_embedding.py``."""
+    them in ``linear.py`` and ``vocab_parallel_embedding.py``.
+
+    The two are siblings here. vLLM's ``UnquantizedEmbeddingMethod`` derives from
+    ``UnquantizedLinearMethod``; SGLang's derives straight from
+    ``QuantizeMethodBase`` and so is not a ``LinearMethodBase`` at all. Asserted
+    rather than assumed because ``get_quant_method`` returns one of these two by
+    layer kind, and on the vLLM hierarchy returning the embedding method where a
+    linear method was wanted is still an ``isinstance(..., LinearMethodBase)`` --
+    a confusion that types out correctly there and not here.
+    """
+    from sglang.srt.layers.quantization.base_config import (
+        LinearMethodBase,
+        QuantizeMethodBase,
+    )
     from sglang.srt.layers.quantization.unquant import (
         UnquantizedEmbeddingMethod,
         UnquantizedLinearMethod,
     )
 
-    assert issubclass(UnquantizedEmbeddingMethod, UnquantizedLinearMethod)
+    assert issubclass(UnquantizedLinearMethod, LinearMethodBase)
+    assert issubclass(UnquantizedEmbeddingMethod, QuantizeMethodBase)
+    assert not issubclass(UnquantizedEmbeddingMethod, LinearMethodBase)
     # `method_has_implemented_embedding` tests for this by identity against the base,
     # and `VocabParallelEmbedding.__init__` refuses a method that lacks it.
     assert "embedding" in vars(UnquantizedEmbeddingMethod)
@@ -139,6 +154,69 @@ def test_the_layer_classes_the_plugin_dispatches_on_still_exist():
         "ParallelLMHead has become a LinearBase; get_quant_method tests ParallelLMHead "
         "first, so this ordering is now load-bearing rather than incidental"
     )
+
+
+def test_the_fused_linear_classes_are_still_subclasses_of_the_one_we_dispatch_on():
+    """``get_quant_method`` tests ``LinearBase`` first, then narrows to these two.
+
+    If either stopped deriving from ``LinearBase`` it would never reach the narrowing
+    at all, and the fused-layer guard would go quiet -- returning to exactly the
+    silent-uninitialised-weights behaviour it was added to stop.
+    """
+    from sglang.srt.layers.linear import (
+        LinearBase,
+        MergedColumnParallelLinear,
+        QKVParallelLinear,
+    )
+
+    assert issubclass(QKVParallelLinear, LinearBase)
+    assert issubclass(MergedColumnParallelLinear, LinearBase)
+
+
+def test_qwen2_still_fuses_qkv_without_declaring_how():
+    """The premise of :data:`CONVENTIONAL_FUSED_MODULES`, checked against SGLang.
+
+    Two facts, and the fallback is only justified while both hold: the model fuses
+    q/k/v into one layer, and it tells a quantization config nothing about it. If
+    SGLang ever adds the declaration this test turns red, and the right response is
+    to delete the fallback for that model rather than to keep guessing beside a
+    source of truth.
+
+    ``Qwen2ForCausalLM`` specifically, because it is what the parity checkpoint is
+    and where this was found -- but it is not a special case: 172 of the 210 files in
+    ``srt/models/`` declare no ``packed_modules_mapping``.
+    """
+    import inspect
+
+    from sglang.srt.models.qwen2 import Qwen2ForCausalLM
+
+    assert getattr(Qwen2ForCausalLM, "packed_modules_mapping", {}) == {}
+
+    source = inspect.getsource(Qwen2ForCausalLM.load_weights)
+    for shard in ("q_proj", "k_proj", "v_proj"):
+        assert f'"qkv_proj", "{shard}"' in source, (
+            "Qwen2 no longer fuses qkv in load_weights; the fallback expansion "
+            "in CONVENTIONAL_FUSED_MODULES describes a fusion that stopped happening"
+        )
+
+
+def test_a_failed_stacked_mapping_lookup_keeps_the_rewritten_name():
+    """Why the symptom was ``qkqkv_proj`` and not a clean "qkv_proj not found".
+
+    The loop rebinds ``name`` in place and, when the lookup misses, ``continue``\\ s
+    to the next entry carrying the rewrite with it -- so ``v_proj`` matches inside
+    the ``qkv_proj`` it just produced and ``.replace`` fires a second time. Pinned
+    because that mangled name is the string a user will search for, and it points at
+    a substring bug that is not the actual fault: the fault is that the parameter was
+    missing, one layer up.
+    """
+    import inspect
+
+    from sglang.srt.models.qwen2 import Qwen2ForCausalLM
+
+    source = inspect.getsource(Qwen2ForCausalLM.load_weights)
+    assert "name = name.replace(weight_name, param_name)" in source
+    assert "if name not in params_dict:\n                    continue" in source
 
 
 def test_the_moe_package_is_where_the_guard_looks():

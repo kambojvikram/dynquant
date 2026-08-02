@@ -117,6 +117,102 @@ def test_the_injected_key_does_not_reach_the_schema(sglang):
 
 
 # --------------------------------------------------------------------------
+# 1b. ...and the model classes that never inject one
+# --------------------------------------------------------------------------
+
+
+def test_a_fused_layer_resolves_even_when_the_model_class_declares_nothing(sglang):
+    """Lifting the injected mapping is necessary and not sufficient.
+
+    What SGLang injects is ``getattr(model_class, "packed_modules_mapping", {})``
+    (``model_loader/loader.py:204``), and on 0.5.16 that attribute is absent from 172
+    of the 210 files in ``srt/models/``. ``Qwen2ForCausalLM`` is one of them: it fuses
+    q/k/v inside ``load_weights`` and declares nothing, so the injected dict is empty
+    for one of the most-served architectures there is.
+
+    The test above pins that an empty mapping resolves to nothing at the *schema*
+    layer, which is still true and still correct. This one pins that the plugin does
+    not stop there.
+    """
+    config = sglang.DynQuantConfig.from_config(BLOCK)
+    assert config.packed_modules_mapping == {}
+
+    shards = config._shards("model.layers.0.self_attn.qkv_proj")
+    assert [name.rsplit(".", 1)[-1] for name, _ in shards] == ["q_proj", "k_proj", "v_proj"]
+    assert [spec.bits for _, spec in shards] == [4, 3, 3]
+
+
+def test_the_fallback_reaches_get_quant_method_on_both_branches(sglang):
+    """The fallback is only worth anything at the point layers are built.
+
+    ``get_quant_method`` asks twice, once per layer kind, and a fallback wired into
+    one branch and not the other is a bug that no schema-level test can see.
+    """
+    config = sglang.DynQuantConfig.from_config(BLOCK)
+    from sglang.srt.layers.linear import QKVParallelLinear
+
+    method = config.get_quant_method(QKVParallelLinear(), "model.layers.0.self_attn.qkv_proj")
+    assert type(method).__name__ == "DynQuantLinearMethod"
+
+
+def test_a_fused_layer_with_no_shards_is_refused_rather_than_served_dense(sglang):
+    """The failure this whole path exists to stop, asserted as a raise.
+
+    Serving a fused layer unquantized against a packed checkpoint is not a
+    degradation, it is uninitialised memory: SGLang's loader rewrites
+    ``q_proj.qweight`` to ``qkv_proj.qweight``, finds no such parameter on the
+    unquantized layer, and drops it with ``logger.warning``
+    (``models/qwen2.py:639``). Nothing raises and the server answers requests. It did
+    exactly that on the first real serve of this integration.
+
+    A checkpoint whose fused shards are named something neither SGLang nor
+    :data:`CONVENTIONAL_FUSED_MODULES` knows -- ``W_pack`` here -- is the reachable
+    version of that state.
+    """
+    exotic = {
+        **BLOCK,
+        "modules": {
+            "model.layers.0.self_attn.W_pack": {"bits": 4},
+            "model.layers.0.self_attn.o_proj": {"bits": 4},
+        },
+    }
+    config = sglang.DynQuantConfig.from_config(exotic)
+    from sglang.srt.layers.linear import QKVParallelLinear
+
+    with pytest.raises(DynQuantError, match="QKVParallelLinear"):
+        config.get_quant_method(QKVParallelLinear(), "model.layers.0.self_attn.qkv_proj")
+
+
+def test_an_unfused_layer_left_dense_is_not_refused(sglang):
+    """The false positive the class test exists to avoid.
+
+    ``o_proj`` beside a quantized ``q_proj`` resolves to nothing for a perfectly
+    good reason -- the exporter left it dense -- and its fp16 weight is on disk under
+    its own name for the loader to find. Only a *fused* layer has no such fallback,
+    which is why the guard tests the layer class and not the emptiness.
+    """
+    config = sglang.DynQuantConfig.from_config(BLOCK)
+    from sglang.srt.layers.linear import LinearBase
+
+    method = config.get_quant_method(LinearBase(), "model.layers.0.self_attn.o_proj")
+    assert type(method).__name__ == "UnquantizedLinearMethod"
+
+
+def test_a_fused_layer_in_an_untouched_region_is_not_refused(sglang):
+    """The other false positive: a dense vision tower beside a quantized LM.
+
+    Its ``qkv_proj`` resolves to nothing and should, and its dense weights load
+    normally. The guard's second half -- are any siblings quantized -- is what tells
+    this apart from a checkpoint whose shard names did not match.
+    """
+    config = sglang.DynQuantConfig.from_config(BLOCK)
+    from sglang.srt.layers.linear import QKVParallelLinear
+
+    method = config.get_quant_method(QKVParallelLinear(), "visual.blocks.0.attn.qkv_proj")
+    assert type(method).__name__ == "UnquantizedLinearMethod"
+
+
+# --------------------------------------------------------------------------
 # 2. The abstract method vLLM deleted and SGLang kept
 # --------------------------------------------------------------------------
 

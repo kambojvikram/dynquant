@@ -47,11 +47,40 @@ from dynquant.errors import DynQuantError, FormatVersionError, PackingError
 
 __all__ = [
     "CHECKPOINT_FORMAT",
+    "CONVENTIONAL_FUSED_MODULES",
     "SCHEMA_VERSION",
     "ModuleQuantSpec",
     "QuantizationConfigSchema",
     "expand_fused_prefix",
 ]
+
+CONVENTIONAL_FUSED_MODULES: Mapping[str, tuple[str, ...]] = {
+    "qkv_proj": ("q_proj", "k_proj", "v_proj"),
+    "gate_up_proj": ("gate_proj", "up_proj"),
+}
+"""What a fused leaf is *conventionally* made of, for servers that do not say.
+
+A last resort, consulted only through the ``fusion_defaults`` argument of
+:meth:`QuantizationConfigSchema.resolve_shards` and only when the framework
+declared nothing for the leaf. It exists because SGLang's model classes are not
+required to declare ``packed_modules_mapping``: on 0.5.16, 70 of the 210 files in
+``sglang/srt/models/`` fuse ``q/k/v`` inside ``load_weights`` and only 38 declare a
+class-level mapping at all -- ``Qwen2ForCausalLM`` fuses and does not declare. vLLM
+declares it on essentially every model, which is why its plugin passes no defaults
+and this table is dead code there.
+
+The two entries are the *modal* declaration, copied verbatim: 25 of SGLang's 38
+declarations are exactly this dict. Nothing rarer belongs here -- ``W_pack``,
+``c_attn``, ``fused_qkv_a_proj_with_mqa``, ``in_proj_qkvz`` and friends appear only
+in files that do declare their own mapping, so guessing on their behalf would add
+risk without adding coverage.
+
+Guessing is bounded on both sides regardless. ``resolve_shards`` applies this only
+when the checkpoint has no tensor at the prefix itself, so an already-fused
+checkpoint is never second-guessed; and its all-or-none rule means a wrong entry
+resolves to no shards and takes the same unquantized path the layer takes today,
+rather than mislabelling one.
+"""
 
 CHECKPOINT_FORMAT = "dynquant-packed"
 """``quantization_config.checkpoint_format``. Distinguishes a packed checkpoint
@@ -213,6 +242,20 @@ class QuantizationConfigSchema:
             return None
         return self.modules.get(name)
 
+    def quantized_siblings(self, prefix: str) -> list[str]:
+        """Checkpoint modules sharing a parent with ``prefix``, ``prefix`` aside.
+
+        The question this answers is "was this region of the model quantized at
+        all". A layer that resolves to no shards inside a quantized attention block
+        means something different from the same layer inside a vision tower the
+        exporter left alone, and only the caller knows which of those is worth
+        complaining about.
+        """
+        if "." not in prefix:
+            return []
+        stem = prefix.rsplit(".", 1)[0] + "."
+        return sorted(name for name in self.modules if name.startswith(stem) and name != prefix)
+
     def remap(self, apply_list: Callable[[list[str]], list[str]]) -> QuantizationConfigSchema:
         """Rewrite module names through vLLM's HF-to-vLLM name mapper.
 
@@ -239,7 +282,11 @@ class QuantizationConfigSchema:
         )
 
     def resolve_shards(
-        self, prefix: str, packed_modules_mapping: Mapping[str, Sequence[str]]
+        self,
+        prefix: str,
+        packed_modules_mapping: Mapping[str, Sequence[str]],
+        *,
+        fusion_defaults: Mapping[str, Sequence[str]] | None = None,
     ) -> list[tuple[str, ModuleQuantSpec]] | None:
         """Which checkpoint modules back one server-side layer, and at what widths.
 
@@ -250,6 +297,11 @@ class QuantizationConfigSchema:
         ``from_config`` and leaves the lifting to the plugin -- which is why it is a
         parameter here rather than something this module reads for itself.
 
+        ``fusion_defaults`` covers the case where the framework declares nothing:
+        see :data:`CONVENTIONAL_FUSED_MODULES`. It is applied only when the leaf has
+        no declared entry *and* the checkpoint holds no tensor at the prefix itself,
+        so a checkpoint that is already fused on disk keeps resolving to itself.
+
         Returns ``None`` when the layer is not quantized at all, so the caller can
         hand back an unquantized method. Raises when *some* of a fused layer's
         shards are quantized and others are not: the fused parameter is one
@@ -258,6 +310,8 @@ class QuantizationConfigSchema:
         This mirrors what GPTQ does in the same situation.
         """
         names = expand_fused_prefix(prefix, packed_modules_mapping)
+        if fusion_defaults and names == [prefix] and prefix not in self.modules:
+            names = expand_fused_prefix(prefix, fusion_defaults)
         found = [(name, self.get(name)) for name in names]
         present = [(name, spec) for name, spec in found if spec is not None]
         if not present:

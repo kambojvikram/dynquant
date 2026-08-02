@@ -16,6 +16,7 @@ from dynquant.constants import DEFAULT_GROUP_SIZE, HF_QUANT_METHOD
 from dynquant.errors import DynQuantError, FormatVersionError, PackingError
 from dynquant.integration.serving_common.schema import (
     CHECKPOINT_FORMAT,
+    CONVENTIONAL_FUSED_MODULES,
     SCHEMA_VERSION,
     ModuleQuantSpec,
     QuantizationConfigSchema,
@@ -208,6 +209,95 @@ def test_modules_to_not_convert_wins_over_the_map():
     assert partial.get("model.layers.0.self_attn.q_proj") is None
     with pytest.raises(DynQuantError, match="q_proj"):
         partial.resolve_shards("model.layers.0.self_attn.qkv_proj", LLAMA_MAPPING)
+
+
+# --------------------------------------------------------------------------
+# Fusion defaults, for servers that declare no mapping
+# --------------------------------------------------------------------------
+
+
+def test_no_defaults_means_a_missing_mapping_still_resolves_to_nothing():
+    """The behaviour every caller had before ``fusion_defaults`` existed.
+
+    Pinned as its own test because it is what vLLM still gets -- its models declare
+    ``packed_modules_mapping`` universally, so its plugin passes no defaults and
+    must keep resolving exactly as it did when the reference numbers were measured.
+    """
+    assert schema().resolve_shards("model.layers.0.self_attn.qkv_proj", {}) is None
+
+
+def test_defaults_rescue_a_fused_prefix_the_framework_said_nothing_about():
+    """SGLang's ``Qwen2ForCausalLM`` fuses q/k/v and declares no mapping.
+
+    Turned up on a real serve, not in review: with an empty mapping every
+    ``qkv_proj`` took the unquantized path, SGLang's loader then failed to place
+    168 packed tensors, and the server started and answered anyway.
+    """
+    resolved = schema().resolve_shards(
+        "model.layers.0.self_attn.qkv_proj", {}, fusion_defaults=CONVENTIONAL_FUSED_MODULES
+    )
+    assert [name.rsplit(".", 1)[-1] for name, _ in resolved] == ["q_proj", "k_proj", "v_proj"]
+    assert [spec.bits for _, spec in resolved] == [4, 3, 3]
+
+
+def test_a_declared_mapping_is_never_overridden_by_a_default():
+    """Same leaf, different meaning: a vision tower's ``qkv_proj`` holds one tensor.
+
+    The framework knows its own model and the table does not, so a declared entry
+    has to win even when the default would have resolved to something.
+    """
+    fused_on_disk = schema(
+        modules={"model.visual.blocks.0.attn.qkv_proj": ModuleQuantSpec(4, 128, False)}
+    )
+    resolved = fused_on_disk.resolve_shards(
+        "model.visual.blocks.0.attn.qkv_proj",
+        {"qkv_proj": ["qkv_proj"]},
+        fusion_defaults=CONVENTIONAL_FUSED_MODULES,
+    )
+    assert [name for name, _ in resolved] == ["model.visual.blocks.0.attn.qkv_proj"]
+
+
+def test_a_checkpoint_fused_on_disk_is_not_second_guessed():
+    """Undeclared *and* present under its own name -- the defaults must stand down.
+
+    Without the ``prefix not in modules`` condition this would expand to q/k/v,
+    match nothing, and turn a layer that resolves correctly today into a dense one.
+    """
+    fused_on_disk = schema(
+        modules={"model.layers.0.self_attn.qkv_proj": ModuleQuantSpec(4, 128, False)}
+    )
+    resolved = fused_on_disk.resolve_shards(
+        "model.layers.0.self_attn.qkv_proj", {}, fusion_defaults=CONVENTIONAL_FUSED_MODULES
+    )
+    assert [name for name, _ in resolved] == ["model.layers.0.self_attn.qkv_proj"]
+
+
+def test_a_default_that_names_nothing_falls_back_rather_than_guessing():
+    """The bound on the whole idea: a wrong entry costs an unquantized layer.
+
+    ``resolve_shards`` is all-or-none, so a table entry that matches no checkpoint
+    module returns ``None`` -- the same answer as before defaults existed -- instead
+    of resolving a partial set and mislabelling a shard's width.
+    """
+    elsewhere = schema(modules={"model.layers.0.self_attn.W_pack": ModuleQuantSpec(4, 128, False)})
+    assert (
+        elsewhere.resolve_shards(
+            "model.layers.0.self_attn.qkv_proj", {}, fusion_defaults=CONVENTIONAL_FUSED_MODULES
+        )
+        is None
+    )
+
+
+def test_quantized_siblings_reports_the_region_not_the_layer():
+    """Feeds the SGLang plugin's "is this region quantized at all" question."""
+    assert schema().quantized_siblings("model.layers.0.self_attn.qkv_proj") == [
+        "model.layers.0.self_attn.k_proj",
+        "model.layers.0.self_attn.q_proj",
+        "model.layers.0.self_attn.v_proj",
+    ]
+    assert schema().quantized_siblings("model.visual.blocks.0.attn.qkv_proj") == []
+    # A bare name has no parent to look under, and must not match every module.
+    assert schema().quantized_siblings("lm_head") == []
 
 
 # --------------------------------------------------------------------------

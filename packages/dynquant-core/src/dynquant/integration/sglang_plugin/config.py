@@ -16,7 +16,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import torch
-from sglang.srt.layers.linear import LinearBase
+from sglang.srt.layers.linear import (
+    LinearBase,
+    MergedColumnParallelLinear,
+    QKVParallelLinear,
+)
 from sglang.srt.layers.quantization.base_config import (
     QuantizationConfig,
     QuantizeMethodBase,
@@ -34,7 +38,11 @@ from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
 
 from dynquant.constants import HF_QUANT_METHOD
 from dynquant.errors import DynQuantError
-from dynquant.integration.serving_common.schema import QuantizationConfigSchema
+from dynquant.integration.serving_common.schema import (
+    CONVENTIONAL_FUSED_MODULES,
+    ModuleQuantSpec,
+    QuantizationConfigSchema,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from sglang.srt.models.utils import WeightsMapper
@@ -129,9 +137,29 @@ class DynQuantConfig(QuantizationConfig):
         it is three modules at three different widths, so without the mapping every
         fused layer resolves to no shards and takes the unquantized path against a
         checkpoint holding packed words. Hence the lift here.
+
+        The lift is necessary and not sufficient: what SGLang injects is
+        ``getattr(model_class, "packed_modules_mapping", {})``
+        (``model_loader/loader.py:204``), and on 0.5.16 that attribute is absent from
+        172 of the 210 files in ``srt/models/`` -- including ``Qwen2ForCausalLM``,
+        which fuses q/k/v inside ``load_weights`` all the same. So an empty dict here
+        is the common case rather than the broken one, and
+        :data:`CONVENTIONAL_FUSED_MODULES` covers it at the point of use.
         """
         mapping = config.get("packed_modules_mapping") or {}
         return cls(QuantizationConfigSchema.from_dict(config), packed_modules_mapping=mapping)
+
+    def _shards(self, prefix: str) -> list[tuple[str, ModuleQuantSpec]] | None:
+        """:meth:`QuantizationConfigSchema.resolve_shards`, with SGLang's gap filled.
+
+        Every call goes through here so the fallback cannot be applied on one branch
+        of :meth:`get_quant_method` and forgotten on the other.
+        """
+        return self.schema.resolve_shards(
+            prefix,
+            self.packed_modules_mapping,
+            fusion_defaults=CONVENTIONAL_FUSED_MODULES,
+        )
 
     def apply_weight_name_mapper(self, hf_to_sglang_mapper: WeightsMapper) -> None:
         """SGLang's spelling of vLLM's ``apply_vllm_mapper``. Same ``WeightsMapper``."""
@@ -161,14 +189,15 @@ class DynQuantConfig(QuantizationConfig):
         if isinstance(layer, ParallelLMHead):
             if not self.schema.lm_head_quantized:
                 return UnquantizedEmbeddingMethod()
-            shards = self.schema.resolve_shards(prefix, self.packed_modules_mapping)
+            shards = self._shards(prefix)
             if shards is None:
                 return UnquantizedEmbeddingMethod()
             return DynQuantEmbeddingMethod(self, shards)
 
         if isinstance(layer, LinearBase):
-            shards = self.schema.resolve_shards(prefix, self.packed_modules_mapping)
+            shards = self._shards(prefix)
             if shards is None:
+                _refuse_an_empty_fused_layer(layer, prefix, self)
                 # An explicit method, not `None`, and this is where SGLang differs
                 # from vLLM in a way that bites. vLLM's `LinearBase.__init__`
                 # substitutes `UnquantizedLinearMethod()` when `get_quant_method`
@@ -189,6 +218,68 @@ class DynQuantConfig(QuantizationConfig):
         # (`radix_attention.py:135`). The exporter leaves those tensors in the
         # compute dtype, so that is what we want in both cases.
         return None
+
+
+#: The layer classes whose prefix names no tensor on disk, so falling back to an
+#: unquantized method against a packed checkpoint leaves them with nothing to load.
+#: ``MergedColumnParallelRepeatedLinear`` is a third fused class and is deliberately
+#: absent: its own docstring says "quantization is not supported yet", so it is
+#: never handed a quant_config and never reaches this code.
+_FUSED_LINEAR_CLASSES = (MergedColumnParallelLinear, QKVParallelLinear)
+
+
+def _refuse_an_empty_fused_layer(
+    layer: torch.nn.Module, prefix: str, config: DynQuantConfig
+) -> None:
+    """Raise before a fused layer is built with nothing to fill it.
+
+    An empty resolution has two meanings that the return value cannot tell apart,
+    and they are as far apart in consequence as two outcomes get. For an ordinary
+    module it means the checkpoint left this one dense, and the dense weight is
+    there on disk to load -- correct, and common. For a *fused* layer it means the
+    server is about to build a ``qkv_proj`` that no tensor is named after: the
+    checkpoint stores ``q_proj``/``k_proj``/``v_proj`` packed, SGLang's loader
+    rewrites their names to ``qkv_proj.qweight`` and friends, finds no such
+    parameter on an unquantized layer, and drops every one of them with
+    ``logger.warning`` (``models/qwen2.py:639``). Nothing raises. The layer keeps
+    the uninitialised buffer it was constructed with and the server answers
+    requests.
+
+    That is not hypothetical: it is what this integration did on its first real
+    serve, and the only outward sign was a wall of "Parameter ... not found in
+    params_dict" among the startup logs, half of them naming ``qkqkv_proj`` --
+    SGLang's ``stacked_params_mapping`` loop reuses the already-rewritten ``name``
+    after a failed lookup, so ``"qkv_proj".replace("v_proj", "qkv_proj")`` mangles
+    it a second time. Both the mangling and the missing parameters were downstream
+    of this one decision.
+
+    The class test is what makes the check precise, and a name test would not be:
+    ``o_proj`` in a quantized attention block also resolves to nothing when the
+    exporter leaves it dense, and that is fine. Only a fused layer has no on-disk
+    counterpart to fall back to.
+
+    The sibling test is the second half. A fused layer inside a region the exporter
+    never touched -- a vision tower beside a quantized language model -- resolves
+    empty for a good reason and loads its dense weights normally.
+    """
+    if not isinstance(layer, _FUSED_LINEAR_CLASSES):
+        return
+    siblings = config.schema.quantized_siblings(prefix)
+    if not siblings:
+        return
+    raise DynQuantError(
+        f"{prefix} is {type(layer).__name__}, a fused layer, and none of the "
+        f"checkpoint modules it fuses are in this checkpoint's quantization map -- "
+        f"while {siblings} beside it are. Serving it unquantized would build a layer "
+        f"with no weights to load, because the checkpoint stores these packed and "
+        f"keeps no dense copy.\n"
+        f"The prefix is expanded through the model class's `packed_modules_mapping`, "
+        f"which SGLang declares on 38 of its 210 model files; where it is missing "
+        f"DynQuant falls back to {dict(CONVENTIONAL_FUSED_MODULES)}. Neither named a "
+        f"module in this checkpoint.\n"
+        f"Declare the fusion on the model class, or list every shard in "
+        f"quantization_config.modules_to_not_convert to serve this layer dense."
+    )
 
 
 #: Every class SGLang uses to own expert weights lives under this package --
