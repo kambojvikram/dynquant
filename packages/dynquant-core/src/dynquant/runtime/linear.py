@@ -70,6 +70,10 @@ class _PackedModule(nn.Module):
 
     def __init__(self, weight: QuantTensor, *, tied_to: _PackedModule | None = None) -> None:
         super().__init__()
+        # Decide the backend here, where it is an ordinary function call, rather
+        # than in the first forward, where it would be one `torch.compile` is
+        # tracing. See the comment on the caches in `runtime.ops`.
+        ops.warm_dispatch()
         if weight.layout is not QuantLayout.LINEAR:
             raise NotImplementedError(f"layout {weight.layout.value} is not runnable yet")
         if len(weight.logical_shape) != 2:

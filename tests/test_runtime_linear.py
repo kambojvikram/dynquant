@@ -15,6 +15,8 @@ from torch import nn
 
 from dynquant.errors import DynQuantError
 from dynquant.quant.grid import quantize_with_search
+from dynquant.runtime import ops
+from dynquant.runtime.backend import Backend
 from dynquant.runtime.linear import (
     DynQuantEmbedding,
     DynQuantLinear,
@@ -212,6 +214,68 @@ def test_pack_model_raises_on_a_name_the_model_does_not_have(model):
 def test_pack_model_raises_rather_than_skipping_an_unsupported_module(model):
     with pytest.raises(DynQuantError, match="Linear and Embedding only"):
         pack_model(model, {"": 4})
+
+
+# --------------------------------------------------------------------------
+# Dispatch, and when it is allowed to happen
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def cold_dispatch(monkeypatch):
+    """A process that has not yet resolved its backend, with the probe counted.
+
+    ``monkeypatch.setattr`` restores both globals afterwards, so a test that
+    leaves the dispatch layer cold cannot slow down or mislead the next one.
+    """
+    calls = []
+
+    def counted(*args, **kwargs):
+        calls.append(args)
+        return Backend.TORCH
+
+    monkeypatch.setattr(ops, "_ACTIVE_BACKEND", None)
+    monkeypatch.setattr(ops, "_GEMV_MAX_ROWS", None)
+    monkeypatch.setattr(ops, "resolve_backend", counted)
+    return calls
+
+
+def test_the_backend_is_probed_once_and_then_never_again(cold_dispatch):
+    """The property `torch.compile` needs: after warming, these read a constant.
+
+    Dynamo traces through a cache decorator rather than honouring it, so a probe
+    that is still *reachable* on the first call is a probe dynamo will try to
+    trace -- and `importlib.util.find_spec`, which resolving a backend does, is
+    not traceable. vLLM compiles with `fullgraph`, so that is a hard failure at
+    the first quantized linear rather than a slow path.
+
+    Counting the calls rather than asserting the return value is deliberate: the
+    return value would still be right if the probe ran on every forward.
+    """
+    ops.warm_dispatch()
+    assert len(cold_dispatch) == 1
+
+    for _ in range(5):
+        ops.active_backend()
+        ops.gemv_max_rows()
+        ops.uses_compiled_kernels(torch.device("cpu"))
+    assert len(cold_dispatch) == 1
+
+
+def test_building_a_packed_module_warms_the_dispatch_layer(cold_dispatch):
+    """Construction is the last point at which the probe is an ordinary call.
+
+    vLLM builds every layer before it traces anything, so warming here is what
+    makes the constant above already be a constant by the time compilation
+    starts. Asserting on construction rather than on the plugin keeps the
+    guarantee testable without vLLM installed -- `vllm_plugin.linear` calls the
+    same function from its `create_weights`.
+    """
+    quantized, _ = quantize_with_search(
+        torch.randn(32, 128), bits=4, group_size=128, compute_dtype=torch.float16
+    )
+    DynQuantLinear(quantized, bias=None)
+    assert len(cold_dispatch) == 1
 
 
 # --------------------------------------------------------------------------

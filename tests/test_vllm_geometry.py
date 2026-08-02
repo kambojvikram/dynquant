@@ -132,8 +132,26 @@ def test_empty_and_degenerate_shards_are_rejected():
 # --------------------------------------------------------------------------
 
 
-def spec(bits=4, group_size=128, symmetric=False):
-    return ModuleQuantSpec(bits=bits, group_size=group_size, symmetric=symmetric)
+def spec(bits=4, group_size=128, symmetric=False, out_features=None):
+    return ModuleQuantSpec(
+        bits=bits, group_size=group_size, symmetric=symmetric, out_features=out_features
+    )
+
+
+def gdn(qkv_bits=3, z_bits=3, tp_size=1, hidden=2048):
+    """Qwen3.5's gated delta net: two checkpoint tensors, four output partitions.
+
+    vLLM builds ``in_proj_qkvz`` as ``MergedColumnParallelLinear(output_sizes=[key,
+    key, value, value])`` while the checkpoint stores ``in_proj_qkv`` (q, k and v
+    together) and ``in_proj_z``. Its weight mapper says so explicitly --
+    ``".in_proj_qkv": (".in_proj_qkvz", (0, 1, 2))`` -- so module 0 spans a run of
+    three partitions and module 1 the fourth.
+    """
+    shards = [
+        ("l.linear_attn.in_proj_qkv", spec(qkv_bits, out_features=3 * hidden)),
+        ("l.linear_attn.in_proj_z", spec(z_bits, out_features=hidden)),
+    ]
+    return shards, [hidden // tp_size] * 4
 
 
 def test_separate_modules_pair_positionally_with_the_partitions():
@@ -168,9 +186,93 @@ def test_symmetry_survives_the_pairing():
         assert collapsed.symmetric is symmetric
 
 
+# -- one module spanning a run of partitions (Qwen3.5's gated delta net) ----
+
+
+def test_a_module_spanning_several_partitions_stays_one_shard():
+    shards, partitions = gdn()
+    matched = match_shards_to_partitions(shards, partitions, 2048)
+    assert [s.name for s in matched] == [
+        "l.linear_attn.in_proj_qkv",
+        "l.linear_attn.in_proj_z",
+    ]
+    # One shard per *module*, not per partition: q, k and v came off disk as one
+    # tensor at one width, so splitting them into three shards would issue three
+    # kernels over what is one contiguous span of identical rows.
+    assert [s.out_features for s in matched] == [6144, 2048]
+
+
+def test_the_run_is_where_vllm_places_each_partition():
+    """vLLM places partition by partition; every such range must resolve."""
+    shards, partitions = gdn(qkv_bits=3, z_bits=8)
+    geometry = FusedPackedGeometry(match_shards_to_partitions(shards, partitions, 2048))
+
+    owners = []
+    row = 0
+    for size in partitions:
+        owners.append(geometry.plan_for_rows(row, size).spec.name)
+        row += size
+    assert owners == [
+        "l.linear_attn.in_proj_qkv",
+        "l.linear_attn.in_proj_qkv",
+        "l.linear_attn.in_proj_qkv",
+        "l.linear_attn.in_proj_z",
+    ]
+    # And the flat span the three qkv partitions land in is exactly the one shard,
+    # so a 3-bit run followed by an 8-bit one has no gap between them.
+    assert geometry[0].qweight_offset == 0
+    assert geometry[1].qweight_offset == geometry[0].qweight_numel
+
+
+def test_the_run_mapping_survives_tensor_parallelism():
+    """``output_partition_sizes`` is per rank; the checkpoint's rows are not."""
+    for tp_size in (1, 2, 4):
+        shards, partitions = gdn(tp_size=tp_size)
+        matched = match_shards_to_partitions(shards, partitions, 2048)
+        assert [s.out_features for s in matched] == [6144 // tp_size, 2048 // tp_size]
+
+
+def test_mixed_widths_across_a_run_are_the_case_that_makes_this_hard():
+    """The shipped 3.25 map gives in_proj_qkv and in_proj_z different widths."""
+    shards, partitions = gdn(qkv_bits=3, z_bits=8)
+    geometry = FusedPackedGeometry(match_shards_to_partitions(shards, partitions, 2048))
+    assert not geometry.is_uniform
+    words = [plan.words_per_row for plan in geometry]
+    assert words[0] != words[1]
+    assert geometry.qweight_numel == 6144 * words[0] + 2048 * words[1]
+
+
+def test_a_map_without_row_counts_says_so_rather_than_guessing():
+    """6144+2048 and 4096+4096 are indistinguishable without ``out_features``."""
+    shards = [("l.in_proj_qkv", spec()), ("l.in_proj_z", spec())]
+    with pytest.raises(DynQuantError, match="record no 'out_features'"):
+        match_shards_to_partitions(shards, [2048] * 4, 2048)
+
+
+def test_rows_that_do_not_tile_the_partitions_are_refused():
+    shards = [("l.a", spec(out_features=5000)), ("l.b", spec(out_features=2048))]
+    with pytest.raises(DynQuantError, match="not a whole multiple"):
+        match_shards_to_partitions(shards, [2048] * 4, 2048)
+
+
+def test_a_run_that_does_not_land_on_a_partition_boundary_is_refused():
+    """A module ending mid-partition has no flat span, so it must not be paired."""
+    shards = [("l.a", spec(out_features=3072)), ("l.b", spec(out_features=5120))]
+    with pytest.raises(DynQuantError, match="do not line up"):
+        match_shards_to_partitions(shards, [2048] * 4, 2048)
+
+
+def test_more_modules_than_partitions_is_refused():
+    """The greedy runs out of partitions rather than reading past the end."""
+    shards = [(f"l.{i}", spec(out_features=2048)) for i in range(3)]
+    with pytest.raises(DynQuantError, match="not a whole multiple"):
+        match_shards_to_partitions(shards, [2048, 2048], 2048)
+
+
 def test_a_partition_count_the_map_cannot_explain_is_an_error():
+    """Three partitions, two modules, and no row count that could explain it."""
     shards = [("l.q_proj", spec()), ("l.k_proj", spec())]
-    with pytest.raises(DynQuantError, match="does not describe this model"):
+    with pytest.raises(DynQuantError, match="record no 'out_features'"):
         match_shards_to_partitions(shards, [1024, 256, 256], 1024)
 
 

@@ -57,13 +57,33 @@ which is recorded separately as provenance."""
 
 @dataclass(frozen=True, slots=True)
 class ModuleQuantSpec:
-    """The width one checkpoint module was quantized at."""
+    """The width one checkpoint module was quantized at.
+
+    Attributes:
+        out_features: Rows of this module's weight as stored, i.e. before any
+            tensor-parallel division. Optional because it is not needed to
+            *decode* anything -- the packed tensor carries its own shape -- but a
+            serving framework needs it to line checkpoint modules up against a
+            fused layer's output partitions when the two do not correspond one to
+            one. vLLM's gated delta net is the case that forces it: one
+            ``in_proj_qkv`` tensor backs three of ``in_proj_qkvz``'s four
+            partitions and ``in_proj_z`` backs the fourth, and nothing else in
+            what vLLM hands a quantization config distinguishes that from a
+            4096+4096 split. ``None`` for checkpoints written before this field
+            existed, which is why every consumer treats it as optional rather
+            than assuming it.
+    """
 
     bits: int
     group_size: int
     symmetric: bool
+    out_features: int | None = None
 
     def __post_init__(self) -> None:
+        if self.out_features is not None and self.out_features <= 0:
+            raise DynQuantError(
+                f"out_features must be positive, got {self.out_features}"
+            )
         if self.bits not in BIT_OPTIONS:
             # PackingError rather than FormatVersionError: the block may declare a
             # schema this build understands perfectly and still name a width no
@@ -87,6 +107,8 @@ class ModuleQuantSpec:
             out["group_size"] = self.group_size
         if self.symmetric != default_symmetric:
             out["symmetric"] = self.symmetric
+        if self.out_features is not None:
+            out["out_features"] = self.out_features
         return out
 
 
@@ -281,8 +303,10 @@ def _spec_from_entry(
         )
     if "bits" not in entry:
         raise DynQuantError(f"quantization_config.modules[{name!r}] has no 'bits'")
+    out_features = entry.get("out_features")
     return ModuleQuantSpec(
         bits=int(entry["bits"]),
         group_size=int(entry.get("group_size", default_group_size)),
         symmetric=bool(entry.get("symmetric", default_symmetric)),
+        out_features=None if out_features is None else int(out_features),
     )

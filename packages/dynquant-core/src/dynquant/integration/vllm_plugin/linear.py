@@ -17,6 +17,7 @@ from vllm.model_executor.layers.linear import (
 from vllm.model_executor.utils import set_weight_attrs
 
 from dynquant.errors import DynQuantError
+from dynquant.integration.vllm_plugin.fuse import fused_shard_concat
 from dynquant.integration.vllm_plugin.geometry import (
     FusedPackedGeometry,
     match_shards_to_partitions,
@@ -59,6 +60,10 @@ class DynQuantLinearMethod(LinearMethodBase):
         **extra_weight_attrs,
     ) -> None:
         del output_size  # implied by output_partition_sizes and the tp size
+        # vLLM compiles the model with `fullgraph`, so the backend probe has to
+        # have run before the first forward is traced -- see `runtime.ops`. Layer
+        # construction is the last point at which it is an ordinary call.
+        ops.warm_dispatch()
         specs = match_shards_to_partitions(
             self.shards, output_partition_sizes, input_size_per_partition
         )
@@ -122,13 +127,20 @@ class DynQuantLinearMethod(LinearMethodBase):
         geometry: FusedPackedGeometry = layer.dynquant_geometry
         in_features: int = layer.dynquant_in_features
 
-        parts = [
-            ops.quantized_matmul(x, _shard_tensor(layer, geometry, i, in_features))
-            for i in range(len(geometry))
-        ]
         # One shard is the overwhelmingly common case (every non-fused layer), and
         # concatenating a single tensor still copies it.
-        out = parts[0] if len(parts) == 1 else torch.cat(parts, dim=-1)
+        if len(geometry) == 1:
+            out = ops.quantized_matmul(x, _shard_tensor(layer, geometry, 0, in_features))
+        else:
+            # Not `torch.cat`: the caller splits this straight back apart, and
+            # inductor cancels that pair in a way vLLM's piecewise boundaries do
+            # not survive. See `fuse.py` -- the docstring is the whole argument.
+            out = fused_shard_concat(
+                [
+                    ops.quantized_matmul(x, _shard_tensor(layer, geometry, i, in_features))
+                    for i in range(len(geometry))
+                ]
+            )
         if bias is not None:
             out = out + bias
         return out
@@ -162,6 +174,7 @@ class DynQuantEmbeddingMethod(DynQuantLinearMethod):
         **extra_weight_attrs,
     ) -> None:
         del input_size, output_size
+        ops.warm_dispatch()
         if len(self.shards) != 1:
             raise DynQuantError(
                 f"an embedding table cannot be fused, but {len(self.shards)} shards "

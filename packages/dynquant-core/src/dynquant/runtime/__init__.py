@@ -28,6 +28,7 @@ from .ops import (
     gemv_max_rows,
     quantized_matmul,
     uses_compiled_kernels,
+    warm_dispatch,
 )
 
 __all__ = [
@@ -47,4 +48,5 @@ __all__ = [
     "quantized_matmul",
     "resolve_backend",
     "uses_compiled_kernels",
+    "warm_dispatch",
 ]

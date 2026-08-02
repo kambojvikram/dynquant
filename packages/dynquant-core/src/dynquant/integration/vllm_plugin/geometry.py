@@ -107,8 +107,8 @@ def match_shards_to_partitions(
 ) -> list[ShardSpec]:
     """Line the checkpoint's modules up against vLLM's output partitions.
 
-    Two cases, and the difference is whether the checkpoint stores the shards
-    separately:
+    Three cases, and the difference is how the checkpoint's tensors divide up the
+    layer's output rows:
 
     * ``len(shards) == len(output_partition_sizes)`` -- the ordinary case. vLLM's
       ``packed_modules_mapping`` lists the sub-modules in the same order it
@@ -119,11 +119,29 @@ def match_shards_to_partitions(
       ``_load_fused_module_from_checkpoint`` splits the loaded tensor by rows,
       which the flat layout handles because a uniform-width shard has a constant
       words-per-row.
+    * **Fewer modules than partitions, more than one** -- each module spans a
+      *run* of consecutive partitions. Qwen3.5's gated delta net is the case:
+      vLLM builds ``in_proj_qkvz`` as four partitions of ``[key, key, value,
+      value]`` while the checkpoint holds two tensors, ``in_proj_qkv`` covering
+      the first three and ``in_proj_z`` the fourth
+      (``Qwen3_5Model.hf_to_vllm_mapper``). The run lengths come from
+      :attr:`ModuleQuantSpec.out_features`; nothing else vLLM passes a
+      quantization config distinguishes 6144+2048 from 4096+4096.
+
+    The first two cases are that rule's degenerate instances -- one partition per
+    module, and one run covering everything -- but they are kept as explicit
+    branches because they must keep working for checkpoints written before
+    ``out_features`` was recorded.
 
     Anything else means the config and the model disagree about the layer's
     structure, and continuing would place weights at plausible wrong offsets.
     """
     if len(shards) == len(output_partition_sizes):
+        # Deliberately not cross-checked against out_features. A QKV layer with
+        # fewer KV heads than ranks legitimately has partitions that do *not* sum
+        # to the checkpoint's rows -- vLLM replicates K and V across ranks, so
+        # `output_sizes` counts those rows once per replica. An assertion here
+        # would reject GQA at high tensor-parallel sizes, which is correct today.
         return [
             ShardSpec(
                 name=name,
@@ -149,12 +167,100 @@ def match_shards_to_partitions(
             )
         ]
 
-    raise DynQuantError(
-        f"this layer has {len(output_partition_sizes)} output partitions "
-        f"{list(output_partition_sizes)} but the quantization map resolved "
-        f"{len(shards)} modules {[name for name, _ in shards]}. The checkpoint's "
-        f"quantization_config does not describe this model."
-    )
+    return _match_runs(shards, output_partition_sizes, in_features)
+
+
+def _match_runs(
+    shards: Sequence[tuple[str, ModuleQuantSpec]],
+    output_partition_sizes: Sequence[int],
+    in_features: int,
+) -> list[ShardSpec]:
+    """One checkpoint module per *run* of consecutive output partitions.
+
+    Emits one :class:`ShardSpec` per module, not per partition, so a module that
+    spans three partitions stays one shard with one width and one flat span.
+    That is what makes the loader work unchanged: vLLM's v2 path decomposes a
+    tuple shard id into one placement call per partition
+    (``MergedColumnParallelLinear._load_fused_module_from_checkpoint``), each
+    naming a row range strictly inside the run, and
+    ``DynQuantPackedParameter._plan_for_rows`` resolves any such sub-range
+    against the enclosing shard.
+
+    The pairing is positional in the same sense as the equal-length case: run *i*
+    of the partitions belongs to module *i* of ``packed_modules_mapping``. If a
+    model ever listed its sub-modules in an order disagreeing with the partition
+    indices its weight mapper emits, two modules of *different* widths would swap
+    and the shape check in ``_place`` would refuse the load, naming the module.
+    Two of the *same* width would swap into byte-identical spans, which is why
+    that case is not worth a build-time check it cannot make.
+    """
+    missing = [name for name, spec in shards if spec.out_features is None]
+    if missing:
+        raise DynQuantError(
+            f"this layer has {len(output_partition_sizes)} output partitions "
+            f"{list(output_partition_sizes)} but the quantization map resolved "
+            f"{len(shards)} modules {[name for name, _ in shards]}, so each module "
+            f"must cover several partitions -- and {missing} record no "
+            f"'out_features' to say how many. Re-export this checkpoint: maps "
+            f"written before out_features existed cannot describe a layer whose "
+            f"partitions and checkpoint tensors do not correspond one to one."
+        )
+
+    rows = [int(spec.out_features) for _, spec in shards]  # type: ignore[arg-type]
+    total_rows = sum(rows)
+    total_partitions = sum(output_partition_sizes)
+    # The partitions are this rank's; the checkpoint's rows are everyone's. The
+    # ratio is the tensor-parallel size, and it has to be exact -- a layer whose
+    # rows do not tile across ranks is one vLLM shards by some rule other than
+    # even division, and guessing which would place weights wrongly rather than
+    # loudly.
+    if total_partitions <= 0 or total_rows % total_partitions != 0:
+        raise DynQuantError(
+            f"the checkpoint's {len(shards)} modules {[n for n, _ in shards]} hold "
+            f"{total_rows} rows in total, which is not a whole multiple of this "
+            f"layer's {total_partitions} output rows per rank "
+            f"{list(output_partition_sizes)}. The quantization_config does not "
+            f"describe this model."
+        )
+    tp_size = total_rows // total_partitions
+
+    specs: list[ShardSpec] = []
+    index = 0
+    for (name, spec), module_rows in zip(shards, rows):
+        if module_rows % tp_size != 0:
+            raise DynQuantError(
+                f"{name} has {module_rows} rows, which does not divide across "
+                f"{tp_size} tensor-parallel ranks"
+            )
+        want = module_rows // tp_size
+        got = 0
+        first = index
+        while index < len(output_partition_sizes) and got < want:
+            got += output_partition_sizes[index]
+            index += 1
+        if got != want:
+            raise DynQuantError(
+                f"{name} needs {want} of this layer's output rows per rank but "
+                f"partitions {first}..{index - 1} of "
+                f"{list(output_partition_sizes)} give {got}. The checkpoint's "
+                f"modules do not line up with this layer's partitions."
+            )
+        specs.append(
+            ShardSpec(
+                name=name,
+                bits=spec.bits,
+                group_size=spec.group_size,
+                out_features=want,
+                in_features=in_features,
+                symmetric=spec.symmetric,
+            )
+        )
+
+    # No leftover check: the totals were required to agree above and every module
+    # consumed exactly its own rows, so the partitions are consumed exactly. The
+    # failure that check would have caught -- partitions with no module behind
+    # them -- shows up as the last module's run coming up short.
+    return specs
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,6 +375,28 @@ class FusedPackedGeometry:
     @property
     def shards(self) -> tuple[ShardPlan, ...]:
         return self._shards
+
+    def plan_for_rows(self, row_offset: int, num_rows: int) -> ShardPlan:
+        """The shard containing output rows ``[row_offset, row_offset + num_rows)``.
+
+        A range may be a *part* of a shard and usually is: vLLM places a fused
+        layer one output partition at a time, and under the run mapping several
+        partitions share one shard. What it may not be is a range straddling two
+        shards -- those have different words per row, so no flat span holds them
+        and there is nothing to narrow. vLLM never asks for one, so this is a
+        guard against the layer and the map drifting apart rather than a case to
+        handle.
+        """
+        for plan in self._shards:
+            if plan.row_offset <= row_offset and (
+                row_offset + num_rows <= plan.row_offset + plan.spec.out_features
+            ):
+                return plan
+        raise DynQuantError(
+            f"rows [{row_offset}, {row_offset + num_rows}) do not fall inside a single "
+            f"shard of this layer; shards are "
+            f"{[(p.spec.name, p.row_offset, p.spec.out_features) for p in self._shards]}"
+        )
 
     def by_name(self, name: str) -> ShardPlan:
         try:

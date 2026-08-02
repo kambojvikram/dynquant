@@ -178,18 +178,10 @@ class DynQuantPackedParameter(BasevLLMParameter):
     def _plan_for_rows(self, dest_row: int, num_rows: int):
         """The shard owning ``[dest_row, dest_row + num_rows)``.
 
-        A range that straddles two shards has no single words-per-row and so no
-        flat span. vLLM never asks for one -- its shard boundaries are exactly the
-        ``output_partition_sizes`` the geometry was built from -- so this is a
-        guard against the two drifting apart, not a case to handle.
+        Delegated to the geometry, which is the vLLM-free half and so the half
+        whose arithmetic gets checked without a GPU. The lookup is not a
+        formality: under the run mapping one shard backs several of vLLM's output
+        partitions, so most placements name a sub-range of a shard rather than
+        the whole of one.
         """
-        for plan in self._geometry:
-            if plan.row_offset <= dest_row and (
-                dest_row + num_rows <= plan.row_offset + plan.spec.out_features
-            ):
-                return plan
-        raise DynQuantError(
-            f"rows [{dest_row}, {dest_row + num_rows}) do not fall inside a single shard "
-            f"of this layer; shards are "
-            f"{[(p.spec.name, p.row_offset, p.spec.out_features) for p in self._geometry]}"
-        )
+        return self._geometry.plan_for_rows(dest_row, num_rows)

@@ -27,8 +27,6 @@ property of how the kernel was compiled (see ``DYNQUANT_GEMV_MAX_ROWS``).
 
 from __future__ import annotations
 
-from functools import lru_cache
-
 import torch
 
 from dynquant.constants import GEMV_MAX_ROWS
@@ -44,17 +42,62 @@ __all__ = [
     "gemv_max_rows",
     "quantized_matmul",
     "uses_compiled_kernels",
+    "warm_dispatch",
 ]
 
+# Two process-wide constants, cached in module globals rather than behind
+# `lru_cache`, and the difference is `torch.compile`.
+#
+# Both are decided by probing: which shared object imported, what the driver
+# says, what number the binary was compiled with. Neither can change during a
+# run. But `quantized_matmul` reads them on every call, and every call happens
+# inside the model's forward -- so under `torch.compile` they are read while
+# dynamo is tracing. Dynamo does not honour `lru_cache`; it traces the body,
+# reaches `importlib.util.find_spec` in the CUDA probe, and raises
+# `Unsupported`. vLLM compiles with `fullgraph`, so that is a hard failure at
+# the first linear layer rather than a slow path.
+#
+# A module global that already holds a value is a constant to dynamo: it reads
+# it, guards on it, and traces neither branch. The probe therefore has to have
+# run before compilation, which is what `warm_dispatch` is for -- layer
+# construction calls it, and layers are built before anything is traced.
+#
+# `torch.compiler.disable` would also stop the tracing, by breaking the graph at
+# every quantized linear. That trades a startup call for a per-layer graph
+# break, which under `fullgraph` is still an error.
+_ACTIVE_BACKEND: Backend | None = None
+_GEMV_MAX_ROWS: int | None = None
 
-@lru_cache(maxsize=1)
+
+def warm_dispatch() -> Backend:
+    """Resolve the backend now, outside any compiled region. Returns it.
+
+    Call from anywhere a quantized layer is constructed. Idempotent, and cheap
+    after the first call -- it exists to control *when* the probe runs, not
+    whether.
+
+    Raises:
+        BackendUnavailableError: If ``$DYNQUANT_BACKEND`` names a backend that is
+            not usable. Deliberately at layer-construction time rather than at
+            import: a process that merely imports DynQuant has not asked for a
+            kernel yet, and failing there would make the package unimportable on
+            a machine whose environment out-lived its wheel.
+    """
+    backend = active_backend()
+    gemv_max_rows()
+    return backend
+
+
 def active_backend() -> Backend:
     """The backend for this process. Resolved once; honours ``$DYNQUANT_BACKEND``.
 
     Cached because resolution imports a shared object and queries the driver, and
     because a backend that changed mid-run would make a benchmark meaningless.
     """
-    return resolve_backend()
+    global _ACTIVE_BACKEND
+    if _ACTIVE_BACKEND is None:
+        _ACTIVE_BACKEND = resolve_backend()
+    return _ACTIVE_BACKEND
 
 
 def uses_compiled_kernels(tensor_or_device: QuantTensor | torch.device | torch.Tensor) -> bool:
@@ -75,7 +118,6 @@ def uses_compiled_kernels(tensor_or_device: QuantTensor | torch.device | torch.T
     return device.type == "cuda"
 
 
-@lru_cache(maxsize=1)
 def gemv_max_rows() -> int:
     """Largest M the packed GEMV accepts, asked of the binary that will run it.
 
@@ -83,6 +125,13 @@ def gemv_max_rows() -> int:
     extension -- the value is then unused for dispatch anyway, since the torch
     backend has only one implementation.
     """
+    global _GEMV_MAX_ROWS
+    if _GEMV_MAX_ROWS is None:
+        _GEMV_MAX_ROWS = _probe_gemv_max_rows()
+    return _GEMV_MAX_ROWS
+
+
+def _probe_gemv_max_rows() -> int:
     if active_backend() is not Backend.CUDA:
         return GEMV_MAX_ROWS
     try:

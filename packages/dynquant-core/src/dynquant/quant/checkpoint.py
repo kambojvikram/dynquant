@@ -177,7 +177,15 @@ def export_packed_checkpoint(
         # loading it.
         tensors.update({key: value.cpu() for key, value in quantized.state_dict(name).items()})
 
-        specs[name] = ModuleQuantSpec(bits=width, group_size=group_size, symmetric=symmetric)
+        # num_rows, not `weight.shape[0]`: for a module the packer treats as more
+        # than a matrix the row count is the packer's, and the loader compares
+        # against packed rows.
+        specs[name] = ModuleQuantSpec(
+            bits=width,
+            group_size=group_size,
+            symmetric=symmetric,
+            out_features=quantized.num_rows,
+        )
         layers[name] = {
             **quantized.metadata(),
             "clipped_fraction": round(search.clipped_fraction, 6),
