@@ -81,9 +81,7 @@ class ModuleQuantSpec:
 
     def __post_init__(self) -> None:
         if self.out_features is not None and self.out_features <= 0:
-            raise DynQuantError(
-                f"out_features must be positive, got {self.out_features}"
-            )
+            raise DynQuantError(f"out_features must be positive, got {self.out_features}")
         if self.bits not in BIT_OPTIONS:
             # PackingError rather than FormatVersionError: the block may declare a
             # schema this build understands perfectly and still name a width no
@@ -130,7 +128,7 @@ class QuantizationConfigSchema:
     # -- serialisation -----------------------------------------------------
 
     @classmethod
-    def from_dict(cls, config: Mapping[str, Any]) -> "QuantizationConfigSchema":
+    def from_dict(cls, config: Mapping[str, Any]) -> QuantizationConfigSchema:
         method = config.get("quant_method")
         if method is not None and method != HF_QUANT_METHOD:
             raise DynQuantError(
@@ -205,7 +203,7 @@ class QuantizationConfigSchema:
             return None
         return self.modules.get(name)
 
-    def remap(self, apply_list: Callable[[list[str]], list[str]]) -> "QuantizationConfigSchema":
+    def remap(self, apply_list: Callable[[list[str]], list[str]]) -> QuantizationConfigSchema:
         """Rewrite module names through vLLM's HF-to-vLLM name mapper.
 
         Some vLLM model implementations rename modules relative to the HF
@@ -222,7 +220,7 @@ class QuantizationConfigSchema:
                 f"vLLM's name mapper returned {len(mapped)} names for {len(names)} modules"
             )
         return QuantizationConfigSchema(
-            modules={new: self.modules[old] for old, new in zip(names, mapped)},
+            modules={new: self.modules[old] for old, new in zip(names, mapped, strict=True)},
             group_size=self.group_size,
             symmetric=self.symmetric,
             lm_head_quantized=self.lm_head_quantized,

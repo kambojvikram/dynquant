@@ -216,7 +216,9 @@ def test_modules_to_not_convert_wins_over_the_map():
 
 def test_remap_rewrites_names_without_mutating_the_original():
     original = schema()
-    renamed = original.remap(lambda names: [n.replace("model.layers", "transformer.h") for n in names])
+    renamed = original.remap(
+        lambda names: [n.replace("model.layers", "transformer.h") for n in names]
+    )
 
     assert "transformer.h.0.self_attn.q_proj" in renamed.modules
     assert "model.layers.0.self_attn.q_proj" in original.modules

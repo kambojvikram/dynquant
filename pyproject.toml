@@ -86,6 +86,23 @@ module = [
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+# vLLM is a Linux + CUDA wheel with a multi-gigabyte dependency tree, and the
+# `types` job runs on a CPU runner that deliberately does not install it -- type
+# checking the plugin must not be contingent on being able to build a serving
+# stack. What the plugin borrows from vLLM is checked by tests/test_vllm_*.py,
+# which skip where vLLM is absent and run for real where it is not.
+module = ["vllm.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Consequence of the above: every vLLM base class reads as `Any` here, and
+# `QuantizationConfig`, `LinearMethodBase` and `BasevLLMParameter` are all
+# subclassed by design -- that is the entire extension contract. Scoped to this
+# package so the rule keeps its teeth everywhere else.
+module = ["dynquant.integration.vllm_plugin.*"]
+disallow_subclassing_any = false
+
+[[tool.mypy.overrides]]
 # Vendored research code is kept verbatim for golden tests; it is not type-clean
 # and must not be "fixed" -- that would defeat the purpose of the compat preset.
 module = ["dynquant._legacy.*"]

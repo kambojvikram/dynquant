@@ -8,6 +8,8 @@ the wrong rows -- and it is exactly the part that does not need a GPU to check.
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import pytest
 
 from dynquant.constants import PER_ROW_GROUP_SIZE
@@ -291,7 +293,7 @@ def test_row_parallel_partitions_tile_the_full_row():
     covered = [split.word_slice(rank) for rank in range(4)]
     assert covered[0].start == 0
     assert covered[-1].stop == full.words_per_row
-    assert all(a.stop == b.start for a, b in zip(covered, covered[1:]))
+    assert all(a.stop == b.start for a, b in pairwise(covered))
 
 
 def test_tp_one_is_the_whole_row():
@@ -312,9 +314,7 @@ def test_every_width_splits_the_same_way(bits):
 def test_split_that_would_cut_a_group_is_refused_with_both_ways_out():
     # 4096 inputs, group 128, tp 64 -> 64 inputs per rank: half a group.
     with pytest.raises(DynQuantError) as exc:
-        row_parallel_split(
-            bits=4, group_size=128, in_features=4096, tp_size=64, name="l.down_proj"
-        )
+        row_parallel_split(bits=4, group_size=128, in_features=4096, tp_size=64, name="l.down_proj")
     message = str(exc.value)
     assert "l.down_proj" in message
     assert "group_size" in message and "tensor-parallel size" in message
@@ -330,9 +330,7 @@ def test_per_row_grouping_cannot_be_split_at_all():
             name="l.embed",
         )
     # ...but is fine on one rank, which is how a per-row embedding still serves.
-    split = row_parallel_split(
-        bits=4, group_size=PER_ROW_GROUP_SIZE, in_features=4096, tp_size=1
-    )
+    split = row_parallel_split(bits=4, group_size=PER_ROW_GROUP_SIZE, in_features=4096, tp_size=1)
     assert split.groups_per_partition == 1
 
 

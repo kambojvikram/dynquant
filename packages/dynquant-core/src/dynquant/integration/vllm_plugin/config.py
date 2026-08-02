@@ -83,17 +83,15 @@ class DynQuantConfig(QuantizationConfig):
         return []
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> "DynQuantConfig":
+    def from_config(cls, config: dict[str, Any]) -> DynQuantConfig:
         return cls(QuantizationConfigSchema.from_dict(config))
 
-    def apply_vllm_mapper(self, hf_to_vllm_mapper: "WeightsMapper") -> None:
+    def apply_vllm_mapper(self, hf_to_vllm_mapper: WeightsMapper) -> None:
         self.schema = self.schema.remap(hf_to_vllm_mapper.apply_list)
 
     # -- per-layer dispatch ------------------------------------------------
 
-    def get_quant_method(
-        self, layer: torch.nn.Module, prefix: str
-    ) -> QuantizeMethodBase | None:
+    def get_quant_method(self, layer: torch.nn.Module, prefix: str) -> QuantizeMethodBase | None:
         # Imported here, not at module scope: linear.py imports this module for
         # the config type, and importing it back at the top would be a cycle.
         from dynquant.integration.vllm_plugin.linear import (

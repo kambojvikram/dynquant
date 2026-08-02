@@ -9,6 +9,8 @@ is serving, instead of one that needs a second harness.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any, Protocol, cast
+
 import torch
 from vllm.model_executor.layers.linear import (
     LinearMethodBase,
@@ -29,7 +31,36 @@ from dynquant.quant.pack import row_geometry
 from dynquant.quant.tensor import QuantLayout, QuantTensor
 from dynquant.runtime import ops
 
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from dynquant.integration.vllm_plugin.config import DynQuantConfig
+    from dynquant.integration.vllm_plugin.geometry import TensorParallelSplit
+
 __all__ = ["DynQuantEmbeddingMethod", "DynQuantLinearMethod"]
+
+
+class _Stash(Protocol):
+    """What ``create_weights`` leaves on the layer for ``apply`` to find.
+
+    A quantization method owns no state per layer -- vLLM builds one method and
+    hands it every matching module -- so everything shape-dependent is stashed on
+    the layer itself. That is vLLM's own convention, but ``nn.Module.__getattr__``
+    is typed ``Tensor | Module``, which is right for submodules and parameters and
+    wrong for a geometry object or an int. Declaring the stash once is cheaper
+    than casting at each of a dozen reads, and it is also the only written record
+    of the contract between the two halves of this class.
+    """
+
+    dynquant_geometry: FusedPackedGeometry
+    dynquant_row_split: TensorParallelSplit | None
+    dynquant_in_features: int
+    dynquant_spec: ModuleQuantSpec
+    qweight: torch.Tensor
+    scales: torch.Tensor
+    offsets: torch.Tensor
+
+
+def _stash(layer: torch.nn.Module) -> _Stash:
+    return cast(_Stash, layer)
 
 
 @register_weight_loader_v2_supported_method
@@ -45,7 +76,9 @@ class DynQuantLinearMethod(LinearMethodBase):
     between a correct model and a plausible one.
     """
 
-    def __init__(self, quant_config, shards: list[tuple[str, ModuleQuantSpec]]) -> None:
+    def __init__(
+        self, quant_config: DynQuantConfig | None, shards: list[tuple[str, ModuleQuantSpec]]
+    ) -> None:
         self.quant_config = quant_config
         self.shards = shards
 
@@ -57,7 +90,7 @@ class DynQuantLinearMethod(LinearMethodBase):
         input_size: int,
         output_size: int,
         params_dtype: torch.dtype,
-        **extra_weight_attrs,
+        **extra_weight_attrs: Any,
     ) -> None:
         del output_size  # implied by output_partition_sizes and the tp size
         # vLLM compiles the model with `fullgraph`, so the backend probe has to
@@ -92,11 +125,12 @@ class DynQuantLinearMethod(LinearMethodBase):
                 name=specs[0].name,
             )
 
-        layer.dynquant_geometry = geometry
-        layer.dynquant_row_split = split
+        stash = _stash(layer)
+        stash.dynquant_geometry = geometry
+        stash.dynquant_row_split = split
         # Read back in apply(). Not `layer.input_size_per_partition`, which
         # ReplicatedLinear does not define.
-        layer.dynquant_in_features = input_size_per_partition
+        stash.dynquant_in_features = input_size_per_partition
 
         def make(numel: int, dtype: torch.dtype, kind: str) -> DynQuantPackedParameter:
             return DynQuantPackedParameter(
@@ -124,8 +158,9 @@ class DynQuantLinearMethod(LinearMethodBase):
     def apply(
         self, layer: torch.nn.Module, x: torch.Tensor, bias: torch.Tensor | None = None
     ) -> torch.Tensor:
-        geometry: FusedPackedGeometry = layer.dynquant_geometry
-        in_features: int = layer.dynquant_in_features
+        stash = _stash(layer)
+        geometry = stash.dynquant_geometry
+        in_features = stash.dynquant_in_features
 
         # One shard is the overwhelmingly common case (every non-fused layer), and
         # concatenating a single tensor still copies it.
@@ -171,7 +206,7 @@ class DynQuantEmbeddingMethod(DynQuantLinearMethod):
         input_size: int,
         output_size: int,
         params_dtype: torch.dtype,
-        **extra_weight_attrs,
+        **extra_weight_attrs: Any,
     ) -> None:
         del input_size, output_size
         ops.warm_dispatch()
@@ -184,8 +219,9 @@ class DynQuantEmbeddingMethod(DynQuantLinearMethod):
         num_rows = sum(output_partition_sizes)
         geom = row_geometry(spec.bits, spec.group_size, input_size_per_partition)
 
-        layer.dynquant_spec = spec
-        layer.dynquant_in_features = input_size_per_partition
+        stash = _stash(layer)
+        stash.dynquant_spec = spec
+        stash.dynquant_in_features = input_size_per_partition
 
         qweight = torch.nn.Parameter(
             torch.zeros(num_rows, geom.words_per_row, dtype=torch.int32),
@@ -220,7 +256,7 @@ class DynQuantEmbeddingMethod(DynQuantLinearMethod):
     ) -> torch.Tensor:
         return ops.quantized_matmul(x, _embedding_tensor(layer), bias)
 
-    def tie_weights(self, layer: torch.nn.Module, embed_tokens: torch.nn.Module):
+    def tie_weights(self, layer: torch.nn.Module, embed_tokens: torch.nn.Module) -> torch.nn.Module:
         """Share the packed table with ``embed_tokens`` -- all three buffers.
 
         The base implementation assigns ``layer.weight`` and stops, which for a
@@ -253,10 +289,11 @@ def _shard_tensor(
     cycle and every weight refit that vLLM performs.
     """
     plan = geometry[shard_id]
+    stash = _stash(layer)
     return QuantTensor(
-        packed=geometry.view_qweight(layer.qweight, shard_id),
-        scales=geometry.view_scale(layer.scales, shard_id),
-        offsets=geometry.view_scale(layer.offsets, shard_id),
+        packed=geometry.view_qweight(stash.qweight, shard_id),
+        scales=geometry.view_scale(stash.scales, shard_id),
+        offsets=geometry.view_scale(stash.offsets, shard_id),
         bits=plan.spec.bits,
         group_size=plan.spec.group_size,
         in_features=in_features,
@@ -268,18 +305,17 @@ def _shard_tensor(
 
 
 def _embedding_tensor(layer: torch.nn.Module) -> QuantTensor:
-    spec: ModuleQuantSpec = layer.dynquant_spec
-    in_features: int = layer.dynquant_in_features
+    stash = _stash(layer)
+    spec = stash.dynquant_spec
+    in_features = stash.dynquant_in_features
     return QuantTensor(
-        packed=layer.qweight,
-        scales=layer.scales,
-        offsets=layer.offsets,
+        packed=stash.qweight,
+        scales=stash.scales,
+        offsets=stash.offsets,
         bits=spec.bits,
         group_size=spec.group_size,
         in_features=in_features,
-        logical_shape=(layer.qweight.shape[0], in_features),
+        logical_shape=(stash.qweight.shape[0], in_features),
         layout=QuantLayout.LINEAR,
         symmetric=spec.symmetric,
     )
-
-

@@ -27,10 +27,10 @@ import pytest
 
 pytest.importorskip("vllm", reason="the vLLM plugin needs vLLM to import at all")
 
-import torch  # noqa: E402
+import torch
 
-from dynquant.errors import DynQuantError  # noqa: E402
-from dynquant.integration.vllm_plugin.config import (  # noqa: E402
+from dynquant.errors import DynQuantError
+from dynquant.integration.vllm_plugin.config import (
     DynQuantConfig,
     _class_is_fused_moe,
     _is_fused_moe,
@@ -53,12 +53,17 @@ def moe_owner_classes() -> list[type]:
     for info in pkgutil.walk_packages(package.__path__, package.__name__ + "."):
         try:
             module = __import__(info.name, fromlist=["_"])
-        except Exception:  # pragma: no cover - optional backends (deep_gemm, pplx)
+        except Exception:  # noqa: BLE001
+            # Blind on purpose. This sweep is exhaustive over the classes it can
+            # *see*, and an optional backend that will not import on this machine
+            # -- deep_gemm without its shared object, pplx without a network
+            # backend -- is not a fact about the guard under test. Those modules
+            # fail in whatever way their own dependency chain fails, so naming a
+            # tuple of exception types here would make the test red on somebody's
+            # box for a reason it is not asking about.
             continue
         for _, obj in inspect.getmembers(module, inspect.isclass):
-            if obj.__module__.startswith(package.__name__) and issubclass(
-                obj, torch.nn.Module
-            ):
+            if obj.__module__.startswith(package.__name__) and issubclass(obj, torch.nn.Module):
                 found.append(obj)
     return found
 

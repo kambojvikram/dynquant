@@ -30,6 +30,7 @@ anything about DynQuant.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -306,7 +307,10 @@ def _unique_state_dict(model: nn.Module) -> dict[str, torch.Tensor]:
     for key, value in state.items():
         if not isinstance(value, torch.Tensor):
             continue
-        identity = (value.untyped_storage().data_ptr(), value.storage_offset())
+        # `storage_offset()` is `int | SymInt`, and a SymInt is not hashable into
+        # the same bucket as the int it will become. Nothing reaches here on a
+        # traced model, so int() is the fact rather than a coercion.
+        identity = (value.untyped_storage().data_ptr(), int(value.storage_offset()))
         earlier = first_at.get(identity)
         if earlier is not None and value.shape == state[earlier].shape:
             continue
@@ -386,12 +390,10 @@ def _write_config(out: Path, model: nn.Module, schema: QuantizationConfigSchema)
 
     generation_config = getattr(model, "generation_config", None)
     if generation_config is not None:
-        try:
+        # A generation config that fails its own validation is not worth failing an
+        # export over -- the model still serves, on defaults.
+        with contextlib.suppress(ValueError, OSError):
             generation_config.save_pretrained(str(out))
-        except (ValueError, OSError):
-            # A generation config that fails its own validation is not worth
-            # failing an export over -- the model still serves, on defaults.
-            pass
 
 
 def _write_manifest(

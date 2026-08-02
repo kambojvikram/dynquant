@@ -22,11 +22,18 @@ crash rather than a silent 512-vs-384 mismatch producing noise.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any, cast
+
 import torch
 from vllm.model_executor.parameter import BasevLLMParameter
 
 from dynquant.errors import DynQuantError
 from dynquant.integration.vllm_plugin.geometry import FusedPackedGeometry, TensorParallelSplit
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from collections.abc import Callable
+
+    from dynquant.integration.vllm_plugin.geometry import ShardPlan
 
 __all__ = ["DynQuantPackedParameter"]
 
@@ -45,14 +52,14 @@ class DynQuantPackedParameter(BasevLLMParameter):
     unset is what keeps those adjustment branches switched off.
     """
 
-    def __new__(cls, data: torch.Tensor, **kwargs):
-        return super().__new__(cls, data=data, **kwargs)
+    def __new__(cls, data: torch.Tensor, **kwargs: Any) -> DynQuantPackedParameter:
+        return cast(DynQuantPackedParameter, super().__new__(cls, data=data, **kwargs))
 
     def __init__(
         self,
         *,
         data: torch.Tensor,
-        weight_loader,
+        weight_loader: Callable[..., None] | None,
         geometry: FusedPackedGeometry,
         elements_per_row: str,
         row_split: TensorParallelSplit | None = None,
@@ -97,7 +104,7 @@ class DynQuantPackedParameter(BasevLLMParameter):
         rows = self._geometry.total_out_features
         self._place(loaded_weight, dest_row=0, num_rows=rows, src_row=self.tp_rank * rows)
 
-    def load_merged_column_weight(self, loaded_weight: torch.Tensor, **kwargs) -> None:
+    def load_merged_column_weight(self, loaded_weight: torch.Tensor, **kwargs: Any) -> None:
         """One shard of a ``gate_up_proj``-style merge.
 
         ``shard_offset`` and ``shard_size`` arrive already divided by ``tp_size``,
@@ -115,7 +122,7 @@ class DynQuantPackedParameter(BasevLLMParameter):
             src_row=self.tp_rank * shard_size,
         )
 
-    def load_qkv_weight(self, loaded_weight: torch.Tensor, **kwargs) -> None:
+    def load_qkv_weight(self, loaded_weight: torch.Tensor, **kwargs: Any) -> None:
         """One of q/k/v.
 
         Differs from the merged case only in the source offset: with fewer KV
@@ -175,7 +182,7 @@ class DynQuantPackedParameter(BasevLLMParameter):
             )
         dest.copy_(source)
 
-    def _plan_for_rows(self, dest_row: int, num_rows: int):
+    def _plan_for_rows(self, dest_row: int, num_rows: int) -> ShardPlan:
         """The shard owning ``[dest_row, dest_row + num_rows)``.
 
         Delegated to the geometry, which is the vLLM-free half and so the half

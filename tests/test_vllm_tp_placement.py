@@ -28,10 +28,10 @@ import torch
 
 pytest.importorskip("vllm", reason="the vLLM plugin needs vLLM to import at all")
 
-from dynquant.errors import DynQuantError  # noqa: E402
-from dynquant.integration.vllm_plugin.linear import DynQuantLinearMethod  # noqa: E402
-from dynquant.integration.vllm_plugin.schema import ModuleQuantSpec  # noqa: E402
-from dynquant.quant.pack import row_geometry  # noqa: E402
+from dynquant.errors import DynQuantError
+from dynquant.integration.vllm_plugin.linear import DynQuantLinearMethod
+from dynquant.integration.vllm_plugin.schema import ModuleQuantSpec
+from dynquant.quant.pack import row_geometry
 
 TP = 2
 IN_FEATURES = 2048
@@ -81,9 +81,7 @@ def checkpoint_tensors(bits: int, out_features: int, in_features: int = IN_FEATU
     geom = row_geometry(bits, GROUP_SIZE, in_features)
     words = torch.arange(out_features * geom.words_per_row, dtype=torch.int32)
     scales = torch.arange(out_features * geom.num_groups, dtype=torch.bfloat16)
-    return words.view(out_features, geom.words_per_row), scales.view(
-        out_features, geom.num_groups
-    )
+    return words.view(out_features, geom.words_per_row), scales.view(out_features, geom.num_groups)
 
 
 def build(shards, output_partition_sizes, *, in_per_partition=IN_FEATURES):

@@ -41,8 +41,9 @@ arithmetic actually gets checked.
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING
 
 from dynquant.errors import DynQuantError
 from dynquant.integration.vllm_plugin.schema import ModuleQuantSpec
@@ -151,7 +152,7 @@ def match_shards_to_partitions(
                 in_features=in_features,
                 symmetric=spec.symmetric,
             )
-            for (name, spec), out in zip(shards, output_partition_sizes)
+            for (name, spec), out in zip(shards, output_partition_sizes, strict=True)
         ]
 
     if len(shards) == 1:
@@ -226,7 +227,7 @@ def _match_runs(
 
     specs: list[ShardSpec] = []
     index = 0
-    for (name, spec), module_rows in zip(shards, rows):
+    for (name, spec), module_rows in zip(shards, rows, strict=True):
         if module_rows % tp_size != 0:
             raise DynQuantError(
                 f"{name} has {module_rows} rows, which does not divide across "
@@ -366,7 +367,7 @@ class FusedPackedGeometry:
     def __len__(self) -> int:
         return len(self._shards)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[ShardPlan]:
         return iter(self._shards)
 
     def __getitem__(self, shard_id: int) -> ShardPlan:
@@ -428,19 +429,19 @@ class FusedPackedGeometry:
 
     # -- views -------------------------------------------------------------
 
-    def view_qweight(self, flat: "torch.Tensor", shard_id: int) -> "torch.Tensor":
+    def view_qweight(self, flat: torch.Tensor, shard_id: int) -> torch.Tensor:
         """``[out_i, words_i]`` view into the flat packed buffer. No copy."""
         plan = self._shards[shard_id]
         self._check_flat(flat, self.qweight_numel, "qweight")
         return flat[plan.qweight_slice].view(plan.qweight_shape)
 
-    def view_scale(self, flat: "torch.Tensor", shard_id: int) -> "torch.Tensor":
+    def view_scale(self, flat: torch.Tensor, shard_id: int) -> torch.Tensor:
         """``[out_i, groups_i]`` view into a flat scales/offsets buffer."""
         plan = self._shards[shard_id]
         self._check_flat(flat, self.scale_numel, "scales/offsets")
         return flat[plan.scale_slice].view(plan.scale_shape)
 
-    def _check_flat(self, flat: "torch.Tensor", expected: int, what: str) -> None:
+    def _check_flat(self, flat: torch.Tensor, expected: int, what: str) -> None:
         if flat.dim() != 1 or flat.numel() != expected:
             raise DynQuantError(
                 f"{what} buffer should be 1-D of {expected} elements for this layer, "
@@ -516,8 +517,7 @@ def row_parallel_split(
 
     if in_features % tp_size != 0:
         raise DynQuantError(
-            f"{name}: in_features={in_features} is not divisible by "
-            f"tensor-parallel size {tp_size}"
+            f"{name}: in_features={in_features} is not divisible by tensor-parallel size {tp_size}"
         )
     per_partition = in_features // tp_size
     if per_partition % full.effective_group != 0:

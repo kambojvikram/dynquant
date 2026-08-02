@@ -13,6 +13,7 @@ Runs on CPU. vLLM is not imported anywhere in this file.
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -157,9 +158,7 @@ def test_config_still_names_the_architecture(exported):
 def test_fused_shards_resolve_to_their_separate_widths(exported):
     """The case the flat buffer exists for, read back the way vLLM will read it."""
     _, _, report = exported
-    block = json.loads((report.output_dir / HF_CONFIG_FILENAME).read_text())[
-        "quantization_config"
-    ]
+    block = json.loads((report.output_dir / HF_CONFIG_FILENAME).read_text())["quantization_config"]
     schema = QuantizationConfigSchema.from_dict(block)
 
     shards = schema.resolve_shards(
@@ -186,7 +185,7 @@ def test_each_quantized_module_becomes_a_triple(exported):
 def test_unquantized_tensors_pass_through_under_their_original_names(exported):
     from safetensors.torch import load_file
 
-    model, bits, report = exported
+    model, _bits, report = exported
     tensors = load_file(report.output_dir / HF_WEIGHTS_FILENAME)
 
     # Norms are what a model's own load_weights routes without knowing anything
@@ -313,7 +312,7 @@ def test_an_untied_head_is_written_separately(tmp_path):
 
 def test_a_map_for_another_model_names_the_module_it_could_not_find(tmp_path):
     model = tiny_model()
-    with pytest.raises(DynQuantError, match="transformer.h.0.attn.c_attn"):
+    with pytest.raises(DynQuantError, match=re.escape("transformer.h.0.attn.c_attn")):
         export_packed_checkpoint(
             model,
             {"transformer.h.0.attn.c_attn": 4},
