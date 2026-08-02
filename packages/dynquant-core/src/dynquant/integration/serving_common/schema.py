@@ -55,7 +55,7 @@ __all__ = [
 
 CHECKPOINT_FORMAT = "dynquant-packed"
 """``quantization_config.checkpoint_format``. Distinguishes a packed checkpoint
-that vLLM can serve from the values-quantized directory ``dynquant quantize``
+a server can load from the values-quantized directory ``dynquant quantize``
 writes, which has the same ``quant_method`` but stores dense compute-dtype
 weights and must not be loaded through this path."""
 
@@ -78,7 +78,7 @@ class ModuleQuantSpec:
             one. vLLM's gated delta net is the case that forces it: one
             ``in_proj_qkv`` tensor backs three of ``in_proj_qkvz``'s four
             partitions and ``in_proj_z`` backs the fourth, and nothing else in
-            what vLLM hands a quantization config distinguishes that from a
+            what a server hands a quantization config distinguishes that from a
             4096+4096 split. ``None`` for checkpoints written before this field
             existed, which is why every consumer treats it as optional rather
             than assuming it.
@@ -241,12 +241,14 @@ class QuantizationConfigSchema:
     def resolve_shards(
         self, prefix: str, packed_modules_mapping: Mapping[str, Sequence[str]]
     ) -> list[tuple[str, ModuleQuantSpec]] | None:
-        """Which checkpoint modules back one vLLM layer, and at what widths.
+        """Which checkpoint modules back one server-side layer, and at what widths.
 
-        vLLM fuses ``q``/``k``/``v`` into one ``qkv_proj`` layer whose prefix names
-        no tensor in the checkpoint, so the prefix is expanded through
-        ``packed_modules_mapping`` -- which vLLM has already populated on the
-        config by the time any layer is built.
+        Both servers fuse ``q``/``k``/``v`` into one ``qkv_proj`` layer whose prefix
+        names no tensor in the checkpoint, so the prefix is expanded through
+        ``packed_modules_mapping``. How that mapping reaches the config differs --
+        vLLM sets it on the instance, SGLang injects it into the dict handed to
+        ``from_config`` and leaves the lifting to the plugin -- which is why it is a
+        parameter here rather than something this module reads for itself.
 
         Returns ``None`` when the layer is not quantized at all, so the caller can
         hand back an unquantized method. Raises when *some* of a fused layer's
@@ -275,7 +277,7 @@ class QuantizationConfigSchema:
 def expand_fused_prefix(
     prefix: str, packed_modules_mapping: Mapping[str, Sequence[str]]
 ) -> list[str]:
-    """vLLM layer prefix to the checkpoint module names it was fused from.
+    """A serving layer's prefix to the checkpoint module names it was fused from.
 
     ``model.layers.0.self_attn.qkv_proj`` with ``{"qkv_proj": ["q_proj", "k_proj",
     "v_proj"]}`` becomes the three ``model.layers.0.self_attn.*_proj`` names. A

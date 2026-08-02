@@ -68,7 +68,7 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class ShardSpec:
-    """One checkpoint module that vLLM has folded into a fused layer.
+    """One checkpoint module the server has folded into a fused layer.
 
     A layer that is not fused has exactly one of these, and everything below
     degenerates to "the whole buffer is shard 0" -- deliberately, so there is no
@@ -83,7 +83,7 @@ class ShardSpec:
         group_size: As stored, so possibly
             :data:`~dynquant.constants.PER_ROW_GROUP_SIZE`.
         out_features: Rows **on this tensor-parallel rank**, i.e. already divided
-            by ``tp_size``. vLLM hands ``create_weights`` the per-partition
+            by ``tp_size``. Both servers hand ``create_weights`` the per-partition
             output sizes, so taking them pre-divided keeps the division in one
             place instead of two.
         in_features: Reduction length **on this rank**, likewise already divided
@@ -110,27 +110,27 @@ def match_shards_to_partitions(
     output_partition_sizes: Sequence[int],
     in_features: int,
 ) -> list[ShardSpec]:
-    """Line the checkpoint's modules up against vLLM's output partitions.
+    """Line the checkpoint's modules up against the layer's output partitions.
 
     Three cases, and the difference is how the checkpoint's tensors divide up the
     layer's output rows:
 
-    * ``len(shards) == len(output_partition_sizes)`` -- the ordinary case. vLLM's
-      ``packed_modules_mapping`` lists the sub-modules in the same order it
-      concatenates their outputs, so the pairing is positional.
+    * ``len(shards) == len(output_partition_sizes)`` -- the ordinary case. A
+      model's ``packed_modules_mapping`` lists the sub-modules in the same order
+      the layer concatenates their outputs, so the pairing is positional.
     * ``len(shards) == 1`` with several partitions -- the checkpoint was already
       fused on disk (Phi-3's ``qkv_proj``). There is one width for the whole
-      matrix, so the partitions collapse into one shard and vLLM's
+      matrix, so the partitions collapse into one shard and
       ``_load_fused_module_from_checkpoint`` splits the loaded tensor by rows,
       which the flat layout handles because a uniform-width shard has a constant
       words-per-row.
     * **Fewer modules than partitions, more than one** -- each module spans a
       *run* of consecutive partitions. Qwen3.5's gated delta net is the case:
-      vLLM builds ``in_proj_qkvz`` as four partitions of ``[key, key, value,
-      value]`` while the checkpoint holds two tensors, ``in_proj_qkv`` covering
-      the first three and ``in_proj_z`` the fourth
-      (``Qwen3_5Model.hf_to_vllm_mapper``). The run lengths come from
-      :attr:`ModuleQuantSpec.out_features`; nothing else vLLM passes a
+      the server builds ``in_proj_qkvz`` as four partitions of ``[key, key,
+      value, value]`` while the checkpoint holds two tensors, ``in_proj_qkv``
+      covering the first three and ``in_proj_z`` the fourth (vLLM's
+      ``Qwen3_5Model.hf_to_vllm_mapper``). The run lengths come from
+      :attr:`ModuleQuantSpec.out_features`; nothing else a server passes a
       quantization config distinguishes 6144+2048 from 4096+4096.
 
     The first two cases are that rule's degenerate instances -- one partition per
@@ -144,8 +144,8 @@ def match_shards_to_partitions(
     if len(shards) == len(output_partition_sizes):
         # Deliberately not cross-checked against out_features. A QKV layer with
         # fewer KV heads than ranks legitimately has partitions that do *not* sum
-        # to the checkpoint's rows -- vLLM replicates K and V across ranks, so
-        # `output_sizes` counts those rows once per replica. An assertion here
+        # to the checkpoint's rows -- both servers replicate K and V across ranks,
+        # so `output_sizes` counts those rows once per replica. An assertion here
         # would reject GQA at high tensor-parallel sizes, which is correct today.
         return [
             ShardSpec(
@@ -184,10 +184,10 @@ def _match_runs(
 
     Emits one :class:`ShardSpec` per module, not per partition, so a module that
     spans three partitions stays one shard with one width and one flat span.
-    That is what makes the loader work unchanged: vLLM's v2 path decomposes a
-    tuple shard id into one placement call per partition
-    (``MergedColumnParallelLinear._load_fused_module_from_checkpoint``), each
-    naming a row range strictly inside the run, and
+    That is what makes the loader work unchanged: the v2 path decomposes a tuple
+    shard id into one placement call per partition
+    (``MergedColumnParallelLinear._load_fused_module_from_checkpoint``, in both
+    servers), each naming a row range strictly inside the run, and
     ``DynQuantPackedParameter._plan_for_rows`` resolves any such sub-range
     against the enclosing shard.
 
@@ -216,9 +216,9 @@ def _match_runs(
     total_partitions = sum(output_partition_sizes)
     # The partitions are this rank's; the checkpoint's rows are everyone's. The
     # ratio is the tensor-parallel size, and it has to be exact -- a layer whose
-    # rows do not tile across ranks is one vLLM shards by some rule other than
-    # even division, and guessing which would place weights wrongly rather than
-    # loudly.
+    # rows do not tile across ranks is one the server shards by some rule other
+    # than even division, and guessing which would place weights wrongly rather
+    # than loudly.
     if total_partitions <= 0 or total_rows % total_partitions != 0:
         raise DynQuantError(
             f"the checkpoint's {len(shards)} modules {[n for n, _ in shards]} hold "
@@ -321,7 +321,7 @@ class ShardPlan:
 
 
 class FusedPackedGeometry:
-    """The flat layout of every shard in one vLLM linear layer.
+    """The flat layout of every shard in one serving linear layer.
 
     Built once in ``create_weights`` and kept on the layer, because every later
     operation -- placing a loaded shard, viewing a shard at ``apply`` time,
@@ -384,13 +384,13 @@ class FusedPackedGeometry:
     def plan_for_rows(self, row_offset: int, num_rows: int) -> ShardPlan:
         """The shard containing output rows ``[row_offset, row_offset + num_rows)``.
 
-        A range may be a *part* of a shard and usually is: vLLM places a fused
-        layer one output partition at a time, and under the run mapping several
+        A range may be a *part* of a shard and usually is: a fused layer is
+        placed one output partition at a time, and under the run mapping several
         partitions share one shard. What it may not be is a range straddling two
         shards -- those have different words per row, so no flat span holds them
-        and there is nothing to narrow. vLLM never asks for one, so this is a
-        guard against the layer and the map drifting apart rather than a case to
-        handle.
+        and there is nothing to narrow. Neither server ever asks for one, so this
+        is a guard against the layer and the map drifting apart rather than a
+        case to handle.
         """
         for plan in self._shards:
             if plan.row_offset <= row_offset and (

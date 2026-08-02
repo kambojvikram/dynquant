@@ -56,9 +56,25 @@ the one both readers actually consult — writing to `BASE_` would be a no-op, s
 copy has already been taken by the time any plugin runs.
 
 `WEIGHT_LOADER_V2_SUPPORTED` is the load-bearing one. The v1 loader places shards
-with `param.data.narrow(output_dim, ...)`; on DynQuant's flat buffers that narrows
-into the wrong rows and copies **without raising**. Getting this wrong produces a
-model that loads, serves, and is quietly wrong.
+with `param.data.narrow(output_dim, ...)`, which assumes every row of the parameter
+is the same width — under per-module allocation they are not, which is why our
+buffers are flat. So there is no v1 loader that can **express** this layout, and
+without the entry `DynQuantPackedParameter`'s four placement hooks are never called
+at all.
+
+*Correction to an earlier draft of this document*, which claimed the v1 loader
+corrupts silently. It does not: every v1 path ends in
+`assert param_data.shape == loaded_weight.shape` before the copy (`linear.py:437`
+with an f-string message, `:736` bare). Traced per layer kind against a flat 1-D
+parameter — column-parallel raises `RuntimeError` from an out-of-range `narrow`
+even at `--tp-size 1`; merged-column and QKV compare 1-D `[shard_size]` against a
+2-D `[shard_size, words]` and hit the bare assert; row-parallel indexes `shape[1]`
+on a 1-D buffer and raises `IndexError`. The failure is therefore loud and
+useless: raised inside a **spawned** scheduler subprocess, on a line naming neither
+the module nor quantization. That is the argument for the registry entry, not
+silent corruption. `tests/test_sglang_linear.py::test_the_v1_loader_cannot_place_these_buffers`
+runs those three v1 bodies against a real parameter and records exactly what it
+does and does not prove.
 
 ### Ordering is already correct
 
@@ -88,6 +104,15 @@ may still be called more than once per process, so `register()` must be re-entra
 ## Phases
 
 Each phase has a gate. S1–S4 need no GPU.
+
+**Progress, 2026-08-02.** S1, S2, S3 and S4 are done and their gates pass on Windows:
+`ruff`, `ruff format --check` and `mypy` clean, 1104 tests passing. S0 is not done — it
+is the GPU box, and S5 onward all need it. The three corrections this port turned up
+against the original draft are recorded inline: the `BASE_QUANTIZATION_METHODS` split
+(S2), `packed_modules_mapping` arriving inside the config dict (S3), and
+`skip_block_quant_check` needing to be a named parameter (S4). A fourth correction is
+under "the three containers" and applies to **both** plugins: the v1 weight loader does
+not corrupt silently.
 
 ### S0 — Environment, on the vast.ai box
 
@@ -265,18 +290,65 @@ Two asymmetries to copy exactly, both visible in `parameter.py`:
 
 Also: `create_weights` takes an extra `skip_block_quant_check` kwarg
 (`linear.py:330`, forwarded at `:365`; `ColumnParallelLinear` at `:961`/`:1013`) —
-only `fp8.py` reads it, so accepting and ignoring it via `**extra_weight_attrs` is
-correct, but the signature must not choke on it. SGLang uses `copy_with_check` rather
-than a bare `copy_`; and there are `_is_cpu` padding branches we should assert we
-never enter.
+only `fp8.py` reads it. SGLang uses `copy_with_check` rather than a bare `copy_`; and
+there are `_is_cpu` padding branches we should assert we never enter.
 
-**Gate, CPU only:**
-1. Geometry oracle tests at TP ∈ {1, 2, 4} exercising the `tp_rank` argument
-   specifically — assert rank *n* receives rows `[n·shard, (n+1)·shard)`.
-2. A negative test proving the v2 registration is load-bearing: with
-   `WEIGHT_LOADER_V2_SUPPORTED` **not** patched, loading must produce different bytes
-   than the v2 path. If that test passes trivially, S2's third write is dead code and
-   the whole design is wrong.
+**Correction 3 — `skip_block_quant_check` must be a named parameter, not swallowed by
+`**extra_weight_attrs`.** The draft above said accepting it through the catch-all was
+correct. It is not: `create_weights` forwards that dict to `set_weight_attrs`, so the
+flag would be stapled onto `qweight`, `scales` and `offsets` as a weight attribute —
+silently, since `set_weight_attrs` only objects to *overwriting*. It is declared after
+`params_dtype`, which is safe because `ReplicatedLinear` (`linear.py:231-239`) passes
+exactly six arguments positionally.
+
+#### What S4 actually shipped
+
+`sglang_plugin/parameter.py` and `sglang_plugin/linear.py`, with five deltas from the
+vLLM twin:
+
+1. **`tp_rank` is an argument.** All four hooks take it explicitly, and
+   `load_column_parallel_weight` / `load_row_parallel_weight` give it **no default** —
+   that is what makes `weight_loader_v2`'s `except TypeError` fallback
+   (`linear.py:456-466`, `:1547-1558`) re-raise instead of quietly loading rank 0's
+   rows on every rank.
+2. **The base classes are load-bearing.** `DynQuantPackedParameter(_ColumnvLLMParameter,
+   RowvLLMParameter)` mirrors SGLang's own `ModelWeightParameter`, so both `isinstance`
+   gates take the direct branch and `output_dim`/`input_dim` pass up the MRO instead of
+   being hand-written properties. `packed_dim` stays absent: it would make the loaders
+   divide row offsets by a pack factor, and DynQuant packs along the *input* axis.
+3. **`use_presharded_weights`** zeroes the source-row offset *and* skips the
+   row-parallel word slice, expressed as one nullable `word_rank` argument so the two
+   ways of meaning "do not slice" cannot disagree.
+4. **`skip_block_quant_check`**, per Correction 3.
+5. **No `tie_weights`.** SGLang's `ParallelLMHead.tie_weights`
+   (`vocab_parallel_embedding.py:654`) never consults the quant method, where vLLM's
+   delegates to it; an override would be dead code that looked live. Survivable because
+   the dense models we serve tie by assigning the whole module (`qwen3.py:488`).
+
+Plus: `_place` runs our own shape check — which names the module, the width and the
+group size — and then delegates the copy to SGLang's `copy_with_check`, so an
+fp32-scales checkpoint into an fp16 layer raises the downcast `ValueError` rather than
+silently losing the exponent range.
+
+**Gate, CPU only — done, `tests/test_sglang_linear.py`, 30 tests:**
+1. Placement at TP=2 for column / merged-column / QKV at three different widths /
+   replicated KV / row-parallel over bits ∈ {2, 3, 4, 8}, each asserting rank *n*
+   receives exactly its slice and that the ranks reassemble the checkpoint.
+2. Both `isinstance` gates satisfied; the hooks reject a call with no `tp_rank`.
+3. `use_presharded_weights` for column, row and QKV, looped over both ranks — rank 0
+   passes by luck otherwise.
+4. `skip_block_quant_check=True` is accepted and does *not* become a weight attribute.
+5. The registered literal equals `DynQuantLinearMethod.__name__`, and the embedding
+   method is deliberately *not* in the v2 list.
+6. `test_the_v1_loader_cannot_place_these_buffers` — copies of SGLang's three v1
+   placement bodies run against a real `DynQuantPackedParameter`, each asserted to
+   raise. Its docstring states what that does and does not prove; see the corrected
+   claim under "the three containers" above.
+
+These run against `tests/_sglang_stub.py`, whose parameter classes are **copied** from
+0.5.16 rather than sketched, precisely because the plugin subclasses them for real.
+`tests/test_sglang_stub_conformance.py` is what keeps that copy honest, and it can only
+run on the Linux box.
 
 ### S5 — First real serve
 

@@ -77,6 +77,18 @@ dynquant = "dynquant.cli:main"
 [project.entry-points."vllm.general_plugins"]
 dynquant = "dynquant.integration.vllm_plugin:register"
 
+# The same arrangement for SGLang, whose plugin framework calls this once per
+# process from `load_plugins()` -- including as the first statement of
+# `run_scheduler_process()`, which matters because the scheduler is spawned rather
+# than forked and so inherits none of the parent's registry writes.
+#
+# The group name is SGLang's `GENERAL_PLUGINS_GROUP`, not its `PLATFORM_PLUGINS_GROUP`
+# ("sglang.srt.platforms"). The two are discovered separately and a platform plugin
+# is expected to register hardware, not a quantization method; declaring the wrong
+# one loads us in the wrong phase, or not at all.
+[project.entry-points."sglang.srt.plugins"]
+dynquant = "dynquant.integration.sglang_plugin:register"
+
 [project.urls]
 # No Documentation key until the mkdocs site of P10 exists. PyPI renders whatever
 # is listed here as a link on the project page, and a 404 next to the install

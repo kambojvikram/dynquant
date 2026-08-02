@@ -1,6 +1,6 @@
 """One opaque op for the concatenation at the output of a fused layer.
 
-A fused vLLM layer -- ``qkv_proj``, ``gate_up_proj``, ``in_proj_qkvz`` -- is always
+A fused serving layer -- ``qkv_proj``, ``gate_up_proj``, ``in_proj_qkvz`` -- is always
 consumed by a split. Every other quantization method holds one weight matrix and
 does one matmul, so that split is a genuine view into one wide buffer. DynQuant
 holds a separate width per shard, so it does one matmul per shard and joins them,

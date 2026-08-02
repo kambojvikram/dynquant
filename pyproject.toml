@@ -57,9 +57,11 @@ ignore = [
 [tool.ruff.lint.isort]
 # Without this, `dynquant` sorts as third-party and lands in the same block as
 # pytest, which hides at a glance whether a test is exercising the package or its
-# dependencies. `_oracle` is a test-local helper module, not a distribution.
+# dependencies. `_oracle` and `_sglang_stub` are test-local helper modules, not
+# distributions -- and `_sglang_stub` in particular must not sort next to a real
+# `sglang` import, since the whole point of the file is that it is not one.
 known-first-party = ["dynquant", "dynquant_kernels"]
-known-local-folder = ["_oracle"]
+known-local-folder = ["_oracle", "_sglang_stub"]
 
 [tool.ruff.format]
 quote-style = "double"
