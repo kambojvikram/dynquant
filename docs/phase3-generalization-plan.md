@@ -151,13 +151,85 @@ no-op for role assignment — same role map with the window set and unset.
 
 Suite: 1138 passed, 13 skipped (was 1115). Ruff clean.
 
-### G2 — Pack / unpack and kernel parity on each model's real shapes
+### G2 — Pack / unpack and kernel parity on each model's real shapes ✅ **done 2026-08-03**
 
 The 417 kernel-parity tests sweep geometries, not these geometries. Gemma-3 uses `head_dim=256`
 (not `hidden/heads`), Phi-4-mini has a partial rotary factor, and the four models' GQA ratios
 differ. One pack → unpack → compare-against-the-torch-oracle run per model's actual layer shapes,
 at 2/3/4/8 bits. Cheap, and it is the only thing standing between a shape assumption and a
 silently wrong checkpoint.
+
+#### What it found
+
+`tests/test_quant_phase3_shapes.py` — 302 tests over 40 pinned weight shapes covering all four
+models, plus three phase-3 reduction widths appended to `tests/test_kernels_parity.py`. Suite
+1229 → **1531 passed, 14 skipped**; ruff clean; **8 of 8 mutations killed**, including one per
+defect below.
+
+The shapes are **pinned config literals, not fetched** — two of the four repos are gated (HTTP
+401 without a token), so a fetching test would be red on any machine without HF credentials. The
+literals are cross-checked two ways: a `needs_hf` test builds each model on the meta device and
+asserts the built shape set equals the pinned set, and each model's total parameter count must
+land within 0.5% of its model card (llama 8,030,261,248; ministral 8,019,808,256; phi4
+3,836,021,760; gemma3 4,300,079,472). A transcription error would have to be made identically in
+two places to survive. The gated configs were themselves checked against the NousResearch and
+unsloth mirrors, which agree exactly on every field used.
+
+The suite was green before any of this, which is the point: **none of the three defects was
+covered.**
+
+**1. The budget was blind to group zero-padding.** `allocate.budget.module_stored_bits` priced the
+payload as `params * bits` while the packer stores `rows * padded_in_features * bits` —
+`padded_in_features` zero-fills the tail group *before* quantization and those pad values are
+packed like any other. Undercount measured at real shapes: **1.1%** for Gemma-3's vision `fc2`
+(4304 → 4352) and **4.8× (2-bit) to 7.3× (8-bit)** for its `patch_embedding`, whose
+`[1152, 3, 14, 14]` folds to 48384 rows of 14 columns and pads to 128. The plan's own P4 gate
+requires the manifest number to be the on-disk number; a budget that targets a size the writer
+cannot hit fails it silently, and only at the shapes we had never tested.
+
+Fixed by adding `quant.pack.stored_bits()` — the arithmetic counterpart of `QuantTensor.nbytes`,
+for callers that must price a tensor before quantizing it — and routing `module_stored_bits`
+through it. Both sides now resolve through `row_geometry`, so **a disagreement is not
+expressible**, the same argument `RowGeometry`'s docstring already records for the encoder and
+the validator. A test asserts predicted == actual *exactly* (`abs=0.0`) at all 40 shapes × 4
+widths. Resulting bpw: 2.250/3.250/4.250/8.250 for the ordinary shapes, 2.275/3.286/4.297/8.342
+for `fc2`, 20.571/29.714/38.857/75.429 for `patch_embedding`.
+
+**2. Nothing stopped us quantizing a tensor that costs more than leaving it dense.** That last row
+of numbers is the defect: at group 128 a row costs one padded group — 128·2 payload bits plus an
+fp16 scale and offset, so **288 bits no matter how few columns it holds** — against `16 ·
+in_features` for fp16. They cross at 18 columns; 19 make quantizing cheaper. `patch_embedding`
+has 14, so every width on offer is worse than not quantizing, and the *narrowest* is the worst
+by 1.3×.
+
+`UNQUANTIZED_FLOOR = 16` exists for exactly this case but was keyed on `ModuleRole.LIN_ATTN_CONV`
+and `ModuleRole.SSM_CONV` — **a role cannot see a shape**, and a short trailing dimension is a
+property of the tensor. Every architecture grows its own; Gemma-3's is a patch embedding, and it
+is only the first one we happened to look at. Fixed with `ModuleInfo.pays_for_itself`, wired into
+`is_quantizable`, so the module is reported unquantized, lands in `Budget.fixed_bits` at compute
+dtype, and never reaches the knapsack. The threshold is asserted at exactly 18/19. Every other
+real phase-3 width clears it; the next-narrowest, 1152, clears it by 6×.
+
+**3. The test oracle over-predicted on padded shapes**, by `sqrt(padded / in_features)`.
+`_oracle.expected_rel_fro` reasoned that padded positions are exact zeros which dilute the mean —
+they do not: the reported error is a ratio and the pad cancels out of numerator and denominator
+together. Removed, and the group mean is now weighted by *real* element counts so a tail group
+holding 14 of 128 counts for 14.
+
+This one had been sitting there in the green. At the only padded shapes previously under test —
+100-of-128 and 320-of-384 — the spurious factor is 1.13× and 1.10×, inside the ±25% band and
+pointing opposite to the known `_UNIFORM_ERROR_EFFICIENCY = 0.90` bias. **Two errors cancelling is
+the failure mode a test oracle exists to prevent.** It took 14-of-128, where the factor is 3.02×
+and the prediction misses by two thirds, to make it visible.
+
+#### Also verified at full scale
+
+Phi-4-mini's fused row partitions land on real boundaries (`qkv_proj` → Q 0:3072, K 3072:4096,
+V 4096:5120 — GQA 24:8, not an even third; `gate_up_proj` → GATE 0:8192, UP 8192:16384) and its
+tied `lm_head` resolves to `model.embed_tokens` with `floor_bits == 8`. Rows are independent under
+group-wise packing — groups run along `in_features` and every row carries its own scales — which
+is what licenses probing a 262208-row embedding with 6 rows; it is now asserted rather than
+assumed, by packing 37 rows and comparing three ragged slices against the full pack.
 
 ### G3 — Three of the five evals do not exist
 

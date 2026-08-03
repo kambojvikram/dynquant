@@ -67,6 +67,7 @@ __all__ = [
     "pack_nbit",
     "padded_in_features",
     "row_geometry",
+    "stored_bits",
     "unpack_nbit",
     "words_per_group",
     "words_per_row",
@@ -224,6 +225,37 @@ def row_geometry(bits: int, group_size: int, in_features: int) -> RowGeometry:
         num_groups=padded // group_size,
         words_per_group=words_per_group(bits, group_size),
     )
+
+
+def stored_bits(
+    rows: int,
+    in_features: int,
+    bits: int,
+    *,
+    group_size: int,
+    symmetric: bool = False,
+    metadata_bits: int = 16,
+) -> int:
+    """Bits a packed tensor of ``rows x in_features`` actually occupies.
+
+    The arithmetic counterpart of :attr:`~dynquant.quant.tensor.QuantTensor.nbytes`,
+    for callers that must price a tensor before quantizing it -- the allocator, which
+    compares widths it will never all materialise. The two must agree exactly, and a
+    test asserts they do at every real phase-3 shape.
+
+    Counting ``rows * in_features * bits`` instead is wrong wherever ``in_features``
+    is not a whole number of groups, because :func:`padded_in_features` zero-fills
+    the tail group *before* quantization and those pad values are packed like any
+    other. The undercount is 1.1% for Gemma-3's vision ``fc2`` (4304 -> 4352) and
+    4.8x for its ``patch_embedding``, whose ``[1152, 3, 14, 14]`` folds to 14 columns
+    and pads to 128. A budget built on the smaller number targets a size the writer
+    cannot hit.
+    """
+    if rows <= 0 or in_features <= 0:
+        return 0
+    geo = row_geometry(bits, group_size, in_features)
+    terms = 1 if symmetric else 2  # a scale, plus an offset when asymmetric
+    return rows * (geo.words_per_row * _WORD_BITS + geo.num_groups * metadata_bits * terms)
 
 
 # --------------------------------------------------------------------------

@@ -41,6 +41,8 @@ from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any
 
 from dynquant._logging import get_logger
+from dynquant.constants import BIT_OPTIONS, DEFAULT_GROUP_SIZE
+from dynquant.quant.pack import stored_bits
 
 from .experts import IN_OUT, OUT_IN, bank_orientation, batched_expert_params
 from .naming import canonical_name
@@ -120,8 +122,47 @@ class ModuleInfo:
         return floor
 
     @property
+    def pays_for_itself(self) -> bool:
+        """Whether quantizing this tensor is cheaper than storing it dense.
+
+        Usually so obvious it need not be asked, and for one shape in the phase-3
+        set it is false. Gemma-3's ``vision_tower...patch_embedding`` has shape
+        ``[1152, 3, 14, 14]``, which folds to 48384 rows of **14** columns; a group
+        of 128 pads that row by 9.1x and then charges a scale and an offset on top.
+        Measured through :class:`~dynquant.quant.tensor.QuantTensor`: 20.6 bits per
+        weight at 2-bit, 38.9 at 4-bit, 75.4 at 8-bit -- against 16 for leaving it
+        alone. Every width is worse than fp16, and the wide ones are worse by more,
+        so no amount of budget pressure makes quantizing it the right move.
+
+        :data:`~dynquant.graph.roles.UNQUANTIZED_FLOOR` already exists for exactly
+        this failure ("a depthwise conv1d with a handful of taps per channel stores
+        one fp16 scale per 4 values"), but it is keyed on *role*, and a role cannot
+        see a shape. A short trailing dimension is a property of the tensor, and
+        every architecture grows its own: this one is a patch embedding, the next
+        will be something else.
+
+        Priced at :data:`~dynquant.constants.DEFAULT_GROUP_SIZE` and at the
+        narrowest width on offer, which is the same "under the default policy"
+        scope :attr:`floor_bits` carries. A policy with a smaller group would pad
+        less and could make some of these worth quantizing again; leaving them
+        dense then costs a few unnecessary bits on a tiny tensor, which is the
+        direction to be wrong in.
+        """
+        if len(self.shape) < 2:  # pragma: no cover -- rank-1 tensors have no role
+            return True
+        columns = self.shape[-1]
+        if columns <= 0:  # pragma: no cover -- an empty weight
+            return True
+        cheapest = stored_bits(1, columns, min(BIT_OPTIONS), group_size=DEFAULT_GROUP_SIZE)
+        return cheapest < columns * UNQUANTIZED_FLOOR
+
+    @property
     def is_quantizable(self) -> bool:
-        return self.role.is_quantizable and self.floor_bits < UNQUANTIZED_FLOOR
+        return (
+            self.role.is_quantizable
+            and self.floor_bits < UNQUANTIZED_FLOOR
+            and self.pays_for_itself
+        )
 
 
 @dataclass(frozen=True, slots=True)

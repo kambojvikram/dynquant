@@ -13,13 +13,13 @@ offsets, and the tensors that stay at compute dtype.
 
 from __future__ import annotations
 
-import math
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from dynquant.constants import DEFAULT_GROUP_SIZE, PER_ROW_GROUP_SIZE
+from dynquant.constants import DEFAULT_GROUP_SIZE
 from dynquant.graph.roles import UNQUANTIZED_FLOOR
+from dynquant.quant.pack import stored_bits
 
 if TYPE_CHECKING:
     from dynquant.graph.classify import ModelGraph, ModuleInfo
@@ -58,6 +58,11 @@ def module_stored_bits(
 
     ``bits == UNQUANTIZED_FLOOR`` means the tensor is not quantized at all and is
     stored at compute dtype -- no groups, no scales, just the weights.
+
+    Delegates the geometry to :func:`~dynquant.quant.pack.stored_bits` rather than
+    recomputing it, because this function and the packer disagreeing is not a
+    theoretical risk: it computed ``params * bits`` for the payload, which silently
+    drops the zero-padded tail group that the packer does store.
     """
     params = info.num_params
     if bits >= UNQUANTIZED_FLOOR:
@@ -69,16 +74,16 @@ def module_stored_bits(
 
     columns = shape[-1]
     rows = params // columns if columns else params
-
-    if group_size == PER_ROW_GROUP_SIZE:
-        groups_per_row = 1
-    else:
-        groups_per_row = max(1, math.ceil(columns / group_size))
-
-    payload = float(params * bits)
-    terms = 1 if symmetric else 2  # scale, plus an offset when asymmetric
-    overhead = float(rows * groups_per_row * metadata_bits * terms)
-    return payload + overhead
+    return float(
+        stored_bits(
+            rows,
+            columns,
+            bits,
+            group_size=group_size,
+            symmetric=symmetric,
+            metadata_bits=metadata_bits,
+        )
+    )
 
 
 @dataclass(frozen=True, slots=True)

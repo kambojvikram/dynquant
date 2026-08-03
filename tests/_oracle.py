@@ -39,10 +39,20 @@ def expected_rel_fro(weight, bits: int, group_size: int) -> float:
 
     Works for any distribution and any group size, because the group ranges are
     measured rather than assumed.
+
+    **Padding weights the tail group down, it does not scale the answer up.** This
+    function used to finish with ``err_rms *= sqrt(padded / in_features)``, on the
+    reasoning that padded positions are exact zeros which dilute the mean. They do
+    not: the reported error is a ratio, and the pad drops out of the numerator and
+    the denominator together. The factor was invisible while the only padded shapes
+    under test were 100-of-128 and 320-of-384, where a 13% and a 10% inflation sat
+    inside a 25% band pointing the opposite way from
+    :data:`_UNIFORM_ERROR_EFFICIENCY`. Gemma-3's ``patch_embedding`` is 14 of 128,
+    where the same factor is 3.02x and the prediction misses by two thirds. Two
+    errors cancelling is exactly what this module exists to avoid.
     """
     import torch
 
-    original_numel = weight.numel()
     w = weight.reshape(-1, weight.shape[-1]).to(torch.float32)
     in_features = w.shape[-1]
     effective_group = in_features if group_size == -1 else group_size
@@ -61,13 +71,15 @@ def expected_rel_fro(weight, bits: int, group_size: int) -> float:
     hi = groups.amax(dim=-1)
     step = (hi - lo) / (2**bits - 1)
 
-    mean_sq = (step.pow(2) / 12.0).mean().item()
-    err_rms = math.sqrt(mean_sq) * _UNIFORM_ERROR_EFFICIENCY
-
-    # Padded positions are exact zeros, so they dilute the mean; scale back to
-    # the true element count.
+    # Averaged over *real* elements, so a tail group holding 14 values of 128
+    # counts for 14 and not for a whole group. Without the weighting a short tail
+    # would pull the mean toward its own step, which for `patch_embedding` -- one
+    # group per row, 14 real values in it -- is the entire answer.
+    counts = torch.full((groups.shape[1],), float(effective_group))
     if pad:
-        err_rms *= math.sqrt(groups.numel() / original_numel)
+        counts[-1] = effective_group - pad
+    mean_sq = ((step.pow(2) / 12.0) * counts).sum().item() / (w.shape[0] * counts.sum().item())
+    err_rms = math.sqrt(mean_sq) * _UNIFORM_ERROR_EFFICIENCY
 
     w_rms = weight.to(torch.float32).pow(2).mean().sqrt().item()
     return err_rms / w_rms

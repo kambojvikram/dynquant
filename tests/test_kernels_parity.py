@@ -55,6 +55,16 @@ GEOMETRIES = [
     (16, 128, 32),  # smallest legal group
     (48, 100, PER_ROW_GROUP_SIZE),  # per-row, ragged tail, in_features % 32 != 0
     (7, 4, PER_ROW_GROUP_SIZE),  # Mamba conv1d: fewer values than a 3-bit block
+    # Reduction widths taken from the phase-3 evaluation set, because every case
+    # above was chosen for its layout and none of them is a number any shipping
+    # checkpoint contains. `in_features` is real; the row counts are not, and are
+    # deliberately small and ragged -- rows are independent under group-wise
+    # packing (asserted in test_quant_phase3_shapes.py), so a row count buys
+    # tail-warp coverage rather than fidelity, and 1152x4304 would buy neither at
+    # forty times the runtime.
+    (72, 4304, 128),  # Gemma-3 vision fc2: the only real width that pads (->4352)
+    (80, 2048, 128),  # Gemma-3 o_proj: heads*head_dim, not hidden_size
+    (65, 3072, 128),  # Phi-4-mini's fused qkv_proj / gate_up_proj
 ]
 
 DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
