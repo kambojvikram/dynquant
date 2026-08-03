@@ -30,6 +30,14 @@ the candidates that were rejected and why.
 :mod:`dynquant.eval.harness` is the batched greedy decode loop shared by every task,
 which is what makes "the same decode at every measurement point" structural rather
 than a thing each task has to remember.
+
+:mod:`dynquant.eval.ifeval` breaks the few-shot convention, deliberately. Its prompts
+are zero-shot instructions addressed to an assistant, so it renders them through the
+model's chat template instead; a fixed prefix would be measuring the wrong thing, since
+the constraint under test *is* the prompt. The rest of the discipline is unchanged --
+greedy decode, a parameterless scorer, per-item hits -- and the two things a template
+introduces that a few-shot prefix does not (a second BOS token, and a base model with
+no template at all) are handled explicitly rather than left to chance.
 """
 
 from __future__ import annotations
@@ -42,21 +50,25 @@ if TYPE_CHECKING:
     from .compare import PairedComparison, compare_paired, mcnemar_exact
     from .gsm8k import Gsm8kResult, evaluate_gsm8k, load_gsm8k
     from .harness import EvalConfig, generate_batched
+    from .ifeval import IfevalResult, evaluate_ifeval, load_ifeval
 
 __all__ = [
     "Banking77Result",
     "CaseholdResult",
     "EvalConfig",
     "Gsm8kResult",
+    "IfevalResult",
     "PairedComparison",
     "compare_paired",
     "evaluate_banking77",
     "evaluate_casehold",
     "evaluate_gsm8k",
+    "evaluate_ifeval",
     "generate_batched",
     "load_banking77",
     "load_casehold",
     "load_gsm8k",
+    "load_ifeval",
     "mcnemar_exact",
 ]
 
@@ -70,6 +82,9 @@ _LAZY = {
     "Gsm8kResult": "gsm8k",
     "evaluate_gsm8k": "gsm8k",
     "load_gsm8k": "gsm8k",
+    "IfevalResult": "ifeval",
+    "evaluate_ifeval": "ifeval",
+    "load_ifeval": "ifeval",
     "EvalConfig": "harness",
     "generate_batched": "harness",
     "PairedComparison": "compare",

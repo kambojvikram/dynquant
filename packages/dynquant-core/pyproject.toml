@@ -51,6 +51,10 @@ eval = [
     "dynquant-core[hf]",
     "lm-eval>=0.4.4",
     "datasets>=2.20",
+    # Three of IFEval's 25 instruction types are "answer in French" and its
+    # relatives, which cannot be scored without language identification. Absent it,
+    # dynquant.eval.ifeval refuses to produce a number rather than guessing.
+    "langdetect>=1.0.9",
 ]
 triton = ["triton>=3.0; platform_system=='Linux'"]
 dev = [

@@ -60,6 +60,17 @@ class EvalConfig:
     """Score only the first N examples. For smoke runs; a real number needs the
     whole set, and the reported result says which was used."""
 
+    add_special_tokens: bool = True
+    """Let the tokenizer prepend its own BOS.
+
+    Must be ``False`` for a prompt built by ``apply_chat_template``, because the
+    template already emits the BOS token itself. Leaving it on gives Llama-3 and
+    Gemma-3 prompts *two* leading BOS tokens, which no error reports and which costs a
+    few points of instruction-following -- exactly the size of effect this package
+    exists to measure, arriving from the harness instead of from the weights.
+
+    A few-shot prompt is raw text with no template, so it wants the default."""
+
     early_stop: bool = True
     """Stop a sequence once it has emitted a stop string, instead of decoding to
     ``max_new_tokens`` and discarding the tail.
@@ -121,13 +132,16 @@ def generate_batched(
                 padding=True,
                 truncation=True,
                 max_length=config.max_prompt_tokens,
+                add_special_tokens=config.add_special_tokens,
             ).to(device)
             if batch["input_ids"].shape[1] >= config.max_prompt_tokens:
                 # Only pay for the exact count on batches that could have lost
                 # something -- the sort puts those first, so this is rare.
                 truncated += sum(
                     len(ids) > config.max_prompt_tokens
-                    for ids in tokenizer(raw, truncation=False)["input_ids"]
+                    for ids in tokenizer(
+                        raw, truncation=False, add_special_tokens=config.add_special_tokens
+                    )["input_ids"]
                 )
 
             generated = model.generate(

@@ -46,7 +46,7 @@ it never saw.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from dynquant._logging import get_logger
@@ -226,14 +226,10 @@ def evaluate_casehold(
         max_new_tokens=8, stop_sequences=(FEWSHOT_STOP,), max_prompt_tokens=4096
     )
     if FEWSHOT_STOP not in config.stop_sequences:
-        config = EvalConfig(
-            max_new_tokens=config.max_new_tokens,
-            batch_size=config.batch_size,
-            stop_sequences=(*config.stop_sequences, FEWSHOT_STOP),
-            max_prompt_tokens=config.max_prompt_tokens,
-            limit=config.limit,
-            early_stop=config.early_stop,
-        )
+        # `replace`, not a field-by-field rebuild: a rebuild silently reverts any
+        # field it forgets to list, and the fields it is most likely to forget are
+        # the ones added after it was written.
+        config = replace(config, stop_sequences=(*config.stop_sequences, FEWSHOT_STOP))
 
     subset = list(examples[: config.limit] if config.limit else examples)
     prompts = [build_prompt(example, shots) for example in subset]

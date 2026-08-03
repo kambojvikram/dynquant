@@ -166,8 +166,8 @@ So GSM8K is free; **IFEval, HumanEval and MBPP have to be written**, and the jud
 
 Order by value per unit of work:
 
-1. **IFEval** — programmatically verifiable, no judge, no execution sandbox, and it measures the
-   thing SFT actually changes. Write this first.
+1. **IFEval** ✅ **done 2026-08-03** — programmatically verifiable, no judge, no execution
+   sandbox, and it measures the thing SFT actually changes. Written first.
 2. **HumanEval + MBPP** — execution-based pass@1. Needs a sandboxed subprocess runner with a
    timeout; the harness does not have one. Non-trivial but bounded.
 3. **MT-Bench / AlpacaEval 2** — see §5. Not on the critical path.
@@ -176,6 +176,61 @@ Hard requirement on all of them: **store per-item outcomes**. Every task must em
 so every A/B is an exact McNemar test rather than two independent proportions. This is what
 halved the standard error in phase 2, and it is what refused to promote a +0.51 that looked like
 a win.
+
+#### G3a — IFEval ✅ **done 2026-08-03**
+
+`eval/_ifeval_instructions.py` (the 25 verifiers, ported literally from
+`google-research/instruction_following_eval`) and `eval/ifeval.py` (prompting, decode, and all
+four official metrics), with `tests/test_eval_ifeval.py` — 51 tests, 9 of them verified to go red
+when their fix is reverted. Suite 1138 → **1189 passed, 13 skipped**; ruff clean.
+
+**IFEval has no gold answers.** A response is correct iff a Python function says so, which makes
+the scorer the benchmark. That framing is what turned up the four defect classes below; each
+would have produced a *number*, not an error.
+
+**1. Double BOS on every chat-templated prompt.** `apply_chat_template` emits BOS, and the
+tokenizer's `add_special_tokens=True` emits a second. Llama-3 and Gemma-3 prompts would have
+carried two. It reports nothing, costs a few points of instruction following, and is **the same
+magnitude as the effect the campaign exists to measure** — arriving from the harness instead of
+from the weights. Fixed structurally: `EvalConfig.add_special_tokens`, threaded through both
+tokenizer calls in `generate_batched`, defaulting off in `ifeval.DEFAULT_CONFIG` and force-overridden
+(with a warning) whenever a tokenizer carries a chat template. Guarded by a spy test on the
+config the decode loop actually receives.
+
+**2. Three of the 25 instruction types cannot be scored without `langdetect`** — `language:response_language`
+and the two `change_case:english_*` rules. This is not an approximation but an absence, and both
+available guesses produce ordinary-looking results: counting them followed inflates, counting them
+violated deflates. `evaluate_ifeval` therefore refuses by default (`on_unverifiable="raise"`, with
+an actionable message) and under `"drop"` records exactly which prompt keys were dropped.
+`langdetect` is now in the `eval` extra.
+
+**3. Scorer drift between machines.** NLTK present on one box and absent on another silently
+changes sentence-splitting rules — same code, same checkpoint, different number. Every result now
+carries `scorer_fingerprint()` (e.g. `ifeval/regex-sentences+regex-words+langdetect`). Worth being
+precise about the exposure: the *paired difference* every claim rests on is immune, because a
+splitter that miscounts "Dr. Smith arrived." miscounts it identically for both arms; it is the
+absolute number that stops being leaderboard-comparable. And `length_constraints:number_words`,
+the commonest constraint, is bit-identical either way — upstream's `RegexpTokenizer(r"\w+")` *is*
+`re.findall(r"\w+", …)`.
+
+**4. `EvalConfig` was being rebuilt field-by-field in three task modules.** Adding the few-shot
+stop sequence meant re-listing every field, so the rebuild silently reverted any field it forgot —
+and the fields it forgets are the ones added after it was written. Already live: `gsm8k`'s copy
+omitted `early_stop`, so a caller passing `early_stop=False` got `True`. All three now use
+`dataclasses.replace`. Found only because `add_special_tokens` was the next field to be forgotten.
+
+Ported infidelities are preserved deliberately, since fixing them would produce numbers that are
+not IFEval numbers: `keywords:existence` matches inside words while `keywords:forbidden_words`
+does not; `number_paragraphs` tolerates an empty run at either end but not an interior one;
+`nth_paragraph_first_word` counts non-blank paragraphs but indexes the unfiltered list. Each has
+a test that pins it.
+
+Two structural choices worth carrying to the remaining evals. **Every checker is built before a
+single token is generated** — a malformed kwarg or an uncompilable dataset-interpolated regex
+costs two seconds, not a full GPU generation pass (also spy-tested). And per-item vectors are
+stored at **two** granularities, `hits` per prompt and `instruction_hits` per constraint, because
+prompt-level strict and instruction-level loose run ~10 points apart and a single "IFEval" number
+does not say which one it is. All four official metrics are reported.
 
 ### G4 — Evaluate through vLLM, and prove it first
 
