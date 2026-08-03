@@ -168,8 +168,8 @@ Order by value per unit of work:
 
 1. **IFEval** ✅ **done 2026-08-03** — programmatically verifiable, no judge, no execution
    sandbox, and it measures the thing SFT actually changes. Written first.
-2. **HumanEval + MBPP** — execution-based pass@1. Needs a sandboxed subprocess runner with a
-   timeout; the harness does not have one. Non-trivial but bounded.
+2. **HumanEval + MBPP** ✅ **done 2026-08-03** — execution-based pass@1. Needs a sandboxed
+   subprocess runner with a timeout; the harness does not have one. Non-trivial but bounded.
 3. **MT-Bench / AlpacaEval 2** — see §5. Not on the critical path.
 
 Hard requirement on all of them: **store per-item outcomes**. Every task must emit a `hits` array
@@ -231,6 +231,82 @@ costs two seconds, not a full GPU generation pass (also spy-tested). And per-ite
 stored at **two** granularities, `hits` per prompt and `instruction_hits` per constraint, because
 prompt-level strict and instruction-level loose run ~10 points apart and a single "IFEval" number
 does not say which one it is. All four official metrics are reported.
+
+#### G3b — HumanEval + MBPP ✅ **done 2026-08-03**
+
+`eval/_code_exec.py` (the sandbox, the extractor, and the shared tally), `eval/humaneval.py` and
+`eval/mbpp.py`, with `tests/test_eval_code.py` — 41 tests, **all 16 mutations verified to turn
+their test red**. Suite 1189 → **1229 passed, 14 skipped**; ruff clean. Subprocesses are real in
+the tests; only generation is stubbed.
+
+**These are the only two tasks whose scorer cannot be argued with** — the output is executed and
+either passes the assertions or does not. The cost is that the *sandbox* now sits in the
+measurement path, and a sandbox's failures produce numbers rather than errors. Six defect classes,
+each closed structurally and each with a test:
+
+**1. `exit(0)` reads as a pass.** A candidate calling `sys.exit(0)` or `os._exit(0)` before its
+assertions run leaves a zero exit code, and a harness that trusts the exit code scores it correct.
+Not hypothetical: models emit `if __name__ == "__main__": sys.exit(main())` unprompted. Closed by
+requiring a **sentinel file** alongside the zero exit — written from a guard script's namespace
+after `runpy.run_path` returns normally, which `sys.exit(0)` cannot reach (SystemExit propagates
+out as non-zero) and `os._exit(0)` never arrives at. The candidate never sees the guard.
+
+**2. A timeout is a property of the machine, not only of the model.** A 5.9 s solution passes
+alone and fails under eight-way contention, so the pass rate becomes a function of how busy the
+box was — indistinguishable, in the results table, from quantization damage. Every timeout is
+**re-run once serially** before it is counted, and `sandbox_fingerprint()`
+(`exec/linux/py3.11/rlimits/t=8s/m=4096MB`) records the bounds, the platform and the interpreter,
+because a solution using `itertools.batched` passes on one minor version and fails on another.
+
+**3. Environment leakage.** The parent process is a fine-tuning run: it holds the HF token, the
+W&B key and the CUDA configuration. None of that belongs in a process executing text a model
+wrote. The child environment is an **allow-list**, plus `PYTHONHASHSEED=0` (a solution whose
+output depends on set iteration order would otherwise flip between runs and read as quantization
+noise) and four `*_NUM_THREADS=1` caps, since a candidate importing numpy inside eight concurrent
+workers otherwise starts eight thread pools and the box spends the evaluation context-switching.
+
+**4. Unbounded child output, and `input()` burning the timeout.** stdout to `DEVNULL`, stderr to a
+file read **from the end** at 2 KB — a candidate printing in a loop would otherwise fill the
+parent's pipe buffer and deadlock the run it was supposed to score. `stdin=DEVNULL` so a candidate
+calling `input()` raises `EOFError` immediately instead of being scored as an infinite loop.
+
+**5. An instruct checkpoint scored under the completion framing.** The largest artefact available
+on this benchmark, and all four phase-3 models are instruct checkpoints. Concatenating prompt and
+generation appends "Sure! Here's the function:" to a function signature; every problem then fails
+for a syntax error and the arm reads as catastrophically damaged, with nothing in the output
+saying the harness did it. `style="auto"` follows `tokenizer.chat_template`, and the framing
+actually used is recorded on the result, because two arms prompted differently are not comparable
+and the pass rates alone do not say so.
+
+**6. A truncated fence must still parse.** `max_new_tokens` can cut a block mid-way. A regex
+requiring the closing fence finds nothing and scores a nearly complete answer as "produced no
+code" — and does so most often on the longest problems, exactly where a quantized model is already
+weakest, so the artefact points the same direction as the effect being measured. `\Z` is an
+accepted alternative to the close. Two smaller extraction rules matter for the same reason: the
+block that *defines the entry point* wins over the first block (models routinely open with a
+fenced restatement of the tests), and the prompt's imports are carried into a standalone block, or
+every HumanEval problem annotated `List[int]` dies with a `NameError` the model did not cause.
+
+MBPP is paired with HumanEval rather than replacing it: 164 problems cannot resolve a two-point
+difference, and MBPP's 500-problem test split roughly triples the sample with independently
+written problems. Its asserts are shown to the model because the task statement never names the
+function, and the entry point is recovered from those asserts by AST walk, skipping wrappers
+(`set`, `len`) and Attribute calls (`math.isclose`). Its prompt is deliberately **empty** at the
+extractor — MBPP asks for a whole function, so prepending the English statement would be a
+`SyntaxError` on every problem.
+
+Scoring is greedy pass@1, not the unbiased pass@k estimator: sampling turns a two-point effect
+into noise, and n=1 collapses the estimator to the mean while yielding the paired vector every
+claim rests on. **Execution is opt-in** — both entry points refuse until the caller passes
+`allow_execution=True`, because importing an evaluation module should never be enough to run code
+a language model wrote. The isolation is against *accidents*, not an adversary; the threat model
+is a model you fine-tuned yourself producing a wrong program.
+
+The POSIX-only paths cannot be exercised on the development box, and the campaign runs on Linux,
+so they were verified under WSL directly: `RLIMIT_AS` caps a 3 GiB allocation at `memory_mb=256`,
+`RLIMIT_FSIZE` kills a 200 MB write, and `killpg` reaps a detached grandchild that a timed-out
+candidate had spawned. On Windows there are no rlimits and the wall clock is the only bound, which
+is why the fingerprint says so.
 
 ### G4 — Evaluate through vLLM, and prove it first
 

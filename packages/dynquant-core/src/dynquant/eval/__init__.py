@@ -38,6 +38,14 @@ the constraint under test *is* the prompt. The rest of the discipline is unchang
 greedy decode, a parameterless scorer, per-item hits -- and the two things a template
 introduces that a few-shot prefix does not (a second BOS token, and a base model with
 no template at all) are handled explicitly rather than left to chance.
+
+:mod:`dynquant.eval.humaneval` and :mod:`dynquant.eval.mbpp` are the only tasks whose
+scorer cannot be argued with: the model's output is executed, and it either passes the
+assertions or it does not. That costs a sandbox, so **execution is opt-in** -- both
+refuse to run until the caller passes ``allow_execution=True``, because importing an
+evaluation module should never be enough to run code a language model wrote. What the
+subprocess isolation covers, and what it does not, is set out in
+:mod:`dynquant.eval._code_exec`.
 """
 
 from __future__ import annotations
@@ -45,16 +53,20 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from ._code_exec import CodeEvalResult
     from .banking77 import Banking77Result, evaluate_banking77, load_banking77
     from .casehold import CaseholdResult, evaluate_casehold, load_casehold
     from .compare import PairedComparison, compare_paired, mcnemar_exact
     from .gsm8k import Gsm8kResult, evaluate_gsm8k, load_gsm8k
     from .harness import EvalConfig, generate_batched
+    from .humaneval import evaluate_humaneval, load_humaneval
     from .ifeval import IfevalResult, evaluate_ifeval, load_ifeval
+    from .mbpp import evaluate_mbpp, load_mbpp
 
 __all__ = [
     "Banking77Result",
     "CaseholdResult",
+    "CodeEvalResult",
     "EvalConfig",
     "Gsm8kResult",
     "IfevalResult",
@@ -63,12 +75,16 @@ __all__ = [
     "evaluate_banking77",
     "evaluate_casehold",
     "evaluate_gsm8k",
+    "evaluate_humaneval",
     "evaluate_ifeval",
+    "evaluate_mbpp",
     "generate_batched",
     "load_banking77",
     "load_casehold",
     "load_gsm8k",
+    "load_humaneval",
     "load_ifeval",
+    "load_mbpp",
     "mcnemar_exact",
 ]
 
@@ -85,6 +101,11 @@ _LAZY = {
     "IfevalResult": "ifeval",
     "evaluate_ifeval": "ifeval",
     "load_ifeval": "ifeval",
+    "CodeEvalResult": "_code_exec",
+    "evaluate_humaneval": "humaneval",
+    "load_humaneval": "humaneval",
+    "evaluate_mbpp": "mbpp",
+    "load_mbpp": "mbpp",
     "EvalConfig": "harness",
     "generate_batched": "harness",
     "PairedComparison": "compare",
