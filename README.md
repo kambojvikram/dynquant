@@ -151,8 +151,9 @@ change shipped without its shuffled control cannot tell those two apart.
 adjacent pair separates — DynQuant's +0.45 over plain round-to-nearest is *p* = 0.17.
 Choosing widths earns its keep only once the budget is tight enough that the role
 floors stop being affordable and something actually has to be given up.
-[docs/reports/](docs/reports/) has both write-ups; `experiments/four_point/` has the
-arms, including the ones that lost.
+[docs/reports/README.md](docs/reports/README.md) indexes the whole experimental record —
+the two write-ups above, the transfer run, the serving-parity measurement, and the packed
+runtime; `experiments/four_point/` has the arms, including the ones that lost.
 
 ## Status
 
