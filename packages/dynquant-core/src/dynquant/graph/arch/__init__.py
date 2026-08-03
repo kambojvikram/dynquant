@@ -12,6 +12,6 @@ better, it is not a prerequisite for the model working.
 
 from __future__ import annotations
 
-from . import qwen_linear_attn
+from . import phi_fused, qwen_linear_attn
 
-__all__ = ["qwen_linear_attn"]
+__all__ = ["phi_fused", "qwen_linear_attn"]

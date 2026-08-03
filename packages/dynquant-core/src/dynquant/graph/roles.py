@@ -418,6 +418,20 @@ _LEAF_EXACT: dict[str, ModuleRole] = {
     "patch_embed": ModuleRole.VISION_PATCH_EMBED,
     "patch_embedding": ModuleRole.VISION_PATCH_EMBED,
     "proj_in": ModuleRole.VISION_PATCH_EMBED,
+    # Learned positional tables. Matched as whole leaves because the substring
+    # pass has nothing that would catch them: SigLIP's
+    # `embeddings.position_embedding` shares no fragment with `embed_tokens`, so
+    # without an entry here every Gemma-3 / SigLIP tower ships one module in
+    # OTHER. In a vision tower `_contextualise` lifts this to the patch
+    # embedding's floor, since the two tables are summed and share a fate.
+    "position_embedding": ModuleRole.EMBEDDING,
+    "position_embeddings": ModuleRole.EMBEDDING,
+    "wpe": ModuleRole.EMBEDDING,  # GPT-2
+    # `nn.MultiheadAttention` keeps its fused Q|K|V in one raw parameter rather
+    # than in child Linears. The substring pass would read `in_proj_weight` as
+    # Mamba's `in_proj` and put a QKV projection on the SSM floor -- close enough
+    # to look deliberate. Exact-leaf matching runs first, so this wins.
+    "in_proj_weight": ModuleRole.ATTN_QKV,
     # Norms whose leaf carries no "norm" substring the pattern list would catch.
     # `model.norm` -- the final norm in every Llama-family model -- is the one
     # that matters: unclassified it would land in OTHER and be quantized, and a
@@ -483,6 +497,12 @@ def _contextualise(
             return ModuleRole.VISION_ATTN
         if role.is_mlp:
             return ModuleRole.VISION_MLP
+        if role is ModuleRole.EMBEDDING:
+            # A positional table inside a vision tower is added directly to the
+            # patch embeddings, so it inherits their floor rather than the token
+            # embedding's. Text embeddings are unaffected: no text path carries a
+            # vision tag in its name.
+            return ModuleRole.VISION_PATCH_EMBED
         return role
     if is_shared:
         return _SHARED_REMAP.get(role, role)

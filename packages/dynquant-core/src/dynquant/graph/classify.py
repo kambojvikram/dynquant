@@ -295,6 +295,9 @@ def classify_model(
     skipped: dict[str, str] = {}
     seen_weights: dict[int, str] = {}
     tied: dict[str, list[str]] = {}
+    claimed: set[int] = set()
+    """Ids of every parameter some module accounted for, so the sweep below can
+    tell a genuinely unowned tensor from one already in the graph."""
 
     for raw_name, module in model.named_modules():
         weight = getattr(module, "weight", None)
@@ -305,7 +308,9 @@ def classify_model(
             found, refused = _expert_bank(raw_name, module, inner, overrides)
             modules.update(found)
             skipped.update(refused)
+            claimed.update(id(param) for _, param in batched_expert_params(module))
             continue
+        claimed.add(id(weight))
         name = canonical_name(raw_name)
         if not name or name in modules or name in skipped:
             continue
@@ -345,6 +350,19 @@ def classify_model(
             partitions=_partitions(ctx, role, plugin),
             tied_to=tied_to,
         )
+
+    unowned, refused = _unowned_parameters(model, claimed=claimed, overrides=overrides)
+    skipped.update({n: r for n, r in refused.items() if n not in modules})
+    for name, info, weight in unowned:
+        if name in modules or name in skipped:
+            continue
+        first = seen_weights.get(id(weight))
+        if first is None:
+            seen_weights[id(weight)] = name
+        else:
+            info = replace(info, tied_to=first)
+            tied.setdefault(first, [first]).append(name)
+        modules[name] = info
 
     # Push each follower's role onto its representative, now that every name is
     # known. Done as a second pass because a tie is only discoverable once both
@@ -492,6 +510,77 @@ def _expert_bank(
             source="override" if override is not None else "batched-expert",
         )
     return found, {}
+
+
+def _unowned_parameters(
+    model: nn.Module,
+    *,
+    claimed: set[int],
+    overrides: Mapping[str, str | ModuleRole],
+) -> tuple[list[tuple[str, ModuleInfo, Any]], dict[str, str]]:
+    """Pick up weight tensors that no module exposes as ``.weight``.
+
+    ``named_modules`` finds a tensor only if its owner spells it ``self.weight``.
+    Real architectures routinely do not:
+
+    * ``nn.MultiheadAttention`` keeps its fused Q|K|V in ``in_proj_weight``;
+    * Gemma-3's ``Gemma3MultiModalProjector`` holds the entire vision-to-text
+      bridge in a bare ``nn.Parameter`` called ``mm_input_projection_weight``.
+
+    Those tensors are on disk and in the parameter count whether or not the graph
+    knows about them, and a graph that omits them reports an average-bits figure
+    computed over a *subset* of the file -- the same class of error as
+    double-counting a tied embedding, in the opposite direction. On Gemma-3 the
+    omission is three tensors including the multimodal projector, which
+    :data:`DEFAULT_FLOOR_BITS` rates as one of the least compressible things in
+    the model.
+
+    Classification is by name only. There is no module to inspect, so structural
+    inference has nothing to read and a plugin has no ``ModuleContext`` to be
+    handed; the fallback is the honest option rather than a degraded one.
+
+    Returns:
+        ``(found, refused)`` -- found as ``(name, info, tensor)`` triples so the
+        caller can resolve ties by tensor identity, and refused as
+        ``{name: reason}``.
+    """
+    found: list[tuple[str, ModuleInfo, Any]] = []
+    refused: dict[str, str] = {}
+
+    for raw_name, param in model.named_parameters():
+        if id(param) in claimed:
+            continue
+        name = canonical_name(raw_name)
+        if not name:
+            continue
+        # Rank alone is the wrong test here. SigLIP's pooling `probe` is
+        # `[1, 1, hidden]`: three dimensions, but only one of them is real, so it
+        # is a vector wearing a matrix's shape. Grouped quantization would give it
+        # a single group and one scale per 128 values, which is all cost and no
+        # compression -- the same reasoning that keeps norms and biases out by
+        # rank, applied to a shape that would otherwise slip past.
+        if sum(1 for dim in param.shape if dim > 1) < 2:
+            refused[name] = f"{tuple(param.shape)} has fewer than two non-trivial dimensions"
+            continue
+
+        override = next(
+            (role for pattern, role in overrides.items() if fnmatchcase(name, pattern)), None
+        )
+        found.append(
+            (
+                name,
+                ModuleInfo(
+                    name=name,
+                    role=ModuleRole(override) if override is not None else role_of_name(name),
+                    module_type="Parameter",
+                    shape=tuple(param.shape),
+                    num_params=param.numel(),
+                    source="override" if override is not None else "parameter",
+                ),
+                param,
+            )
+        )
+    return found, refused
 
 
 def _partitions(ctx: ModuleContext, role: ModuleRole, plugin: Any) -> tuple[RowPartition, ...]:
