@@ -45,7 +45,7 @@ def _decode(prompts, *, reply="3", **config_kwargs):
     tokenizer = StubTokenizer()
     model = StubModel(tokenizer, reply)
     config = EvalConfig(early_stop=False, **config_kwargs)
-    return tokenizer, generate_batched(model, tokenizer, prompts, config)
+    return model, generate_batched(model, tokenizer, prompts, config)
 
 
 # --------------------------------------------------------------------------
@@ -60,16 +60,35 @@ def test_an_overlong_prompt_keeps_its_tail_not_its_head() -> None:
     trailing cue sit at the back. Cutting from the right removes the cue.
     """
     prompt = "exemplar filler filler filler QUESTION options Answer:"
-    tokenizer, _ = _decode([prompt], max_prompt_tokens=3)
+    model, _ = _decode([prompt], max_prompt_tokens=3)
 
-    assert tokenizer.fed == [["QUESTION", "options", "Answer:"]]
-    assert "exemplar" not in tokenizer.fed[0]
+    assert model.fed == [["QUESTION", "options", "Answer:"]]
+    assert "exemplar" not in model.fed[0]
+
+
+def test_truncation_ignores_the_tokenizers_own_setting() -> None:
+    """A tokenizer shared with a training pipeline arrives set to whatever it wanted.
+
+    The harness slices rather than asking the tokenizer to truncate, so a caller's
+    ``truncation_side="right"`` cannot quietly remove the trailing cue from every
+    prompt in an evaluation.
+
+    Turns red when: ``encode_prompts`` delegates truncation to the tokenizer again.
+    """
+    tokenizer = StubTokenizer()
+    tokenizer.truncation_side = "right"
+    model = StubModel(tokenizer, "3")
+
+    prompt = "exemplar filler filler filler QUESTION options Answer:"
+    generate_batched(model, tokenizer, [prompt], EvalConfig(early_stop=False, max_prompt_tokens=3))
+
+    assert model.fed == [["QUESTION", "options", "Answer:"]]
 
 
 def test_a_prompt_that_fits_is_not_touched() -> None:
     prompt = "short question Answer:"
-    tokenizer, _ = _decode([prompt], max_prompt_tokens=64)
-    assert tokenizer.fed == [["short", "question", "Answer:"]]
+    model, _ = _decode([prompt], max_prompt_tokens=64)
+    assert model.fed == [["short", "question", "Answer:"]]
 
 
 def test_truncation_is_reported_with_a_count(propagating_logs, caplog) -> None:
@@ -92,12 +111,14 @@ def test_no_warning_when_nothing_was_truncated(propagating_logs, caplog) -> None
     assert "max_prompt_tokens" not in caplog.text
 
 
-def test_the_tokenizer_is_left_as_it_was_found() -> None:
-    """Both sides are mutated for the duration; a caller's tokenizer is not ours.
+def test_the_tokenizer_is_never_mutated_at_all() -> None:
+    """A caller's tokenizer is not ours to configure, even temporarily.
 
     A tokenizer left on ``truncation_side="left"`` would silently change how the
     *training* set is built if the same object is reused, which is exactly the kind
-    of cross-contamination that makes a fine-tune and its evaluation disagree.
+    of cross-contamination that makes a fine-tune and its evaluation disagree. The
+    harness used to set both sides and restore them in a ``finally``; it now sets
+    neither, which is the same guarantee without the window.
     """
     tokenizer = StubTokenizer()
     tokenizer.padding_side = "right"
@@ -110,7 +131,7 @@ def test_the_tokenizer_is_left_as_it_was_found() -> None:
     assert tokenizer.truncation_side == "right"
 
 
-def test_the_tokenizer_is_restored_even_when_generation_raises() -> None:
+def test_the_tokenizer_is_untouched_even_when_generation_raises() -> None:
     tokenizer = StubTokenizer()
     model = StubModel(tokenizer, "3")
 
@@ -153,8 +174,25 @@ def test_length_sorted_batching_returns_results_in_input_order() -> None:
 def test_the_longest_prompts_are_batched_first() -> None:
     """So an OOM happens in the first seconds rather than 40 minutes in."""
     prompts = ["tiny Answer:", "a b c d e f g h Answer:", "mid size Answer:"]
-    tokenizer, _ = _decode(prompts, batch_size=1)
-    assert tokenizer.fed[0][0] == "a", "the 9-word prompt must go first"
+    model, _ = _decode(prompts, batch_size=1)
+    assert model.fed[0][0] == "a", "the 9-word prompt must go first"
+
+
+def test_a_short_prompt_is_padded_on_the_left() -> None:
+    """The pads have to land before the prompt, not after it.
+
+    Right padding makes every sequence but the longest continue from pad tokens,
+    which comes back as fluent text and a score a few points low. The harness builds
+    the batch itself now, so this asserts the tensor it built rather than trusting
+    the tokenizer's ``padding_side``.
+
+    Turns red when: the pad prefix moves to a suffix in ``TransformersBackend``.
+    """
+    model, _ = _decode(["one Answer:", "a b c d Answer:"], batch_size=2)
+
+    short = next(row for row in model.fed if "one" in row)
+    assert short == ["", "", "", "one", "Answer:"], "pads first, then the prompt"
+    assert model.fed[0][0] != "", "the longest row in the batch has no padding at all"
 
 
 def test_an_empty_prompt_list_is_not_an_error() -> None:

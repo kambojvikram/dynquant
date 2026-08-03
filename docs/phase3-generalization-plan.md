@@ -380,7 +380,7 @@ so they were verified under WSL directly: `RLIMIT_AS` caps a 3 GiB allocation at
 candidate had spawned. On Windows there are no rlimits and the wall clock is the only bound, which
 is why the fingerprint says so.
 
-### G4 — Evaluate through vLLM, and prove it first
+### G4 — Evaluate through vLLM, and prove it first ✅ **code done 2026-08-03, gate awaits a GPU**
 
 Generative eval at this volume through `transformers` is prohibitive — this is the difference
 between a campaign that takes a week and one that takes a month. Serve every arm through vLLM,
@@ -392,6 +392,72 @@ whole thing into a second serving-parity test three orders of magnitude larger t
 through vLLM — must agree within the bound the
 [serving-parity report](reports/serving-parity.md) established. Precedent exists: Qwen3.5-2B at
 3.25 bits scored 86.96 % both ways, p = 1.0000.
+
+#### How it was built
+
+`eval/backends.py` (new, `VllmBackend`) and a rewritten `eval/harness.py`, with
+`tests/test_eval_backends.py` — 14 new tests plus 2 in `tests/test_eval_harness.py`, **all 10
+mutations verified to turn their test red**. Suite 1531 → **1547 passed, 14 skipped**; ruff
+clean. **No task file was touched.**
+
+That last point is the design. The alternative — a `generate=` injection point on every task's
+signature — lets a task be scorable through one path and not the other, and the two would drift.
+Instead `generate_batched` dispatches internally on `isinstance(model, EvalBackend)`, so every
+task's call site is unchanged and `test_a_task_cannot_tell_which_backend_it_was_given` runs
+`evaluate_casehold` through both engines and asserts identical `hits`.
+
+**The harness owns the tokenize/detokenize boundary; a backend's only job is prompt ids →
+continuation ids.** This is the same "one resolver means a disagreement is not expressible"
+move as `row_geometry` in G2. Every way two engines can quietly disagree about a *prompt*
+produces a score a few points off rather than an error, and none of them is expressible when
+there is one implementation of each:
+
+- **Ids, not strings, cross the boundary.** vLLM tokenizes with `add_special_tokens=True`, so
+  handing it a chat-templated *string* double-BOSes every Llama-3 and Gemma-3 prompt while the
+  `transformers` arm gets one. Worth a few points of instruction following, raises nothing, and
+  lands in the results table as a "runtime difference" — i.e. as the thing being measured.
+- **Truncation is a slice, not a tokenizer setting.** The harness no longer mutates
+  `padding_side` / `truncation_side` at all, where it previously set both and restored them in a
+  `finally`. A tokenizer shared with a training pipeline can no longer pick up an evaluation's
+  settings, and truncation no longer depends on what the caller had configured.
+- **`_in_request_order` sorts by `int(request_id)`.** `LLM.generate`'s request counter persists
+  across calls, so a second call's ids start mid-stream rather than at zero. The mutation pass
+  is what showed this matters: the plausible-looking rule — check for a permutation of
+  `range(n)`, else leave the order alone — **passes** the out-of-order test and is caught only by
+  the non-zero-start one. It would sort correctly on the first task of a run and silently stop
+  on every task after it.
+- **`_assert_aligned` compares the echoed `prompt_token_ids`, not their length.** Weakening it
+  to a length check also survives the misalignment test unless the fake sends a same-length
+  wrong prompt, which is why it does.
+
+Two scope calls, both stated in the code rather than left implicit. **Offline `vllm.LLM`, not an
+HTTP server**: same scheduler, same paged attention, same kernels, but an OpenAI-compatible
+endpoint adds a process boundary and a *server-side* detokenization step, which gives away the
+"only the engine differs" guarantee. And **`EvalConfig.batch_size` is a `transformers`-path knob
+that `VllmBackend` ignores** — throttling continuous batching to 32-request waves gives back most
+of why the engine was chosen — documented on both classes rather than silently dropped.
+
+#### The gate itself
+
+`scripts/gate_runtime_parity.py` scores one checkpoint twice on one task — once through
+`AutoModelForCausalLM`, once through `VllmBackend.from_pretrained` — and runs `compare_paired`
+over the two hit vectors. It needs a GPU with vLLM installed, so it is a campaign-time gate, not
+a CI one; the unit tests fake the engine at its documented surface, and that fake is a claim
+about vLLM's API which a vLLM release can invalidate without turning a single test red.
+
+**The pass condition is equivalence, not agreement.** Identical generations is the wrong bar and
+the serving-parity report already measured why: on fp16 the two runtimes share only 9 of 32
+greedy tokens on some prompts, because ties near a decision boundary break differently under
+different kernel orders, while top-1 agreement stays at 100 %. So the gate requires the paired
+95 % interval on the score difference to lie entirely inside `--max-delta` (default 1.0 point).
+One condition, two jobs: an interval wider than the bound fails whether the arms really differ
+or whether too few problems were scored to tell, and the failure message distinguishes them —
+a gate that accepted "not significantly different" on 40 examples would pass anything.
+
+Two further checks, because passing is not the same as measuring. Both arms must beat the task's
+chance floor, since two equally destroyed arms agree perfectly. And the `transformers` model
+must actually leave the GPU before the engine is built — vLLM sizes its KV cache from what is
+free at construction, so a lingering reference is either an OOM or a quietly smaller cache.
 
 ---
 

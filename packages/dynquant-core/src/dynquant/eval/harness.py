@@ -1,6 +1,6 @@
 """Batched greedy generation, shared by every task.
 
-Nothing here is task-specific: it takes prompts, returns continuations. The two
+Nothing here is task-specific: it takes prompts, returns continuations. The three
 decisions that matter for measurement validity live here rather than in the task,
 so no task can accidentally make itself incomparable.
 
@@ -25,12 +25,28 @@ produces a plausible number, and nothing in the output says why it is low.
 bounded by the spread within it rather than by the longest prompt in the dataset.
 Results are restored to input order before returning, so this is invisible to the
 caller and cannot change any score.
+
+**One encoder and one decoder, whatever produces the tokens.** A task hands
+:func:`generate_batched` either a ``transformers`` model or an :class:`EvalBackend`
+-- a vLLM engine, say -- and the signature is the same either way, so no task can
+be scorable through one path and not the other. Prompts are turned into ids *here*,
+the backend is handed those exact ids and returns continuation ids, and the decode
+and stop-string truncation happen *here* too. The backend's only responsibility is
+the tokens in between.
+
+That split is the whole point. Evaluating the same checkpoint through two runtimes
+is only a runtime comparison if everything except the runtime is shared, and the
+ways two engines can quietly disagree about a *prompt* -- one prepending its own
+BOS, one truncating from the other end, one detokenizing with special tokens left
+in -- all produce a score a few points off rather than an error. None of them is
+expressible here, because there is only one implementation of each.
 """
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import torch
 
@@ -39,7 +55,14 @@ from dynquant._logging import get_logger
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-__all__ = ["EvalConfig", "generate_batched"]
+__all__ = [
+    "EncodedPrompts",
+    "EvalBackend",
+    "EvalConfig",
+    "TransformersBackend",
+    "encode_prompts",
+    "generate_batched",
+]
 
 _log = get_logger(__name__)
 
@@ -49,7 +72,12 @@ class EvalConfig:
     """How to decode. Identical across every measurement point, by construction."""
 
     max_new_tokens: int = 320
+
     batch_size: int = 32
+    """How many prompts to pad into one tensor. A ``transformers``-path knob only --
+    a serving engine schedules its own concurrency and
+    :class:`~dynquant.eval.backends.VllmBackend` says so and ignores this."""
+
     stop_sequences: tuple[str, ...] = ()
     """Cut the continuation at the first of these. Applied to the decoded text
     rather than as token ids, because a stop string can tokenize differently
@@ -80,11 +108,144 @@ class EvalConfig:
     only safe if the stopping criterion is evaluated *per sequence* -- a criterion
     that halted the whole batch when one member finished would silently truncate
     the others, which reads as a low-but-plausible score rather than as a crash.
-    :func:`generate_batched` verifies the per-sequence shape before using it and
+    :class:`TransformersBackend` verifies the per-sequence shape before using it and
     falls back to full-length decoding otherwise."""
 
 
-@torch.no_grad()
+class EncodedPrompts(NamedTuple):
+    """Prompt ids as every backend must see them, and what encoding cost."""
+
+    ids: list[list[int]]
+    truncated: int
+    """How many prompts lost tokens off the front."""
+
+
+def encode_prompts(tokenizer: Any, prompts: Sequence[str], config: EvalConfig) -> EncodedPrompts:
+    """Tokenize, count the overlong ones, and cut them at the front.
+
+    Truncation is done by slicing rather than by asking the tokenizer, so it does
+    not depend on the caller's ``truncation_side`` -- a tokenizer object shared with
+    a training pipeline arrives set to whatever that pipeline wanted, and the
+    harness mutating it back and forth is how a run picks up a setting from whoever
+    touched it last. ``ids[-limit:]`` is what ``truncation_side="left"`` does, on a
+    sequence that already has its special tokens.
+    """
+    if not prompts:
+        return EncodedPrompts(ids=[], truncated=0)
+
+    rows = tokenizer(list(prompts), add_special_tokens=config.add_special_tokens)["input_ids"]
+    limit = config.max_prompt_tokens
+    truncated = sum(len(row) > limit for row in rows)
+    if truncated:
+        _log.warning(
+            "%d/%d prompts exceeded max_prompt_tokens=%d and were cut at the front. "
+            "The trailing cue survives, but the leading exemplars did not -- raise "
+            "max_prompt_tokens or use fewer shots if this is a large fraction.",
+            truncated,
+            len(prompts),
+            limit,
+        )
+    return EncodedPrompts(ids=[[int(i) for i in row[-limit:]] for row in rows], truncated=truncated)
+
+
+class EvalBackend(ABC):
+    """Something that turns prompt ids into continuation ids.
+
+    Deliberately narrow. A backend does not tokenize, does not detokenize, does not
+    apply stop strings and does not decide what "greedy" means beyond asking its
+    engine for it -- :func:`generate_batched` owns all of that, identically for
+    every backend. What is left is the only thing a runtime comparison is entitled
+    to vary.
+    """
+
+    name: str = "backend"
+    """Recorded in the run fingerprint, so a results table says which runtime
+    produced each row."""
+
+    @abstractmethod
+    def generate_ids(
+        self,
+        prompt_ids: Sequence[Sequence[int]],
+        config: EvalConfig,
+        *,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> list[list[int]]:
+        """Greedy continuations, one per prompt, **in input order**."""
+
+
+class TransformersBackend(EvalBackend):
+    """``model.generate`` on a padded batch. The reference path."""
+
+    name = "transformers"
+
+    def __init__(self, model: Any, tokenizer: Any) -> None:
+        self._model = model
+        self._tokenizer = tokenizer
+        pad_id = tokenizer.pad_token_id
+        self._pad_id = int(tokenizer.eos_token_id if pad_id is None else pad_id)
+
+    @torch.no_grad()
+    def generate_ids(
+        self,
+        prompt_ids: Sequence[Sequence[int]],
+        config: EvalConfig,
+        *,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> list[list[int]]:
+        model = self._model
+        # Sort long-to-short so the first batch is the memory high-water mark: an OOM
+        # then happens immediately rather than 40 minutes into a run.
+        order = sorted(range(len(prompt_ids)), key=lambda i: -len(prompt_ids[i]))
+        outputs: list[list[int] | None] = [None] * len(prompt_ids)
+
+        device = next(model.parameters()).device
+        was_training = model.training
+        model.eval()
+        criteria = _stopping_criteria(self._tokenizer, config)
+
+        try:
+            for start in range(0, len(order), config.batch_size):
+                chunk = order[start : start + config.batch_size]
+                width = max(len(prompt_ids[i]) for i in chunk)
+                # Padded on the left, so every row's last position is a real token
+                # and one slice at `width` extracts every continuation.
+                input_ids = torch.tensor(
+                    [
+                        [self._pad_id] * (width - len(prompt_ids[i])) + list(prompt_ids[i])
+                        for i in chunk
+                    ],
+                    dtype=torch.long,
+                    device=device,
+                )
+                attention_mask = torch.tensor(
+                    [[0] * (width - len(prompt_ids[i])) + [1] * len(prompt_ids[i]) for i in chunk],
+                    dtype=torch.long,
+                    device=device,
+                )
+                generated = model.generate(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    max_new_tokens=config.max_new_tokens,
+                    do_sample=False,
+                    num_beams=1,
+                    temperature=None,
+                    top_p=None,
+                    top_k=None,
+                    pad_token_id=self._pad_id,
+                    stopping_criteria=criteria,
+                )
+                for position, row in zip(chunk, generated[:, width:].tolist(), strict=True):
+                    outputs[position] = [int(i) for i in row]
+
+                if progress is not None:
+                    progress(min(start + config.batch_size, len(order)), len(order))
+        finally:
+            if was_training:
+                model.train()
+
+        return _require_complete(outputs)
+
+
 def generate_batched(
     model: Any,
     tokenizer: Any,
@@ -95,6 +256,10 @@ def generate_batched(
 ) -> list[str]:
     """Greedy-decode a continuation for each prompt.
 
+    ``model`` is either a ``transformers`` model or an :class:`EvalBackend`; the
+    task calling this cannot tell the difference, which is what makes every task
+    scorable through every runtime.
+
     Returns continuations only -- the prompt is stripped by slicing the token
     sequence, not by string matching, so a tokenizer that normalises whitespace
     cannot leave a fragment of the prompt in the answer.
@@ -102,94 +267,32 @@ def generate_batched(
     if not prompts:
         return []
 
-    pad_id = tokenizer.pad_token_id
-    if pad_id is None:
-        pad_id = tokenizer.eos_token_id
-        tokenizer.pad_token = tokenizer.eos_token
-    original_side = tokenizer.padding_side
-    original_truncation = getattr(tokenizer, "truncation_side", "right")
-    tokenizer.padding_side = "left"
-    tokenizer.truncation_side = "left"
-    truncated = 0
+    encoded = encode_prompts(tokenizer, prompts, config)
+    backend = model if isinstance(model, EvalBackend) else TransformersBackend(model, tokenizer)
+    continuations = backend.generate_ids(encoded.ids, config, progress=progress)
 
-    # Sort long-to-short so the first batch is the memory high-water mark: an OOM
-    # then happens immediately rather than 40 minutes into a run.
-    order = sorted(range(len(prompts)), key=lambda i: -len(prompts[i]))
-    outputs: list[str | None] = [None] * len(prompts)
-
-    device = next(model.parameters()).device
-    was_training = model.training
-    model.eval()
-    criteria = _stopping_criteria(tokenizer, config)
-
-    try:
-        for start in range(0, len(order), config.batch_size):
-            chunk = order[start : start + config.batch_size]
-            raw = [prompts[i] for i in chunk]
-            batch = tokenizer(
-                raw,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=config.max_prompt_tokens,
-                add_special_tokens=config.add_special_tokens,
-            ).to(device)
-            if batch["input_ids"].shape[1] >= config.max_prompt_tokens:
-                # Only pay for the exact count on batches that could have lost
-                # something -- the sort puts those first, so this is rare.
-                truncated += sum(
-                    len(ids) > config.max_prompt_tokens
-                    for ids in tokenizer(
-                        raw, truncation=False, add_special_tokens=config.add_special_tokens
-                    )["input_ids"]
-                )
-
-            generated = model.generate(
-                **batch,
-                max_new_tokens=config.max_new_tokens,
-                do_sample=False,
-                num_beams=1,
-                temperature=None,
-                top_p=None,
-                top_k=None,
-                pad_token_id=pad_id,
-                stopping_criteria=criteria,
-            )
-            # Every row shares one prompt width because padding is left and the
-            # batch is padded to a common length, so a single slice is correct.
-            continuations = generated[:, batch["input_ids"].shape[1] :]
-            for position, text in zip(
-                chunk,
-                tokenizer.batch_decode(continuations, skip_special_tokens=True),
-                strict=True,
-            ):
-                outputs[position] = _truncate(text, config.stop_sequences)
-
-            if progress is not None:
-                progress(min(start + config.batch_size, len(order)), len(order))
-    finally:
-        tokenizer.padding_side = original_side
-        tokenizer.truncation_side = original_truncation
-        if was_training:
-            model.train()
-
-    if truncated:
-        _log.warning(
-            "%d/%d prompts exceeded max_prompt_tokens=%d and were cut at the front. "
-            "The trailing cue survives, but the leading exemplars did not -- raise "
-            "max_prompt_tokens or use fewer shots if this is a large fraction.",
-            truncated,
-            len(prompts),
-            config.max_prompt_tokens,
+    if len(continuations) != len(prompts):
+        raise RuntimeError(
+            f"{backend.name} returned {len(continuations)} continuations for {len(prompts)} prompts"
         )
+    return [
+        _truncate(text, config.stop_sequences)
+        for text in tokenizer.batch_decode(continuations, skip_special_tokens=True)
+    ]
 
-    # Every position must have been written: the batches partition `order`, which
-    # is a permutation of the input indices. A gap would mean a silently dropped
-    # prompt, which would shift every subsequent answer against its gold label.
-    if any(text is None for text in outputs):
-        missing = sum(text is None for text in outputs)
-        raise RuntimeError(f"generation covered {len(prompts) - missing}/{len(prompts)} prompts")
-    return [text for text in outputs if text is not None]
+
+def _require_complete(outputs: Sequence[list[int] | None]) -> list[list[int]]:
+    """Every position must have been written.
+
+    The batches partition a permutation of the input indices, so a gap would mean a
+    silently dropped prompt -- which shifts every subsequent answer against its gold
+    label and lands the score near chance for a reason that looks nothing like a
+    batching bug.
+    """
+    if any(row is None for row in outputs):
+        missing = sum(row is None for row in outputs)
+        raise RuntimeError(f"generation covered {len(outputs) - missing}/{len(outputs)} prompts")
+    return [row for row in outputs if row is not None]
 
 
 def _stopping_criteria(tokenizer: Any, config: EvalConfig) -> Any | None:

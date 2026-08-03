@@ -29,7 +29,13 @@ the candidates that were rejected and why.
 
 :mod:`dynquant.eval.harness` is the batched greedy decode loop shared by every task,
 which is what makes "the same decode at every measurement point" structural rather
-than a thing each task has to remember.
+than a thing each task has to remember. It also owns the tokenize/detokenize
+boundary, so :mod:`dynquant.eval.backends` can swap the engine underneath -- a task
+is handed either a ``transformers`` model or a vLLM one through the same argument and
+cannot tell which it got. Serving every arm through vLLM is what makes a campaign of
+this size affordable, and evaluating through the runtime the checkpoints are actually
+served with is worth having on its own; neither is worth a prompt that differs between
+the two arms, which is why the ids, not the strings, are what crosses the boundary.
 
 :mod:`dynquant.eval.ifeval` breaks the few-shot convention, deliberately. Its prompts
 are zero-shot instructions addressed to an assistant, so it renders them through the
@@ -54,11 +60,12 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ._code_exec import CodeEvalResult
+    from .backends import VllmBackend
     from .banking77 import Banking77Result, evaluate_banking77, load_banking77
     from .casehold import CaseholdResult, evaluate_casehold, load_casehold
     from .compare import PairedComparison, compare_paired, mcnemar_exact
     from .gsm8k import Gsm8kResult, evaluate_gsm8k, load_gsm8k
-    from .harness import EvalConfig, generate_batched
+    from .harness import EvalBackend, EvalConfig, generate_batched
     from .humaneval import evaluate_humaneval, load_humaneval
     from .ifeval import IfevalResult, evaluate_ifeval, load_ifeval
     from .mbpp import evaluate_mbpp, load_mbpp
@@ -67,10 +74,12 @@ __all__ = [
     "Banking77Result",
     "CaseholdResult",
     "CodeEvalResult",
+    "EvalBackend",
     "EvalConfig",
     "Gsm8kResult",
     "IfevalResult",
     "PairedComparison",
+    "VllmBackend",
     "compare_paired",
     "evaluate_banking77",
     "evaluate_casehold",
@@ -106,8 +115,10 @@ _LAZY = {
     "load_humaneval": "humaneval",
     "evaluate_mbpp": "mbpp",
     "load_mbpp": "mbpp",
+    "EvalBackend": "harness",
     "EvalConfig": "harness",
     "generate_batched": "harness",
+    "VllmBackend": "backends",
     "PairedComparison": "compare",
     "compare_paired": "compare",
     "mcnemar_exact": "compare",

@@ -29,10 +29,12 @@ class StubBatch(dict):  # type: ignore[type-arg]
 
 
 class StubTokenizer:
-    """Word-per-token, and it records what it handed to the model.
+    """Word-per-token, with a stable vocabulary.
 
-    ``padding_side`` and ``truncation_side`` are honoured rather than ignored,
-    because those two attributes are the thing under test.
+    ``padding_side`` and ``truncation_side`` are honoured rather than ignored, which
+    is what lets a test set them *wrong* and assert the harness pads and truncates
+    correctly anyway -- it does both itself, so a tokenizer arriving from a training
+    pipeline with its own settings cannot change a score.
     """
 
     def __init__(self) -> None:
@@ -44,9 +46,10 @@ class StubTokenizer:
         self.eos_token_id = PAD_ID
         self._ids: dict[str, int] = {}
         self._words: dict[int, str] = {PAD_ID: ""}
-        self.fed: list[list[str]] = []
-        """One entry per sequence actually tokenized for the model, as words. This is
-        the ground truth for "did the model see the question or the padding?"."""
+
+    def words_for(self, ids: Any) -> list[str]:
+        """Ids back to words, pads included, for asserting what a batch contained."""
+        return [self._words[int(i)] for i in ids]
 
     def _id(self, word: str) -> int:
         if word not in self._ids:
@@ -88,7 +91,6 @@ class StubTokenizer:
         if return_tensors != "pt":
             return {"input_ids": rows}
 
-        self.fed.extend([self._words[i] for i in row] for row in rows)
         return StubBatch(
             input_ids=torch.tensor(rows),
             attention_mask=torch.tensor([[int(i != PAD_ID) for i in row] for row in rows]),
@@ -109,9 +111,15 @@ class StubModel:
     """
 
     def __init__(self, tokenizer: StubTokenizer, reply: str) -> None:
+        self._tokenizer = tokenizer
         self._reply = tokenizer.encode_words(reply)
         self.training = False
         self.calls = 0
+        self.fed: list[list[str]] = []
+        """One entry per sequence the model was actually given, as words, pads and
+        all. This is the ground truth for "did the model see the question or the
+        padding?" -- recorded here rather than on the tokenizer because the harness
+        builds the batch itself, so the tokenizer never sees the padded form."""
 
     def parameters(self) -> Any:
         yield torch.zeros(1)
@@ -126,5 +134,6 @@ class StubModel:
 
     def generate(self, *, input_ids: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         self.calls += 1
+        self.fed.extend(self._tokenizer.words_for(row) for row in input_ids.tolist())
         reply = torch.tensor([self._reply] * input_ids.shape[0], dtype=input_ids.dtype)
         return torch.cat([input_ids, reply], dim=1)
