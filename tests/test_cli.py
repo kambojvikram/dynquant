@@ -635,6 +635,152 @@ def test_task_dispatch_resolves_by_naming_convention() -> None:
         assert callable(getattr(module, f"evaluate_{key}"))
 
 
+def _result_class(key: str) -> type:
+    """The dataclass ``evaluate_<key>`` returns, resolved without importing datasets.
+
+    ``from __future__ import annotations`` leaves the return annotation a string, and
+    ``get_type_hints`` would try to resolve every *other* annotation too -- several of
+    which live under ``TYPE_CHECKING`` and do not exist at runtime. So only the return
+    name is looked up, in the module that declares the function.
+    """
+    from importlib import import_module
+
+    module = import_module(f"dynquant.eval.{key}")
+    return getattr(module, getattr(module, f"evaluate_{key}").__annotations__["return"])  # type: ignore[no-any-return]
+
+
+def _eval_args(**overrides: object) -> argparse.Namespace:
+    defaults: dict[str, object] = {
+        "split": None,
+        "shots": None,
+        "shot_split": None,
+        "shot_seed": 0,
+        "on_unverifiable": "raise",
+        "allow_execution": False,
+        "prompt_style": "auto",
+        "exec_timeout": None,
+        "exec_memory_mb": None,
+    }
+    return argparse.Namespace(**{**defaults, **overrides})
+
+
+def test_every_task_is_sent_exactly_the_arguments_its_scorer_takes() -> None:
+    """The registry decides what to pass by declared capability, and the scorer
+    decides what it accepts. Both directions matter and they fail differently.
+
+    Sending an argument the function does not take raises at the end of a GPU run.
+    *Not* sending one it does takes the default instead -- MBPP flagged as taking no
+    shots would score zero-shot and report the number as three-shot, which is a
+    silently wrong row in the results table rather than a crash.
+
+    Both the declaration and the call are checked. Agreeing on the flags is not the
+    same as acting on them: a capability the registry declares but never turns into a
+    keyword argument leaves the scorer on its own default, which is exactly the
+    silent-wrong-row failure, and the signature check alone cannot see it.
+    """
+    from importlib import import_module
+    from inspect import signature
+
+    for key, spec in evaluate.TASKS.items():
+        scorer = getattr(import_module(f"dynquant.eval.{key}"), f"evaluate_{key}")
+        accepted = set(signature(scorer).parameters)
+        assert {"label", "config", "progress", "keep_predictions"} <= accepted
+        assert ("shots" in accepted) == spec.takes_shots, key
+        assert ("on_unverifiable" in accepted) == spec.unverifiable, key
+        for name in ("allow_execution", "style", "timeout", "memory_mb"):
+            assert (name in accepted) == spec.executes_code, f"{key}.{name}"
+
+        sent = evaluate._task_kwargs(spec, _eval_args(allow_execution=True), ["exemplar"])
+        assert set(sent) <= accepted, f"{key} is sent {set(sent) - accepted}"
+        assert ("shots" in sent) == spec.takes_shots, key
+        assert ("on_unverifiable" in sent) == spec.unverifiable, key
+        # `timeout`/`memory_mb` are deliberately absent unless asked for, so only the
+        # two the task cannot run without are required here.
+        for name in ("allow_execution", "style"):
+            assert (name in sent) == spec.executes_code, f"{key}.{name}"
+
+
+def test_the_field_counting_unscorable_generations_exists_on_every_result() -> None:
+    """``unscored`` names a field per task because the tasks spell it differently.
+    A name that is merely plausible would read as ``0`` through ``getattr`` with a
+    default -- reporting a model that emitted nothing as a model that answered wrong,
+    which is the one distinction this column exists to make."""
+    import dataclasses
+
+    for key, spec in evaluate.TASKS.items():
+        names = {field.name for field in dataclasses.fields(_result_class(key))}
+        assert spec.unscored in names, f"{key} has no field named {spec.unscored!r}"
+
+
+def test_a_task_promising_extra_metrics_can_actually_produce_them() -> None:
+    """``detail=True`` puts the task's own metrics in the record. IFEval reports four
+    and the code tasks separate a timeout from a wrong answer; a task that claims the
+    block without an ``as_dict`` would fail after the GPU time, not before it."""
+    for key, spec in evaluate.TASKS.items():
+        if spec.detail:
+            assert callable(getattr(_result_class(key), "as_dict", None)), key
+
+
+def test_a_task_with_one_split_is_never_asked_which_split() -> None:
+    """HumanEval is 164 problems in a single set and ``load_humaneval`` takes no split
+    argument. The parser used to default ``--split`` to ``"test"``, which would have
+    reached the loader as a positional it has no parameter for."""
+    assert evaluate.TASKS["humaneval"].split is None
+    assert evaluate.TASKS["ifeval"].split == "train"
+
+    with pytest.raises(DynQuantError, match="single set"):
+        evaluate._resolve_splits(evaluate.TASKS["humaneval"], _eval_args(split="test"))
+
+
+@pytest.mark.parametrize(
+    "flag,kwargs", [("--shots", {"shots": 5}), ("--shot-split", {"shot_split": "train"})]
+)
+def test_a_few_shot_option_on_a_zero_shot_task_is_refused(flag: str, kwargs: dict) -> None:
+    """Not ignored. A run that quietly dropped ``--shots 5`` reports a zero-shot score
+    under a five-shot label, and nothing downstream can tell."""
+    with pytest.raises(DynQuantError, match=flag):
+        evaluate._resolve_splits(evaluate.TASKS["ifeval"], _eval_args(**kwargs))
+
+
+def test_a_task_whose_only_split_is_named_train_is_read_from_it() -> None:
+    """IFEval's 541 prompts ship under `train` and there is no other split. The old
+    parser default of `"test"` would have asked for one that does not exist -- and the
+    three tasks whose split *is* called `test` cannot detect that, because for them the
+    parser's default and the task's own answer coincide."""
+    assert evaluate._resolve_splits(evaluate.TASKS["ifeval"], _eval_args()) == ("train", None, 0)
+    assert evaluate._resolve_splits(evaluate.TASKS["gsm8k"], _eval_args()) == ("test", "train", 5)
+
+
+def test_mbpp_draws_its_exemplars_from_a_split_it_does_not_score() -> None:
+    """The `prompt` split is MBPP's own exemplar set. Drawing them from `test` would
+    put the answer to a graded problem in its own prompt."""
+    split, shot_split, shots = evaluate._resolve_splits(evaluate.TASKS["mbpp"], _eval_args())
+    assert (split, shot_split, shots) == ("test", "prompt", 3)
+
+
+def test_a_code_task_refuses_to_start_without_execution_opted_in() -> None:
+    """Scoring HumanEval means running code the model wrote. The refusal happens
+    before the model loads, not after the generations exist."""
+    with pytest.raises(DynQuantError, match="--allow-execution"):
+        evaluate._task_kwargs(evaluate.TASKS["humaneval"], _eval_args(), [])
+
+    kwargs = evaluate._task_kwargs(
+        evaluate.TASKS["humaneval"], _eval_args(allow_execution=True), []
+    )
+    assert kwargs["allow_execution"] is True
+    # Absent, not defaulted: the sandbox budget lives in the task module, and a second
+    # copy in the CLI is a second number to forget to change.
+    assert "timeout" not in kwargs and "memory_mb" not in kwargs
+
+
+def test_a_chat_templated_task_does_not_prepend_a_second_bos() -> None:
+    """IFEval's prompt is a chat template, which carries its own BOS. Leaving the
+    tokenizer's on gives Llama-3 and Gemma-3 two -- no error, and damage the same size
+    as the effect being measured."""
+    assert evaluate.TASKS["ifeval"].add_special_tokens is False
+    assert evaluate.TASKS["gsm8k"].add_special_tokens is True
+
+
 @pytest.mark.parametrize("field", ["task", "split", "shots", "shot_seed", "limit"])
 def test_comparing_across_settings_is_refused(tmp_path: Path, field: str) -> None:
     """A harness difference reported as a quantization effect is the failure this

@@ -46,7 +46,25 @@ __all__ = ["TASKS", "run"]
 
 
 class _TaskSpec:
-    """Per-task defaults, chosen once so no two runs can pick different ones."""
+    """Per-task defaults, chosen once so no two runs can pick different ones.
+
+    Every field is something two runs could otherwise disagree about. The ones the
+    phase-3 tasks added are less obvious than a decode budget and are worth naming:
+
+    ``split`` and ``shot_split`` are ``None`` for a task whose dataset has a single
+    set and whose loader therefore takes no split argument (HumanEval), and for a task
+    that takes no few-shot prefix at all (IFEval, HumanEval). A default of ``"test"``
+    imposed by the argument parser cannot express either -- it would ask a train-only
+    dataset for a test split, and hand ``shots=`` to a function that has no such
+    parameter.
+
+    ``unscored`` names the field counting generations that produced nothing to score.
+    Every task has one, and every one of them means the same thing -- the model
+    stopped producing the format rather than got the answer wrong -- but they are
+    spelled differently per task (``unparseable`` where a number is expected,
+    ``empty`` where any text would do). Declared here rather than sniffed off the
+    result, so a renamed field is an import-time error and not a silent zero.
+    """
 
     def __init__(
         self,
@@ -57,6 +75,13 @@ class _TaskSpec:
         max_new_tokens: int,
         max_prompt_tokens: int,
         batch_size: int,
+        split: str | None = "test",
+        shot_split: str | None = "train",
+        add_special_tokens: bool = True,
+        unscored: str = "unparseable",
+        executes_code: bool = False,
+        unverifiable: bool = False,
+        detail: bool = False,
     ) -> None:
         self.key = key
         self.shots = shots
@@ -64,6 +89,17 @@ class _TaskSpec:
         self.max_new_tokens = max_new_tokens
         self.max_prompt_tokens = max_prompt_tokens
         self.batch_size = batch_size
+        self.split = split
+        self.shot_split = shot_split
+        self.add_special_tokens = add_special_tokens
+        self.unscored = unscored
+        self.executes_code = executes_code
+        self.unverifiable = unverifiable
+        self.detail = detail
+
+    @property
+    def takes_shots(self) -> bool:
+        return self.shot_split is not None
 
     def _module(self) -> Any:
         """Import the task module on demand.
@@ -76,8 +112,23 @@ class _TaskSpec:
 
         return import_module(f"dynquant.eval.{self.key}")
 
-    def load(self, split: str) -> list[Any]:
-        return getattr(self._module(), f"load_{self.key}")(split)  # type: ignore[no-any-return]
+    def load(self, split: str | None) -> list[Any]:
+        loader = getattr(self._module(), f"load_{self.key}")
+        return loader() if split is None else loader(split)  # type: ignore[no-any-return]
+
+    def unscored_count(self, result: Any) -> int:
+        return int(getattr(result, self.unscored))
+
+    def detail_of(self, result: Any) -> dict[str, Any] | None:
+        """The task's own metrics, for tasks that report more than one number.
+
+        IFEval has four official metrics, and the code tasks distinguish a timeout from
+        a wrong answer. Dropping those would leave the record unable to say which of
+        the two a regression was. The three single-number tasks are already recorded
+        in full by the fields around this one, so they carry no detail block rather
+        than a duplicate one.
+        """
+        return result.as_dict() if self.detail else None  # type: ignore[no-any-return]
 
     def evaluate(self, *args: Any, **kwargs: Any) -> Any:
         return getattr(self._module(), f"evaluate_{self.key}")(*args, **kwargs)
@@ -118,6 +169,60 @@ TASKS = {
         max_prompt_tokens=1536,
         batch_size=32,
     ),
+    # IFEval ships a single split, named `train`, and takes no few-shot prefix: the
+    # constraint *is* the instruction, and an exemplar would demonstrate obeying a
+    # different constraint. 1024 new tokens because the constraints are frequently
+    # length constraints -- "at least 400 words", "write 5 paragraphs" -- and a cap
+    # that truncates the answer scores the cap rather than the model.
+    # `add_special_tokens=False` because the prompt is a chat template that already
+    # carries its own BOS; leaving it on gives Llama-3 and Gemma-3 two, which is no
+    # error and a few points of damage.
+    "ifeval": _TaskSpec(
+        "ifeval",
+        shots=0,
+        chance=0.0,
+        max_new_tokens=1024,
+        max_prompt_tokens=2048,
+        batch_size=16,
+        split="train",
+        shot_split=None,
+        add_special_tokens=False,
+        unscored="empty",
+        unverifiable=True,
+        detail=True,
+    ),
+    # HumanEval is 164 problems in one set, so `load_humaneval` takes no split
+    # argument at all. No shots: the docstring in the prompt is the specification.
+    "humaneval": _TaskSpec(
+        "humaneval",
+        shots=0,
+        chance=0.0,
+        max_new_tokens=1024,
+        max_prompt_tokens=2048,
+        batch_size=16,
+        split=None,
+        shot_split=None,
+        unscored="empty",
+        executes_code=True,
+        detail=True,
+    ),
+    # MBPP's exemplars are its own `prompt` split, which is not scored. The budgets
+    # here are the chat-framing ones, which are the larger of the two the task defines;
+    # under the completion framing they only mean the generation ends at the task's own
+    # stop sequence rather than at the cap, so no solution is truncated either way.
+    "mbpp": _TaskSpec(
+        "mbpp",
+        shots=3,
+        chance=0.0,
+        max_new_tokens=1024,
+        max_prompt_tokens=2048,
+        batch_size=16,
+        split="test",
+        shot_split="prompt",
+        unscored="empty",
+        executes_code=True,
+        detail=True,
+    ),
 }
 
 
@@ -127,13 +232,15 @@ def run(args: argparse.Namespace) -> int:
     from dynquant.eval.harness import EvalConfig
 
     spec = TASKS[args.task]
-    n_shots = spec.shots if args.shots is None else args.shots
+    split, shot_split, n_shots = _resolve_splits(spec, args)
 
-    examples = spec.load(args.split)
-    shots = _pick_shots(spec, n_shots, seed=args.shot_seed, split=args.shot_split)
+    examples = spec.load(split)
+    shots = _pick_shots(spec, n_shots, seed=args.shot_seed, split=shot_split)
+    source = f"the {split} split" if split is not None else "its only split"
+    prefix = f"{len(shots)} shot(s) from {shot_split} at seed {args.shot_seed}"
     print(
-        f"{args.task}: {len(examples)} examples from the {args.split} split, "
-        f"{len(shots)} shot(s) from {args.shot_split} at seed {args.shot_seed}",
+        f"{args.task}: {len(examples)} examples from {source}, "
+        f"{prefix if spec.takes_shots else 'no few-shot prefix'}",
         flush=True,
     )
 
@@ -157,6 +264,7 @@ def run(args: argparse.Namespace) -> int:
         max_new_tokens=args.max_new_tokens or spec.max_new_tokens,
         batch_size=args.batch_size or spec.batch_size,
         max_prompt_tokens=args.max_prompt_tokens or spec.max_prompt_tokens,
+        add_special_tokens=spec.add_special_tokens,
         limit=args.limit,
     )
     label = args.label or f"{args.task}:{Path(args.model).name}"
@@ -167,10 +275,10 @@ def run(args: argparse.Namespace) -> int:
         tokenizer,
         examples,
         label=label,
-        shots=shots,
         config=config,
         progress=None if args.quiet else _shared.progress_printer(args.task, every=200),
         keep_predictions=args.keep_predictions,
+        **_task_kwargs(spec, args, shots),
     )
     elapsed = time.time() - started
     print("\n" + result.summary(), flush=True)
@@ -180,14 +288,19 @@ def run(args: argparse.Namespace) -> int:
         "task": args.task,
         "label": result.label,
         "model": args.model,
-        "split": args.split,
+        "split": split,
         "shots": n_shots,
         "shot_seed": args.shot_seed,
         "limit": args.limit,
         "accuracy": result.accuracy,
-        "correct": result.correct,
+        # Counted from the vector rather than read off a per-task field, so the
+        # headline number and the paired test can never disagree about which problems
+        # were right -- and so one definition covers "exact match", "prompt-level
+        # strict" and "pass@1" without the command knowing which it is looking at.
+        "correct": sum(1 for hit in result.hits if hit),
         "total": result.total,
-        "unparseable": result.unparseable,
+        "unparseable": spec.unscored_count(result),
+        "detail": spec.detail_of(result),
         "chance": spec.chance,
         "seconds": round(elapsed, 1),
         "decode": {
@@ -224,7 +337,76 @@ def run(args: argparse.Namespace) -> int:
     return 0
 
 
-def _pick_shots(spec: _TaskSpec, count: int, *, seed: int, split: str) -> list[Any]:
+def _resolve_splits(
+    spec: _TaskSpec, args: argparse.Namespace
+) -> tuple[str | None, str | None, int]:
+    """Settle where the problems and the exemplars come from, and how many.
+
+    The parser cannot carry these defaults because they are not shared: IFEval has one
+    split and it is called ``train``, HumanEval's loader takes no split at all, and
+    neither takes a few-shot prefix. So the parser defaults to ``None`` -- "the caller
+    said nothing" -- and the task decides. An option the task cannot honour is an
+    error rather than a silently ignored argument, because a run that quietly dropped
+    ``--shots 5`` produces a number that looks like a five-shot score.
+    """
+    from dynquant.errors import DynQuantError
+
+    if args.split is not None and spec.split is None:
+        raise DynQuantError(
+            f"--split {args.split!r} was given, but {spec.key} ships a single set and its "
+            f"loader takes no split argument. Drop --split."
+        )
+    split = spec.split if args.split is None else args.split
+
+    if not spec.takes_shots:
+        for flag, value in (("--shots", args.shots), ("--shot-split", args.shot_split)):
+            if value is not None:
+                raise DynQuantError(
+                    f"{flag} was given, but {spec.key} takes no few-shot prefix -- the "
+                    f"instruction in the prompt is the whole specification, and "
+                    f"{spec.key}'s scorer would ignore the exemplars. Drop {flag}."
+                )
+        return split, None, 0
+
+    shot_split = spec.shot_split if args.shot_split is None else args.shot_split
+    return split, shot_split, spec.shots if args.shots is None else args.shots
+
+
+def _task_kwargs(spec: _TaskSpec, args: argparse.Namespace, shots: list[Any]) -> dict[str, Any]:
+    """The arguments only some tasks take.
+
+    Passed by declared capability rather than by task name: a chain of ``if task ==``
+    is how a fifth task gets added to the registry and silently never receives its own
+    options.
+    """
+    from dynquant.errors import DynQuantError
+
+    kwargs: dict[str, Any] = {}
+    if spec.takes_shots:
+        kwargs["shots"] = shots
+    if spec.unverifiable:
+        kwargs["on_unverifiable"] = args.on_unverifiable
+    if spec.executes_code:
+        if not args.allow_execution:
+            raise DynQuantError(
+                f"{spec.key} is scored by running the code the model wrote, so it needs "
+                f"--allow-execution. The sandbox is described in "
+                f"dynquant.eval._code_exec; read what it does and does not protect "
+                f"against before pointing it at an untrusted checkpoint."
+            )
+        kwargs["allow_execution"] = True
+        kwargs["style"] = args.prompt_style
+        # Left unset rather than defaulted here: the task module owns the sandbox
+        # budget, and a second copy of the number in the CLI is a second thing to
+        # forget to change.
+        if args.exec_timeout is not None:
+            kwargs["timeout"] = args.exec_timeout
+        if args.exec_memory_mb is not None:
+            kwargs["memory_mb"] = args.exec_memory_mb
+    return kwargs
+
+
+def _pick_shots(spec: _TaskSpec, count: int, *, seed: int, split: str | None) -> list[Any]:
     """A fixed few-shot prefix, byte-identical across runs and restarts.
 
     Drawn from a split the evaluation does not score. Using the scored split would

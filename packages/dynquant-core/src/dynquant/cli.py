@@ -427,7 +427,7 @@ def _add_eval(subparsers: _SubParsers) -> None:
     parser.add_argument(
         "--task",
         required=True,
-        choices=("gsm8k", "casehold", "banking77"),
+        choices=("gsm8k", "casehold", "banking77", "ifeval", "humaneval", "mbpp"),
         help="which task to score",
     )
     _add_loading(parser)
@@ -439,13 +439,15 @@ def _add_eval(subparsers: _SubParsers) -> None:
         default=DEFAULT_GROUP_SIZE,
         help=f"group size to pack --map at, if the file does not say (default: {DEFAULT_GROUP_SIZE})",
     )
-    parser.add_argument("--split", default="test", help="split to score (default: test)")
+    # No default here, and deliberately: the tasks do not agree. IFEval ships one
+    # split and it is called `train`; HumanEval's loader takes no split argument at
+    # all. A parser-level "test" would ask both for something that does not exist, so
+    # the default lives on the task and `None` means "the caller said nothing".
+    parser.add_argument("--split", help="split to score (default: per task)")
     parser.add_argument(
         "--shots", type=int, help="few-shot examples in the prompt (default: per task)"
     )
-    parser.add_argument(
-        "--shot-split", default="train", help="split the shots are drawn from (default: train)"
-    )
+    parser.add_argument("--shot-split", help="split the shots are drawn from (default: per task)")
     parser.add_argument("--shot-seed", type=int, default=0, help="seed for the shots (default: 0)")
     parser.add_argument("--limit", type=int, help="score only the first N problems")
     parser.add_argument("--batch-size", type=int, help="generation batch size (default: per task)")
@@ -454,6 +456,41 @@ def _add_eval(subparsers: _SubParsers) -> None:
         "--max-prompt-tokens", type=int, help="truncate prompts to this (default: per task)"
     )
     parser.add_argument("--tokenizer", help="where to load the tokenizer from (default: the model)")
+    parser.add_argument(
+        "--allow-execution",
+        action="store_true",
+        help=(
+            "run the Python the model wrote, which is how humaneval and mbpp are "
+            "scored at all. Opt-in rather than implied by --task: see "
+            "dynquant.eval._code_exec for what the sandbox does and does not stop"
+        ),
+    )
+    parser.add_argument(
+        "--prompt-style",
+        default="auto",
+        choices=("auto", "chat", "completion"),
+        help=(
+            "framing for the code tasks; auto picks chat when the tokenizer has a chat "
+            "template. The largest artifact on these benchmarks, so it is recorded "
+            "with the score (default: auto)"
+        ),
+    )
+    parser.add_argument(
+        "--exec-timeout", type=float, metavar="SECONDS", help="sandbox timeout (default: per task)"
+    )
+    parser.add_argument(
+        "--exec-memory-mb", type=int, metavar="MB", help="sandbox memory cap (default: per task)"
+    )
+    parser.add_argument(
+        "--on-unverifiable",
+        default="raise",
+        choices=("raise", "drop"),
+        help=(
+            "ifeval only: what to do about prompts carrying a constraint this process "
+            "cannot check. 'drop' excludes them and records which, so the denominator "
+            "is stated rather than quietly reduced (default: raise)"
+        ),
+    )
     parser.add_argument("--label", help="name for this run in the output (default: task:model)")
     parser.add_argument(
         "--keep-predictions",
