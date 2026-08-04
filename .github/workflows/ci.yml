@@ -246,6 +246,7 @@ jobs:
         run: |
           pytest --no-header -q -rs \
             tests/test_eval_harness.py \
+            tests/test_eval_backends.py \
             tests/test_quant_phase3_shapes.py \
             tests/test_graph_arch_matrix.py \
             tests/test_export_checkpoint.py \

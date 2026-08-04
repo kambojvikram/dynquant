@@ -53,9 +53,7 @@ _log = get_logger(__name__)
 _TrainerCallbackBase: type = object
 _TRANSFORMERS_ERROR: Exception | None = None
 try:  # transformers is an optional dependency of dynquant-core
-    from transformers import (  # type: ignore[attr-defined]
-        TrainerCallback as _ImportedTrainerCallback,
-    )
+    from transformers import TrainerCallback as _ImportedTrainerCallback
 
     _TrainerCallbackBase = _ImportedTrainerCallback
 except Exception as exc:  # noqa: BLE001 -- a broken transformers install must

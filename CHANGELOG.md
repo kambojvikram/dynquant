@@ -101,6 +101,33 @@ parity on GSM8K is certifiable to roughly ±1.4 points, and DynQuant's phase-2 m
 GPTQ is +1.54. Arms that are compared to each other should therefore be scored through
 the same engine.
 
+### Fixed — CI, red on `main` for three pushes
+
+Two jobs, both introduced by the decode work above and neither caught before the push.
+
+`tests/test_eval_backends.py` gated on `torch` alone, but its `_pair` helper drives the
+`transformers` arm of the comparison and so reaches `greedy_generation_config`, which
+imports `GenerationConfig` when it is called rather than at module import. The `test`
+job installs no transformers — deliberately, to prove `dynquant-core` installs on a box
+that will never fine-tune — so sixteen tests failed there with `ModuleNotFoundError`
+raised from inside the harness. The file now `importorskip`s transformers and is listed
+in the `transformers-lines` job's "no gated file may skip" step, so the coverage moves
+to the runners that have transformers instead of evaporating.
+
+`mypy --strict` reported 34 errors, and four of them were configuration rather than
+code. `transformers` ships `py.typed` while annotating almost none of its constructors
+and re-exporting its public names through a `_LazyModule`, which under strict mode makes
+`from transformers import GenerationConfig` an unexported attribute and
+`GenerationConfig(...)` an untyped call. Both are now settled once in `pyproject.toml`
+(`implicit_reexport` for `transformers.*`, `untyped_calls_exclude = ["transformers"]`)
+rather than by a `type: ignore` per call site, and three such ignores were deleted.
+The rest were real: the 25 IFEval instruction builders had no return annotation (now
+`_Predicate`, with `_Builder` for the registry), `_preferred_block` returned `Any`,
+`phi_fused` read `num_key_value_heads` before the guard that makes its fallback
+non-`None`, and `_isolation_kwargs`/`_terminate` branched on `os.name`, which no type
+checker narrows — under `os.name` each platform's mypy run reports the *other*
+platform's branch, so both are now `sys.platform`.
+
 ### Fixed — `scripts/gate_runtime_parity.py` named the wrong failure
 
 The verdict branched on how *wide* the confidence interval was before asking whether it

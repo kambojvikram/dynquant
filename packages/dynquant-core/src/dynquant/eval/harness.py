@@ -409,9 +409,7 @@ def _stopping_criteria(tokenizer: Any, config: EvalConfig) -> Any | None:
         return None
     try:
         from transformers import StoppingCriteriaList
-        from transformers.generation import (  # type: ignore[attr-defined]
-            StopStringCriteria,
-        )
+        from transformers.generation import StopStringCriteria
     except ImportError:
         return None
 
@@ -437,7 +435,7 @@ def _stopping_criteria(tokenizer: Any, config: EvalConfig) -> Any | None:
             getattr(verdict, "shape", verdict),
         )
         return None
-    return StoppingCriteriaList([criterion])  # type: ignore[no-untyped-call]
+    return StoppingCriteriaList([criterion])
 
 
 def _truncate(text: str, stops: Sequence[str]) -> str:

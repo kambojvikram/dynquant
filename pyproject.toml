@@ -73,9 +73,18 @@ warn_unreachable = true
 disallow_untyped_decorators = false   # torch decorators are untyped
 files = ["packages/dynquant-core/src/dynquant"]
 exclude = "(_legacy|_cutlass)"
+# `transformers` ships `py.typed` but annotates almost none of its constructors, so
+# `GenerationConfig(...)` -- the one call the decode neutrality work depends on -- is a
+# call to an untyped function. Ignoring it per-call-site would put a `type: ignore` on
+# every future transformers call and train us to add them without reading; naming the
+# package once here keeps `disallow_untyped_calls` sharp for our own code, which is
+# what it is for. Scoped to transformers alone, not to third-party code generally.
+untyped_calls_exclude = ["transformers"]
 
 [[tool.mypy.overrides]]
-# Third-party packages without complete stubs.
+# Third-party packages without complete stubs. `langdetect` and `nltk` are the IFEval
+# scorer's two optional backends: absent on the `types` runner, untyped where present,
+# and both already imported inside a `try` that has a documented fallback.
 module = [
     "safetensors.*",
     "transformers.*",
@@ -84,8 +93,19 @@ module = [
     "yaml.*",
     "datasets.*",
     "dynquant_kernels.*",
+    "langdetect.*",
+    "nltk.*",
 ]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# `transformers/__init__.py` is a `_LazyModule`: its public names are re-exported
+# implicitly, so strict mode's `no_implicit_reexport` rejects `from transformers import
+# GenerationConfig` as "not explicitly exported". The alternative is importing from the
+# defining module (`transformers.generation.configuration_utils`), which is a private
+# path that has moved before and would break on a release where the public name did not.
+module = ["transformers.*"]
+implicit_reexport = true
 
 [[tool.mypy.overrides]]
 # vLLM and SGLang are Linux + CUDA wheels with multi-gigabyte dependency trees, and

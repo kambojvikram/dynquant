@@ -136,7 +136,7 @@ class _TaskSpec:
         in full by the fields around this one, so they carry no detail block rather
         than a duplicate one.
         """
-        return result.as_dict() if self.detail else None  # type: ignore[no-any-return]
+        return result.as_dict() if self.detail else None
 
     def evaluate(self, *args: Any, **kwargs: Any) -> Any:
         return getattr(self._module(), f"evaluate_{self.key}")(*args, **kwargs)

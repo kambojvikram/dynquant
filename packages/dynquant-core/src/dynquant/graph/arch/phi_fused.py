@@ -74,9 +74,12 @@ class PhiFusedPlugin:
         put the boundaries in the wrong place while still summing correctly.
         """
         heads = ctx.cfg("num_attention_heads")
-        kv_heads = ctx.cfg("num_key_value_heads") or heads
         if not heads:
             return None
+        # After the guard, not before it: `num_key_value_heads` is absent on
+        # multi-head configs and falls back to `heads`, so reading it first makes the
+        # fallback inherit the unchecked `None`.
+        kv_heads = ctx.cfg("num_key_value_heads") or heads
 
         hidden = ctx.cfg("hidden_size")
         head_dim = ctx.cfg("head_dim") or (hidden // heads if hidden else None)

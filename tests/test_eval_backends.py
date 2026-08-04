@@ -30,6 +30,17 @@ from typing import Any, NamedTuple
 import pytest
 
 torch = pytest.importorskip("torch")
+# And transformers, which is *not* obvious from the imports below: nothing here names
+# it. `_pair` drives both arms of the comparison, and the transformers arm reaches
+# `greedy_generation_config`, which imports `GenerationConfig` at call time. The `test`
+# CI job deliberately installs no transformers -- that is how it proves dynquant-core
+# installs on a box that will never fine-tune -- so without this the whole file failed
+# there with a bare ModuleNotFoundError raised from inside the harness.
+#
+# Skipping is only acceptable because it cannot become the silent kind: the
+# `transformers-lines` job lists this file among those that must *run*, and fails if
+# any of them skips. See .github/workflows/ci.yml.
+transformers = pytest.importorskip("transformers")
 
 from _decode_stub import StubModel, StubTokenizer  # noqa: E402
 

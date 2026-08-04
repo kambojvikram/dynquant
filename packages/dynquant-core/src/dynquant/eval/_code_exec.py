@@ -306,7 +306,7 @@ def _preferred_block(generation: str, *, entry_point: str) -> str:
     routinely open with a fenced restatement of the *tests* or of the signature before
     writing the solution.
     """
-    blocks = [block for block in _FENCE.findall(generation) if block.strip()]
+    blocks: list[str] = [block for block in _FENCE.findall(generation) if block.strip()]
     if not blocks:
         return generation
     needle = re.compile(rf"^[ \t]*def[ \t]+{re.escape(entry_point)}\b", re.MULTILINE)
@@ -650,14 +650,25 @@ def _isolation_kwargs() -> dict[str, Any]:
     Windows the equivalent needs a Job object; the new process group gets us a clean
     ``kill`` of the child itself, and a grandchild would survive. Model-written HumanEval
     solutions do not spawn processes, so this is a documented gap rather than a live one.
+
+    Branched on ``sys.platform`` rather than ``os.name`` because only the former narrows
+    for a type checker: ``subprocess.CREATE_NEW_PROCESS_GROUP`` does not exist in the
+    POSIX stubs and ``os.killpg`` does not exist in the Windows ones, so under ``os.name``
+    each platform's mypy run reports the *other* platform's branch as an error. The two
+    tests are equivalent at runtime; this one is also checkable.
     """
-    if os.name == "nt":
+    if sys.platform == "win32":
         return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
-    return {"start_new_session": True}
+    else:
+        # An `else` rather than a fall-through return, which reads better without it.
+        # Under `warn_unreachable` mypy elides the branch its platform did not take but
+        # still walks the statement *after* an always-returning `if`, so the bare
+        # trailing return is an "unreachable" error on Windows and the `else` is not.
+        return {"start_new_session": True}
 
 
 def _terminate(process: subprocess.Popen[bytes]) -> None:
-    if os.name != "nt":
+    if sys.platform != "win32":
         try:
             os.killpg(os.getpgid(process.pid), signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):

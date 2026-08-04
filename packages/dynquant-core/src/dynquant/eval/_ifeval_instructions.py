@@ -42,15 +42,16 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 from dynquant._logging import get_logger
 from dynquant.errors import DynQuantError
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import Iterable
 
 __all__ = [
     "CAPABILITY_LANGDETECT",
@@ -71,6 +72,22 @@ CAPABILITY_LANGDETECT = "langdetect"
 registry, in the error message, and in the fingerprint, and those must agree."""
 
 _RELATIONS = ("less than", "at least")
+
+_Predicate: TypeAlias = Callable[[str], bool]
+"""What every builder below returns: a bound instruction, response in, followed out.
+
+Named because it is the return type of all 25 builders and the payload of every
+registry entry, and spelling it out at each of those sites made the signatures long
+enough that a wrong one read as noise.
+"""
+
+_Builder: TypeAlias = Callable[[str, Mapping[str, Any]], _Predicate]
+"""An instruction's id and its dataset-supplied arguments, bound into a predicate.
+
+The two-stage shape is what lets :func:`_compile` fail at build time: a prompt whose
+``keywords`` entry is an unbalanced bracket names itself immediately instead of raising
+``re.error`` somewhere in the middle of scoring a few thousand responses.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,7 +275,7 @@ def count_words(text: str) -> int:
 
 @dataclass(frozen=True, slots=True)
 class _Spec:
-    factory: Callable[[str, Mapping[str, Any]], Callable[[str], bool]]
+    factory: _Builder
     requires: frozenset[str] = frozenset()
 
 
@@ -267,13 +284,8 @@ _REGISTRY: dict[str, _Spec] = {}
 
 def _register(
     instruction_id: str, *, requires: Iterable[str] = ()
-) -> Callable[
-    [Callable[[str, Mapping[str, Any]], Callable[[str], bool]]],
-    Callable[[str, Mapping[str, Any]], Callable[[str], bool]],
-]:
-    def decorate(
-        factory: Callable[[str, Mapping[str, Any]], Callable[[str], bool]],
-    ) -> Callable[[str, Mapping[str, Any]], Callable[[str], bool]]:
+) -> Callable[[_Builder], _Builder]:
+    def decorate(factory: _Builder) -> _Builder:
         _REGISTRY[instruction_id] = _Spec(factory=factory, requires=frozenset(requires))
         return factory
 
@@ -367,7 +379,7 @@ def _compile(instruction_id: str, pattern: str, flags: int = 0) -> re.Pattern[st
 
 
 @_register("keywords:existence")
-def _keyword_existence(instruction_id: str, kwargs: Mapping[str, Any]):
+def _keyword_existence(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     # No word boundaries. The original searches for the bare pattern, so "existence"
     # is satisfied by "batting" when the keyword is "bat". Reproduced, not repaired.
     patterns = [
@@ -378,7 +390,7 @@ def _keyword_existence(instruction_id: str, kwargs: Mapping[str, Any]):
 
 
 @_register("keywords:frequency")
-def _keyword_frequency(instruction_id: str, kwargs: Mapping[str, Any]):
+def _keyword_frequency(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     pattern = _compile(instruction_id, _need(instruction_id, kwargs, "keyword"), re.IGNORECASE)
     frequency = int(_need(instruction_id, kwargs, "frequency"))
     relation = _relation(instruction_id, kwargs, "relation")
@@ -386,7 +398,7 @@ def _keyword_frequency(instruction_id: str, kwargs: Mapping[str, Any]):
 
 
 @_register("keywords:forbidden_words")
-def _forbidden_words(instruction_id: str, kwargs: Mapping[str, Any]):
+def _forbidden_words(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     # With word boundaries, unlike `keywords:existence` above. The asymmetry is in the
     # original and is load-bearing: forbidding "bat" must not fail a response for
     # saying "debate".
@@ -398,7 +410,7 @@ def _forbidden_words(instruction_id: str, kwargs: Mapping[str, Any]):
 
 
 @_register("keywords:letter_frequency")
-def _letter_frequency(instruction_id: str, kwargs: Mapping[str, Any]):
+def _letter_frequency(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     letter = str(_need(instruction_id, kwargs, "letter")).lower()
     frequency = int(_need(instruction_id, kwargs, "let_frequency"))
     relation = _relation(instruction_id, kwargs, "let_relation")
@@ -411,7 +423,7 @@ def _letter_frequency(instruction_id: str, kwargs: Mapping[str, Any]):
 
 
 @_register("language:response_language", requires=[CAPABILITY_LANGDETECT])
-def _response_language(instruction_id: str, kwargs: Mapping[str, Any]):
+def _response_language(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     language = str(_need(instruction_id, kwargs, "language"))
     detect = backends().detect_language
 
@@ -435,7 +447,7 @@ def _response_language(instruction_id: str, kwargs: Mapping[str, Any]):
 
 
 @_register("length_constraints:number_sentences")
-def _number_sentences(instruction_id: str, kwargs: Mapping[str, Any]):
+def _number_sentences(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     num_sentences = int(_need(instruction_id, kwargs, "num_sentences"))
     relation = _relation(instruction_id, kwargs, "relation")
     split = backends().split_sentences
@@ -443,7 +455,7 @@ def _number_sentences(instruction_id: str, kwargs: Mapping[str, Any]):
 
 
 @_register("length_constraints:number_paragraphs")
-def _number_paragraphs(instruction_id: str, kwargs: Mapping[str, Any]):
+def _number_paragraphs(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     num_paragraphs = int(_need(instruction_id, kwargs, "num_paragraphs"))
     splitter = re.compile(r"\s?\*\*\*\s?")
 
@@ -466,14 +478,14 @@ def _number_paragraphs(instruction_id: str, kwargs: Mapping[str, Any]):
 
 
 @_register("length_constraints:number_words")
-def _number_words(instruction_id: str, kwargs: Mapping[str, Any]):
+def _number_words(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     num_words = int(_need(instruction_id, kwargs, "num_words"))
     relation = _relation(instruction_id, kwargs, "relation")
     return lambda response: _compare(count_words(response), num_words, relation)
 
 
 @_register("length_constraints:nth_paragraph_first_word")
-def _nth_paragraph_first_word(instruction_id: str, kwargs: Mapping[str, Any]):
+def _nth_paragraph_first_word(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     num_paragraphs = int(_need(instruction_id, kwargs, "num_paragraphs"))
     nth = int(_need(instruction_id, kwargs, "nth_paragraph"))
     first_word = str(_need(instruction_id, kwargs, "first_word")).lower()
@@ -506,14 +518,14 @@ def _nth_paragraph_first_word(instruction_id: str, kwargs: Mapping[str, Any]):
 
 
 @_register("detectable_content:number_placeholders")
-def _number_placeholders(instruction_id: str, kwargs: Mapping[str, Any]):
+def _number_placeholders(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     num_placeholders = int(_need(instruction_id, kwargs, "num_placeholders"))
     pattern = re.compile(r"\[.*?\]")
     return lambda response: len(pattern.findall(response)) >= num_placeholders
 
 
 @_register("detectable_content:postscript")
-def _postscript(instruction_id: str, kwargs: Mapping[str, Any]):
+def _postscript(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     marker = str(_need(instruction_id, kwargs, "postscript_marker"))
     if marker == "P.P.S":
         pattern = r"\s*p\.\s?p\.\s?s.*$"
@@ -531,7 +543,7 @@ def _postscript(instruction_id: str, kwargs: Mapping[str, Any]):
 
 
 @_register("detectable_format:number_bullet_lists")
-def _number_bullet_lists(instruction_id: str, kwargs: Mapping[str, Any]):
+def _number_bullet_lists(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     num_bullets = int(_need(instruction_id, kwargs, "num_bullets"))
     star = re.compile(r"^\s*\*[^\*].*$", re.MULTILINE)
     dash = re.compile(r"^\s*-.*$", re.MULTILINE)
@@ -539,14 +551,14 @@ def _number_bullet_lists(instruction_id: str, kwargs: Mapping[str, Any]):
 
 
 @_register("detectable_format:constrained_response")
-def _constrained_response(instruction_id: str, kwargs: Mapping[str, Any]):
+def _constrained_response(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     del instruction_id, kwargs
     options = ("My answer is yes.", "My answer is no.", "My answer is maybe.")
     return lambda response: any(option in response.strip() for option in options)
 
 
 @_register("detectable_format:number_highlighted_sections")
-def _number_highlighted(instruction_id: str, kwargs: Mapping[str, Any]):
+def _number_highlighted(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     num_highlights = int(_need(instruction_id, kwargs, "num_highlights"))
     single = re.compile(r"\*[^\n\*]*\*")
     double = re.compile(r"\*\*[^\n\*]*\*\*")
@@ -564,7 +576,7 @@ def _number_highlighted(instruction_id: str, kwargs: Mapping[str, Any]):
 
 
 @_register("detectable_format:multiple_sections")
-def _multiple_sections(instruction_id: str, kwargs: Mapping[str, Any]):
+def _multiple_sections(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     spliter = str(_need(instruction_id, kwargs, "section_spliter"))
     num_sections = int(_need(instruction_id, kwargs, "num_sections"))
     # Interpolated raw, as the original does, so `Section` and `SECTION` behave
@@ -575,7 +587,7 @@ def _multiple_sections(instruction_id: str, kwargs: Mapping[str, Any]):
 
 
 @_register("detectable_format:json_format")
-def _json_format(instruction_id: str, kwargs: Mapping[str, Any]):
+def _json_format(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     del instruction_id, kwargs
 
     def check(response: str) -> bool:
@@ -598,7 +610,7 @@ def _json_format(instruction_id: str, kwargs: Mapping[str, Any]):
 
 
 @_register("detectable_format:title")
-def _title(instruction_id: str, kwargs: Mapping[str, Any]):
+def _title(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     del instruction_id, kwargs
     pattern = re.compile(r"<<[^\n]+>>")
     return lambda response: any(
@@ -612,7 +624,7 @@ def _title(instruction_id: str, kwargs: Mapping[str, Any]):
 
 
 @_register("combination:two_responses")
-def _two_responses(instruction_id: str, kwargs: Mapping[str, Any]):
+def _two_responses(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     del instruction_id, kwargs
 
     def check(response: str) -> bool:
@@ -631,7 +643,7 @@ def _two_responses(instruction_id: str, kwargs: Mapping[str, Any]):
 
 
 @_register("combination:repeat_prompt")
-def _repeat_prompt(instruction_id: str, kwargs: Mapping[str, Any]):
+def _repeat_prompt(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     to_repeat = str(_need(instruction_id, kwargs, "prompt_to_repeat")).strip().lower()
     return lambda response: response.strip().lower().startswith(to_repeat)
 
@@ -642,13 +654,13 @@ def _repeat_prompt(instruction_id: str, kwargs: Mapping[str, Any]):
 
 
 @_register("startend:end_checker")
-def _end_checker(instruction_id: str, kwargs: Mapping[str, Any]):
+def _end_checker(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     end_phrase = str(_need(instruction_id, kwargs, "end_phrase")).strip().lower()
     return lambda response: response.strip().strip('"').lower().endswith(end_phrase)
 
 
 @_register("startend:quotation")
-def _quotation(instruction_id: str, kwargs: Mapping[str, Any]):
+def _quotation(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     del instruction_id, kwargs
 
     def check(response: str) -> bool:
@@ -664,7 +676,7 @@ def _quotation(instruction_id: str, kwargs: Mapping[str, Any]):
 
 
 @_register("change_case:capital_word_frequency")
-def _capital_word_frequency(instruction_id: str, kwargs: Mapping[str, Any]):
+def _capital_word_frequency(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     frequency = int(_need(instruction_id, kwargs, "capital_frequency"))
     relation = _relation(instruction_id, kwargs, "capital_relation")
     tokenize = backends().tokenize_words
@@ -677,7 +689,7 @@ def _capital_word_frequency(instruction_id: str, kwargs: Mapping[str, Any]):
 
 
 @_register("change_case:english_capital", requires=[CAPABILITY_LANGDETECT])
-def _english_capital(instruction_id: str, kwargs: Mapping[str, Any]):
+def _english_capital(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     del instruction_id, kwargs
     detect = backends().detect_language
 
@@ -691,7 +703,7 @@ def _english_capital(instruction_id: str, kwargs: Mapping[str, Any]):
 
 
 @_register("change_case:english_lowercase", requires=[CAPABILITY_LANGDETECT])
-def _english_lowercase(instruction_id: str, kwargs: Mapping[str, Any]):
+def _english_lowercase(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     del instruction_id, kwargs
     detect = backends().detect_language
 
@@ -710,7 +722,7 @@ def _english_lowercase(instruction_id: str, kwargs: Mapping[str, Any]):
 
 
 @_register("punctuation:no_comma")
-def _no_comma(instruction_id: str, kwargs: Mapping[str, Any]):
+def _no_comma(instruction_id: str, kwargs: Mapping[str, Any]) -> _Predicate:
     del instruction_id, kwargs
     return lambda response: "," not in response
 
