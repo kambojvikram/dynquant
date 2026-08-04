@@ -450,14 +450,45 @@ the serving-parity report already measured why: on fp16 the two runtimes share o
 greedy tokens on some prompts, because ties near a decision boundary break differently under
 different kernel orders, while top-1 agreement stays at 100 %. So the gate requires the paired
 95 % interval on the score difference to lie entirely inside `--max-delta` (default 1.0 point).
-One condition, two jobs: an interval wider than the bound fails whether the arms really differ
-or whether too few problems were scored to tell, and the failure message distinguishes them —
-a gate that accepted "not significantly different" on 40 examples would pass anything.
+
+That leaves three outcomes, not two, and they are told apart by whether the interval **excludes
+zero** — not by how wide it is. Inside the bound is a pass, even when the delta is
+statistically significant, because equivalence is the claim. An interval that excludes zero
+means the arms really differ and more data will not change that. An interval that contains zero
+but exceeds the bound means too few problems were scored to tell — and a gate that accepted
+"not significantly different" on 40 examples would pass anything. The first real run got the
+second and third of those confused; see below.
 
 Two further checks, because passing is not the same as measuring. Both arms must beat the task's
 chance floor, since two equally destroyed arms agree perfectly. And the `transformers` model
 must actually leave the GPU before the engine is built — vLLM sizes its KV cache from what is
 free at construction, so a lingering reference is either an OOM or a quietly smaller cache.
+
+#### What the first run found — [`reports/decode-neutrality.md`](reports/decode-neutrality.md)
+
+The smoke run on `Qwen/Qwen2.5-1.5B-Instruct` (GSM8K, 100 problems) came back 23 points apart:
+vLLM 60.00 %, transformers 37.00 %. Qwen publish ≈ 60 % for that checkpoint, so the arm that
+was wrong was the *direct* one — the opposite of what a serving gate is usually built to catch.
+
+`model.generate` merges the checkpoint's own `generation_config` **underneath** the caller's
+keyword arguments, and this one sets `repetition_penalty: 1.1` for chat. The old call site
+pinned `do_sample`, `num_beams`, `temperature`, `top_p` and `top_k` and never named the
+penalty, so it was applied on every greedy generation through `transformers` and on none
+through vLLM. The fix is structural rather than one more named field: `greedy_generation_config`
+builds a *fresh* `GenerationConfig`, which replaces the checkpoint's instead of layering over
+it, so every field it does not name is the library default. `NEUTRAL_DECODE` is the tripwire on
+those defaults, and the vLLM arm's mirror-image hole — four penalties left unpassed because the
+engine's defaults happen to be neutral — is pinned the same way.
+
+The gate's own verdict was the second defect: it branched on interval *width* before asking
+whether the interval excluded zero, and so reported a real 23-point disagreement as "too few
+problems to tell". Acting on that means scoring more problems, which is the one action that
+cannot help. Both are fixed and both counts above are now test fixtures.
+
+Scope, measured rather than assumed: `Qwen3.5-2B-Base` ships no `generation_config.json` at
+all and `Mistral-7B-Instruct-v0.3` ships only token ids, so **no phase-1 or phase-2 number
+changes**. Phi-4-mini and Ministral-8B are likewise clean; the two gated models could not be
+checked without an accepted licence.
 
 ---
 

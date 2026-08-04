@@ -24,7 +24,12 @@ torch = pytest.importorskip("torch")
 
 from _decode_stub import StubModel, StubTokenizer  # noqa: E402
 
-from dynquant.eval.harness import EvalConfig, generate_batched  # noqa: E402
+from dynquant.eval.harness import (  # noqa: E402
+    NEUTRAL_DECODE,
+    EvalConfig,
+    generate_batched,
+    greedy_generation_config,
+)
 
 
 @pytest.fixture
@@ -231,3 +236,149 @@ def test_padded_batch_members_get_their_own_answer_not_the_pad() -> None:
     prompts = ["one Answer:", "a b c d e Answer:"]
     _, outputs = _decode(prompts, reply="2", batch_size=2)
     assert outputs == ["2", "2"]
+
+
+# --------------------------------------------------------------------------
+# Decode settings
+#
+# The failure these cover cost 23 points and produced no error: Qwen2.5-1.5B-Instruct
+# ships `repetition_penalty: 1.1` in its generation_config.json, `model.generate`
+# merges the checkpoint's config *under* its kwargs, and a five-shot GSM8K prompt is
+# repetitive by construction. The same weights served through vLLM, whose sampling
+# parameters apply no penalty, scored 60% against transformers' 37%. Both numbers
+# looked like results.
+# --------------------------------------------------------------------------
+
+
+transformers = pytest.importorskip("transformers")
+
+
+def _chat_tuned_config():
+    """A checkpoint's own generation_config, as Qwen2.5-1.5B-Instruct ships it."""
+    return transformers.GenerationConfig(
+        do_sample=True,
+        temperature=0.7,
+        top_p=0.8,
+        top_k=20,
+        repetition_penalty=1.1,
+        eos_token_id=[151645, 151643],
+        bos_token_id=151643,
+        pad_token_id=151643,
+    )
+
+
+def test_the_checkpoints_chat_preferences_do_not_reach_the_decode() -> None:
+    """Every sampling field comes back to its neutral value, not the checkpoint's.
+
+    Asserted on the built config rather than on ``repetition_penalty`` alone, because
+    pinning the one field that bit is the fix that fails next time: the next
+    checkpoint ships a different field.
+
+    Turns red when: ``greedy_generation_config`` starts from the checkpoint's config
+    (``copy.deepcopy(source)``, ``GenerationConfig(**source.to_dict())``) instead of
+    from a fresh one.
+    """
+    model = StubModel(StubTokenizer(), "3", generation_config=_chat_tuned_config())
+    greedy = greedy_generation_config(model, EvalConfig(max_new_tokens=64), pad_id=7)
+
+    assert greedy.repetition_penalty == 1.0
+    assert greedy.do_sample is False
+    assert greedy.temperature == 1.0, "the library default, not the checkpoint's 0.7"
+    assert greedy.top_p == 1.0
+    assert greedy.top_k == 50
+
+
+def test_every_field_that_could_move_a_greedy_score_is_neutral() -> None:
+    """``NEUTRAL_DECODE`` is the list; this is the check that the built config obeys it.
+
+    Turns red when: a field is added to ``NEUTRAL_DECODE`` that the built config does
+    not actually leave neutral -- which is the only way the list could describe
+    something other than what runs.
+    """
+    model = StubModel(StubTokenizer(), "3", generation_config=_chat_tuned_config())
+    greedy = greedy_generation_config(model, EvalConfig(), pad_id=7)
+
+    assert {field: getattr(greedy, field) for field in NEUTRAL_DECODE} == NEUTRAL_DECODE
+
+
+def test_the_neutral_values_are_the_librarys_own_defaults() -> None:
+    """The tripwire on transformers itself.
+
+    ``NEUTRAL_DECODE`` claims each value means "not applied". That claim is only true
+    while it matches what ``GenerationConfig()`` produces -- the config the harness
+    builds names four fields and inherits the rest.
+
+    Turns red when: a transformers release changes one of these defaults. Then the
+    campaign's decode changed without anyone editing this repository, which is
+    exactly the case worth stopping on.
+    """
+    fresh = transformers.GenerationConfig()
+    assert {field: getattr(fresh, field) for field in NEUTRAL_DECODE} == NEUTRAL_DECODE
+
+
+def test_the_tokenizers_own_ids_are_carried_over_not_reset() -> None:
+    """The deliberate exception: token ids are facts, not preferences.
+
+    Dropping ``eos_token_id`` would neutralise nothing and cost every sequence a full
+    ``max_new_tokens`` of decoding.
+
+    Turns red when: the ids stop being read off the checkpoint.
+    """
+    model = StubModel(StubTokenizer(), "3", generation_config=_chat_tuned_config())
+    greedy = greedy_generation_config(model, EvalConfig(max_new_tokens=64), pad_id=7)
+
+    assert greedy.eos_token_id == [151645, 151643]
+    assert greedy.bos_token_id == 151643
+    assert greedy.pad_token_id == 7, "the harness's pad id, not the checkpoint's"
+    assert greedy.max_new_tokens == 64
+
+
+def test_a_model_with_no_generation_config_still_decodes(propagating_logs, caplog) -> None:
+    """A bare module has no ``generation_config``; that is a slow run, not a crash.
+
+    Warned about because it is otherwise invisible: without an eos id every sequence
+    runs to ``max_new_tokens``, which shows up as a run taking hours longer for no
+    stated reason.
+
+    Turns red when: the attribute is read directly and raises, or the warning goes.
+    """
+    with caplog.at_level(logging.WARNING, logger="dynquant.eval.harness"):
+        greedy = greedy_generation_config(StubModel(StubTokenizer(), "3"), EvalConfig(), pad_id=7)
+
+    assert greedy.eos_token_id is None
+    assert "names no eos token" in caplog.text
+
+
+def test_generation_is_driven_by_the_config_not_by_loose_kwargs() -> None:
+    """The mechanism, asserted at the call site.
+
+    A loose ``do_sample=False`` kwarg leaves every *unnamed* field merged from the
+    checkpoint; an explicit ``GenerationConfig`` replaces the lot. Only the second is
+    safe, so the call has to pass the object and nothing that could layer over it.
+
+    Turns red when: a sampling kwarg is reintroduced beside ``generation_config``, or
+    the config stops being passed at all.
+    """
+    tokenizer = StubTokenizer()
+    model = StubModel(tokenizer, "3", generation_config=_chat_tuned_config())
+    generate_batched(model, tokenizer, ["a b Answer:"], EvalConfig(early_stop=False))
+
+    (call,) = model.kwargs
+    assert set(call) == {"generation_config", "stopping_criteria"}
+    assert call["generation_config"].repetition_penalty == 1.0
+
+
+def test_the_config_is_built_once_for_the_whole_run() -> None:
+    """Not per batch: it cannot vary between batches, and it is not free to build.
+
+    Turns red when: ``greedy_generation_config`` moves inside the batch loop, where a
+    later change could make one batch decode differently from another.
+    """
+    tokenizer = StubTokenizer()
+    model = StubModel(tokenizer, "3", generation_config=_chat_tuned_config())
+    prompts = [f"prompt {'x ' * i} Answer:" for i in range(5)]
+    generate_batched(model, tokenizer, prompts, EvalConfig(early_stop=False, batch_size=2))
+
+    assert model.calls == 3
+    configs = {id(call["generation_config"]) for call in model.kwargs}
+    assert len(configs) == 1, "every batch decoded with the same object"

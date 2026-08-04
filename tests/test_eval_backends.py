@@ -96,10 +96,23 @@ class FakeEngine:
 
 @dataclass
 class FakeSamplingParams:
-    n: int = 1
+    """Every default here is deliberately *not* neutral, and deliberately not vLLM's.
+
+    A fake that defaulted each penalty to the value the caller wants could not tell
+    "pinned explicitly" from "not passed at all" -- the assertion would read 1.0 either
+    way. The real ``SamplingParams`` does default these to the neutral values; that is
+    precisely why they were left unpassed, and why a vLLM release moving one would have
+    re-decoded the campaign with nothing to catch it.
+    """
+
+    n: int = 0
     temperature: float = 1.0
-    top_p: float = 1.0
-    top_k: int = -1
+    top_p: float = 0.8
+    top_k: int = 20
+    repetition_penalty: float = 1.1
+    presence_penalty: float = 0.5
+    frequency_penalty: float = 0.5
+    min_tokens: int = 8
     max_tokens: int | None = None
     stop: list[str] | None = None
 
@@ -300,6 +313,55 @@ def test_the_engine_is_asked_for_greedy_decoding() -> None:
     assert params.top_p == 1.0
     assert params.top_k == -1
     assert params.max_tokens == 64
+
+
+def test_no_penalty_is_applied_on_the_engine_arm_either() -> None:
+    """The other half of the 23-point gap, pinned on the side that was already right.
+
+    The transformers arm was the broken one -- it merged the checkpoint's
+    ``repetition_penalty: 1.1`` -- and vLLM was correct only because
+    ``SamplingParams`` happens to default these to neutral. "Correct by default" is
+    not a property a campaign can rest on: an engine release that changed one would
+    move every vLLM-scored arm at once, and the parity gate would then read the
+    disagreement as a fault in the transformers path.
+
+    Turns red when: any of the three penalties, or ``min_tokens``, stops being passed.
+    ``FakeSamplingParams`` defaults them all to non-neutral values so that dropping the
+    argument is distinguishable from pinning it.
+    """
+    params = _pair(["a Answer:"]).engine.seen[0]["sampling_params"]
+
+    assert params.repetition_penalty == 1.0
+    assert params.presence_penalty == 0.0
+    assert params.frequency_penalty == 0.0
+    assert params.min_tokens == 0, "no floor on the answer length; eos may come at once"
+
+
+def test_the_two_arms_pin_the_same_settings_under_their_two_spellings() -> None:
+    """The arms are only comparable where their settings correspond.
+
+    Written as an explicit mapping because the libraries agree on neither the names
+    nor the value that means "off": ``min_new_tokens=None`` and ``min_tokens=0`` are
+    the same statement, and ``top_k`` is disabled by -1 in vLLM and by the vocabulary
+    size in transformers. Deriving one from the other would assume the correspondence
+    this asserts.
+
+    Turns red when: one arm's neutral value is changed without the other's -- the
+    failure mode the runtime-parity gate exists to detect, caught here for free
+    instead of after an hour of GPU time.
+    """
+    from dynquant.eval.harness import NEUTRAL_DECODE
+
+    params = _pair(["a Answer:"]).engine.seen[0]["sampling_params"]
+    correspondence = {
+        "repetition_penalty": ("repetition_penalty", params.repetition_penalty),
+        "num_return_sequences": ("n", params.n),
+        "min_new_tokens": ("min_tokens", None if params.min_tokens == 0 else params.min_tokens),
+    }
+    for hf_field, (vllm_field, vllm_value) in correspondence.items():
+        assert vllm_value == NEUTRAL_DECODE[hf_field], (
+            f"vLLM's {vllm_field} disagrees with transformers' {hf_field}"
+        )
 
 
 def test_stop_sequences_reach_the_engine_only_as_a_speed_setting() -> None:

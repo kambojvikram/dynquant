@@ -241,22 +241,31 @@ def _judge(paired: PairedComparison, *, chance: float, max_delta: float) -> list
     failures: list[str] = []
     low, high = paired.interval_points
 
-    if low < -max_delta or high > max_delta:
-        half = (high - low) / 2.0
-        if half > max_delta:
-            failures.append(
-                f"the interval is {2 * half:.2f} points wide against a +/-{max_delta:.2f} "
-                f"bound, on {paired.total} problems with {paired.discordant} discordant. "
-                f"This is not evidence the runtimes differ -- it is too few problems to "
-                f"tell. Score more, or widen --max-delta and say so."
-            )
-        else:
-            failures.append(
-                f"the runtimes disagree: delta {paired.delta_points:+.2f} points, 95% CI "
-                f"[{low:+.2f}, {high:+.2f}], outside the +/-{max_delta:.2f} bound "
-                f"(p={paired.p_value:.4g}). The campaign cannot report vLLM-scored arms "
-                f"alongside transformers-scored ones until this is explained."
-            )
+    # Three cases, discriminated on whether the interval excludes zero rather than on
+    # how wide it is. Width alone cannot tell them apart, and getting this backwards is
+    # worse than not diagnosing at all: a genuine 23-point disagreement reported as
+    # "too few problems to tell" sends the operator to score *more* problems, which
+    # narrows the interval around a real difference and fails again, more expensively.
+    if low >= -max_delta and high <= max_delta:
+        pass  # Equivalent within the bound. A significant but tiny delta passes here,
+        # which is the point of testing equivalence rather than significance.
+    elif low > 0.0 or high < 0.0:
+        failures.append(
+            f"the runtimes disagree: delta {paired.delta_points:+.2f} points, 95% CI "
+            f"[{low:+.2f}, {high:+.2f}], which excludes zero and leaves the "
+            f"+/-{max_delta:.2f} bound (p={paired.p_value:.4g}, {paired.discordant} "
+            f"discordant of {paired.total}). More problems will not change this. The "
+            f"campaign cannot report vLLM-scored arms alongside transformers-scored "
+            f"ones until it is explained."
+        )
+    else:
+        failures.append(
+            f"the interval is {high - low:.2f} points wide against a +/-{max_delta:.2f} "
+            f"bound and contains zero, on {paired.total} problems with "
+            f"{paired.discordant} discordant. This is not evidence the runtimes differ "
+            f"-- it is too few problems to tell. Score more, or widen --max-delta and "
+            f"say so."
+        )
 
     floor = max(chance, 0.0)
     for label, accuracy in (

@@ -110,7 +110,9 @@ class StubModel:
     prompt-construction bug hide behind a plausible answer.
     """
 
-    def __init__(self, tokenizer: StubTokenizer, reply: str) -> None:
+    def __init__(
+        self, tokenizer: StubTokenizer, reply: str, generation_config: Any | None = None
+    ) -> None:
         self._tokenizer = tokenizer
         self._reply = tokenizer.encode_words(reply)
         self.training = False
@@ -120,6 +122,16 @@ class StubModel:
         all. This is the ground truth for "did the model see the question or the
         padding?" -- recorded here rather than on the tokenizer because the harness
         builds the batch itself, so the tokenizer never sees the padded form."""
+        self.kwargs: list[dict[str, Any]] = []
+        """One entry per ``generate`` call, tensors excluded. A real ``generate``
+        merges the checkpoint's own ``generation_config`` *under* whatever it is
+        passed, so which arguments arrive decides whether the decode is greedy or
+        carries the checkpoint author's chat preferences -- and neither raises."""
+        if generation_config is not None:
+            # Set only when a test asks for it: a model *without* the attribute is
+            # itself a case worth covering, and a stub that always had one could not
+            # express it.
+            self.generation_config = generation_config
 
     def parameters(self) -> Any:
         yield torch.zeros(1)
@@ -135,5 +147,6 @@ class StubModel:
     def generate(self, *, input_ids: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         self.calls += 1
         self.fed.extend(self._tokenizer.words_for(row) for row in input_ids.tolist())
+        self.kwargs.append({k: v for k, v in kwargs.items() if k != "attention_mask"})
         reply = torch.tensor([self._reply] * input_ids.shape[0], dtype=input_ids.dtype)
         return torch.cat([input_ids, reply], dim=1)

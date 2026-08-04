@@ -56,12 +56,14 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
 __all__ = [
+    "NEUTRAL_DECODE",
     "EncodedPrompts",
     "EvalBackend",
     "EvalConfig",
     "TransformersBackend",
     "encode_prompts",
     "generate_batched",
+    "greedy_generation_config",
 ]
 
 _log = get_logger(__name__)
@@ -173,6 +175,90 @@ class EvalBackend(ABC):
         """Greedy continuations, one per prompt, **in input order**."""
 
 
+#: Decode settings that are neutral by definition, checked rather than assumed.
+#:
+#: Each key is a field whose non-neutral value would change a greedy score -- by
+#: choosing a different search (``penalty_alpha`` turns greedy into contrastive
+#: search), by rewriting the logits before the argmax, or by moving where the
+#: sequence stops -- paired with the value that means "not applied".
+#:
+#: This is a tripwire, not the mechanism. What makes the decode neutral is that
+#: :func:`greedy_generation_config` builds a fresh ``GenerationConfig``, so *every*
+#: field it does not name is the library's default whether or not it is listed here.
+#: The list exists so that a transformers release changing one of those defaults
+#: turns a test red instead of quietly re-decoding the campaign, and so the vLLM
+#: arm's :meth:`~dynquant.eval.backends.VllmBackend._sampling_params` can be read
+#: against something.
+NEUTRAL_DECODE: dict[str, Any] = {
+    "do_sample": False,
+    "num_beams": 1,
+    "penalty_alpha": None,
+    "num_return_sequences": 1,
+    "repetition_penalty": 1.0,
+    "encoder_repetition_penalty": 1.0,
+    "no_repeat_ngram_size": 0,
+    "length_penalty": 1.0,
+    "guidance_scale": None,
+    "sequence_bias": None,
+    "min_length": 0,
+    "min_new_tokens": None,
+    "stop_strings": None,
+    "bad_words_ids": None,
+    "forced_bos_token_id": None,
+    "forced_eos_token_id": None,
+    "suppress_tokens": None,
+    "begin_suppress_tokens": None,
+    "exponential_decay_length_penalty": None,
+}
+
+
+def greedy_generation_config(model: Any, config: EvalConfig, pad_id: int) -> Any:
+    """Decode settings built from the library's defaults, never the checkpoint's.
+
+    ``model.generate`` merges ``model.generation_config`` *under* the kwargs it is
+    given, so every field the call site does not name is whatever the checkpoint author
+    chose for chat. Qwen2.5-1.5B-Instruct ships ``repetition_penalty: 1.1``. On a
+    five-shot GSM8K prompt -- repetitive by construction, since every exemplar repeats
+    the same scaffolding and the arithmetic reuses digits -- that cost 23 points
+    against the same weights served through vLLM, whose sampling parameters apply no
+    penalty. Neither arm raised anything and both numbers looked like results.
+
+    Passing an explicit ``GenerationConfig`` *replaces* the checkpoint's rather than
+    layering over it, so every field not named here is the library's neutral default
+    instead of a preference tuned for conversation. That is the property worth having:
+    the fix is not "also pin ``repetition_penalty``", because the next checkpoint will
+    ship a different field.
+
+    The token ids are the deliberate exception. They are facts about the tokenizer, not
+    decode settings, and reading them off the checkpoint is exactly right -- dropping
+    ``eos_token_id`` would make every sequence run to ``max_new_tokens``. That case is
+    warned about rather than repaired, because there is nowhere better to get the id
+    from: the previous code passed no ``eos_token_id`` at all and let ``generate``
+    merge this same attribute, so inventing a fallback here would be a silent change
+    to which token ends a sequence, on top of a run that is merely slow.
+    """
+    from transformers import GenerationConfig
+
+    source = getattr(model, "generation_config", None)
+    eos_token_id = getattr(source, "eos_token_id", None)
+    if eos_token_id is None:
+        _log.warning(
+            "the checkpoint's generation_config names no eos token, so every sequence "
+            "will decode to max_new_tokens=%d. Scores are unaffected -- the text is cut "
+            "at the stop sequences either way -- but the run will take several times "
+            "longer than it needs to.",
+            config.max_new_tokens,
+        )
+    return GenerationConfig(
+        max_new_tokens=config.max_new_tokens,
+        do_sample=False,
+        num_beams=1,
+        pad_token_id=pad_id,
+        eos_token_id=eos_token_id,
+        bos_token_id=getattr(source, "bos_token_id", None),
+    )
+
+
 class TransformersBackend(EvalBackend):
     """``model.generate`` on a padded batch. The reference path."""
 
@@ -202,6 +288,7 @@ class TransformersBackend(EvalBackend):
         was_training = model.training
         model.eval()
         criteria = _stopping_criteria(self._tokenizer, config)
+        greedy = greedy_generation_config(model, config, self._pad_id)
 
         try:
             for start in range(0, len(order), config.batch_size):
@@ -225,13 +312,7 @@ class TransformersBackend(EvalBackend):
                 generated = model.generate(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
-                    max_new_tokens=config.max_new_tokens,
-                    do_sample=False,
-                    num_beams=1,
-                    temperature=None,
-                    top_p=None,
-                    top_k=None,
-                    pad_token_id=self._pad_id,
+                    generation_config=greedy,
                     stopping_criteria=criteria,
                 )
                 for position, row in zip(chunk, generated[:, width:].tolist(), strict=True):

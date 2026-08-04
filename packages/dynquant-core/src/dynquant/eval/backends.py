@@ -102,7 +102,24 @@ class VllmBackend(EvalBackend):
         return [[int(i) for i in out.outputs[0].token_ids] for out in ordered]
 
     def _sampling_params(self, config: EvalConfig) -> Any:
-        """Greedy, one sequence, mirroring the ``transformers`` arm exactly.
+        """Greedy, one sequence, pinned field by field to match the ``transformers`` arm.
+
+        The penalties are set explicitly even though they are already
+        :class:`SamplingParams`' defaults, because their being defaults here is exactly
+        what made the arms disagree: ``model.generate`` merges the *checkpoint's*
+        ``generation_config``, so a checkpoint shipping ``repetition_penalty: 1.1`` --
+        Qwen2.5-1.5B-Instruct does -- decoded with a penalty through ``transformers``
+        and without one here, for a 23-point gap on five-shot GSM8K. The
+        ``transformers`` side is fixed at its root by
+        :func:`~dynquant.eval.harness.greedy_generation_config`; naming them here is so
+        the two sides can be read against each other, and so a vLLM release that
+        changes a default cannot move a score silently.
+
+        Offline ``LLM.generate`` uses a ``SamplingParams`` it is handed as-is, so the
+        engine's ``--generation-config auto`` behaviour -- which would otherwise apply
+        that same checkpoint file here -- never gets a say. That is why this is pinned
+        in the request rather than in the engine's constructor, where the argument
+        would also have to exist in every supported vLLM version.
 
         ``stop`` is passed only when ``early_stop`` is set, for the same reason it is
         optional there: it is a speed setting and cannot move a score, because
@@ -116,6 +133,10 @@ class VllmBackend(EvalBackend):
             temperature=0.0,
             top_p=1.0,
             top_k=-1,
+            repetition_penalty=1.0,
+            presence_penalty=0.0,
+            frequency_penalty=0.0,
+            min_tokens=0,
             max_tokens=config.max_new_tokens,
             stop=list(config.stop_sequences) if config.early_stop else None,
         )

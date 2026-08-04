@@ -19,6 +19,44 @@ ones that invalidate artifacts a user has already produced.
 
 ## [Unreleased]
 
+### Fixed — a "greedy" decode that was partly the checkpoint's decode
+
+`model.generate` merges the checkpoint's own `generation_config` **underneath** the
+keyword arguments it is given, so every field the call site does not name is whatever
+the checkpoint author picked for chat. `dynquant eval`'s `transformers` path named
+`do_sample`, `num_beams`, `temperature`, `top_p` and `top_k` — and not
+`repetition_penalty`, which `Qwen/Qwen2.5-1.5B-Instruct` sets to 1.1. That penalty was
+applied to every greedy generation on the direct path and to none on the vLLM path,
+and it cost **23 points** of GSM8K: 37.00 % against vLLM's 60.00 %, where Qwen publish
+≈ 60 %. The runtime-parity gate is what found it.
+
+`eval.harness.greedy_generation_config` now builds a *fresh* `GenerationConfig`, which
+replaces the checkpoint's rather than layering over it, so every field it does not name
+is the library's default. The tokenizer's `eos`/`bos`/`pad` ids are the deliberate
+exception, and a checkpoint that names no `eos` is now warned about rather than left to
+decode silently to `max_new_tokens`. `eval.harness.NEUTRAL_DECODE` is exported as the
+tripwire on those defaults: nineteen fields whose non-neutral value would move a greedy
+score, asserted against a fresh `GenerationConfig()` so a transformers release that
+changes one turns a test red. `VllmBackend` pins the mirror-image four —
+`repetition_penalty`, `presence_penalty`, `frequency_penalty`, `min_tokens` — which had
+been left unpassed because vLLM's own defaults happen to be neutral.
+
+No published DynQuant number changes. Measured, not assumed: `Qwen3.5-2B-Base` ships no
+`generation_config.json` at all and `Mistral-7B-Instruct-v0.3` ships only token ids, so
+the phase-1 and phase-2 campaigns never carried a penalty. Full scope, including what a
+contaminated path would and would not have invalidated, in
+[`docs/reports/decode-neutrality.md`](docs/reports/decode-neutrality.md).
+
+### Fixed — `scripts/gate_runtime_parity.py` named the wrong failure
+
+The verdict branched on how *wide* the confidence interval was before asking whether it
+excluded zero, so the 23-point disagreement above was reported as "too few problems to
+tell". That sends the operator to score more problems — the one action that cannot help,
+and the expensive one. Equivalence testing has three outcomes and the gate now
+distinguishes them: inside the bound is a pass even when the delta is significant;
+excluding zero is a real disagreement; containing zero while exceeding the bound is too
+little data.
+
 ## [0.2.0] — 2026-08-02
 
 A DynQuant checkpoint serves on vLLM. No fork, no patch, no `--quantization` flag,
