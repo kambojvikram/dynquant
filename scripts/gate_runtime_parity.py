@@ -62,12 +62,6 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from dynquant.eval.compare import PairedComparison
 
-# IFEval takes no few-shot exemplars, so it is not in the CLI's task registry; it is
-# offered here anyway because it is the phase-3 headline and the only task whose
-# prompts go through a chat template, which is where the double-BOS hazard that
-# motivated passing ids rather than strings actually lives.
-IFEVAL_CHANCE = 0.0
-
 GIB = 1024**3
 
 
@@ -187,32 +181,20 @@ def _score(
     different ``config``, and any of those would be attributed to the engine.
     """
     from dynquant.commands import _shared
+    from dynquant.commands.evaluate import _task_kwargs
 
     started = time.time()
-    if args.task == "ifeval":
-        from dynquant.eval.ifeval import evaluate_ifeval
-
-        result = evaluate_ifeval(
-            model,
-            tokenizer,
-            examples,
-            label=f"{args.task}:{arm}",
-            config=config,
-            progress=_shared.progress_printer(arm, every=200),
-            # A missing `langdetect` would otherwise refuse to produce a number at
-            # all. Both arms drop the same keys, so the pairing survives.
-            on_unverifiable="drop",
-        )
-    else:
-        result = spec.evaluate(
-            model,
-            tokenizer,
-            examples,
-            label=f"{args.task}:{arm}",
-            shots=shots,
-            config=config,
-            progress=_shared.progress_printer(arm, every=200),
-        )
+    result = spec.evaluate(
+        model,
+        tokenizer,
+        examples,
+        label=f"{args.task}:{arm}",
+        config=config,
+        progress=_shared.progress_printer(arm, every=200),
+        # By declared capability, so a task added to the registry reaches both arms
+        # of the gate with the options it needs and not by being named here.
+        **_task_kwargs(spec, args, shots),
+    )
     elapsed = time.time() - started
     print(f"\n[{arm}] {result.summary()}", flush=True)
     print(f"[{arm}] {elapsed:.1f}s", flush=True)
@@ -356,54 +338,74 @@ def _task(name: str) -> tuple[Any, float]:
     """The CLI's own task spec, so the gate cannot be configured differently."""
     from dynquant.commands.evaluate import TASKS
 
-    if name == "ifeval":
-        return None, IFEVAL_CHANCE
     spec = TASKS[name]
     return spec, spec.chance
 
 
 def _setup(spec: Any, args: argparse.Namespace) -> tuple[list[Any], list[Any], Any]:
-    """Examples, few-shot prefix and decode settings -- built once, used by both arms."""
-    from dataclasses import replace
+    """Examples, few-shot prefix and decode settings -- built once, used by both arms.
 
+    Split and shot count come from ``_resolve_splits``, the same function ``dynquant
+    eval`` uses. A gate that resolved them itself would certify a configuration nobody
+    runs: the moment the two disagree about which split IFEval is read from or how many
+    exemplars MBPP gets, the parity it measured is parity for the wrong evaluation.
+    """
+    from dynquant.commands.evaluate import _pick_shots, _resolve_splits
     from dynquant.eval.harness import EvalConfig
 
-    if spec is None:
-        from dynquant.eval.ifeval import DEFAULT_CONFIG, load_ifeval
-
-        config = replace(DEFAULT_CONFIG, limit=args.limit)
-        if args.max_new_tokens:
-            config = replace(config, max_new_tokens=args.max_new_tokens)
-        if args.batch_size:
-            config = replace(config, batch_size=args.batch_size)
-        return load_ifeval(args.split or "train"), [], config
-
-    from dynquant.commands.evaluate import _pick_shots
-
-    examples = spec.load(args.split or "test")
-    shots = _pick_shots(spec, spec.shots, seed=args.shot_seed, split=args.shot_split)
+    split, shot_split, n_shots = _resolve_splits(spec, args)
+    examples = spec.load(split)
+    shots = _pick_shots(spec, n_shots, seed=args.shot_seed, split=shot_split)
     config = EvalConfig(
         max_new_tokens=args.max_new_tokens or spec.max_new_tokens,
         batch_size=args.batch_size or spec.batch_size,
         max_prompt_tokens=spec.max_prompt_tokens,
+        add_special_tokens=spec.add_special_tokens,
         limit=args.limit,
     )
     return examples, shots, config
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return _build_parser().parse_args(argv)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    """Separate from parsing so the tests can reach the parser without running it."""
+    from dynquant.commands.evaluate import TASKS
+
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model", required=True, help="checkpoint both arms load")
     parser.add_argument(
         "--task",
         default="gsm8k",
-        choices=["gsm8k", "casehold", "banking77", "ifeval"],
+        # Read off the registry rather than listed: a task the campaign scores but the
+        # gate cannot is a task served through an uncertified runtime.
+        choices=sorted(TASKS),
         help="gsm8k by default: long generations, where a runtime difference compounds",
     )
     parser.add_argument("--split", default=None, help="task default if unset")
     parser.add_argument("--limit", type=int, default=None, help="score only the first N")
     parser.add_argument("--shot-seed", type=int, default=0)
-    parser.add_argument("--shot-split", default="train")
+    parser.add_argument("--shots", type=int, default=None, help="task default if unset")
+    parser.add_argument("--shot-split", default=None, help="task default if unset")
+    parser.add_argument(
+        "--on-unverifiable",
+        default="drop",
+        choices=["raise", "drop"],
+        # Not the command's default of `raise`. A missing `langdetect` would otherwise
+        # refuse to produce a number at all, and both arms drop the same keys, so the
+        # pairing survives -- which is the only property this script measures.
+        help="drop by default here, unlike `dynquant eval`",
+    )
+    parser.add_argument(
+        "--allow-execution",
+        action="store_true",
+        help="required by the code tasks, which are scored by running the generations",
+    )
+    parser.add_argument("--prompt-style", default="auto", choices=["auto", "chat", "completion"])
+    parser.add_argument("--exec-timeout", type=float, default=None)
+    parser.add_argument("--exec-memory-mb", type=int, default=None)
     parser.add_argument("--max-new-tokens", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None, help="transformers arm only")
 
@@ -436,7 +438,7 @@ def _parse_args() -> argparse.Namespace:
         help="equivalence bound in accuracy points; the paired 95%% CI must fit inside it",
     )
     parser.add_argument("--out", default=None, help="write the full record here as JSON")
-    return parser.parse_args()
+    return parser
 
 
 if __name__ == "__main__":
