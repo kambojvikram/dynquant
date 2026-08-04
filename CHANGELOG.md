@@ -48,28 +48,58 @@ the checkpoint author picked for chat. `dynquant eval`'s `transformers` path nam
 applied to every greedy generation on the direct path and to none on the vLLM path. The
 runtime-parity gate is what found it.
 
-An earlier version of this entry credited the penalty with **23 points** of GSM8K.
-It was not worth any: with the decode replaced, the `transformers` arm scored 37.00 %
-again, unchanged to the problem, and the gap was the stop-sequence defect above. The
-decode fix stands on its own — a greedy decode must not inherit `do_sample: true` and
-`temperature: 0.7` from the checkpoint author, whatever it happens to cost on one task.
+A middle version of this entry retracted that, on the grounds that replacing the decode
+left the `transformers` arm at 37.00 %, unchanged to the problem. **The retraction was
+wrong and is withdrawn.** The replacement did not reach the decode: transformers 5.x
+refills a passed config's *unset* fields from `model.generation_config`, so a fresh
+`GenerationConfig` no longer replaces the checkpoint's the way it does on 4.x. Isolated
+on GSM8K problems 100–199 — 42/100 as shipped, **61/100** with `repetition_penalty`
+pinned to 1.0 — the penalty is worth **19 points**, and pinning all nineteen neutral
+fields gives the same 61 with per-problem identical hits.
 
-`eval.harness.greedy_generation_config` now builds a *fresh* `GenerationConfig`, which
-replaces the checkpoint's rather than layering over it, so every field it does not name
-is the library's default. The tokenizer's `eos`/`bos`/`pad` ids are the deliberate
-exception, and a checkpoint that names no `eos` is now warned about rather than left to
-decode silently to `max_new_tokens`. `eval.harness.NEUTRAL_DECODE` is exported as the
-tripwire on those defaults: nineteen fields whose non-neutral value would move a greedy
-score, asserted against a fresh `GenerationConfig()` so a transformers release that
-changes one turns a test red. `VllmBackend` pins the mirror-image four —
-`repetition_penalty`, `presence_penalty`, `frequency_penalty`, `min_tokens` — which had
-been left unpassed because vLLM's own defaults happen to be neutral.
+`eval.harness.greedy_generation_config` therefore pins every field of
+`eval.harness.NEUTRAL_DECODE` **by name** rather than inheriting any: nineteen fields
+whose non-neutral value would move a greedy score, so neutrality is a property of that
+dict and not of a library default that can change between majors. The tokenizer's
+`eos`/`bos`/`pad` ids are the deliberate exception, and a checkpoint that names no `eos`
+is now warned about rather than left to decode silently to `max_new_tokens`.
+`VllmBackend` pins the mirror-image four — `repetition_penalty`, `presence_penalty`,
+`frequency_penalty`, `min_tokens` — which had been left unpassed because vLLM's own
+defaults happen to be neutral.
+
+The suite already carried a tripwire asserting
+`GenerationConfig().repetition_penalty == 1.0`. It never fired: the `test` job installs
+no transformers, so `pytest.importorskip` skipped the whole decode module while the
+campaign ran on 5.14.1. A new `transformers-lines` CI job runs the suite on **4.56.2 and
+5.14.1** with transformers installed, verifies the pinned version is the one imported,
+and fails if any transformers-gated file skips. On 4.x the broken and fixed programs are
+indistinguishable — reverting the fix fails four tests on 5.14.1 and zero on 4.56.2 —
+so testing on the version the campaign runs is the guard, not an optional extra.
 
 No published DynQuant number changes. Measured, not assumed: `Qwen3.5-2B-Base` ships no
 `generation_config.json` at all and `Mistral-7B-Instruct-v0.3` ships only token ids, so
 the phase-1 and phase-2 campaigns never carried a penalty. Full scope, including what a
 contaminated path would and would not have invalidated, in
 [`docs/reports/decode-neutrality.md`](docs/reports/decode-neutrality.md).
+
+On all 1319 GSM8K test problems the fix moves the `transformers` arm from 53.15 % to
+**61.49 %** against vLLM's 62.32 %, unchanged — delta −9.17 → **−0.83**, agreement
+73.24 % → **93.71 %**, *p* 1.1e−10 → 0.27, with the 83 remaining disagreements split 36
+to 47. The gate still fails, now as the underpowered case rather than as a disagreement.
+
+### Changed — the gate no longer tells you to score problems that do not exist
+
+At 6.29 % discordance a ±1.00-point half-width needs about 2418 problems and GSM8K's
+test split is 1319, so "score more" is unfollowable on a run that already covered it.
+`_judge` takes `exhausted` (set when `--limit` is absent) and reports the two actions
+that remain: make the runtimes agree more closely, or set the bound to what the task can
+resolve. `_problems_needed` prints the count the current bound would require, because
+the difference between advice that can be acted on and advice that cannot is the number.
+
+The practical consequence, for the campaign rather than for the script: cross-engine
+parity on GSM8K is certifiable to roughly ±1.4 points, and DynQuant's phase-2 margin over
+GPTQ is +1.54. Arms that are compared to each other should therefore be scored through
+the same engine.
 
 ### Fixed — `scripts/gate_runtime_parity.py` named the wrong failure
 

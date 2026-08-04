@@ -15,6 +15,13 @@ points because one vLLM answer flipped the other way.
 At that point the score had said everything a score can say. The next step was to stop
 reasoning about mechanisms and read the text.
 
+> **Later, and it does not change this report's own finding.** The replacement decode did not
+> take effect on transformers 5.x, which refills a passed config's unset fields from the
+> checkpoint. The penalty *was* a cause — 19 points, isolated field by field — and its
+> retraction has itself been retracted in `decode-neutrality.md`. The stop sequence below is
+> a separate, independently real defect worth 24 points on this block, found exactly as
+> described. The two coexisted; fixing either alone left the gate failing.
+
 ## What the generations said
 
 `diag_arm_gap.py` re-ran both arms on eight hand-picked problems — the six the arms
@@ -108,9 +115,29 @@ not identical.
 
 It also sets the ceiling on what the widened stop can fix. The stop removes a bias: run-ons
 were a one-directional failure, always converting a solved problem into a wrong answer, and
-they hit the `transformers` arm because that arm ran on. What remains after it is chaotic
-divergence, which is unbiased and shrinks with problem count. Whether it shrinks *enough* to
-clear `--max-delta 1.0` is the next measurement, not a prediction.
+they hit the `transformers` arm because that arm ran on.
+
+> **Corrected by the full-scale run.** The paragraph that stood here concluded that what
+> remains is "chaotic divergence, which is unbiased and shrinks with problem count". The
+> first-token divergence above is real and is unbiased. But it was not what remained: the
+> 1319-problem gate came back at −9.17 points, one-directional, and the residual had a second
+> cause — the repetition penalty, still active because its fix was inert on transformers 5.x.
+> The reasoning was sound and the conclusion was still wrong, because "the causes I have
+> found are the causes there are" is an assumption, and a −1.0 smoke on the one agreeing
+> block is not evidence against a uniform −9. **Unbiased-and-shrinking is a claim about a
+> residual, and a residual is only known once the gate passes.**
+>
+> **The residual is now measured, and it is unbiased.** With the penalty neutralised the full
+> 1319-problem gate reads 61.49 % against 62.32 %: 83 discordant problems out of 1319 (6.29 %),
+> split 36 transformers-only to 47 vLLM-only, delta −0.83 with p = 0.27. That split is what
+> first-token divergence looks like; the claim above was right about the mechanism and wrong
+> about the arithmetic, because it was made before the mechanism was the only thing left.
+>
+> The second half of the claim — "shrinks with problem count" — is true and does not help
+> here. GSM8K's test split is 1319 problems and a ±1.00-point bound at this discordance rate
+> needs 2418, so the divergence floor is not something this task can be scored out of. See
+> [`decode-neutrality.md`](decode-neutrality.md#what-the-fix-measured-at-full-scale) for what
+> that costs the campaign.
 
 ## Guards added
 

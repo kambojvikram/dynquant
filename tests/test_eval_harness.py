@@ -16,6 +16,8 @@ at a number near chance, in the arm where quantization was the suspected cause.
 
 from __future__ import annotations
 
+import copy
+import inspect
 import logging
 
 import pytest
@@ -268,24 +270,34 @@ def _chat_tuned_config():
 
 
 def test_the_checkpoints_chat_preferences_do_not_reach_the_decode() -> None:
-    """Every sampling field comes back to its neutral value, not the checkpoint's.
+    """Every field that can act under greedy comes back neutral, not the checkpoint's.
 
     Asserted on the built config rather than on ``repetition_penalty`` alone, because
     pinning the one field that bit is the fix that fails next time: the next
     checkpoint ships a different field.
 
+    ``temperature``, ``top_p`` and ``top_k`` are deliberately not among them and are
+    deliberately not in :data:`NEUTRAL_DECODE`. They are sampling warpers; the processor
+    list only builds them when ``do_sample`` is true, so under greedy decode they cannot
+    move a token however the checkpoint set them. On the 5.x line they do get refilled
+    from ``model.generation_config`` and transformers then reports them as "not valid
+    and may be ignored" -- a message that reads like proof the merge did not happen and
+    is in fact the merge announcing itself. What keeps them inert is the one field
+    below, so that is what gets asserted about them.
+
     Turns red when: ``greedy_generation_config`` starts from the checkpoint's config
     (``copy.deepcopy(source)``, ``GenerationConfig(**source.to_dict())``) instead of
-    from a fresh one.
+    from a fresh one, or stops pinning ``do_sample``.
     """
     model = StubModel(StubTokenizer(), "3", generation_config=_chat_tuned_config())
     greedy = greedy_generation_config(model, EvalConfig(max_new_tokens=64), pad_id=7)
+    merged = _merge_as_generate_would(greedy, model.generation_config)
 
     assert greedy.repetition_penalty == 1.0
     assert greedy.do_sample is False
-    assert greedy.temperature == 1.0, "the library default, not the checkpoint's 0.7"
-    assert greedy.top_p == 1.0
-    assert greedy.top_k == 50
+    assert merged.do_sample is False, (
+        "the checkpoint ships do_sample: true -- leaving it unset arms every warper"
+    )
 
 
 def test_every_field_that_could_move_a_greedy_score_is_neutral() -> None:
@@ -301,19 +313,90 @@ def test_every_field_that_could_move_a_greedy_score_is_neutral() -> None:
     assert {field: getattr(greedy, field) for field in NEUTRAL_DECODE} == NEUTRAL_DECODE
 
 
+def _library_neutral(field: str) -> object:
+    """What transformers itself considers "not applied" for one field.
+
+    Two lines express it differently and the difference is the whole bug this pair of
+    tests exists for. 4.x puts concrete defaults on the instance, so
+    ``GenerationConfig().repetition_penalty`` is ``1.0``. 5.x leaves every field
+    ``None`` there -- ``None`` being its marker for "the caller did not set this, fill
+    it from ``model.generation_config``" -- and keeps the real defaults in a separate
+    table. Reading only the attribute would make this assertion vacuously compare
+    ``None`` against ``None`` on the newer line.
+    """
+    fresh = transformers.GenerationConfig()
+    value = getattr(fresh, field, None)
+    if value is not None:
+        return value
+    table = getattr(fresh, "_get_default_generation_params", None)
+    return table().get(field) if table is not None else None
+
+
+def _merge_as_generate_would(passed, shipped):
+    """Apply the checkpoint's config to a passed one the way ``generate`` does.
+
+    Not ``update(**shipped)``: on 4.x that overwrites unconditionally and quietly
+    accepts keywords it does not know, so asking for ``defaults_only`` there gets a
+    total overwrite plus two stray attributes rather than a ``TypeError``. Dispatch on
+    the signature instead of on an exception.
+    """
+    merged = copy.deepcopy(passed)
+    fields = shipped.to_dict()
+    if "defaults_only" in inspect.signature(merged.update).parameters:
+        merged.update(**fields, defaults_only=True, allow_custom_entries=True)
+    else:  # 4.x: an explicit config replaces the checkpoint's outright
+        for field, value in fields.items():
+            if getattr(merged, field, None) is None:
+                setattr(merged, field, value)
+    return merged
+
+
 def test_the_neutral_values_are_the_librarys_own_defaults() -> None:
     """The tripwire on transformers itself.
 
-    ``NEUTRAL_DECODE`` claims each value means "not applied". That claim is only true
-    while it matches what ``GenerationConfig()`` produces -- the config the harness
-    builds names four fields and inherits the rest.
+    ``NEUTRAL_DECODE`` claims each value means "not applied". That claim is only worth
+    anything while it matches what the library itself calls neutral.
 
     Turns red when: a transformers release changes one of these defaults. Then the
     campaign's decode changed without anyone editing this repository, which is
     exactly the case worth stopping on.
     """
-    fresh = transformers.GenerationConfig()
-    assert {field: getattr(fresh, field) for field in NEUTRAL_DECODE} == NEUTRAL_DECODE
+    assert {field: _library_neutral(field) for field in NEUTRAL_DECODE} == NEUTRAL_DECODE
+
+
+def test_a_checkpoints_preferences_cannot_refill_the_built_config() -> None:
+    """The property no assertion on the built object can show: it survives the merge.
+
+    ``test_the_checkpoints_chat_preferences_do_not_reach_the_decode`` reads fields off
+    the returned config and passed throughout the incident that motivated this test --
+    because the returned config was already right. Under transformers 4.x an explicit
+    ``GenerationConfig`` replaced the checkpoint's outright, so leaving a field at the
+    library default and pinning it to the same value were the same program.
+
+    In the 5.x line ``generate`` fills every field still ``None`` on the passed config
+    from ``model.generation_config``. A field the harness declined to name was
+    therefore no longer "the library default" but "whatever the checkpoint author
+    chose", and ``Qwen/Qwen2.5-1.5B-Instruct``'s ``repetition_penalty: 1.1`` came back.
+    Measured on GSM8K problems 100-199: 42/100 against 61/100 for transformers 4.56.2
+    and 60/100 for vLLM on the same weights and the same token ids.
+
+    So this replays the merge rather than trusting the object, using the library's own
+    ``defaults_only`` path where it exists and emulating it where it does not.
+
+    Turns red when: ``greedy_generation_config`` stops naming a ``NEUTRAL_DECODE``
+    field explicitly -- on the 5.x line. On 4.x the two programs are indistinguishable
+    and this passes either way, which is the point: the guard only discriminates on the
+    version the campaign actually runs, so the suite has to run there too.
+    """
+    model = StubModel(StubTokenizer(), "3", generation_config=_chat_tuned_config())
+    greedy = greedy_generation_config(model, EvalConfig(), pad_id=7)
+
+    merged = _merge_as_generate_would(greedy, model.generation_config)
+
+    assert merged.repetition_penalty == 1.0, (
+        "the checkpoint's 1.1 refilled a field the harness left unset"
+    )
+    assert {field: getattr(merged, field) for field in NEUTRAL_DECODE} == NEUTRAL_DECODE
 
 
 def test_the_tokenizers_own_ids_are_carried_over_not_reset() -> None:
@@ -353,7 +436,9 @@ def test_generation_is_driven_by_the_config_not_by_loose_kwargs() -> None:
     """The mechanism, asserted at the call site.
 
     A loose ``do_sample=False`` kwarg leaves every *unnamed* field merged from the
-    checkpoint; an explicit ``GenerationConfig`` replaces the lot. Only the second is
+    checkpoint. Passing an explicit ``GenerationConfig`` narrows that to the fields the
+    object itself leaves unset -- all of them on 4.x, none of them here, since
+    :func:`greedy_generation_config` now pins the whole neutral set. Only the second is
     safe, so the call has to pass the object and nothing that could layer over it.
 
     Turns red when: a sampling kwarg is reintroduced beside ``generation_config``, or

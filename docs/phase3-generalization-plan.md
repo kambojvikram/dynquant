@@ -380,7 +380,7 @@ so they were verified under WSL directly: `RLIMIT_AS` caps a 3 GiB allocation at
 candidate had spawned. On Windows there are no rlimits and the wall clock is the only bound, which
 is why the fingerprint says so.
 
-### G4 — Evaluate through vLLM, and prove it first ✅ **code done 2026-08-03, gate awaits a GPU**
+### G4 — Evaluate through vLLM, and prove it first ⚠️ **run 2026-08-04: decode fixed, bound unreachable**
 
 Generative eval at this volume through `transformers` is prohibitive — this is the difference
 between a campaign that takes a week and one that takes a month. Serve every arm through vLLM,
@@ -474,28 +474,57 @@ was wrong was the *direct* one — the opposite of what a serving gate is usuall
 `model.generate` merges the checkpoint's own `generation_config` **underneath** the caller's
 keyword arguments, and this one sets `repetition_penalty: 1.1` for chat, so it was applied on
 every greedy generation through `transformers` and on none through vLLM.
-`greedy_generation_config` now builds a *fresh* `GenerationConfig`, which replaces the
-checkpoint's instead of layering over it; `NEUTRAL_DECODE` is the tripwire on the library
-defaults that leaves; the vLLM arm's mirror-image hole is pinned the same way. Separately, the
-gate's verdict branched on interval *width* before asking whether the interval excluded zero,
-and so reported a real disagreement as "too few problems to tell" — which sends the operator to
-score more problems, the one action that cannot help.
+`greedy_generation_config` now pins every field of `NEUTRAL_DECODE` **by name**; the vLLM arm's
+mirror-image hole is pinned the same way. Separately, the gate's verdict branched on interval
+*width* before asking whether the interval excluded zero, and so reported a real disagreement as
+"too few problems to tell" — which sends the operator to score more problems, the one action
+that cannot help.
 
-**Neither explained the gap, and the re-run said so.** With the decode replaced the
-`transformers` arm scored 37.00 % again, unchanged to the problem, and the delta widened to
-−24.00 (95 % CI [−34.78, −13.22], p = 7.0e−5). The cause was a third defect found by dumping
-the generations: `FEWSHOT_STOP` was `"\n\nQuestion:"`, the separator `build_prompt` uses, and
-the model writes `"the answer is 366. Question: There are 12 more green apples…"` — same line,
-one space. Nothing matched, generation ran to `max_new_tokens` through invented problems, and
-the fallback extractor answered one of those. The stop is now the bare `"Question:"`. Full
-diagnosis, plus the two other explanations that fitted the data and were wrong (padded batching,
-different inputs), in [`reports/runtime-parity-gap.md`](reports/runtime-parity-gap.md).
+**A third defect, found by dumping the generations.** `FEWSHOT_STOP` was `"\n\nQuestion:"`, the
+separator `build_prompt` uses, and the model writes `"the answer is 366. Question: There are 12
+more green apples…"` — same line, one space. Nothing matched, generation ran to
+`max_new_tokens` through invented problems, and the fallback extractor answered one of those.
+The stop is now the bare `"Question:"`, worth 24 points on the smoke block. Full diagnosis, plus
+the two explanations that fitted the data and were wrong (padded batching, different inputs), in
+[`reports/runtime-parity-gap.md`](reports/runtime-parity-gap.md).
+
+**All three were real, and the middle one was retracted by mistake.** The decode fix appeared to
+buy nothing — the `transformers` arm scored 37.00 % again, unchanged to the problem — and was
+written up as a refuted cause. It had not run: transformers 5.x refills a passed config's unset
+fields from `model.generation_config`, so building a fresh one stopped replacing the
+checkpoint's somewhere in the 4.x → 5.x transition, and every test stayed green because they
+assert on the config the harness builds rather than the one `generate` uses. The full
+1319-problem gate then failed at **−9.17 points** where the 100-problem smoke had tied, because
+block 0 is the only block of GSM8K where these arms agree. Isolated field by field on problems
+100–199: 42/100 as shipped, **61/100** with `repetition_penalty` alone pinned. A
+`transformers-lines` CI job now runs the suite on 4.56.2 and 5.14.1, since on 4.x the broken and
+fixed programs are indistinguishable.
 
 The residual matters for how this gate is read: with identical token ids, identical weights and
 greedy decode, the two arms still diverge at the *first token* — `sdpa` and FlashAttention-2
 reduce a 1111-token prefill differently in bf16 and the argmax is close to tied after
 `Answer:`. So G4 can never certify that two engines produce the same text, only that they
 produce the same score within a bound. The second is what the campaign needs.
+
+#### What the fixed gate measures, and why it changes the campaign's shape
+
+Re-run on all 1319 problems with the decode pinned: transformers **61.49 %** against vLLM's
+62.32 % (unchanged from the failing run, which is the check that only one arm moved). Delta
+−0.83, 95 % CI [−2.19, +0.52], *p* = 0.27, agreement 93.71 %, and the 83 remaining disagreements
+split 36 transformers-only to 47 vLLM-only — the shape of first-token divergence, not of a bias.
+
+**The gate still fails, and cannot be made to pass on this task.** The interval is 2.71 points
+wide against the ±1.00 bound. At 6.29 % discordance a ±1.00 half-width needs about 2418
+problems; GSM8K's test split *is* 1319. Holding n fixed instead, discordance would have to fall
+to 45 — below the floor two independent bf16 attention implementations put under it. The gate
+now says so rather than advising "score more", which is the one action the operator cannot take.
+
+So the number to plan around is that **cross-engine parity here is certifiable to roughly ±1.4
+points**, and phase 2's headline margin over GPTQ was +1.54. Mixing engines inside one
+comparison would spend most of a real margin on runtime noise. **Every arm that is compared to
+another arm is scored through the same engine — vLLM throughout, which is also 33× faster (20.7 s
+against 682.5 s here).** G4 stays as a standing check that the reference implementation still
+agrees to within what the task can resolve; it is not a licence to mix.
 
 Scope of the decode defects, measured rather than assumed: `Qwen3.5-2B-Base` ships no
 `generation_config.json` at all and `Mistral-7B-Instruct-v0.3` ships only token ids, so **no
@@ -625,18 +654,26 @@ Neither needs a new fine-tune if the phase-2 checkpoint is still on disk.
 
 ## Licensing — research-only as specified
 
-| | license | gated |
-|---|---|---|
-| Llama-3.1-8B-Instruct | Llama 3.1 Community License | yes |
-| gemma-3-4b-it | Gemma Terms of Use | yes |
-| Phi-4-mini-instruct | MIT | no |
-| Ministral-8B-Instruct-2410 | **Mistral Research License — non-commercial** | yes |
-| Tulu-3-SFT-mixture | ODC-BY-1.0, some constituent subsets non-commercial | no |
+Gating re-checked against the Hub API rather than read off the model cards, because the two
+disagree: a restrictive licence is not the same fact as a gated download.
 
-Three of four models need token-gated access accepted on the account before S1 can run, and
-Ministral's MRL makes any resulting checkpoint non-commercial regardless of what the other three
-allow. Fine for a paper. It should be stated in the report rather than discovered by someone
-downstream.
+| | license | `gated` (Hub API) |
+|---|---|---|
+| Llama-3.1-8B-Instruct | Llama 3.1 Community License | `manual` |
+| gemma-3-4b-it | Gemma Terms of Use | `manual` |
+| Phi-4-mini-instruct | MIT | `False` |
+| Ministral-8B-Instruct-2410 | **Mistral Research License — non-commercial** | `False` |
+| Tulu-3-SFT-mixture | ODC-BY-1.0, some constituent subsets non-commercial | `False` |
+
+**Two** of four models need access accepted on the account before they can be pulled — Llama
+and Gemma, both `manual`, so approval is a human step with unbounded latency and has to be
+requested now rather than at S1. Ministral is *not* gated despite the MRL, which is why this
+table separates the two columns: its licence still makes any resulting checkpoint
+non-commercial regardless of what the other three allow. Fine for a paper. It should be stated
+in the report rather than discovered by someone downstream.
+
+This is why S1 starts with the two ungated models: Phi-4-mini and Ministral can be screened
+today, and neither is blocked on an approval that may not arrive.
 
 ---
 

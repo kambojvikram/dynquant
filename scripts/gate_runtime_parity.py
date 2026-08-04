@@ -54,6 +54,7 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -95,7 +96,12 @@ def main() -> int:
     )
     print("\n" + paired.summary(), flush=True)
 
-    failures = _judge(paired, chance=chance, max_delta=args.max_delta)
+    failures = _judge(
+        paired,
+        chance=chance,
+        max_delta=args.max_delta,
+        exhausted=args.limit is None,
+    )
     _report(args, paired, direct, served, chance, failures)
     return 1 if failures else 0
 
@@ -236,7 +242,35 @@ def _release_the_gpu(args: argparse.Namespace) -> None:
 # --------------------------------------------------------------------------
 
 
-def _judge(paired: PairedComparison, *, chance: float, max_delta: float) -> list[str]:
+def _problems_needed(paired: PairedComparison, max_delta: float) -> int:
+    """How many problems a +/-``max_delta`` half-width needs at this discordance rate.
+
+    The paired standard error is ``sqrt(discordant) / total`` in proportion terms, so
+    holding the discordance *rate* fixed and solving ``1.96 * sqrt(rate / n) <= delta``
+    gives ``n >= (1.96 / delta)^2 * rate``. Reported rather than left for the reader
+    because it is the difference between advice that can be followed and advice that
+    cannot: on a task whose split is smaller than this number, "score more" is not an
+    available action however reasonable it sounds.
+
+    Agresti's ``- (b - c)^2 / n`` term is dropped, so this is the plain-McNemar SE and
+    the count comes out slightly high. That direction is the safe one -- it never
+    promises a bound the extra problems would not actually reach -- and the term
+    vanishes as the disagreements balance, which is the case worth planning for: a
+    lopsided residual is a bug to fix, not a sample size to buy.
+    """
+    if not paired.total or not paired.discordant or max_delta <= 0:
+        return 0
+    rate = paired.discordant / paired.total
+    return math.ceil((1.96 / (max_delta / 100.0)) ** 2 * rate)
+
+
+def _judge(
+    paired: PairedComparison,
+    *,
+    chance: float,
+    max_delta: float,
+    exhausted: bool = False,
+) -> list[str]:
     """Equivalence, not significance. See the module docstring."""
     failures: list[str] = []
     low, high = paired.interval_points
@@ -259,12 +293,31 @@ def _judge(paired: PairedComparison, *, chance: float, max_delta: float) -> list
             f"ones until it is explained."
         )
     else:
+        needed = _problems_needed(paired, max_delta)
+        # "Score more" is the obvious advice and it is not always available. When the
+        # run already covered the whole split there is no more of this task to score,
+        # and repeating the suggestion would send the operator looking for problems
+        # that do not exist. Say which of the two remaining actions apply.
+        if exhausted:
+            remedy = (
+                f"the whole split was already scored, so there are no more problems of "
+                f"this task to add -- reaching +/-{max_delta:.2f} here needs about "
+                f"{needed} of them. Either the runtimes must agree more closely (the "
+                f"discordance is {paired.discordant / paired.total:.2%}, and greedy "
+                f"argmax flips between two independent attention implementations put a "
+                f"floor under it), or the bound has to be set to what this task can "
+                f"resolve and every claim it licenses kept smaller than that."
+            )
+        else:
+            remedy = (
+                f"scoring about {needed} problems would reach +/-{max_delta:.2f} at "
+                f"this discordance rate; drop --limit, or widen --max-delta and say so."
+            )
         failures.append(
             f"the interval is {high - low:.2f} points wide against a +/-{max_delta:.2f} "
             f"bound and contains zero, on {paired.total} problems with "
             f"{paired.discordant} discordant. This is not evidence the runtimes differ "
-            f"-- it is too few problems to tell. Score more, or widen --max-delta and "
-            f"say so."
+            f"-- it is too few problems to tell: {remedy}"
         )
 
     floor = max(chance, 0.0)

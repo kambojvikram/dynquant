@@ -182,13 +182,17 @@ class EvalBackend(ABC):
 #: search), by rewriting the logits before the argmax, or by moving where the
 #: sequence stops -- paired with the value that means "not applied".
 #:
-#: This is a tripwire, not the mechanism. What makes the decode neutral is that
-#: :func:`greedy_generation_config` builds a fresh ``GenerationConfig``, so *every*
-#: field it does not name is the library's default whether or not it is listed here.
-#: The list exists so that a transformers release changing one of those defaults
-#: turns a test red instead of quietly re-decoding the campaign, and so the vLLM
-#: arm's :meth:`~dynquant.eval.backends.VllmBackend._sampling_params` can be read
-#: against something.
+#: This *is* the mechanism, and it did not start out that way. The list was written as
+#: a tripwire on the theory that building a fresh ``GenerationConfig`` already made
+#: every unnamed field the library's neutral default. That theory held on transformers
+#: 4.x and stopped holding in the 5.x line, which fills a passed config's unset fields
+#: from ``model.generation_config`` -- so :func:`greedy_generation_config` now pins
+#: every key here explicitly and the neutrality is a property of this dict rather than
+#: of the library's defaults.
+#:
+#: It also remains a tripwire: a release changing one of these defaults turns a test red
+#: instead of quietly re-decoding the campaign, and the vLLM arm's
+#: :meth:`~dynquant.eval.backends.VllmBackend._sampling_params` can be read against it.
 NEUTRAL_DECODE: dict[str, Any] = {
     "do_sample": False,
     "num_beams": 1,
@@ -213,21 +217,33 @@ NEUTRAL_DECODE: dict[str, Any] = {
 
 
 def greedy_generation_config(model: Any, config: EvalConfig, pad_id: int) -> Any:
-    """Decode settings built from the library's defaults, never the checkpoint's.
+    """Decode settings pinned field by field, never inherited from the checkpoint.
 
     ``model.generate`` merges ``model.generation_config`` *under* the kwargs it is
     given, so every field the call site does not name is whatever the checkpoint author
     chose for chat. Qwen2.5-1.5B-Instruct ships ``repetition_penalty: 1.1``. On a
     five-shot GSM8K prompt -- repetitive by construction, since every exemplar repeats
-    the same scaffolding and the arithmetic reuses digits -- that cost 23 points
+    the same scaffolding and the arithmetic reuses digits -- that is worth 19 points
     against the same weights served through vLLM, whose sampling parameters apply no
     penalty. Neither arm raised anything and both numbers looked like results.
 
-    Passing an explicit ``GenerationConfig`` *replaces* the checkpoint's rather than
-    layering over it, so every field not named here is the library's neutral default
-    instead of a preference tuned for conversation. That is the property worth having:
-    the fix is not "also pin ``repetition_penalty``", because the next checkpoint will
-    ship a different field.
+    An earlier version of this function passed an explicit ``GenerationConfig`` and
+    stopped there, on the documented understanding that doing so *replaces* the
+    checkpoint's config rather than layering over it, making every unnamed field the
+    library's neutral default. On transformers 4.x that is what happens, and the fix
+    worked. In the 5.x line a passed config's unset fields are filled from
+    ``model.generation_config`` instead, so the penalty came back and the arm scored as
+    though nothing had been done -- which is exactly what was measured: 42/100 on a
+    block where 4.56.2 and vLLM both scored 61 and 60, recovered to 61/100 by pinning
+    this one field, per-problem identical to pinning all of :data:`NEUTRAL_DECODE`.
+
+    So every neutral field is named explicitly. The objection to that -- "the next
+    checkpoint will ship a different field" -- is real and is why :data:`NEUTRAL_DECODE`
+    enumerates the whole class rather than the one field that bit us. What it cannot
+    cover is a field transformers adds later, and no formulation available here can:
+    ``GenerationConfig`` has no "give me nothing but greedy" constructor. The guard for
+    that is the gate, which scores the same checkpoint through two independent
+    implementations and fails when they part company.
 
     The token ids are the deliberate exception. They are facts about the tokenizer, not
     decode settings, and reading them off the checkpoint is exactly right -- dropping
@@ -251,11 +267,10 @@ def greedy_generation_config(model: Any, config: EvalConfig, pad_id: int) -> Any
         )
     return GenerationConfig(
         max_new_tokens=config.max_new_tokens,
-        do_sample=False,
-        num_beams=1,
         pad_token_id=pad_id,
         eos_token_id=eos_token_id,
         bos_token_id=getattr(source, "bos_token_id", None),
+        **NEUTRAL_DECODE,
     )
 
 

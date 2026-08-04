@@ -183,6 +183,76 @@ jobs:
           dynquant doctor
 
   # ------------------------------------------------------------------------
+  # The same suite, but with transformers actually present -- on both major lines
+  # ------------------------------------------------------------------------
+  transformers-lines:
+    name: transformers ${{ matrix.transformers }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # One entry per major line the package supports, because the two disagree on
+        # a semantic no assertion about a built object can see: what an unset field
+        # means. On 4.x `GenerationConfig()` carries concrete defaults and an explicit
+        # config passed to `generate` replaces the checkpoint's. On 5.x every field
+        # starts `None` -- the marker for "caller did not set this" -- and `generate`
+        # refills those from `model.generation_config`. A harness that named
+        # `do_sample=False` and inherited the rest was therefore correct on one line
+        # and, on the other, silently re-admitted `Qwen2.5-1.5B-Instruct`'s
+        # `repetition_penalty: 1.1`: 42/100 on a GSM8K block that scores 61 without it.
+        #
+        # The suite already had a tripwire for exactly that and it never fired, because
+        # the `test` job above installs no transformers at all -- so
+        # `pytest.importorskip("transformers")` skipped the whole decode module while
+        # the campaign ran on 5.14.1. Skipped is not green. That gap is what this job
+        # closes, and the pins below must include whatever version the campaign runs.
+        transformers: ["4.56.2", "5.14.1"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: install torch (CPU)
+        run: pip install torch --index-url ${{ env.TORCH_CPU_INDEX }}
+
+      - name: install core, the pinned transformers and test deps
+        # peft as well: the arch-matrix and checkpoint-export files reach for it, and
+        # a skip here would reproduce the hole this job exists to close.
+        run: |
+          pip install ./packages/dynquant-core pytest pytest-xdist hypothesis
+          pip install "transformers==${{ matrix.transformers }}" peft
+
+      - name: the version under test is the one that got installed
+        # A resolver backtrack that quietly lands on a different transformers would
+        # make this job report a line it never exercised.
+        run: |
+          python - <<'EOF'
+          import transformers
+          assert transformers.__version__ == "${{ matrix.transformers }}", (
+              f"asked for ${{ matrix.transformers }}, got {transformers.__version__}"
+          )
+          print(transformers.__version__)
+          EOF
+
+      - name: pytest
+        run: pytest -n auto --no-header
+
+      - name: no transformers-gated file may skip
+        # The failure mode is not a red test, it is a green run over a module that
+        # never loaded. Anything importorskipping transformers here is a hole.
+        run: |
+          pytest --no-header -q -rs \
+            tests/test_eval_harness.py \
+            tests/test_quant_phase3_shapes.py \
+            tests/test_graph_arch_matrix.py \
+            tests/test_export_checkpoint.py \
+            | tee /tmp/gated.txt
+          ! grep -q "skipped" /tmp/gated.txt
+
+  # ------------------------------------------------------------------------
   # The compiled extension, built without CUDA
   # ------------------------------------------------------------------------
   kernels-cpu:
