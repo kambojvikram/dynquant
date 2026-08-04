@@ -19,6 +19,42 @@ ones that invalidate artifacts a user has already produced.
 
 ## [Unreleased]
 
+### Fixed — an instruct checkpoint was measured as a base checkpoint
+
+The harness decided whether to frame a prompt as a chat turn by reading
+`tokenizer.chat_template`. That attribute belongs to the Jinja-backed tokenizer, not to
+the capability. `AutoTokenizer` returns `MistralCommonBackend` for any Mistral
+checkpoint shipping a `tekken.json` — Ministral-8B-Instruct, one of the four phase-3
+models, among them — and that class leaves the attribute `None` while
+`apply_chat_template` works and renders `<s>[INST]…[/INST]`.
+
+So an instruct model was handed bare text, and an instruct model handed bare text
+continues it rather than answering it. On IFEval that put Ministral-8B at **24.77% with
+195 of 541 generations empty**, against Phi-4-mini's 68.76% with none. HumanEval and
+MBPP took the same misclassification through `resolve_style`, scoring under the
+completion framing at 70.73% and 43.60%. GSM8K is untouched — it is 5-shot completion
+framing for every model and never consults a template.
+
+None of those is an error, a warning, or a crash. A 24.77% is low enough to read as a
+destroyed checkpoint and stable enough to read as a real measurement, which is what
+makes this the expensive kind of bug: had it gone unnoticed, every Ministral arm in the
+campaign would have been compared against a baseline that was already at the floor, and
+quantization would have looked harmless on it.
+
+`harness.chat_prompt_style` now decides by *asking* the tokenizer to render a turn and
+seeing whether it can, which distinguishes "will not" from "cannot" — a base checkpoint
+still gets the raw prompt, because it genuinely has no turn structure. The four call
+sites (three in `ifeval`, one in `_code_exec.resolve_style`) go through it.
+
+The thing that made this visible at all was `IfevalResult.prompt_style`, which records
+which framing was used. It is why that field exists, and the argument for keeping this
+class of provenance on every result.
+
+Two test doubles had to be corrected to expose the bug: both rendered a template while
+reporting `chat_template = None`, a shape no real tokenizer has in either direction.
+They now raise, as transformers does for a checkpoint that was never taught a turn
+structure.
+
 ### Fixed — GSM8K generations ran on into problems the model invented
 
 `gsm8k.FEWSHOT_STOP` was `"\n\nQuestion:"`, taken from how `build_prompt` separates its

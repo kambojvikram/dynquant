@@ -55,7 +55,14 @@ SLOW = 1.5
 
 
 class _Tokenizer:
-    """Just enough tokenizer to choose a framing and render a template."""
+    """Just enough tokenizer to choose a framing and render a template.
+
+    ``chat_template=None`` means a base checkpoint, and a base checkpoint's
+    ``apply_chat_template`` *raises* -- transformers will not invent a turn structure
+    for a model that was never taught one. Rendering anyway while reporting no template
+    is a shape no tokenizer has, and it stopped standing in for a base model once the
+    harness began deciding by asking rather than by reading the attribute.
+    """
 
     def __init__(self, chat_template: str | None = "template") -> None:
         self.chat_template = chat_template
@@ -67,6 +74,8 @@ class _Tokenizer:
         tokenize: bool = False,
         add_generation_prompt: bool = True,
     ) -> str:
+        if self.chat_template is None:
+            raise ValueError("tokenizer.chat_template is not set")
         return f"<|user|>{messages[0]['content']}<|assistant|>"
 
 

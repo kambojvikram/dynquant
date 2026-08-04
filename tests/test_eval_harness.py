@@ -29,6 +29,7 @@ from _decode_stub import StubModel, StubTokenizer  # noqa: E402
 from dynquant.eval.harness import (  # noqa: E402
     NEUTRAL_DECODE,
     EvalConfig,
+    chat_prompt_style,
     generate_batched,
     greedy_generation_config,
 )
@@ -53,6 +54,75 @@ def _decode(prompts, *, reply="3", **config_kwargs):
     model = StubModel(tokenizer, reply)
     config = EvalConfig(early_stop=False, **config_kwargs)
     return model, generate_batched(model, tokenizer, prompts, config)
+
+
+# --------------------------------------------------------------------------
+# Chat-template detection
+# --------------------------------------------------------------------------
+
+
+class _RendersWithoutExposing:
+    """A tokenizer that applies a chat template but has no ``chat_template``.
+
+    This is `MistralCommonBackend`, which `AutoTokenizer` returns for any Mistral
+    checkpoint shipping a `tekken.json` -- Ministral-8B-Instruct among them. It is not
+    a hypothetical shape invented for a test.
+    """
+
+    def apply_chat_template(self, messages, *, tokenize=False, add_generation_prompt=False):
+        return f"<s>[INST]{messages[0]['content']}[/INST]"
+
+
+class _RefusesToRender:
+    """A base checkpoint: no turn structure, and it raises when asked to invent one."""
+
+    chat_template = None
+
+    def apply_chat_template(self, messages, **kwargs):
+        raise ValueError("Cannot use chat template functions: tokenizer.chat_template is not set")
+
+
+def test_a_tokenizer_that_renders_without_exposing_a_template_is_still_chat() -> None:
+    """Turns red when: the check goes back to reading ``tokenizer.chat_template``.
+
+    That attribute belongs to the Jinja-backed implementation, not to the capability.
+    Reading it classified every tekken-based Mistral instruct checkpoint as a base
+    model, so it was handed bare text -- and an instruct model given bare text
+    continues it instead of answering. Ministral-8B scored 24.77% on IFEval with 195
+    of 541 generations empty, which is low enough to read as a broken model and stable
+    enough to read as a real measurement.
+    """
+    assert chat_prompt_style(_RendersWithoutExposing()) == "chat-template"
+
+
+def test_a_base_checkpoint_is_still_raw() -> None:
+    """Turns red when: the probe starts treating a refusal as a capability.
+
+    The point of asking rather than inspecting is to tell "will not" from "cannot".
+    A base checkpoint genuinely has no turn structure and must keep getting the raw
+    prompt -- inventing one for it would be a different measurement, silently.
+    """
+    assert chat_prompt_style(_RefusesToRender()) == "raw"
+
+
+def test_a_tokenizer_that_renders_nothing_is_raw() -> None:
+    """Turns red when: an empty render counts as a template.
+
+    A tokenizer that returns `""` or `None` has answered "cannot" without raising.
+    Prompting through it would feed the model an empty string for every example, and
+    the resulting zero would be indistinguishable from a destroyed checkpoint.
+    """
+
+    class _Empty:
+        def apply_chat_template(self, messages, **kwargs):
+            return "   "
+
+    class _None:
+        def apply_chat_template(self, messages, **kwargs):
+            return None
+
+    assert chat_prompt_style(_Empty()) == "raw"
+    assert chat_prompt_style(_None()) == "raw"
 
 
 # --------------------------------------------------------------------------

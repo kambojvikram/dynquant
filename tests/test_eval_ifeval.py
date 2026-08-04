@@ -670,6 +670,15 @@ def _example(
 
 
 def _tokenizer(*, chat_template: str | None) -> Any:
+    """A tokenizer that renders a turn, or one that refuses to.
+
+    ``chat_template=None`` makes ``apply_chat_template`` *raise*, which is what a real
+    template-less tokenizer does -- transformers will not invent a turn structure for a
+    base checkpoint. The double used to keep rendering while reporting no template,
+    which no tokenizer does in either direction, and which mattered once the harness
+    started deciding by asking rather than by reading the attribute.
+    """
+
     class _Tok:
         def __init__(self) -> None:
             self.chat_template = chat_template
@@ -679,6 +688,8 @@ def _tokenizer(*, chat_template: str | None) -> Any:
         ) -> str:
             assert tokenize is False
             assert add_generation_prompt is True
+            if chat_template is None:
+                raise ValueError("tokenizer.chat_template is not set")
             return f"<|user|>{messages[0]['content']}<|assistant|>"
 
     return _Tok()

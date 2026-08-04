@@ -64,6 +64,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from dynquant._logging import get_logger
 from dynquant.errors import DynQuantError
+from dynquant.eval.harness import chat_prompt_style
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -480,10 +481,14 @@ def resolve_style(tokenizer: Any, requested: PromptStyle | Literal["auto"]) -> P
     instruct checkpoint answers a coding prompt with prose around a fenced block whether
     or not the harness was expecting one. Guessing wrong in this direction is the single
     largest artefact on this benchmark -- see :func:`extract_code`.
+
+    "Has a template" is :func:`~dynquant.eval.harness.chat_prompt_style`, which asks the
+    tokenizer instead of reading an attribute off it. Reading the attribute misclassified
+    every Mistral checkpoint with a ``tekken.json`` as a base model.
     """
     if requested != "auto":
         return requested
-    return "chat" if getattr(tokenizer, "chat_template", None) else "completion"
+    return "chat" if chat_prompt_style(tokenizer) == "chat-template" else "completion"
 
 
 def prepare_decode(tokenizer: Any, config: Any, *, style: PromptStyle, label: str) -> Any:

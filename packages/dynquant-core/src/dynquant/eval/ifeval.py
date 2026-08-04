@@ -71,7 +71,7 @@ from ._ifeval_instructions import (
     requirements_for,
     scorer_fingerprint,
 )
-from .harness import EvalConfig, generate_batched
+from .harness import EvalConfig, chat_prompt_style, generate_batched
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -244,8 +244,11 @@ def build_prompt(example: IfevalExample, tokenizer: Any) -> str:
     A base checkpoint has no template and gets the raw prompt. That is a real
     difference in measurement, not a fallback to paper over, which is why
     :attr:`IfevalResult.prompt_style` records which happened.
+
+    "Has one" is :func:`~dynquant.eval.harness.chat_prompt_style`, which asks rather
+    than inspects: some instruct tokenizers apply a template without exposing one.
     """
-    if getattr(tokenizer, "chat_template", None):
+    if chat_prompt_style(tokenizer) == "chat-template":
         rendered = tokenizer.apply_chat_template(
             [{"role": "user", "content": example.prompt}],
             tokenize=False,
@@ -308,7 +311,11 @@ def evaluate_ifeval(
             say whether the model stopped counting bullets or stopped writing English.
     """
     config = config or DEFAULT_CONFIG
-    if config.add_special_tokens and getattr(tokenizer, "chat_template", None):
+    # Probed once for the run rather than per example, and shared with `build_prompt`
+    # below, so the style the result reports is by construction the style the prompts
+    # were built in.
+    prompt_style: Literal["chat-template", "raw"] = chat_prompt_style(tokenizer)
+    if config.add_special_tokens and prompt_style == "chat-template":
         # Silently correctable, and correcting it silently is the wrong call: the
         # double-BOS it prevents costs a few points and leaves no trace, so a caller
         # who overrode the default deserves to know their override was overridden.
@@ -330,9 +337,6 @@ def evaluate_ifeval(
         for example in subset
     ]
 
-    prompt_style: Literal["chat-template", "raw"] = (
-        "chat-template" if getattr(tokenizer, "chat_template", None) else "raw"
-    )
     prompts = [build_prompt(example, tokenizer) for example in subset]
     generations = generate_batched(model, tokenizer, prompts, config, progress=progress)
 

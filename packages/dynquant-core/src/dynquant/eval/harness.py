@@ -46,7 +46,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import torch
 
@@ -61,6 +61,7 @@ __all__ = [
     "EvalBackend",
     "EvalConfig",
     "TransformersBackend",
+    "chat_prompt_style",
     "encode_prompts",
     "generate_batched",
     "greedy_generation_config",
@@ -148,6 +149,45 @@ def encode_prompts(tokenizer: Any, prompts: Sequence[str], config: EvalConfig) -
             limit,
         )
     return EncodedPrompts(ids=[[int(i) for i in row[-limit:]] for row in rows], truncated=truncated)
+
+
+def chat_prompt_style(tokenizer: Any) -> Literal["chat-template", "raw"]:
+    """``"chat-template"`` if this tokenizer can frame a chat turn, else ``"raw"``.
+
+    Decided by asking the tokenizer to do it, not by reading
+    ``tokenizer.chat_template``. That attribute is a property of one *implementation* --
+    the Jinja-backed one -- and not of the capability. ``MistralCommonBackend``, which
+    ``AutoTokenizer`` returns for any Mistral checkpoint shipping a ``tekken.json``,
+    leaves it ``None`` while ``apply_chat_template`` works perfectly and renders
+    ``<s>[INST]...[/INST]``.
+
+    That gap is not cosmetic and it does not announce itself. Under the attribute check
+    an instruct checkpoint reads as a base checkpoint, so it is handed bare text, and an
+    instruct model given bare text continues it rather than answering it. On IFEval that
+    put Ministral-8B-Instruct at 24.77% with 195 of 541 generations empty, against
+    Phi-4-mini's 68.76% with none -- a number low enough to look like a broken model and
+    stable enough to look real. The one thing that made it visible was
+    ``IfevalResult.prompt_style``, which is why the tasks record it.
+
+    A base checkpoint still gets ``"raw"``, and that is still a genuine difference in
+    measurement rather than a fallback to paper over: it has no template because it was
+    never taught a turn structure. The probe distinguishes "will not" from "cannot",
+    which the attribute could not.
+
+    Broad ``except`` on purpose. This asks "does this work", and a tokenizer with no
+    template is entitled to refuse in whatever way it likes -- ``ValueError`` from
+    transformers today, and the whole point of probing is to stop encoding today's
+    implementation detail as tomorrow's capability test.
+    """
+    try:
+        rendered = tokenizer.apply_chat_template(
+            [{"role": "user", "content": "ping"}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    except Exception:  # noqa: BLE001 -- a capability probe; see docstring
+        return "raw"
+    return "chat-template" if isinstance(rendered, str) and rendered.strip() else "raw"
 
 
 class EvalBackend(ABC):
