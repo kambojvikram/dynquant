@@ -338,12 +338,22 @@ def test_the_sandbox_fingerprint_names_the_bounds_that_can_change_a_verdict() ->
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows has no rlimits")
+@pytest.mark.skipif(sys.platform == "darwin", reason="Darwin accepts RLIMIT_AS and ignores it")
 def test_a_memory_bomb_is_bounded_rather_than_taking_the_box_with_it() -> None:
-    """Turns red when: the rlimit is dropped on the platforms that have one.
+    """Turns red when: the rlimit is dropped on the platforms that enforce one.
 
     Eight workers each allocating without a ceiling is how an evaluation gets killed by
     the OOM reaper -- and the process the reaper picks is usually the largest one, which
     is the parent holding the model.
+
+    Two platforms are excused and they are excused for different reasons, which is why
+    there are two markers rather than one. Windows has no `resource` module at all, so
+    the child skips the call. macOS has it, `setrlimit(RLIMIT_AS, ...)` returns
+    successfully, and the 3 GiB allocation below then goes through anyway -- Darwin does
+    not enforce an address-space limit. Asserting `status == "failed"` there was CI's
+    only red on macos-14 and it was reporting something true: on macOS the memory bound
+    is nominal. `sandbox_fingerprint` records the platform for exactly this reason, and
+    the campaign runs HumanEval and MBPP on Linux, where the ceiling is real.
     """
     program = "big = bytearray(3 * 1024 * 1024 * 1024)\n"
     outcome = run_program(program, allow_execution=True, timeout=FAST, memory_mb=256)

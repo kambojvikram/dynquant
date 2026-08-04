@@ -105,14 +105,24 @@ the same engine.
 
 Two jobs, both introduced by the decode work above and neither caught before the push.
 
-`tests/test_eval_backends.py` gated on `torch` alone, but its `_pair` helper drives the
-`transformers` arm of the comparison and so reaches `greedy_generation_config`, which
-imports `GenerationConfig` when it is called rather than at module import. The `test`
-job installs no transformers — deliberately, to prove `dynquant-core` installs on a box
-that will never fine-tune — so sixteen tests failed there with `ModuleNotFoundError`
-raised from inside the harness. The file now `importorskip`s transformers and is listed
-in the `transformers-lines` job's "no gated file may skip" step, so the coverage moves
-to the runners that have transformers instead of evaporating.
+Twenty-three tests across three files gated on `torch` alone, but every path that
+*drives* the decode stub reaches `greedy_generation_config`, which imports
+`GenerationConfig` when it is called rather than at module import. The `test` job
+installs no transformers — deliberately, to prove `dynquant-core` installs on a box that
+will never fine-tune — so they failed there with `ModuleNotFoundError` raised from
+inside the harness, several frames below anything the tests mention. The gate now sits
+in `tests/_decode_stub.py`, the one import all of them share, and the three files are
+listed in the `transformers-lines` job's "no gated file may skip" step, so the coverage
+moves to the runners that have transformers instead of evaporating.
+
+macOS was red for an unrelated and more interesting reason:
+`test_a_memory_bomb_is_bounded_rather_than_taking_the_box_with_it` allocates 3 GiB under
+a 256 MB `RLIMIT_AS` and expects the child to die. Darwin accepts the `setrlimit` call
+and does not enforce it, so the allocation succeeds. The test now skips there — with the
+reason spelled out, because it is a real gap and not a missing feature: **on macOS the
+sandbox's memory bound is nominal and the wall-clock timeout is the only enforced one.**
+`sandbox_fingerprint` already records `platform.system()`, which is what keeps that from
+being invisible in a results table, and the campaign scores HumanEval and MBPP on Linux.
 
 `mypy --strict` reported 34 errors, and four of them were configuration rather than
 code. `transformers` ships `py.typed` while annotating almost none of its constructors

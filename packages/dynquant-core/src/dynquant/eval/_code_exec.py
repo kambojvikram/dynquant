@@ -120,6 +120,13 @@ try:
 except ImportError:
     # Windows has no rlimits. The wall-clock timeout is the only bound there, which
     # `sandbox_fingerprint` reports so the difference is visible in the results.
+    #
+    # macOS is the case in between and the one to watch: `resource` imports, RLIMIT_AS
+    # sets without error, and Darwin then does not enforce it -- a 3 GiB allocation
+    # under a 256 MB ceiling succeeds. So on macOS the memory bound is nominal and the
+    # timeout is again the only real one. `sandbox_fingerprint` carries
+    # `platform.system()`, which is what keeps that from being invisible in a results
+    # table; the campaign's code evaluations run on Linux, where it is enforced.
     resource = None
 
 if resource is not None:

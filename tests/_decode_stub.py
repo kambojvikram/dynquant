@@ -1,4 +1,4 @@
-"""A model and tokenizer that decode without a GPU, or weights, or transformers.
+"""A model and tokenizer that decode without a GPU or weights.
 
 The generation loop has failure modes that do not need a real model to expose, and
 that are close to impossible to catch *with* one: a batch padded on the wrong side
@@ -10,13 +10,29 @@ looked a bit low" into an assertion.
 The tokenizer is word-per-token with a stable vocabulary, so a decoded generation is
 comparable to the string that went in and truncation can be asserted on words rather
 than on ids.
+
+**It does need transformers, and did not used to.** Nothing here imports it; what does
+is `harness.greedy_generation_config`, which every path that *drives* the stub goes
+through, and which builds a real ``GenerationConfig`` so that no decode field is left
+to the checkpoint. So the gate belongs here, at the one import every such test shares,
+rather than at each of them: the `test` CI job installs no transformers -- that is how
+it proves `dynquant-core` installs on a box that will never fine-tune -- and without
+this the failure is a `ModuleNotFoundError` raised from inside the harness, several
+frames below anything the test mentions.
+
+Skipping is only acceptable because it cannot become the silent kind: every file that
+imports this one is named in the `transformers-lines` job's "no gated file may skip"
+step, which runs them where transformers *is* installed and fails if any of them skips.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+import pytest
 import torch
+
+pytest.importorskip("transformers")
 
 PAD_ID = 0
 
