@@ -58,10 +58,21 @@ __all__ = [
 
 _log = get_logger(__name__)
 
-FEWSHOT_STOP = "\n\nQuestion:"
-"""Where a continuation ends. The few-shot prefix teaches the model to start the
-next problem after a blank line, so this is the model's own turn boundary rather
-than an arbitrary cutoff."""
+FEWSHOT_STOP = "Question:"
+"""Where a continuation ends: the model's own turn boundary rather than an
+arbitrary cutoff.
+
+Deliberately *not* ``"\\n\\nQuestion:"``, which is how the few-shot prefix separates
+its exemplars and therefore the obvious thing to cut on. Models do not reliably
+reproduce the separator. Qwen2.5-1.5B-Instruct writes ``"the answer is 366.
+Question: There are 12 more green apples..."`` -- a new problem, on the same line,
+after a single space -- and a stop that requires the blank line matches nothing.
+Generation then runs to ``max_new_tokens`` through two or three invented problems,
+and :func:`extract_answer`'s "last number in the text" fallback returns an answer to
+one of *those*. That is worse than an unparseable generation: it is a wrong answer
+that looks like bad arithmetic, and it cost 24 points of GSM8K on the runtime-parity
+gate before it was found. Cutting on the bare word costs nothing, because a
+continuation that says "Question:" has stopped answering either way."""
 
 _GOLD = re.compile(r"####\s*(.+?)\s*$", re.DOTALL)
 _NUMBER = re.compile(r"-?\d[\d,]*\.?\d*")

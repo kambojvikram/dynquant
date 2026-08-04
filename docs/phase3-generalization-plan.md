@@ -464,31 +464,52 @@ chance floor, since two equally destroyed arms agree perfectly. And the `transfo
 must actually leave the GPU before the engine is built — vLLM sizes its KV cache from what is
 free at construction, so a lingering reference is either an OOM or a quietly smaller cache.
 
-#### What the first run found — [`reports/decode-neutrality.md`](reports/decode-neutrality.md)
+#### What the first two runs found — three defects
 
 The smoke run on `Qwen/Qwen2.5-1.5B-Instruct` (GSM8K, 100 problems) came back 23 points apart:
 vLLM 60.00 %, transformers 37.00 %. Qwen publish ≈ 60 % for that checkpoint, so the arm that
 was wrong was the *direct* one — the opposite of what a serving gate is usually built to catch.
 
+**Two decode defects, in [`reports/decode-neutrality.md`](reports/decode-neutrality.md).**
 `model.generate` merges the checkpoint's own `generation_config` **underneath** the caller's
-keyword arguments, and this one sets `repetition_penalty: 1.1` for chat. The old call site
-pinned `do_sample`, `num_beams`, `temperature`, `top_p` and `top_k` and never named the
-penalty, so it was applied on every greedy generation through `transformers` and on none
-through vLLM. The fix is structural rather than one more named field: `greedy_generation_config`
-builds a *fresh* `GenerationConfig`, which replaces the checkpoint's instead of layering over
-it, so every field it does not name is the library default. `NEUTRAL_DECODE` is the tripwire on
-those defaults, and the vLLM arm's mirror-image hole — four penalties left unpassed because the
-engine's defaults happen to be neutral — is pinned the same way.
+keyword arguments, and this one sets `repetition_penalty: 1.1` for chat, so it was applied on
+every greedy generation through `transformers` and on none through vLLM.
+`greedy_generation_config` now builds a *fresh* `GenerationConfig`, which replaces the
+checkpoint's instead of layering over it; `NEUTRAL_DECODE` is the tripwire on the library
+defaults that leaves; the vLLM arm's mirror-image hole is pinned the same way. Separately, the
+gate's verdict branched on interval *width* before asking whether the interval excluded zero,
+and so reported a real disagreement as "too few problems to tell" — which sends the operator to
+score more problems, the one action that cannot help.
 
-The gate's own verdict was the second defect: it branched on interval *width* before asking
-whether the interval excluded zero, and so reported a real 23-point disagreement as "too few
-problems to tell". Acting on that means scoring more problems, which is the one action that
-cannot help. Both are fixed and both counts above are now test fixtures.
+**Neither explained the gap, and the re-run said so.** With the decode replaced the
+`transformers` arm scored 37.00 % again, unchanged to the problem, and the delta widened to
+−24.00 (95 % CI [−34.78, −13.22], p = 7.0e−5). The cause was a third defect found by dumping
+the generations: `FEWSHOT_STOP` was `"\n\nQuestion:"`, the separator `build_prompt` uses, and
+the model writes `"the answer is 366. Question: There are 12 more green apples…"` — same line,
+one space. Nothing matched, generation ran to `max_new_tokens` through invented problems, and
+the fallback extractor answered one of those. The stop is now the bare `"Question:"`. Full
+diagnosis, plus the two other explanations that fitted the data and were wrong (padded batching,
+different inputs), in [`reports/runtime-parity-gap.md`](reports/runtime-parity-gap.md).
 
-Scope, measured rather than assumed: `Qwen3.5-2B-Base` ships no `generation_config.json` at
-all and `Mistral-7B-Instruct-v0.3` ships only token ids, so **no phase-1 or phase-2 number
-changes**. Phi-4-mini and Ministral-8B are likewise clean; the two gated models could not be
-checked without an accepted licence.
+The residual matters for how this gate is read: with identical token ids, identical weights and
+greedy decode, the two arms still diverge at the *first token* — `sdpa` and FlashAttention-2
+reduce a 1111-token prefill differently in bf16 and the argmax is close to tied after
+`Answer:`. So G4 can never certify that two engines produce the same text, only that they
+produce the same score within a bound. The second is what the campaign needs.
+
+Scope of the decode defects, measured rather than assumed: `Qwen3.5-2B-Base` ships no
+`generation_config.json` at all and `Mistral-7B-Instruct-v0.3` ships only token ids, so **no
+phase-1 or phase-2 number changes**. Phi-4-mini and Ministral-8B are likewise clean; the two
+gated models could not be checked without an accepted licence.
+
+The stop-sequence defect is GSM8K-only, and the one earlier GSM8K measurement — the headroom
+screen's `Qwen3.5-2B-Base` at 66.11 % — is not obviously damaged: a *base* model given
+few-shot exemplars imitates their format, separator included, which is precisely the case
+where the old stop matched. The defect also only ever costs points, barring a coincidence
+where a run-on's last number happens to equal the gold. So 66.11 % is a floor on that number,
+not a ceiling, and the conclusion drawn from it — that GSM8K sat too near its ceiling to show
+a fine-tuning gain — is if anything strengthened. Worth a cheap re-check when the box is
+otherwise idle; not worth blocking S1 on.
 
 ---
 

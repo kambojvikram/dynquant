@@ -19,10 +19,13 @@ from dynquant.eval.gsm8k import (
     FEWSHOT_STOP,
     Gsm8kExample,
     build_prompt,
+    evaluate_gsm8k,
     extract_answer,
     format_training_text,
 )
 from dynquant.eval.harness import EvalConfig, _truncate
+
+from ._decode_stub import StubModel, StubTokenizer
 
 EXAMPLES = [
     Gsm8kExample(question="Two plus two?", reasoning="Add them.", answer="4"),
@@ -94,18 +97,29 @@ def test_prompt_ends_where_the_model_must_continue() -> None:
     prompt = build_prompt(EXAMPLES[1], shots=EXAMPLES[:1])
     assert prompt.endswith("Question: Three times three?\nAnswer:")
     assert "#### 4" in prompt, "the shot must demonstrate the answer marker"
+    assert "\n\nQuestion:" in prompt, "exemplars are blank-line separated"
 
 
-def test_the_shot_separator_is_the_stop_sequence() -> None:
-    """Otherwise the model runs on into a problem it invented.
+def test_the_stop_matches_a_run_on_the_model_writes_inline() -> None:
+    """The prompt's separator is not the stop, because models do not write it back.
 
-    The prompt teaches "blank line, then the next Question:". The decoder has to
-    stop on exactly that string, or every generation continues until the token
-    budget runs out -- slow, and it puts extra numbers in front of the fallback
-    extractor.
+    Qwen2.5-1.5B-Instruct finishes an answer and starts a problem it invented on the
+    same line -- "the answer is 366. Question: There are 12 more green apples..." --
+    so a stop of "\\n\\nQuestion:", the separator :func:`build_prompt` actually uses,
+    matches nothing. Generation then runs to the token budget through two or three
+    invented problems and the fallback extractor answers one of *those*.
+
+    The text below is a real generation from the runtime-parity gate, shortened.
     """
-    prompt = build_prompt(EXAMPLES[1], shots=EXAMPLES[:1])
-    assert FEWSHOT_STOP in prompt
+    observed = (
+        "So in total, it had 60 + 180 + 126 = 366 downloads.\n\n"
+        "Therefore, the answer is 366. Question: There are 12 more green apples than "
+        "red apples in a bowl.\nAnswer: Red apples: 16. Green apples: 16 + 12 = 28. "
+        "Total: 16 + 28 = 44 apples.\n\nTherefore, the answer is 44."
+    )
+    assert "\n\nQuestion:" not in observed, "the model never writes the separator back"
+    assert extract_answer(observed) == "44", "untruncated, the extractor answers the wrong problem"
+    assert extract_answer(_truncate(observed, (FEWSHOT_STOP,))) == "366"
 
 
 def test_zero_shot_prompt_is_still_well_formed() -> None:
@@ -136,6 +150,35 @@ def test_truncation_takes_the_earliest_stop_not_the_first_listed() -> None:
 
 def test_truncation_leaves_text_without_a_stop_alone() -> None:
     assert _truncate("no stop here", ("END",)) == "no stop here"
+
+
+def test_the_task_adds_its_stop_to_a_config_that_arrives_without_one() -> None:
+    """Callers build the ``EvalConfig``; the stop is the task's business, not theirs.
+
+    ``scripts/gate_runtime_parity.py`` hands in a config it assembled from command
+    line flags, which carries ``stop_sequences=()``. If the task does not merge its
+    own stop into it, nothing cuts the generation: the run-on below survives to the
+    extractor, which reads the last number in the text and answers a problem the
+    model invented. The score that comes back is wrong rather than missing.
+    """
+    tokenizer = StubTokenizer()
+    model = StubModel(
+        tokenizer,
+        reply="Therefore the answer is 366. Question: There are 12 apples Answer: 44",
+    )
+    example = Gsm8kExample(question="How many downloads?", reasoning="Add them.", answer="366")
+
+    result = evaluate_gsm8k(
+        model,
+        tokenizer,
+        [example],
+        label="stub",
+        config=EvalConfig(max_new_tokens=32, batch_size=2),
+        keep_predictions=1,
+    )
+
+    assert result.predictions[0]["generation"] == "Therefore the answer is 366."
+    assert result.correct == 1, "the stop never reached the config and 44 was scored"
 
 
 def test_eval_config_defaults_to_greedy_shaped_settings() -> None:

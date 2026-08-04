@@ -265,6 +265,7 @@ as the wins.
 | [`stats/`](../../stats/) | the signal maps collected by the fine-tune hooks |
 | [`docs/format-spec.md`](../format-spec.md) | the checkpoint format contract these experiments write and read |
 | [`docs/legacy-audit.md`](../legacy-audit.md) | what was wrong with the supplementary code, defect by defect |
-| [`decode-neutrality.md`](decode-neutrality.md) | the checkpoint's own `generation_config` reaching a "greedy" decode: how the phase-3 G4 gate found it, and which campaigns it does and does not touch |
+| [`decode-neutrality.md`](decode-neutrality.md) | the checkpoint's own `generation_config` reaching a "greedy" decode: how the phase-3 G4 gate found it, and which campaigns it does and does not touch — plus the correction, because it was not what cost the points |
+| [`runtime-parity-gap.md`](runtime-parity-gap.md) | what did: a GSM8K stop sequence the model never wrote back, generations running on into invented problems, and the two better-sounding explanations that measured zero |
 | [`docs/sglang-integration-plan.md`](../sglang-integration-plan.md) | the SGLang plugin design and its S0–S8 staging |
 | [`CHANGELOG.md`](../../CHANGELOG.md) | every change, in order, with the reasoning |

@@ -19,6 +19,25 @@ ones that invalidate artifacts a user has already produced.
 
 ## [Unreleased]
 
+### Fixed — GSM8K generations ran on into problems the model invented
+
+`gsm8k.FEWSHOT_STOP` was `"\n\nQuestion:"`, taken from how `build_prompt` separates its
+few-shot exemplars. Models do not write the separator back.
+`Qwen/Qwen2.5-1.5B-Instruct` ends an answer and starts a new problem on the same line —
+`"the answer is 366. Question: There are 12 more green apples…"` — so nothing matched:
+the stopping criterion never fired, generation ran to `max_new_tokens` through two or
+three invented problems, and `extract_answer`'s "last number in the text" fallback
+returned an answer to one of *those*. Not an unparseable generation, which is counted
+separately and would have shown: a confident wrong number that reads like bad
+arithmetic. On the runtime-parity smoke it turned three solved problems out of six into
+misses, one-directionally, on the arm that ran on.
+
+The stop is now the bare `"Question:"`, which is also what `lm-eval-harness` uses for
+this task. A continuation that has written "Question:" has stopped answering either way.
+Diagnosis, the generations it was read from, and the two explanations that fitted the
+data and were wrong, in
+[`docs/reports/runtime-parity-gap.md`](docs/reports/runtime-parity-gap.md).
+
 ### Fixed — a "greedy" decode that was partly the checkpoint's decode
 
 `model.generate` merges the checkpoint's own `generation_config` **underneath** the
@@ -26,9 +45,14 @@ keyword arguments it is given, so every field the call site does not name is wha
 the checkpoint author picked for chat. `dynquant eval`'s `transformers` path named
 `do_sample`, `num_beams`, `temperature`, `top_p` and `top_k` — and not
 `repetition_penalty`, which `Qwen/Qwen2.5-1.5B-Instruct` sets to 1.1. That penalty was
-applied to every greedy generation on the direct path and to none on the vLLM path,
-and it cost **23 points** of GSM8K: 37.00 % against vLLM's 60.00 %, where Qwen publish
-≈ 60 %. The runtime-parity gate is what found it.
+applied to every greedy generation on the direct path and to none on the vLLM path. The
+runtime-parity gate is what found it.
+
+An earlier version of this entry credited the penalty with **23 points** of GSM8K.
+It was not worth any: with the decode replaced, the `transformers` arm scored 37.00 %
+again, unchanged to the problem, and the gap was the stop-sequence defect above. The
+decode fix stands on its own — a greedy decode must not inherit `do_sample: true` and
+`temperature: 0.7` from the checkpoint author, whatever it happens to cost on one task.
 
 `eval.harness.greedy_generation_config` now builds a *fresh* `GenerationConfig`, which
 replaces the checkpoint's rather than layering over it, so every field it does not name

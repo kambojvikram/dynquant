@@ -1,7 +1,15 @@
 # The checkpoint was choosing the decode
 
-*Record of the first G4 run: what it measured, why the number was wrong, and how far the
-wrongness reaches.*
+*Record of the first G4 run: two decode defects, how far they reach, and — per the
+correction below — what they turned out not to explain.*
+
+> **Correction.** This report first named the checkpoint's `repetition_penalty` as the cause
+> of the 23-point gap between the two arms. **It was not.** With the decode replaced, the
+> transformers arm scored *exactly* 37.00 % again and the gap widened to 24.00 points. Both
+> defects below are real and both fixes stand on their own terms — a "greedy" decode must not
+> inherit the checkpoint author's chat settings, whatever it costs. But the gap had a third,
+> unrelated cause, found by dumping the generations rather than by reasoning about
+> mechanisms, and it is recorded in [`runtime-parity-gap.md`](runtime-parity-gap.md).
 
 ## What was run
 
@@ -38,7 +46,10 @@ whatever the checkpoint author chose — and what they chose was chat sampling:
 The old call site named `do_sample=False`, `num_beams=1`, `temperature=None`, `top_p=None`,
 `top_k=None`. It did not name `repetition_penalty`, so **1.1 was applied to every greedy
 generation on the transformers arm and to none on the vLLM arm**. A repetition penalty on a
-GSM8K chain of thought punishes the model for re-using the numbers it is reasoning about.
+GSM8K chain of thought punishes the model for re-using the numbers it is reasoning about —
+which is a coherent mechanism for a lost score, reads as an explanation, and measured zero.
+The re-run's transformers arm did not move by a single problem. The defect is real; the
+attribution was not, and the difference between the two is a measurement.
 
 The fix is not "also name `repetition_penalty`". `greedy_generation_config` now builds a
 fresh `GenerationConfig`, which *replaces* the checkpoint's rather than layering over it, so
@@ -98,10 +109,33 @@ Two limits on that statement, stated rather than glossed:
   matters for correctness — the fix replaces the config rather than patching a field — but it
   is why the S1 screen must not be read as a check on this.
 
-## What the fix does not yet prove
+## What the re-run measured
 
-The `repetition_penalty` explanation is a **hypothesis with a matching mechanism**, not a
-measurement. It becomes a result when the G4 gate is re-run on the same checkpoint and the
-two arms come back inside the bound. The smoke's `--limit 100` cannot certify equivalence at
-`--max-delta 1.0` in any case — 100 problems give an interval far wider than the bound — so
-the certificate needs the full 1319.
+The section this replaces said the `repetition_penalty` explanation was "a hypothesis with a
+matching mechanism, not a measurement", and that it would become a result when the gate was
+re-run and the two arms came back inside the bound. The gate was re-run on the same
+checkpoint, same 100 problems, with the decode fixed:
+
+| arm | before the fix | after the fix |
+|---|---|---|
+| transformers | 37.00 % | **37.00 %** |
+| vLLM | 60.00 % | 61.00 % |
+| delta | −23.00 | **−24.00**, 95 % CI [−34.78, −13.22], p = 7.0e−5 |
+
+Not "narrowed less than hoped" — *unchanged*, to the problem. Whatever the penalty was doing
+to those generations, it was not deciding whether they were right.
+
+Two things this pins for later:
+
+- **The fix stands regardless.** A greedy decode that silently inherits `do_sample: true`,
+  `temperature: 0.7` and `top_p: 0.8` from the checkpoint is wrong whether or not it happens
+  to cost points on one task and one model. `NEUTRAL_DECODE` still earns its place: it fails
+  loudly on a transformers release that moves a default, which is a different risk from the
+  one that was actually realised here.
+- **A mechanism that fits is not a cause.** The penalty story was consistent with every
+  number then in hand, and the way it was settled was not more reasoning but dumping the text
+  both arms produced. See [`runtime-parity-gap.md`](runtime-parity-gap.md).
+
+The smoke's `--limit 100` cannot certify equivalence at `--max-delta 1.0` in any case — 100
+problems give an interval far wider than the bound — so the certificate still needs the full
+1319, and that run is only worth its GPU time once a smoke comes back inside the bound.
