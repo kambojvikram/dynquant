@@ -491,6 +491,33 @@ def _add_eval(subparsers: _SubParsers) -> None:
             "is stated rather than quietly reduced (default: raise)"
         ),
     )
+    parser.add_argument(
+        "--backend",
+        default="transformers",
+        choices=("transformers", "vllm"),
+        help=(
+            "what generates the text. 'vllm' is the same task and the same prompts "
+            "through an offline engine, which is what makes a large sweep affordable; "
+            "scripts/gate_runtime_parity.py is the measurement that the two agree "
+            "(default: transformers)"
+        ),
+    )
+    parser.add_argument(
+        "--quantization",
+        default=None,
+        help="vllm only: the engine's quantization method, e.g. dynquant, gptq, awq",
+    )
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.85, help="vllm only")
+    parser.add_argument(
+        "--max-model-len",
+        type=int,
+        default=None,
+        help="vllm only: defaults to --max-prompt-tokens + --max-new-tokens",
+    )
+    parser.add_argument("--tensor-parallel-size", type=int, default=1, help="vllm only")
+    parser.add_argument(
+        "--enforce-eager", action="store_true", help="vllm only: skip CUDA graph capture"
+    )
     parser.add_argument("--label", help="name for this run in the output (default: task:model)")
     parser.add_argument(
         "--keep-predictions",

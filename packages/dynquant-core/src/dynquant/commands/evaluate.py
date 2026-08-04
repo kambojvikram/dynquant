@@ -42,7 +42,15 @@ from . import _shared
 if TYPE_CHECKING:
     import argparse
 
-__all__ = ["TASKS", "run"]
+__all__ = ["PAIRING_FIELDS", "TASKS", "run"]
+
+#: Everything two records must agree on before their hit vectors may be paired.
+#:
+#: ``backend`` is here even though G4 measures the two runtimes as equivalent in
+#: *score*. Equal totals are not identical per-item outcomes, and McNemar reads exactly
+#: the items the two arms disagree on -- so a cross-backend pair would put engine
+#: disagreement into the one cell the test counts.
+PAIRING_FIELDS = ("task", "backend", "split", "shots", "shot_seed", "limit")
 
 
 class _TaskSpec:
@@ -244,28 +252,20 @@ def run(args: argparse.Namespace) -> int:
         flush=True,
     )
 
-    model = _shared.load_model(
-        args.model,
-        device=args.device,
-        dtype=args.dtype,
-        trust_remote_code=args.trust_remote_code,
-    )
-    model.config.use_cache = True
-
-    packed: dict[str, Any] | None = None
-    if args.map is not None:
-        packed = _pack(model, args)
-
-    tokenizer = _shared.load_tokenizer(
-        args.tokenizer or args.model, trust_remote_code=args.trust_remote_code
-    )
-
+    # Built before the runtime, not after: the vLLM engine sizes its context from these
+    # numbers, and an engine shorter than the harness's own limits truncates prompts the
+    # transformers path would have scored in full.
     config = EvalConfig(
         max_new_tokens=args.max_new_tokens or spec.max_new_tokens,
         batch_size=args.batch_size or spec.batch_size,
         max_prompt_tokens=args.max_prompt_tokens or spec.max_prompt_tokens,
         add_special_tokens=spec.add_special_tokens,
         limit=args.limit,
+    )
+
+    model, packed = _load_runtime(args, config)
+    tokenizer = _shared.load_tokenizer(
+        args.tokenizer or args.model, trust_remote_code=args.trust_remote_code
     )
     label = args.label or f"{args.task}:{Path(args.model).name}"
 
@@ -285,13 +285,9 @@ def run(args: argparse.Namespace) -> int:
 
     record: dict[str, Any] = {
         "dynquant_core": __version__,
-        "task": args.task,
         "label": result.label,
         "model": args.model,
-        "split": split,
-        "shots": n_shots,
-        "shot_seed": args.shot_seed,
-        "limit": args.limit,
+        **_pairing(args, split=split, n_shots=n_shots),
         "accuracy": result.accuracy,
         # Counted from the vector rather than read off a per-task field, so the
         # headline number and the paired test can never disagree about which problems
@@ -335,6 +331,87 @@ def run(args: argparse.Namespace) -> int:
             f"accuracy {result.accuracy:.4f} is below --min-accuracy {args.min_accuracy:.4f}"
         )
     return 0
+
+
+def _pairing(args: argparse.Namespace, *, split: str | None, n_shots: int) -> dict[str, Any]:
+    """The settings two runs must share before their hit vectors may be paired.
+
+    ``PAIRING_FIELDS`` names them; this builds them. Keeping the two beside each other
+    is the point: written inline in the record, a field could be added to the contract
+    and never recorded -- which makes every comparison against a record written by the
+    same code raise -- or recorded and dropped from the contract, which makes the
+    comparison guard blind to exactly the setting it was added to catch. Neither
+    direction is visible to a test that walks ``PAIRING_FIELDS``, because a shrunken
+    tuple just yields fewer cases and stays green.
+    """
+    from dynquant.errors import DynQuantError
+
+    values: dict[str, Any] = {
+        "task": args.task,
+        "backend": args.backend,
+        "split": split,
+        "shots": n_shots,
+        "shot_seed": args.shot_seed,
+        "limit": args.limit,
+    }
+    if set(values) != set(PAIRING_FIELDS):
+        raise DynQuantError(
+            f"the record pairs on {sorted(values)} but PAIRING_FIELDS names "
+            f"{sorted(PAIRING_FIELDS)}. That is a bug in `dynquant eval`: the two have "
+            f"to describe the same settings or the comparison guard stops guarding."
+        )
+    return values
+
+
+def _load_runtime(args: argparse.Namespace, config: Any) -> tuple[Any, dict[str, Any] | None]:
+    """Whatever the harness will generate with, and what it cost to pack.
+
+    The harness only ever calls ``generate_ids``, so a vLLM engine substitutes for a
+    ``transformers`` model without the scorers knowing which they were handed. That is
+    the property ``scripts/gate_runtime_parity.py`` measures on real hardware; it is not
+    assumed here.
+
+    Serving the campaign through vLLM is the difference between a week and a month at
+    S4's volume, which is why this lives in the command rather than in a script beside
+    it -- a second evaluator built to reach the engine would be a second place for the
+    prompt to be assembled differently.
+    """
+    from dynquant.errors import DynQuantError
+
+    if args.backend == "transformers":
+        model = _shared.load_model(
+            args.model,
+            device=args.device,
+            dtype=args.dtype,
+            trust_remote_code=args.trust_remote_code,
+        )
+        model.config.use_cache = True
+        return model, (_pack(model, args) if args.map is not None else None)
+
+    if args.map is not None:
+        raise DynQuantError(
+            "--map swaps modules on a `transformers` model that is already in memory, "
+            "and the vLLM backend never builds one. Write the checkpoint first with "
+            "`dynquant quantize --map ...` and point --model at that directory, which "
+            "is the configuration a server actually loads."
+        )
+
+    from dynquant.eval.backends import VllmBackend
+
+    engine_kwargs: dict[str, Any] = {
+        "dtype": args.dtype,
+        "gpu_memory_utilization": args.gpu_memory_utilization,
+        "max_model_len": args.max_model_len or (config.max_prompt_tokens + config.max_new_tokens),
+        "trust_remote_code": args.trust_remote_code,
+        "enforce_eager": args.enforce_eager,
+    }
+    if args.quantization:
+        engine_kwargs["quantization"] = args.quantization
+    if args.tensor_parallel_size > 1:
+        engine_kwargs["tensor_parallel_size"] = args.tensor_parallel_size
+
+    print(f"vllm: building engine with {engine_kwargs}", flush=True)
+    return VllmBackend.from_pretrained(args.model, **engine_kwargs), None
 
 
 def _resolve_splits(
@@ -486,7 +563,17 @@ def _compare(record: dict[str, Any], path: str) -> dict[str, Any]:
         raise DynQuantError(f"no evaluation record at {source}")
     other = json.loads(source.read_text(encoding="utf-8"))
 
-    for field in ("task", "split", "shots", "shot_seed", "limit"):
+    for field in PAIRING_FIELDS:
+        if field not in record:
+            # Not a user error: this run built its own record a moment ago. A field
+            # dropped from it would make the guard below compare None against None and
+            # wave through every mismatch, so the check that the guard can still see
+            # has to come first.
+            raise DynQuantError(
+                f"this run's record has no {field!r} field, so it cannot be checked "
+                f"against {source} for comparability. That is a bug in `dynquant eval`, "
+                f"not something the command line did wrong."
+            )
         if other.get(field) != record.get(field):
             raise DynQuantError(
                 f"{source} was measured with {field}={other.get(field)!r} but this run "

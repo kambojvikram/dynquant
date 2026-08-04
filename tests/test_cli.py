@@ -651,6 +651,8 @@ def _result_class(key: str) -> type:
 
 def _eval_args(**overrides: object) -> argparse.Namespace:
     defaults: dict[str, object] = {
+        "task": "gsm8k",
+        "limit": None,
         "split": None,
         "shots": None,
         "shot_split": None,
@@ -660,6 +662,17 @@ def _eval_args(**overrides: object) -> argparse.Namespace:
         "prompt_style": "auto",
         "exec_timeout": None,
         "exec_memory_mb": None,
+        "model": "m",
+        "map": None,
+        "device": "cuda",
+        "dtype": "bfloat16",
+        "trust_remote_code": False,
+        "backend": "transformers",
+        "quantization": None,
+        "gpu_memory_utilization": 0.85,
+        "max_model_len": None,
+        "tensor_parallel_size": 1,
+        "enforce_eager": False,
     }
     return argparse.Namespace(**{**defaults, **overrides})
 
@@ -781,12 +794,109 @@ def test_a_chat_templated_task_does_not_prepend_a_second_bos() -> None:
     assert evaluate.TASKS["gsm8k"].add_special_tokens is True
 
 
-@pytest.mark.parametrize("field", ["task", "split", "shots", "shot_seed", "limit"])
+def _engine_kwargs(monkeypatch, **arg_overrides) -> dict:
+    """Build the vLLM runtime with the engine stubbed, and return what it was sent."""
+    from dynquant.eval.backends import VllmBackend
+    from dynquant.eval.harness import EvalConfig
+
+    captured: dict = {}
+
+    def _fake(cls, model_path, **kwargs):
+        captured.update(kwargs, model_path=model_path)
+        return "engine"
+
+    monkeypatch.setattr(VllmBackend, "from_pretrained", classmethod(_fake))
+    config = EvalConfig(max_new_tokens=1024, batch_size=16, max_prompt_tokens=2048)
+    model, packed = evaluate._load_runtime(_eval_args(backend="vllm", **arg_overrides), config)
+    assert model == "engine"
+    assert packed is None, "an engine loads a checkpoint; nothing was packed in memory"
+    return captured
+
+
+def test_the_engine_context_covers_the_prompt_and_the_generation(monkeypatch) -> None:
+    """vLLM refuses or truncates a prompt longer than `max_model_len`, and the number
+    that comes back from a truncated prompt is a real number for a different question.
+    The engine is therefore sized from the harness's own budgets rather than left to
+    the checkpoint's advertised context, which on a long-context model is 128k of KV
+    cache reserved to run a 2k prompt."""
+    captured = _engine_kwargs(monkeypatch)
+    assert captured["max_model_len"] == 2048 + 1024
+
+    override = _engine_kwargs(monkeypatch, max_model_len=8192)
+    assert override["max_model_len"] == 8192
+
+
+def test_engine_options_left_unset_are_not_sent_at_all(monkeypatch) -> None:
+    """`quantization=None` is not the same request as omitting it: vLLM reads the
+    method out of the checkpoint's own config.json, which is how the GPTQ and AWQ
+    baselines are meant to load."""
+    captured = _engine_kwargs(monkeypatch)
+    assert "quantization" not in captured
+    assert "tensor_parallel_size" not in captured
+
+    asked = _engine_kwargs(monkeypatch, quantization="dynquant", tensor_parallel_size=2)
+    assert asked["quantization"] == "dynquant"
+    assert asked["tensor_parallel_size"] == 2
+
+
+def test_a_bit_map_is_not_applied_to_an_engine_that_never_built_a_model() -> None:
+    """`--map` swaps modules on a live `nn.Module`. The vLLM path has none, so the map
+    would be accepted and silently do nothing -- an arm reported as quantized that ran
+    at full precision, which is the most flattering way this could fail."""
+    with pytest.raises(DynQuantError, match="dynquant quantize"):
+        evaluate._load_runtime(_eval_args(backend="vllm", map="maps/3.25.json"), None)
+
+
+def test_the_record_pairs_on_exactly_the_settings_that_change_the_score() -> None:
+    """Pinned literally, not derived, because every other test here walks
+    ``PAIRING_FIELDS`` -- so dropping an entry deletes its own test cases and the suite
+    stays green while the guard quietly stops checking that setting.
+
+    ``backend`` earns its place even though G4 measures the two runtimes as equivalent
+    in *score*: equal totals are not identical per-item outcomes, and McNemar reads
+    exactly the items the arms disagree on.
+    """
+    assert evaluate.PAIRING_FIELDS == ("task", "backend", "split", "shots", "shot_seed", "limit")
+
+
+def test_the_record_carries_every_setting_the_pairing_guard_will_read() -> None:
+    """The other direction: a field named in the contract but never written into the
+    record makes every comparison against a record this same code produced raise."""
+    args = _eval_args(task="mbpp", backend="vllm", shot_seed=7, limit=200)
+    values = evaluate._pairing(args, split="test", n_shots=3)
+
+    assert set(values) == set(evaluate.PAIRING_FIELDS)
+    assert values == {
+        "task": "mbpp",
+        "backend": "vllm",
+        "split": "test",
+        "shots": 3,
+        "shot_seed": 7,
+        "limit": 200,
+    }
+
+
+def test_a_contract_the_record_cannot_satisfy_is_a_loud_bug(monkeypatch) -> None:
+    """Adding a field to ``PAIRING_FIELDS`` without recording it would otherwise be
+    found by a user, at the end of a run, holding a record that cannot be compared."""
+    monkeypatch.setattr(evaluate, "PAIRING_FIELDS", (*evaluate.PAIRING_FIELDS, "dtype"))
+    with pytest.raises(DynQuantError, match="PAIRING_FIELDS names"):
+        evaluate._pairing(_eval_args(), split="test", n_shots=5)
+
+
+@pytest.mark.parametrize("field", evaluate.PAIRING_FIELDS)
 def test_comparing_across_settings_is_refused(tmp_path: Path, field: str) -> None:
     """A harness difference reported as a quantization effect is the failure this
-    exists to prevent."""
+    exists to prevent.
+
+    ``backend`` belongs in this list even though G4 measures the two runtimes as
+    equivalent in *score*. Equal totals are not identical per-item outcomes, and
+    McNemar reads exactly the items the two arms disagree on -- so a cross-backend
+    pair puts engine disagreement into the one cell being counted.
+    """
     record = {
         "task": "gsm8k",
+        "backend": "transformers",
         "split": "test",
         "shots": 5,
         "shot_seed": 0,
@@ -802,9 +912,37 @@ def test_comparing_across_settings_is_refused(tmp_path: Path, field: str) -> Non
         evaluate._compare(record, str(path))
 
 
+@pytest.mark.parametrize("field", evaluate.PAIRING_FIELDS)
+def test_a_record_missing_a_field_the_guard_reads_fails_loudly(tmp_path: Path, field: str) -> None:
+    """The guard compares ``other.get(f)`` against ``record.get(f)``. Drop the field
+    from the record `run()` writes and both sides are ``None``, so every genuine
+    mismatch is waved through and the McNemar table is built from two different
+    evaluations. The guard has to notice it went blind."""
+    record = {
+        "task": "gsm8k",
+        "backend": "transformers",
+        "split": "test",
+        "shots": 5,
+        "shot_seed": 0,
+        "limit": None,
+        "label": "b",
+        "hits": [True, False],
+    }
+    # The stored record is complete and matches, so the only thing that can fire is the
+    # missing-field check -- otherwise a field earlier in the tuple raises first and the
+    # test passes for the wrong reason.
+    other = dict(record, label="a")
+    del record[field]
+    path = tmp_path / "other.json"
+    path.write_text(json.dumps(other), encoding="utf-8")
+    with pytest.raises(DynQuantError, match=f"no {field!r} field"):
+        evaluate._compare(record, str(path))
+
+
 def test_comparing_different_problem_counts_is_refused(tmp_path: Path) -> None:
     record = {
         "task": "gsm8k",
+        "backend": "transformers",
         "split": "test",
         "shots": 5,
         "shot_seed": 0,
@@ -821,6 +959,7 @@ def test_comparing_different_problem_counts_is_refused(tmp_path: Path) -> None:
 def test_a_matched_pair_compares(tmp_path: Path, capsys) -> None:
     record = {
         "task": "gsm8k",
+        "backend": "transformers",
         "split": "test",
         "shots": 5,
         "shot_seed": 0,
