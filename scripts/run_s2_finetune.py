@@ -900,6 +900,7 @@ def _train(
     from transformers import AutoModelForCausalLM, Trainer, TrainingArguments
 
     from dynquant import DynQuantCallback
+    from dynquant.constants import STATS_FILENAME
     from dynquant.integration.peft_utils import merge_adapters
 
     torch.manual_seed(args.seed)
@@ -942,7 +943,14 @@ def _train(
             flush=True,
         )
 
+    # Created before the callback is constructed, and that is load-bearing rather than
+    # tidiness. ``StatsFile.save`` decides between "directory" and "file path" with
+    # ``Path.is_dir()`` -- a filesystem test, not a reading of the argument -- so the same
+    # command writes ``stats/dynquant_stats.json`` when the directory happens to exist and a
+    # file literally named ``stats`` when it does not. Making it exist first pins the answer.
     stats_dir = destination / "stats"
+    stats_dir.mkdir(parents=True, exist_ok=True)
+    stats_file = stats_dir / STATS_FILENAME
     callback = DynQuantCallback(
         stats_dir,
         grad_estimator=args.estimator,
@@ -1009,7 +1017,8 @@ def _train(
         "train_loss": result.training_loss,
         "seconds": round(elapsed, 1),
         "tracked_modules": tracked,
-        "stats_dir": str(stats_dir),
+        "stats_file": str(stats_file),
+        "stats_modules": _modules_in(stats_file),
         "output": str(merged),
         "commit": _git_head(Path(args.repo)),
     }
@@ -1022,7 +1031,28 @@ def _train(
         # and tracked nothing has to fail here rather than be discovered at S3.
         print("NO MODULES TRACKED: the signal map is empty", flush=True)
         return 4
+    if record["stats_modules"] != tracked:
+        # Checked against the file on disk, not against the tracker in memory. The tracker
+        # reporting N modules proves the hooks fired; only reading the file back proves S3
+        # will find them, at the path this record claims they are at.
+        print(
+            f"SIGNAL MAP NOT WHERE IT IS RECORDED: {stats_file} holds "
+            f"{record['stats_modules']} modules, the tracker saw {tracked}",
+            flush=True,
+        )
+        return 5
+    print(f"-> signal map: {tracked} modules at {stats_file}", flush=True)
     return 0
+
+
+def _modules_in(stats_file: Path) -> int:
+    """How many modules the stats file on disk actually holds. ``-1`` if unreadable."""
+    try:
+        payload = json.loads(stats_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return -1
+    layers = payload.get("layers")
+    return len(layers) if isinstance(layers, dict) else -1
 
 
 if __name__ == "__main__":

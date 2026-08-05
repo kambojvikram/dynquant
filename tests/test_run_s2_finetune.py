@@ -975,6 +975,39 @@ def test_a_dry_run_writes_the_census_and_touches_no_gpu(s2, monkeypatch, tmp_pat
     ]
 
 
+def test_the_signal_map_is_counted_from_the_file_not_from_the_tracker(s2, tmp_path) -> None:
+    """The deliverable is a file S3 will open, so the check has to read that file.
+
+    ``StatsFile.save`` chooses between "directory" and "file path" with ``Path.is_dir()`` --
+    a filesystem test rather than a reading of its argument -- so the callback writes
+    ``stats/dynquant_stats.json`` when that directory exists and a file literally named
+    ``stats`` when it does not. Either is loadable; what is not acceptable is a run whose
+    output path depends on what a previous run happened to leave behind, or a record that
+    names a path the map is not at. A tracker reporting N modules proves the hooks fired; it
+    does not prove S3 can find them.
+
+    Turns red when: the counter starts trusting the in-memory tracker, or stops treating an
+    unreadable or wrongly-shaped stats file as a failure.
+    """
+    import json
+
+    from dynquant.constants import STATS_FILENAME
+
+    stats_dir = tmp_path / "stats"
+    stats_dir.mkdir()
+    good = stats_dir / STATS_FILENAME
+    good.write_text(json.dumps({"layers": {"a": {}, "b": {}, "c": {}}}), encoding="utf-8")
+    assert s2._modules_in(good) == 3
+
+    assert s2._modules_in(tmp_path / "absent.json") == -1, "a missing map is not zero modules"
+    truncated = tmp_path / "truncated.json"
+    truncated.write_text('{"layers": {"a"', encoding="utf-8")
+    assert s2._modules_in(truncated) == -1
+    wrong_shape = tmp_path / "wrong.json"
+    wrong_shape.write_text(json.dumps({"layers": []}), encoding="utf-8")
+    assert s2._modules_in(wrong_shape) == -1
+
+
 # --------------------------------------------------------------------------
 # Collation
 # --------------------------------------------------------------------------
