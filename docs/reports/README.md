@@ -4,7 +4,7 @@ Every experiment run on DynQuant since the package was built, what it measured, 
 full record lives. Nothing here is taken from the paper; everything is measured on this
 repository's own code, all of it on a single NVIDIA A100 80GB PCIe.
 
-There are six campaigns. They answer six different questions, in this order:
+There are seven campaigns. They answer seven different questions, in this order:
 
 | # | question | verdict | full record |
 |---|---|---|---|
@@ -14,6 +14,7 @@ There are six campaigns. They answer six different questions, in this order:
 | 4 | Can the 3-bit loss be reversed without adopting GPTQ's mechanism? | **Yes. +1.54 over GPTQ at 7.4 % fewer bytes, p < 0.0001** | [phase 2 PDF](dynquant-phase2-beating-gptq-3bit.pdf) |
 | 5 | Do inference servers hold the same quantized weights the direct run holds? | **Yes, on both vLLM and SGLang** — after a real defect was found and fixed | [`serving-parity.md`](serving-parity.md) |
 | 6 | Do the phase-3 benchmarks have room for quantization damage to show? | **Yes, all four** — 54.5–83.2 %, no arm near ceiling; two harness defects caught | [`phase3-s1-headroom-screen.md`](phase3-s1-headroom-screen.md) |
+| 7 | Does the S2 fine-tune know which tokens are the assistant's? | **Yes on both tokenizers, ≤0.07 % unmaskable** — after the obvious method dropped 100 % of the data on one of them | [`phase3-s2-loss-masking.md`](phase3-s2-loss-masking.md) |
 
 The method itself — signals, sensitivity estimator, allocator, encoder, format, packed
 runtime, kernels — is documented end to end in the
@@ -233,6 +234,35 @@ instruction-issue floor of ~141 µs against 237 µs achieved — and needs the t
 **Verification.** 417 kernel-parity tests across every geometry × width × M × dtype, and all
 four `compute-sanitizer` tools — memcheck, initcheck, racecheck, synccheck — report 0 errors
 and 0 hazards over that suite.
+
+## 7. Phase 3 — S2, locating the assistant turns
+
+[`phase3-s2-loss-masking.md`](phase3-s2-loss-masking.md)
+
+The second pre-flight check of phase 3, and the same rule as §"Task selection precedes
+fine-tuning" applied one level down: verify the loss mask before spending 30 GPU-hours on it.
+A wrong mask does not fail — it trains a slightly worse model and reports success, which is
+fatal to a campaign whose purpose is to measure small differences *on top of* that model.
+
+The obvious method — locate turn `i` by the length of the render of `messages[:i]` — assumes
+each rendered prefix is a token prefix of the next. Nothing promises that. `mistral_common`,
+behind Ministral-8B, refuses to render *any* assistant-final conversation at all (it is
+validating a serving request), so the walk drops **3 000 of 3 000** rows; Phi-4-mini appends a
+document terminator to a conversation it is not asked to continue, so its "prefix" isn't one.
+The mode that works renders each assistant turn *open* with `continue_final_message=True` and
+closes it with a terminator measured from three synthetic renders — `<|end|>` (200020) on Phi,
+which is **not** its `eos_token_id`. Which mode a tokenizer needs is not an attribute anywhere,
+so `--mask-mode auto` measures both on 32 real rows and takes the winner.
+
+Result on 3 000 Tulu-3 rows each: **0.00 %** unmaskable on Phi, **0.07 %** on Ministral (2 rows
+of empty assistant content), 70.8 % / 70.5 % of tokens supervised. Phi accepts both modes, and
+on 500 rows the two agree on every id and every span start, differing only by that one document
+terminator.
+
+Three designs died on real tokenizers after passing a stub suite; the most dangerous **passed a
+3 000-row dry run at 95 %**, because `mistral_common` merges adjacent same-role turns and the
+merge separator and turn opener are each one token, so two errors cancelled. That is why the
+fourth design was prototyped against the real tokenizers before being written into the module.
 
 ---
 

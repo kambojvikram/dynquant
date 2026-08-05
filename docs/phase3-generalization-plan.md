@@ -589,6 +589,33 @@ does not survive re-tokenization back into control tokens (`2b62907`). Both are 
 carry regression tests. The provisional dataset-sweep choice (Phi-4-mini) is unchanged: the
 screen gives no reason to move it.
 
+### S2 — the fine-tunes, and the loss mask they depend on
+
+Driver: [`scripts/run_s2_finetune.py`](../scripts/run_s2_finetune.py). Before any of the ~30
+GPU-hours is spent, one thing has to be verified rather than assumed: **which token positions
+the loss is applied to.** A wrong mask does not raise — it trains a slightly worse model and
+reports success, and every arm in S3 is measured on top of that model.
+
+**The mask is ready on both models; the fine-tunes have not been launched.**
+[`docs/reports/phase3-s2-loss-masking.md`](reports/phase3-s2-loss-masking.md).
+
+| model | mask mode (auto-selected) | unmaskable | over `--max-len` | supervised |
+|---|---|---:|---:|---:|
+| Phi-4-mini-instruct | `template` (probe 30/30 tie) | **0.00 %** | 3.67 % | 70.8 % |
+| Ministral-8B-Instruct | `assemble` (probe 0 vs 30) | **0.07 %** | 4.10 % | 70.5 % |
+
+3 000 Tulu-3 rows each, `--max-len 2048`. The two drop classes carry separate ceilings on
+purpose: over-length is a budget set by a flag (`--max-length-drop-rate`, 0.15), unmaskable is a
+broken assumption about the tokenizer (`--max-drop-rate`, 0.05). Both models are under both.
+
+The per-turn walk that works on Phi drops **3 000 of 3 000** rows on Ministral —
+`mistral_common` refuses to render any assistant-final conversation, because it is validating a
+serving request. `assemble` mode renders each assistant turn open with
+`continue_final_message=True` and closes it with a terminator measured from three synthetic
+renders. On Phi, which accepts both modes, they agree on every id and every span start over 495
+of 500 rows. Three earlier designs passed a stub test suite and failed on real tokenizers, one
+of them at a 95 % success rate on 3 000 rows — the report is mostly about that.
+
 ### S3 — the arms
 
 Per checkpoint, at matched **bytes** rather than matched nominal width — the accounting point

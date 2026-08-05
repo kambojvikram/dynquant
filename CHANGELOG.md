@@ -19,6 +19,49 @@ ones that invalidate artifacts a user has already produced.
 
 ## [Unreleased]
 
+### Added — the phase-3 S2 fine-tune driver, and a loss mask that is measured rather than assumed
+
+`scripts/run_s2_finetune.py`. Everything in an SFT driver is standard except one thing no
+dataset ships and no tokenizer API reliably provides: **which token positions are the
+assistant's**. A wrong loss mask does not raise — it trains a slightly worse model and reports
+success, which is fatal to a campaign built to measure small differences on top of that model.
+
+The obvious method locates turn `i` by the length of the render of `messages[:i]`, which assumes
+each rendered prefix is a *token* prefix of the next. Nothing promises that, and neither
+tokenizer on the phase-3 panel simply obeys it:
+
+- **`mistral_common` (Ministral-8B) refuses to render any assistant-final conversation** —
+  `InvalidMessageStructureException`, because it is validating a serving request. Every prefix
+  the walk needs is exactly the shape it rejects: **3 000 of 3 000 rows dropped**.
+- **Phi-4-mini closes a conversation it is not asked to continue**, appending `<|endoftext|>`,
+  so that render is not a prefix of the training sequence either.
+
+So there are two modes. `template` walks the renders and *checks* prefix-stability per turn;
+`assemble` renders each assistant turn open with `continue_final_message=True` — accepted by
+both backends, and what the mistral refusal's own error message asks for — then closes it with a
+terminator measured once from three synthetic renders. That measurement matters: Phi's turns end
+in `<|end|>` (200020) while its `eos_token_id` is `<|endoftext|>` (199999), so a design that
+reached for `eos_token_id` would have taught the model to stop with the wrong token. Which mode a
+tokenizer needs is not an attribute anywhere, so `--mask-mode auto` masks 32 real rows both ways
+and takes the winner.
+
+`return_assistant_tokens_mask=True` is not used and is a trap here: it needs `{% generation %}`
+markers, which Phi-4-mini's template lacks, so it returns a full-length **all-zero** mask and
+reports success.
+
+Dry runs, 3 000 Tulu-3 rows, `--max-len 2048`: Phi `template`, **0.00 %** unmaskable, 70.8 %
+of tokens supervised; Ministral `assemble`, **0.07 %** (2 rows of empty assistant content),
+70.5 %. Phi accepts both modes, and over 495 of 500 rows they agree on every id and every span
+start, differing only by that one document terminator. The driver refuses to train past
+`--max-drop-rate` (0.05); over-length rows are counted separately under
+`--max-length-drop-rate` (0.15), because a budget set by a flag and a broken assumption about a
+tokenizer are different facts and must not hide behind each other.
+
+28 tests in `tests/test_run_s2_finetune.py`; full write-up, including three designs that passed
+a stub suite and failed on real tokenizers — one at a 95 % success rate over 3 000 rows, because
+`mistral_common` merges adjacent same-role turns and two one-token errors cancelled — in
+[`docs/reports/phase3-s2-loss-masking.md`](docs/reports/phase3-s2-loss-masking.md).
+
 ### Fixed — the chat frame was detected and then thrown away on the way to the model
 
 The sequel to the entry below, and the more dangerous half. Having correctly decided that
