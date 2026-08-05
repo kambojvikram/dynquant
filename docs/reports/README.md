@@ -276,6 +276,30 @@ its post-SFT number measures *general* math gain does not.
 
 ---
 
+## 8. Phase 3 — S3, what fusion costs the model that has it
+
+Full report: [phase3-s3-fused-floors.md](phase3-s3-fused-floors.md). Measured before S3's arms
+were built, because phase 2 ran only on models that spell every projection separately and
+Phi-4-mini does not: `qkv_proj` and `gate_up_proj` are **55.1 % of its parameters**.
+
+What holds: the row partitions land correctly at the checkpoint's real geometry — 24:8 GQA
+and an unset `head_dim`, neither of which the hidden-64 fixture produces — and the allocator
+descends from floors it cannot afford on a fused model, hitting 3.2492 against a 3.25 target
+with 90 breaches named and 69 of 129 modules moving against a shuffled-score control. That is
+bug 4's guard, which until now had only ever run on an unfused synthetic model.
+
+What does not: **the two panel models are in different regimes at the same nominal target.**
+Phi's floors cost **4.43 average bits** against Ministral's **3.82**, so a 3.25-bit arm asks
+Phi to go 1.18 bits below its floors and Ministral 0.57 — and phase 2 found the signal only
+earns its keep once floors stop being affordable. Of Phi's 4.43, **0.21 bits is fusion rather
+than architecture**: a fused tensor takes the strictest of its partitions' floors, so 0.805 B
+up-projection parameters are charged the SwiGLU gate's 4 bits instead of their own 3. The
+allocator never reads `partitions`, though `QuantTensor` already carries them — the format is
+ready and the allocator is not. Left open deliberately; closing it would break comparability
+with phase 2.
+
+---
+
 ## Conventions that apply to every campaign
 
 **Paired tests on stored per-item hits.** Every arm stores which items it got right, so every

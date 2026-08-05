@@ -102,6 +102,28 @@ def _phi3(*, tie: bool = True) -> tuple[nn.Module, Any]:
     return transformers.AutoModelForCausalLM.from_config(cfg), cfg
 
 
+def _phi_4_mini_config() -> Any:
+    """``microsoft/Phi-4-mini-instruct``'s real geometry, snapshot ``cfbefac``.
+
+    The fixture above runs at hidden 64 with a 4:2 head ratio. Two properties only
+    exist at the checkpoint's own scale: a 24:8 GQA ratio the fixture never produces,
+    and a payload large enough to dominate the group metadata -- at hidden 64 a group
+    of 128 pads every row, so the allocator's arithmetic is metadata, not weights.
+    Note ``head_dim`` is deliberately unset, as it is in the real config.
+    """
+    return transformers.Phi3Config(
+        hidden_size=3072,
+        intermediate_size=8192,
+        num_attention_heads=24,
+        num_key_value_heads=8,
+        num_hidden_layers=32,
+        vocab_size=200064,
+        tie_word_embeddings=True,
+        partial_rotary_factor=0.75,
+        **_TOKENS,
+    )
+
+
 def _mistral(*, sliding_window: int | None = 16) -> tuple[nn.Module, Any]:
     cfg = transformers.MistralConfig(
         hidden_size=HIDDEN,
@@ -333,6 +355,107 @@ def test_phi_tied_embedding_takes_the_lm_head_floor() -> None:
 
     followers = [m for m in graph if m.is_tied_follower]
     assert followers and all(m.name not in {i.name for i in graph.quantizable()} for m in followers)
+
+
+def test_phi_partitions_hold_at_phi_4_mini_s_real_geometry() -> None:
+    """The same two splits, at the numbers the campaign actually quantizes.
+
+    The fixture above runs at hidden 64 with a 4:2 head ratio. The checkpoint phase 3
+    spends its GPU-hours on runs at hidden 3072 with 24:8, and it does not set
+    ``head_dim`` at all -- so the real model exercises the ``hidden // heads``
+    fallback and a 3:1 block ratio that the fixture never produces. Both boundaries
+    are asserted as literals rather than recomputed from the config, because
+    recomputing them here would just restate the code under test.
+
+    Values read from ``microsoft/Phi-4-mini-instruct``'s ``config.json``
+    (snapshot ``cfbefac``). Weights are on the meta device: only ``shape`` is read,
+    and materialising 15.7 M rows to check a boundary would be its own bug.
+
+    Turns red when: the fallback for an absent ``head_dim`` is dropped, a guard
+    starts declining on this shape, or Phi-4-mini's geometry moves under us.
+    """
+    import torch
+
+    plugin = plugin_for("phi3")
+    assert plugin is not None
+
+    cfg = _phi_4_mini_config()
+    assert getattr(cfg, "head_dim", None) in (None, 128), "fallback path must stay reachable"
+
+    def _ctx(leaf: str, out_features: int) -> ModuleContext:
+        return ModuleContext(
+            name=f"model.layers.0.{'self_attn' if 'qkv' in leaf else 'mlp'}.{leaf}",
+            module=torch.nn.Identity(),
+            weight=torch.empty(out_features, 3072, device="meta"),
+            config=cfg,
+            ancestors=(),
+            leaf=leaf,
+        )
+
+    qkv = plugin.partitions_for(_ctx("qkv_proj", 5120), ModuleRole.ATTN_QKV)
+    assert qkv is not None, "5120 = 24x128 + 2x(8x128); the guard must accept it"
+    assert [(p.role, p.start, p.stop) for p in qkv] == [
+        (ModuleRole.ATTN_Q, 0, 3072),
+        (ModuleRole.ATTN_K, 3072, 4096),
+        (ModuleRole.ATTN_V, 4096, 5120),
+    ]
+
+    gate_up = plugin.partitions_for(_ctx("gate_up_proj", 16384), ModuleRole.MLP_GATE_UP)
+    assert gate_up is not None
+    assert [(p.role, p.start, p.stop) for p in gate_up] == [
+        (ModuleRole.MLP_GATE, 0, 8192),
+        (ModuleRole.MLP_UP, 8192, 16384),
+    ]
+
+
+def test_soft_floors_reach_phi_s_fused_tensors() -> None:
+    """A fused tensor can be pushed below its maxed floor like any other.
+
+    ``floor_bits`` on a fused tensor is the *strictest* of its partitions' floors --
+    ``gate_up_proj`` inherits the SwiGLU gate's 4 even though half its rows are an
+    up-projection that would take 3. On Phi-4-mini that rule applies to 55% of the
+    parameters, and it lifts the whole model's floor cost to 4.43 average bits, so
+    every target the campaign runs sits below it. If soft floors did not reach these
+    tensors the allocator would have nothing left to trade and would miss the budget
+    on the one model in the panel that is fused.
+
+    Every allocator test in ``test_allocate.py`` runs on an unfused synthetic model,
+    which is why this lives here: it is the fused half of the same guard.
+
+    Turns red when: ``_downgrade`` starts treating a fused role as structural, or
+    fused tensors stop appearing in the violation report that makes the trade visible.
+    """
+    import torch
+
+    from dynquant.allocate.budget import Budget
+    from dynquant.allocate.knapsack import allocate_bits
+
+    # Real geometry, not the fixture: at hidden 64 a group of 128 pads every row and
+    # the scale/offset metadata outweighs the payload, so 2 bits everywhere costs more
+    # than a 3.25-bit budget and the allocator correctly refuses before it can descend.
+    # The property under test only exists at a scale where the payload dominates.
+    with torch.device("meta"):
+        model = transformers.AutoModelForCausalLM.from_config(_phi_4_mini_config())
+    graph = classify_model(model, config=_phi_4_mini_config())
+
+    fused = {m.name for m in graph.quantizable() if m.partitions}
+    assert fused, "phi3 should have fused tensors to allocate over"
+
+    unaffordable = graph.floor_cost_bits() / graph.total_params()
+    assert unaffordable > 4.0, f"Phi-4-mini's floors should be unaffordable, got {unaffordable:.2f}"
+
+    budget = Budget.from_target(graph, target_bits=3.25)
+    scores = {info.name: 0.5 for info in graph.quantizable()}
+    result = allocate_bits(graph, scores, budget)
+    assert abs(result.average_bits - 3.25) < 0.01, result.summary()
+
+    breached = {v.name for v in result.violations}
+    assert fused & breached, (
+        f"no fused tensor was traded down at 3.25b against {unaffordable:.2f}b of "
+        f"floors; breached instead: {sorted(breached)[:5]}"
+    )
+    for name in fused:
+        assert result.bits[name] >= 2
 
 
 def test_untied_phi_keeps_the_embedding_floor() -> None:

@@ -1,0 +1,97 @@
+[
+  {
+    "model": "phi4-mini",
+    "model_type": "phi3",
+    "params": 3835822080,
+    "quantizable_modules": 129,
+    "fused_params": 2113929216,
+    "fused_fraction": 0.5511,
+    "floor_cost_bits": 4.431,
+    "floor_cost_bits_if_partitioned": 4.221,
+    "fusion_surcharge_bits": 0.2099,
+    "up_rows_overcharged_params": 805306368,
+    "headroom": {
+      "3.25": -1.181,
+      "4.0": -0.431
+    },
+    "arms": {
+      "3.25": {
+        "achieved_bits": 3.2492,
+        "miss": -0.00082,
+        "violations": 90,
+        "widths": {
+          "2": 20,
+          "3": 95,
+          "4": 14
+        },
+        "modules_moved_vs_shuffled": 69,
+        "modules": 129,
+        "fused_widths": {
+          "gate_up_proj": 3,
+          "qkv_proj": 3
+        }
+      },
+      "4.0": {
+        "achieved_bits": 3.9991,
+        "miss": -0.00095,
+        "violations": 9,
+        "widths": {
+          "2": 4,
+          "3": 34,
+          "4": 91
+        },
+        "modules_moved_vs_shuffled": 13,
+        "modules": 129,
+        "fused_widths": {
+          "gate_up_proj": 4,
+          "qkv_proj": 4
+        }
+      }
+    }
+  },
+  {
+    "model": "ministral-8b",
+    "model_type": "mistral",
+    "params": 8019509248,
+    "quantizable_modules": 254,
+    "fused_params": 0,
+    "fused_fraction": 0.0,
+    "floor_cost_bits": 3.8159,
+    "floor_cost_bits_if_partitioned": 3.8159,
+    "fusion_surcharge_bits": 0.0,
+    "up_rows_overcharged_params": 0,
+    "headroom": {
+      "3.25": -0.5659,
+      "4.0": 0.1841
+    },
+    "arms": {
+      "3.25": {
+        "achieved_bits": 3.25,
+        "miss": 0.0,
+        "violations": 160,
+        "widths": {
+          "2": 45,
+          "3": 167,
+          "4": 42
+        },
+        "modules_moved_vs_shuffled": 137,
+        "modules": 254,
+        "fused_widths": {}
+      },
+      "4.0": {
+        "achieved_bits": 4.0,
+        "miss": 0.0,
+        "violations": 15,
+        "widths": {
+          "2": 5,
+          "3": 43,
+          "4": 204,
+          "8": 2
+        },
+        "modules_moved_vs_shuffled": 61,
+        "modules": 254,
+        "fused_widths": {}
+      }
+    }
+  }
+]
