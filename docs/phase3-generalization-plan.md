@@ -569,6 +569,26 @@ Pure inference, no training, 4 models × {IFEval, GSM8K, HumanEval, MBPP}. Two t
 If S1 shows all four models at ceiling on everything, stop and switch to the base-checkpoint
 variant of P1 before spending S2. That decision costs six hours here and a week later.
 
+**S1 is done — go, on two of the four models.**
+[`docs/reports/phase3-s1-headroom-screen.md`](reports/phase3-s1-headroom-screen.md).
+
+| model | IFEval | GSM8K | HumanEval | MBPP |
+|---|---:|---:|---:|---:|
+| Phi-4-mini-instruct | 68.76 % | 83.17 % | 77.44 % | 60.00 % |
+| Ministral-8B-Instruct | 54.53 % | 80.89 % | 79.27 % | 55.80 % |
+
+No pair is above ~90 %, so all four benchmarks stay in the headline; the highest arm leaves 16.8
+points of room. Llama-3.1-8B-Instruct and gemma-3-4b-it are **not** screened — both are
+`gated=manual`, licence acceptance is per-HF-account through the web UI, and no token is
+configured. **Until a token lands, the four-model panel is a two-model panel.**
+
+The screen also caught two harness defects, each of which produced a stable wrong number rather
+than an error, together worth up to 56 points on a single arm: `tokenizer.chat_template` is not
+a capability test for a tekken-backed tokenizer (`8336aab`), and a chat frame rendered to text
+does not survive re-tokenization back into control tokens (`2b62907`). Both are fixed, both
+carry regression tests. The provisional dataset-sweep choice (Phi-4-mini) is unchanged: the
+screen gives no reason to move it.
+
 ### S3 — the arms
 
 Per checkpoint, at matched **bytes** rather than matched nominal width — the accounting point
