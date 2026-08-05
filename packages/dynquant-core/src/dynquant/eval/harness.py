@@ -46,7 +46,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeAlias
 
 import torch
 
@@ -60,14 +60,23 @@ __all__ = [
     "EncodedPrompts",
     "EvalBackend",
     "EvalConfig",
+    "Prompt",
     "TransformersBackend",
     "chat_prompt_style",
     "encode_prompts",
     "generate_batched",
     "greedy_generation_config",
+    "render_chat",
 ]
 
 _log = get_logger(__name__)
+
+Prompt: TypeAlias = "str | list[int]"
+"""What a task may hand the harness: text to tokenize, or tokens already.
+
+Few-shot prompts are text -- they are text in the dataset and text is what the model
+was trained on. A *chat* prompt is ids, because the framing is made of control tokens
+and :func:`render_chat` is the only thing entitled to emit them."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +132,7 @@ class EncodedPrompts(NamedTuple):
     """How many prompts lost tokens off the front."""
 
 
-def encode_prompts(tokenizer: Any, prompts: Sequence[str], config: EvalConfig) -> EncodedPrompts:
+def encode_prompts(tokenizer: Any, prompts: Sequence[Prompt], config: EvalConfig) -> EncodedPrompts:
     """Tokenize, count the overlong ones, and cut them at the front.
 
     Truncation is done by slicing rather than by asking the tokenizer, so it does
@@ -132,11 +141,29 @@ def encode_prompts(tokenizer: Any, prompts: Sequence[str], config: EvalConfig) -
     harness mutating it back and forth is how a run picks up a setting from whoever
     touched it last. ``ids[-limit:]`` is what ``truncation_side="left"`` does, on a
     sequence that already has its special tokens.
+
+    A prompt that arrives as ids is passed through and truncated identically. Only
+    :func:`render_chat` produces those, and it produces them precisely so that the
+    control tokens framing the turn never have to survive a trip through text.
     """
     if not prompts:
         return EncodedPrompts(ids=[], truncated=0)
 
-    rows = tokenizer(list(prompts), add_special_tokens=config.add_special_tokens)["input_ids"]
+    rows: list[list[int]] = [[] for _ in prompts]
+    text_at = [index for index, prompt in enumerate(prompts) if isinstance(prompt, str)]
+    if text_at:
+        # One batched call, as before: tokenizing per prompt is measurably slower on
+        # the datasets this runs on, and the split here is by prompt *kind*, which is
+        # uniform within a task in every current caller.
+        encoded = tokenizer(
+            [prompts[index] for index in text_at],
+            add_special_tokens=config.add_special_tokens,
+        )["input_ids"]
+        for index, row in zip(text_at, encoded, strict=True):
+            rows[index] = [int(token) for token in row]
+    for index, prompt in enumerate(prompts):
+        if not isinstance(prompt, str):
+            rows[index] = [int(token) for token in prompt]
     limit = config.max_prompt_tokens
     truncated = sum(len(row) > limit for row in rows)
     if truncated:
@@ -148,7 +175,7 @@ def encode_prompts(tokenizer: Any, prompts: Sequence[str], config: EvalConfig) -
             len(prompts),
             limit,
         )
-    return EncodedPrompts(ids=[[int(i) for i in row[-limit:]] for row in rows], truncated=truncated)
+    return EncodedPrompts(ids=[row[-limit:] for row in rows], truncated=truncated)
 
 
 def chat_prompt_style(tokenizer: Any) -> Literal["chat-template", "raw"]:
@@ -188,6 +215,72 @@ def chat_prompt_style(tokenizer: Any) -> Literal["chat-template", "raw"]:
     except Exception:  # noqa: BLE001 -- a capability probe; see docstring
         return "raw"
     return "chat-template" if isinstance(rendered, str) and rendered.strip() else "raw"
+
+
+def render_chat(tokenizer: Any, messages: Sequence[dict[str, str]]) -> Prompt:
+    """One chat turn, as the ids the model was trained on.
+
+    Ids, not text, because the rendered text is not always re-tokenizable back into
+    what it renders. ``MistralCommonBackend`` renders ``<s>[INST]...[/INST]`` and then
+    tokenizes that string as *literal characters* -- ``tekken`` never parses control
+    tokens out of user text, which is a deliberate injection guard and not a bug. The
+    frame therefore survives rendering and dies on encoding: no BOS, no ``[INST]``,
+    seventeen tokens where there should be ten. transformers says so out loud
+    (``apply_chat_template(..., tokenize=False)`` "is unsafe ... don't encode the
+    output manually"), in a warning that a batch eval buries.
+
+    What that cost is the point. Handed the de-tokenized frame, Ministral-8B-Instruct
+    returned *nothing at all* for 120 of 164 HumanEval problems and 84 of 541 IFEval
+    prompts -- 23.17% and 37.52%, both stable, neither an error. Correctly framing an
+    instruct checkpoint (:func:`chat_prompt_style`) and then discarding the framing on
+    the way to the model is a harness bug that reads exactly like a damaged model,
+    which is the failure mode this package exists to be able to rule out.
+
+    Round-tripping is lossless for the Jinja-backed tokenizers -- Phi-4-mini gives the
+    same ten ids either way -- so this changes no already-collected number for them.
+    It removes the round trip rather than repairing it, because "re-tokenizing rendered
+    text reproduces the render" is an assumption no tokenizer promises to keep.
+
+    Falls back to text only if the tokenizer will not produce ids, which no real
+    transformers tokenizer does; the fallback exists so a caller's stub cannot crash a
+    run over a capability it never claimed.
+    """
+    turn = [dict(message) for message in messages]
+    try:
+        encoded = tokenizer.apply_chat_template(turn, tokenize=True, add_generation_prompt=True)
+    except Exception:  # noqa: BLE001 -- see the fallback in the docstring
+        encoded = None
+    ids = _as_token_ids(encoded)
+    if ids is not None:
+        return ids
+    return str(tokenizer.apply_chat_template(turn, tokenize=False, add_generation_prompt=True))
+
+
+def _as_token_ids(encoded: Any) -> list[int] | None:
+    """Normalise what ``apply_chat_template(tokenize=True)`` returns, or give up.
+
+    It returns a ``BatchEncoding`` on some versions, a bare list on others, a tensor
+    when asked, and either one row or a batch of one. ``None`` means "that was not ids"
+    -- including the empty case, so an unusable render falls back rather than sending
+    the model a zero-length prompt.
+    """
+    if encoded is None:
+        return None
+    if isinstance(encoded, str):
+        return None
+    if hasattr(encoded, "keys") and "input_ids" in encoded:
+        encoded = encoded["input_ids"]
+    if hasattr(encoded, "tolist"):
+        encoded = encoded.tolist()
+    if not isinstance(encoded, (list, tuple)) or not encoded:
+        return None
+    if isinstance(encoded[0], (list, tuple)):
+        if len(encoded) != 1:
+            return None
+        encoded = encoded[0]
+    if not encoded or not all(isinstance(token, int) for token in encoded):
+        return None
+    return [int(token) for token in encoded]
 
 
 class EvalBackend(ABC):
@@ -385,7 +478,7 @@ class TransformersBackend(EvalBackend):
 def generate_batched(
     model: Any,
     tokenizer: Any,
-    prompts: Sequence[str],
+    prompts: Sequence[Prompt],
     config: EvalConfig,
     *,
     progress: Callable[[int, int], None] | None = None,

@@ -48,7 +48,7 @@ from ._code_exec import (
     resolve_style,
     score_generations,
 )
-from .harness import EvalConfig, generate_batched
+from .harness import EvalConfig, Prompt, generate_batched, render_chat
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -141,12 +141,16 @@ def build_test_program(example: HumanEvalExample) -> str:
     return f"{example.test.rstrip()}\n\ncheck({example.entry_point})"
 
 
-def build_prompt(example: HumanEvalExample, tokenizer: Any, *, style: PromptStyle) -> str:
-    """Render one problem in the requested framing."""
+def build_prompt(example: HumanEvalExample, tokenizer: Any, *, style: PromptStyle) -> Prompt:
+    """Render one problem in the requested framing.
+
+    The chat framing comes back as token ids -- see
+    :func:`~dynquant.eval.harness.render_chat`.
+    """
     if style == "completion":
         return example.prompt
     message = [{"role": "user", "content": _INSTRUCTION.format(prompt=example.prompt)}]
-    return str(tokenizer.apply_chat_template(message, tokenize=False, add_generation_prompt=True))
+    return render_chat(tokenizer, message)
 
 
 def evaluate_humaneval(

@@ -36,7 +36,7 @@ from ._code_exec import (
     resolve_style,
     score_generations,
 )
-from .harness import EvalConfig, generate_batched
+from .harness import EvalConfig, Prompt, generate_batched, render_chat
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -192,8 +192,12 @@ def build_prompt(
     *,
     style: PromptStyle,
     shots: Sequence[MbppExample] = (),
-) -> str:
-    """Render one problem, with the tests included in both framings."""
+) -> Prompt:
+    """Render one problem, with the tests included in both framings.
+
+    The chat framing comes back as token ids -- see
+    :func:`~dynquant.eval.harness.render_chat`.
+    """
     tests = "\n".join(example.tests)
     if style == "completion":
         blocks = [
@@ -206,7 +210,7 @@ def build_prompt(
     message = [
         {"role": "user", "content": _CHAT_INSTRUCTION.format(text=example.text, tests=tests)}
     ]
-    return str(tokenizer.apply_chat_template(message, tokenize=False, add_generation_prompt=True))
+    return render_chat(tokenizer, message)
 
 
 def evaluate_mbpp(

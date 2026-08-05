@@ -30,8 +30,10 @@ from dynquant.eval.harness import (  # noqa: E402
     NEUTRAL_DECODE,
     EvalConfig,
     chat_prompt_style,
+    encode_prompts,
     generate_batched,
     greedy_generation_config,
+    render_chat,
 )
 
 
@@ -123,6 +125,124 @@ def test_a_tokenizer_that_renders_nothing_is_raw() -> None:
 
     assert chat_prompt_style(_Empty()) == "raw"
     assert chat_prompt_style(_None()) == "raw"
+
+
+# --------------------------------------------------------------------------
+# Chat framing survives encoding
+# --------------------------------------------------------------------------
+
+
+class _MistralShaped:
+    """`MistralCommonBackend`: renders control tokens as text it will not read back.
+
+    Two behaviours, both real, and only dangerous together. `apply_chat_template` with
+    `tokenize=False` renders the frame as the *characters* `<s>[INST]...[/INST]`; the
+    tokenizer then encodes that string without parsing any of it back into a control
+    token, because `tekken` never promotes text to a special token -- a deliberate
+    injection guard. So the frame survives rendering and dies on encoding.
+
+    Ids are `BOS INST ... INST_END`; the text path produces none of those three.
+    """
+
+    BOS, INST, INST_END = 1, 3, 4
+
+    def apply_chat_template(self, messages, *, tokenize=False, add_generation_prompt=False):
+        content = messages[0]["content"]
+        if not tokenize:
+            return f"<s>[INST]{content}[/INST]"
+        return {"input_ids": [self.BOS, self.INST, *self._encode(content), self.INST_END]}
+
+    def __call__(self, texts, *, add_special_tokens=True):
+        return {"input_ids": [self._encode(text) for text in texts]}
+
+    @staticmethod
+    def _encode(text):
+        # Offset well past the control ids, so a control token in the output can only
+        # have come from the template and never from a character that happens to collide.
+        return [1000 + ord(character) for character in text]
+
+
+def test_the_chat_frame_reaches_the_model_as_control_tokens() -> None:
+    """Turns red when: a chat prompt goes to the model as re-tokenized text.
+
+    Detecting that a checkpoint is instruct-tuned and then handing it a frame whose
+    control tokens were flattened into characters is the same measurement failure as
+    not detecting it, and it is harder to see because `prompt_style` says
+    "chat-template" the whole time. Ministral-8B returned *nothing at all* for 120 of
+    164 HumanEval problems and 84 of 541 IFEval prompts that way -- 23.17% and 37.52%,
+    no error, no warning that survives a batch run.
+
+    Asserting on the ids the backend receives, not on `render_chat` alone, because the
+    bug lived in the step between them.
+    """
+    tokenizer = _MistralShaped()
+    prompt = render_chat(tokenizer, [{"role": "user", "content": "hi"}])
+    ids = encode_prompts(tokenizer, [prompt], EvalConfig()).ids[0]
+
+    assert ids[0] == _MistralShaped.BOS
+    assert ids[1] == _MistralShaped.INST
+    assert ids[-1] == _MistralShaped.INST_END
+
+
+def test_a_lossless_tokenizer_is_unaffected_by_the_ids_path() -> None:
+    """Turns red when: the ids path changes the prompt for a Jinja-backed tokenizer.
+
+    The fix removes a round trip rather than repairing one, so for every tokenizer that
+    round-trips losslessly -- all of the Jinja-backed ones -- it must be a no-op. That
+    is what lets already-collected numbers stand instead of being re-run: Phi-4-mini
+    gives the same ten ids either way.
+    """
+
+    class _Lossless:
+        def apply_chat_template(self, messages, *, tokenize=False, add_generation_prompt=False):
+            text = f"<|user|>{messages[0]['content']}<|assistant|>"
+            return {"input_ids": self._encode(text)} if tokenize else text
+
+        def __call__(self, texts, *, add_special_tokens=True):
+            return {"input_ids": [self._encode(text) for text in texts]}
+
+        @staticmethod
+        def _encode(text):
+            return [ord(character) for character in text]
+
+    tokenizer = _Lossless()
+    messages = [{"role": "user", "content": "hi"}]
+    config = EvalConfig()
+
+    through_ids = encode_prompts(tokenizer, [render_chat(tokenizer, messages)], config).ids
+    rendered = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    through_text = encode_prompts(tokenizer, [rendered], config).ids
+
+    assert through_ids == through_text
+
+
+def test_text_and_ids_prompts_mix_without_reordering() -> None:
+    """Turns red when: pre-encoded prompts are appended instead of placed.
+
+    Tokenizing only the text prompts means the batched call no longer lines up with the
+    input positionally. Getting that wrong scores every answer against the wrong
+    example, which lands near chance rather than at zero and reads as a damaged model.
+    """
+    tokenizer = _MistralShaped()
+    prompts = ["ab", [7, 8, 9], "c", [11]]
+
+    ids = encode_prompts(tokenizer, prompts, EvalConfig()).ids
+
+    assert ids == [[1000 + ord("a"), 1000 + ord("b")], [7, 8, 9], [1000 + ord("c")], [11]]
+
+
+def test_a_pre_encoded_prompt_is_truncated_at_the_front_too() -> None:
+    """Turns red when: the ids path skips the length limit.
+
+    A chat prompt is not exempt from `max_prompt_tokens`; a path that silently sends an
+    over-long prompt to the engine gets an engine-side error or a silent engine-side
+    truncation from the other end, neither of which is the harness's documented
+    behaviour.
+    """
+    encoded = encode_prompts(_MistralShaped(), [[1, 2, 3, 4, 5]], EvalConfig(max_prompt_tokens=3))
+
+    assert encoded.ids == [[3, 4, 5]]
+    assert encoded.truncated == 1
 
 
 # --------------------------------------------------------------------------

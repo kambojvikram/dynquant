@@ -19,6 +19,35 @@ ones that invalidate artifacts a user has already produced.
 
 ## [Unreleased]
 
+### Fixed — the chat frame was detected and then thrown away on the way to the model
+
+The sequel to the entry below, and the more dangerous half. Having correctly decided that
+Ministral-8B-Instruct is an instruct checkpoint, the harness rendered its chat turn with
+`apply_chat_template(tokenize=False)` and then re-tokenized that string. Rendering is
+lossy for `MistralCommonBackend`: it emits the frame as the *characters*
+`<s>[INST]…[/INST]`, and `tekken` never parses control tokens back out of user text —
+a deliberate injection guard, not a bug. So the frame survived rendering and died on
+encoding. `<s>[INST]Write a function add(a,b).[/INST]` went to the model as **17 tokens
+of literal punctuation with no BOS and no `[INST]`**, where the model's own tokenizer
+produces 10 beginning `[1, 3, …]`. transformers warns about exactly this
+(`apply_chat_template(..., tokenize=False)` "is unsafe … don't encode the output
+manually") in a line that a batch evaluation buries.
+
+Handed that, the model mostly returned nothing at all: **120 of 164** HumanEval problems
+and **84 of 541** IFEval prompts came back empty, for 23.17% and 37.52%. Both stable,
+neither an error, and `prompt_style` now read `chat-template` throughout — so the one
+field that caught the previous bug could not catch this one.
+
+`harness.render_chat` replaces the round trip rather than repairing it: it asks for
+`tokenize=True` and returns token ids, and `encode_prompts` accepts a prompt that is
+already ids and truncates it identically. "Re-tokenizing rendered text reproduces the
+render" is an assumption no tokenizer promises to keep, so the harness stops making it.
+`ifeval`, `humaneval` and `mbpp` build chat prompts through it.
+
+**No already-collected number changes for a Jinja-backed tokenizer.** The round trip is
+lossless there — Phi-4-mini gives the same ten ids either way, verified on the box — and
+a test pins that, which is what lets the Phi-4-mini arms stand rather than be re-run.
+
 ### Fixed — an instruct checkpoint was measured as a base checkpoint
 
 The harness decided whether to frame a prompt as a chat turn by reading

@@ -71,7 +71,7 @@ from ._ifeval_instructions import (
     requirements_for,
     scorer_fingerprint,
 )
-from .harness import EvalConfig, chat_prompt_style, generate_batched
+from .harness import EvalConfig, Prompt, chat_prompt_style, generate_batched, render_chat
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -233,7 +233,7 @@ def load_ifeval(split: str = "train", *, cache_dir: str | None = None) -> list[I
     ]
 
 
-def build_prompt(example: IfevalExample, tokenizer: Any) -> str:
+def build_prompt(example: IfevalExample, tokenizer: Any) -> Prompt:
     """Render one prompt, through the model's chat template where it has one.
 
     IFEval is zero-shot and its constraints are addressed to an assistant, so a model
@@ -247,14 +247,12 @@ def build_prompt(example: IfevalExample, tokenizer: Any) -> str:
 
     "Has one" is :func:`~dynquant.eval.harness.chat_prompt_style`, which asks rather
     than inspects: some instruct tokenizers apply a template without exposing one.
+    The framed turn comes back from :func:`~dynquant.eval.harness.render_chat` as token
+    ids, because for some of those same tokenizers the rendered *text* cannot be encoded
+    back into the frame it shows.
     """
     if chat_prompt_style(tokenizer) == "chat-template":
-        rendered = tokenizer.apply_chat_template(
-            [{"role": "user", "content": example.prompt}],
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-        return str(rendered)
+        return render_chat(tokenizer, [{"role": "user", "content": example.prompt}])
     return example.prompt
 
 
