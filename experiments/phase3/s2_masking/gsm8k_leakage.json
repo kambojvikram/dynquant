@@ -1,0 +1,29 @@
+{
+  "n_test": 1319,
+  "n_rows": 50000,
+  "ngram": 13,
+  "test_items_hit": 2,
+  "test_items_hit_rate": 0.001516,
+  "rows_hitting": 2,
+  "rows_hitting_by_source": {
+    "ai2-adapt-dev/tulu_v3.9_open_math_2_gsm8k_50k": 1,
+    "ai2-adapt-dev/tulu_v3.9_wildchat_100k": 1
+  },
+  "gsm8k_sourced_rows": 2615,
+  "examples": [
+    {
+      "position": 13300,
+      "source": "ai2-adapt-dev/tulu_v3.9_open_math_2_gsm8k_50k",
+      "test_items": [
+        602
+      ]
+    },
+    {
+      "position": 44416,
+      "source": "ai2-adapt-dev/tulu_v3.9_wildchat_100k",
+      "test_items": [
+        0
+      ]
+    }
+  ]
+}

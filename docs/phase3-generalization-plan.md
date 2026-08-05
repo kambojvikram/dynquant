@@ -619,6 +619,29 @@ renders. On Phi, which accepts both modes, they agree on every id and every span
 of 500 rows. Three earlier designs passed a stub test suite and failed on real tokenizers, one
 of them at a 95 % success rate on 3 000 rows — the report is mostly about that.
 
+**Launch configuration**, and the one place the two arms differ:
+
+| | Phi-4-mini | Ministral-8B |
+|---|---:|---:|
+| micro-batch × accumulation | 4 × 8 | **2 × 16** |
+| effective batch / steps / LR | 32 / 1 501 / 1e-4 | 32 / 1 501 / 1e-4 |
+
+Phi holds 86.7 GB of a 97 GB card at micro-batch 4, and Ministral's activations are ~1.7×
+larger (36 × 4096 × 12288 against 32 × 3072 × 8192), with gradient checkpointing off because
+recomputation would fire each forward hook twice and double-count the saliency EMA. Halving the
+micro-batch and doubling accumulation keeps everything the optimizer sees identical. What it
+does not keep identical is the activation-EMA horizon, which is per micro-batch — so the two
+signal maps are comparable in their *decisions*, not their magnitudes, which is what S6 reads.
+
+**GSM8K test leakage: checked, not assumed.** Tulu-3 contributes
+`tulu_v3.9_open_math_2_gsm8k_50k` at 5.2 % of the 50 000 selected rows. A 13-gram index over
+all 1 319 GSM8K test questions, scanned against the run's own selection, flags **2 items and 0
+usable duplicates** (one shared word-problem skeleton with different quantities; one WildChat
+conversation quoting the "Janet's ducks" prompt). That caps the effect at 0.15 points against a
++1.54 effect size, so GSM8K stays in the headline — but its post-SFT number is in-domain by
+construction and is not evidence of general math gain. S5's mixtures get their own scan:
+[`experiments/phase3/s2_masking/gsm8k_leakage_check.py`](../experiments/phase3/s2_masking/gsm8k_leakage_check.py).
+
 ### S3 — the arms
 
 Per checkpoint, at matched **bytes** rather than matched nominal width — the accounting point

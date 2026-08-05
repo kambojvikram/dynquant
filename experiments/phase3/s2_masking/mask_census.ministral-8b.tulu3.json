@@ -1,0 +1,46 @@
+{
+  "model": "mistralai/Ministral-8B-Instruct-2410",
+  "dataset": "allenai/tulu-3-sft-mixture",
+  "examples_requested": 3000,
+  "conversations_seen": 3000,
+  "conversations_kept": 2875,
+  "drop_rate": 0.041667,
+  "unmaskable_rate": 0.000667,
+  "over_max_len_rate": 0.041,
+  "dropped_by_reason": {
+    "too long": 123,
+    "apply_chat_template raised InvalidAssistantMessageException": 2
+  },
+  "tokens": 1622149,
+  "supervised_tokens": 1143701,
+  "mask_mode": "assemble",
+  "mask_mode_requested": "auto",
+  "mask_mode_probe": {
+    "template": 0,
+    "assemble": 30
+  },
+  "max_len": 2048,
+  "sources": {
+    "ai2-adapt-dev/tulu_v3.9_synthetic_finalresp_wildguardmixtrain_decontaminated_50k": 158,
+    "ai2-adapt-dev/numinamath_tir_math_decontaminated": 209,
+    "ai2-adapt-dev/tulu_v3.9_open_math_2_gsm8k_50k": 154,
+    "ai2-adapt-dev/personahub_math_v5_regen_149960": 491,
+    "ai2-adapt-dev/tulu_v3.9_wildchat_100k": 315,
+    "ai2-adapt-dev/personahub_ifdata_manual_seed_v3_29980": 84,
+    "ai2-adapt-dev/tulu_v3.9_aya_100k": 329,
+    "ai2-adapt-dev/flan_v2_converted": 288,
+    "ai2-adapt-dev/tulu_v3.9_wildjailbreak_decontaminated_50k": 162,
+    "ai2-adapt-dev/personahub_code_v2_34999": 112,
+    "ai2-adapt-dev/tulu_v3.9_personahub_math_interm_algebra_20k": 61,
+    "ai2-adapt-dev/oasst1_converted": 23,
+    "ai2-adapt-dev/evol_codealpaca_heval_decontaminated": 321,
+    "ai2-adapt-dev/tulu_v3.9_sciriff_10k": 39,
+    "allenai/tulu-3-sft-personas-math-grade": 179,
+    "ai2-adapt-dev/coconot_converted": 31,
+    "ai2-adapt-dev/tulu_v3.9_table_gpt_5k": 24,
+    "ai2-adapt-dev/no_robots_converted": 20
+  },
+  "sources_overlapping_an_eval_task": [
+    "ai2-adapt-dev/tulu_v3.9_open_math_2_gsm8k_50k"
+  ]
+}

@@ -264,6 +264,16 @@ Three designs died on real tokenizers after passing a stub suite; the most dange
 merge separator and turn opener are each one token, so two errors cancelled. That is why the
 fourth design was prototyped against the real tokenizers before being written into the module.
 
+The same run's census flags a GSM8K-derived source at **5.2 % of the mixture**, against a
+headline that includes GSM8K. Reporting it and keeping it is defensible for arm-versus-arm —
+both sides train on the same mixture — but that argument does not cover *test* leakage, which
+would make the score recall rather than reasoning and compress the range quantization damage
+has to show up in. Settled by looking: a 13-gram index over all 1 319 test questions, scanned
+against the run's own 50 000 rows, flags **2 items and 0 usable duplicates** — one shared word
+problem skeleton with different quantities, one WildChat conversation quoting "Janet's ducks".
+0.15 points of headroom either way, against a +1.54 effect size. GSM8K stays; the claim that
+its post-SFT number measures *general* math gain does not.
+
 ---
 
 ## Conventions that apply to every campaign

@@ -1,9 +1,9 @@
 # Phase 3 · S2 — locating the assistant turns
 
-**Measured 2026-08-04.** Two tokenizers, 3 000 Tulu-3 conversations each, before any of the
-~30 GPU-hours of S2 fine-tuning is spent. Driver:
-[`scripts/run_s2_finetune.py`](../../scripts/run_s2_finetune.py); dry-run records:
-`/workspace/runs/s2probe/*/mask_census.json`.
+**Measured 2026-08-04, mixture scanned 2026-08-05.** Two tokenizers, 3 000 Tulu-3
+conversations each, before any of the ~30 GPU-hours of S2 fine-tuning is spent. Driver:
+[`scripts/run_s2_finetune.py`](../../scripts/run_s2_finetune.py); records:
+[`experiments/phase3/s2_masking/`](../../experiments/phase3/s2_masking/).
 
 Supervised fine-tuning on a chat mixture needs one thing that no dataset ships and no tokenizer
 API reliably provides: **which token positions are the assistant's**. Everything else in S2 —
@@ -180,7 +180,80 @@ That the two models land within 0.5 points of each other on drop rate and within
 supervised fraction — through completely different tokenizers and two different masking
 algorithms — is the strongest available evidence that both are measuring the same thing.
 
-## 7. What this does not establish
+## 7. The benchmark inside the mixture
+
+The census reports a `sources_overlapping_an_eval_task` field, and on Tulu-3 it is not empty:
+`ai2-adapt-dev/tulu_v3.9_open_math_2_gsm8k_50k`, **2 615 of the 50 000 rows** the run selects
+(5.2 %), against a campaign whose headline includes GSM8K.
+
+The driver reports it and keeps it, and the reason it can is narrow. Phase 3 measures
+*quantization damage* — fine-tuned fp16 against fine-tuned-and-quantized, both sides trained
+on the same mixture — so anything the mixture teaches is present on both sides of every
+comparison. Dropping the source would change the mixture for a comparison that does not need
+it changed.
+
+**That argument covers arm-versus-arm and does not cover test leakage**, which is a different
+failure. A memorised answer is far more robust to weight perturbation than a derived one, so
+test items inside the training mixture would compress the range quantization damage has to
+show up in — the exact property S1 was run to certify. Train-split overlap has no such
+problem; it is ordinary in-domain supervision.
+
+So the question is not "is GSM8K in the mixture" but "is GSM8K's *test* split in the
+mixture", and it was settled by looking rather than by reasoning about how the source was
+built. [`gsm8k_leakage_check.py`](../../experiments/phase3/s2_masking/gsm8k_leakage_check.py)
+indexes every 13-gram of all 1 319 test questions and streams the run's own 50 000 rows —
+same seed, same selection, so a row it clears is a row the model actually saw cleared.
+
+| | |
+|---|---:|
+| test items flagged | **2 / 1 319** (0.15 %) |
+| rows flagged | 2 / 50 000 |
+| usable duplicates | **0** |
+
+Both flagged rows are false positives, and which kind matters:
+
+* **row 13300**, from the GSM8K-derived source, shares only the template phrasing *"at the
+  same rate, how many additional hours would it take to travel an additional"* with test item
+  602. The quantities differ — 360 mi / 2 h / +240 against 1200 mi / 3 h / +2000 — so the test
+  answer is not recoverable from it. A 13-gram turns out to be long enough to be a quotation
+  and still short enough to be a word problem's skeleton.
+* **row 44416** is a WildChat conversation about extracting LoRA adapters by SVD that quotes
+  test item 0, the "Janet's ducks" prompt. A real quotation of the most-quoted item in the
+  benchmark, inside a conversation about something else.
+
+2 / 1 319 caps the effect at **0.15 points** either way, against the +1.54 phase 2 was
+separating. **GSM8K stays in the headline.** What does not survive is any claim that the
+post-SFT GSM8K number measures general math gain: 5.2 % of the mixture is GSM8K-shaped
+supervision, so that number is in-domain by construction and is reported as such.
+
+This is a property of Tulu-3 at seed 0, not of SFT mixtures. S5's SmolTalk and OpenThoughts3
+arms get their own scan before their numbers are read.
+
+## 8. The runs, and one asymmetry in them
+
+| | Phi-4-mini | Ministral-8B |
+|---|---:|---:|
+| micro-batch | 4 | **2** |
+| accumulation | 8 | **16** |
+| effective batch | 32 | 32 |
+| optimizer steps | 1 501 | 1 501 |
+| LR (LoRA, r=32) | 1e-4 | 1e-4 |
+
+Phi holds 86.7 GB of a 97 GB card at micro-batch 4. Ministral is 36 layers × 4096 hidden ×
+12288 intermediate against Phi's 32 × 3072 × 8192 — roughly 1.7× the stored activations per
+step, and gradient checkpointing is deliberately off because recomputation fires each forward
+hook a second time and would double-count the saliency EMA. Micro-batch 2 with accumulation
+16 keeps the effective batch, the learning rate and the step count identical and halves the
+activation memory.
+
+**The asymmetry that remains is the micro-batch itself**, and it is stated rather than
+buried: the activation EMA accumulates per micro-batch, so its horizon differs between the
+two models. It costs nothing that this campaign reads, because no arm is ever compared across
+models — every arm is measured against its own model's bf16 ceiling — but it does mean the
+two signal maps are not numerically comparable to each other, and §6 of the S6 bit-map
+cross-analysis has to compare *decisions*, not magnitudes.
+
+## 9. What this does not establish
 
 * Nothing here says the fine-tune will help. It says the loss will be applied to the right
   tokens. S2's own gate is the eval delta against the S1 headroom numbers.
@@ -194,9 +267,9 @@ algorithms — is the strongest available evidence that both are measuring the s
 * 3 000 rows is a dry run. The full S2 mixture is larger, and the census is written on every
   real run for exactly this reason.
 
-## 8. Verification
+## 10. Verification
 
-28 unit tests in [`tests/test_run_s2_finetune.py`](../../tests/test_run_s2_finetune.py), each
+29 unit tests in [`tests/test_run_s2_finetune.py`](../../tests/test_run_s2_finetune.py), each
 answering "what future diff turns this red?". The ones that carry this report's findings:
 
 | test | what it pins |
