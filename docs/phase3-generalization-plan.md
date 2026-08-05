@@ -67,11 +67,12 @@ Cross them once instead:
 
 | sweep | arms | question |
 |---|---|---|
-| **model** | 4 models × Tulu-3 | does the result hold across attention structure |
+| **model** | 2 models × Tulu-3 | does the result hold across attention structure |
 | **dataset** | 1 model × {SmolTalk, OpenThoughts3} | are the conclusions data-specific |
 
-Six fine-tunes, not twelve. Pick the dataset-sweep model by what S1 shows most damage on —
-almost certainly Phi-4-mini, which is also the cheapest to train three times.
+Six fine-tunes, not twelve — and **four in the end**, once the panel was settled at two models
+(see *Licensing*). Pick the dataset-sweep model by what S1 shows most damage on — almost
+certainly Phi-4-mini, which is also the cheapest to train three times.
 
 That reduction is not only a saving. The three-dataset arm on one model is a direct test of a
 finding this project already has and has never stressed: 86–89 % of off-uniform bit decisions
@@ -578,9 +579,10 @@ variant of P1 before spending S2. That decision costs six hours here and a week 
 | Ministral-8B-Instruct | 54.53 % | 80.89 % | 79.27 % | 55.80 % |
 
 No pair is above ~90 %, so all four benchmarks stay in the headline; the highest arm leaves 16.8
-points of room. Llama-3.1-8B-Instruct and gemma-3-4b-it are **not** screened — both are
-`gated=manual`, licence acceptance is per-HF-account through the web UI, and no token is
-configured. **Until a token lands, the four-model panel is a two-model panel.**
+points of room. Llama-3.1-8B-Instruct and gemma-3-4b-it are **not** screened, and as of
+2026-08-05 are **out of the campaign** rather than pending — both are `gated=manual`, licence
+acceptance is per-HF-account through the web UI, and no token is being supplied. **Phase 3 is a
+two-model panel by decision**; see *Licensing* for what that panel does and does not cover.
 
 The screen also caught two harness defects, each of which produced a stable wrong number rather
 than an error, together worth up to 56 points on a single arm: `tokenizer.chat_template` is not
@@ -596,8 +598,9 @@ GPU-hours is spent, one thing has to be verified rather than assumed: **which to
 the loss is applied to.** A wrong mask does not raise — it trains a slightly worse model and
 reports success, and every arm in S3 is measured on top of that model.
 
-**The mask is ready on both models; the fine-tunes have not been launched.**
-[`docs/reports/phase3-s2-loss-masking.md`](reports/phase3-s2-loss-masking.md).
+**The mask is verified on both models, and the fine-tunes launched 2026-08-05** — Phi-4-mini
+then Ministral-8B, sequentially on the one GPU, 50 000 conversations each, LoRA r=32, effective
+batch 32, one epoch. [`docs/reports/phase3-s2-loss-masking.md`](reports/phase3-s2-loss-masking.md).
 
 | model | mask mode (auto-selected) | unmaskable | over `--max-len` | supervised |
 |---|---|---:|---:|---:|
@@ -721,6 +724,30 @@ in the report rather than discovered by someone downstream.
 
 This is why S1 starts with the two ungated models: Phi-4-mini and Ministral can be screened
 today, and neither is blocked on an approval that may not arrive.
+
+### Decided 2026-08-05: the panel is two models
+
+Llama-3.1-8B-Instruct and gemma-3-4b-it are **out of phase 3**, not pending. No token for an
+account that has accepted both licences is being supplied, so the approval that "may not
+arrive" is not arriving, and a campaign does not wait on it.
+
+Everything downstream is stated as a two-model panel from here on. What that panel still
+covers, and what it does not:
+
+| | covered by | |
+|---|---|---|
+| fused projections | Phi-4-mini — `qkv_proj`, `gate_up_proj` | ✅ the row-partition path phase 1 finding 5 turns on |
+| dense GQA, unfused | Ministral-8B — separate `q/k/v`, `gate`/`up` | ✅ |
+| two tokenizer backends | `TokenizersBackend` and `MistralCommonBackend` | ✅ and they behave differently enough to matter |
+| 3.8 B vs 8.0 B | both | ✅ a 2.1× scale span |
+| the Llama family | — | ❌ |
+| a sliding-window / full alternating stack | — | ❌ (gemma-3 was the only one) |
+
+The two missing rows are stated as scope, not hidden. The generalization claim phase 3 can make
+is therefore "across attention structure, projection fusion, tokenizer backend and 2.1× of
+scale", which is narrower than the four-model version and is the claim the report will make.
+Adding a model later costs one fine-tune plus its arms and invalidates nothing already run,
+because every arm is compared against its own model's bf16 ceiling.
 
 ---
 

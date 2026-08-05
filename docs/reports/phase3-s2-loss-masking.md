@@ -184,10 +184,10 @@ algorithms — is the strongest available evidence that both are measuring the s
 
 * Nothing here says the fine-tune will help. It says the loss will be applied to the right
   tokens. S2's own gate is the eval delta against the S1 headroom numbers.
-* The panel is still **two models, not four** — `meta-llama/Llama-3.1-8B-Instruct` and
-  `google/gemma-3-4b-it` are `gated=manual` and remain blocked on a Hub token
-  ([S1 §1](phase3-s1-headroom-screen.md)). Both would need their own probe; neither mode is
-  assumed to generalize.
+* The panel is **two models by decision** (2026-08-05) — `meta-llama/Llama-3.1-8B-Instruct` and
+  `google/gemma-3-4b-it` are `gated=manual`, no token is being supplied, and phase 3 proceeds
+  without them ([S1 §1](phase3-s1-headroom-screen.md)). Any model added later needs its own
+  probe: neither mode is assumed to generalize, which is the entire point of `auto`.
 * The cross-check in §5 is available *only* on Phi. On Ministral, `assemble` is verified by its
   own internal consistency check — every turn's assembled prefix re-verified against the
   template's next render — not against a second independent implementation.

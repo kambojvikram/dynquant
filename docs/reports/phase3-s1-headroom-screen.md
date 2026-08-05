@@ -24,13 +24,18 @@ that would have invalidated half the campaign. That is the second thing this rep
 | `meta-llama/Llama-3.1-8B-Instruct` | 8.0 B | — | ❌ **blocked** |
 | `google/gemma-3-4b-it` | 4.3 B | — | ❌ **blocked** |
 
-**The two missing models are a blocker, not an omission.** Both repositories are
+**The two missing models were a blocker, and are now a decision.** Both repositories are
 `gated=manual` on the Hub: access requires accepting a licence *per Hugging Face account*,
-through the web UI, and no token is configured on the box. This cannot be resolved from the
-machine or from the code. Until a token for an account that has accepted both licences is
-supplied, the phase-3 four-model plan is a two-model plan — which still covers dense-GQA
-(Ministral) and fused-projection (Phi, `qkv_proj` / `gate_up_proj`) architectures, but loses
-the Llama family and the only model with a `sliding-window + full` alternating stack.
+through the web UI, and no token is configured on the box — not resolvable from the machine or
+from the code. **On 2026-08-05 the panel was settled at two models** rather than held for a
+token, so Llama-3.1-8B-Instruct and gemma-3-4b-it are out of phase 3.
+
+What survives is a panel spanning fused projections (Phi, `qkv_proj` / `gate_up_proj`) against
+unfused dense GQA (Ministral), two different tokenizer backends, and 2.1× of scale. What is
+given up is the Llama family and the only model with a `sliding-window + full` alternating
+stack. Both are stated as scope in every phase-3 claim rather than left implied. Adding a model
+later costs one fine-tune and its arms, and invalidates nothing: every arm is compared against
+its own model's bf16 ceiling.
 
 ## 2. Setup
 
