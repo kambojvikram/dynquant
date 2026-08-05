@@ -292,3 +292,129 @@ def test_a_failed_cell_does_not_cost_the_others_their_run(
     assert code == 1
     assert "1 cell(s) failed: gemma3-4b.gsm8k (exit 1)" in capsys.readouterr().out
     assert not (tmp_path / "gemma3-4b.commit").exists(), "a failed cell is not stamped"
+
+
+# --------------------------------------------------------------------------
+# Scoring a checkpoint on disk -- S3's ~32 arms go through this same driver
+# --------------------------------------------------------------------------
+
+
+def _checkpoint(root: Path, name: str) -> Path:
+    path = root / name
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "config.json").write_text('{"model_type": "phi3"}', encoding="utf-8")
+    return path
+
+
+def test_a_registry_key_and_a_path_both_resolve(s1, tmp_path) -> None:
+    """S3's arms are directories; S1's models are Hub ids. One driver takes both.
+
+    Turns red when: ``--models`` goes back to being a closed set of registry keys, and
+    S3 has to grow a second evaluator whose prompts can drift from this one.
+    """
+    assert s1.resolve_model("phi4-mini") == ("phi4-mini", "microsoft/Phi-4-mini-instruct", False)
+    assert s1.resolve_model("llama31-8b")[2] is True, "gating is read off the registry"
+
+    arm = _checkpoint(tmp_path, "dq_3p25")
+    assert s1.resolve_model(f"dq3p25={arm}") == ("dq3p25", str(arm), False)
+
+
+def test_a_local_checkpoint_is_never_gated(s1, tmp_path) -> None:
+    """Gating is a Hub licence. A directory on disk has already settled it.
+
+    Turns red when: a path inherits a registry entry's gating, so an S3 arm quantized
+    *from* a gated model is skipped for want of a token it does not need.
+    """
+    arm = _checkpoint(tmp_path, "from-a-gated-base")
+    assert s1.resolve_model(f"arm={arm}")[2] is False
+
+
+def test_a_record_name_with_a_dot_is_refused(s1, tmp_path) -> None:
+    """``dq_3.25`` would file under model ``dq_3``, task ``25.gsm8k``.
+
+    ``summarize`` splits the stem on the first dot, so the row would name the wrong arm
+    and still read as measured. Turns red when the name stops being validated, or when
+    the record filename stops being dot-separated and this check is no longer the right
+    one to make.
+    """
+    arm = _checkpoint(tmp_path, "arm")
+    with pytest.raises(SystemExit, match="cannot be empty or contain a dot"):
+        s1.resolve_model(f"dq_3.25={arm}")
+    with pytest.raises(SystemExit, match="cannot be empty or contain a dot"):
+        s1.resolve_model(f"={arm}")
+
+    record = tmp_path / "dq_3.25.gsm8k.json"
+    record.write_text(
+        json.dumps({"total": 1, "accuracy": 1.0, "chance": 0.0, "unparseable": 0}),
+        encoding="utf-8",
+    )
+    assert "dq_3 " in s1.summarize(tmp_path), "the mis-split this refusal prevents"
+
+
+def test_a_path_that_is_not_a_checkpoint_costs_a_message_not_an_engine_build(s1, tmp_path) -> None:
+    """An arm is produced by a separate step; a missing one should fail before the GPU.
+
+    Turns red when: the check is dropped, and a mistyped path costs a model load per
+    task before it says anything.
+    """
+    with pytest.raises(SystemExit, match="not a checkpoint"):
+        s1.resolve_model(f"arm={tmp_path / 'never-written'}")
+
+    empty = tmp_path / "half-written"
+    empty.mkdir()
+    with pytest.raises(SystemExit, match="not a checkpoint"):
+        s1.resolve_model(f"arm={empty}")
+
+
+def test_an_unknown_bare_name_lists_the_registry(s1) -> None:
+    """A typo should say what the options are, including that a path is one.
+
+    Turns red when: argparse choices come back (the message would be argparse's, which
+    cannot mention the name=path form), or the error stops naming the alternatives.
+    """
+    with pytest.raises(SystemExit) as excinfo:
+        s1.resolve_model("phi4mini")
+    message = str(excinfo.value)
+    assert "phi4-mini" in message and "name=path" in message
+
+
+def test_two_arms_cannot_file_under_one_record_name(s1, tmp_path, monkeypatch) -> None:
+    """Thirty-two arms per model is where a name collision stops being hypothetical.
+
+    The loser's records are overwritten by the winner's and the survivor looks correct.
+    Turns red when the collision check is dropped.
+    """
+    monkeypatch.setattr(s1, "_git_head", lambda repo: "a" * 40)
+    first, second = _checkpoint(tmp_path, "a"), _checkpoint(tmp_path, "b")
+    with pytest.raises(SystemExit, match="both record as 'dq'"):
+        s1.main(["--out", str(tmp_path / "out"), "--models", f"dq={first}", f"dq={second}"])
+
+
+def test_a_checkpoint_arm_runs_the_same_command_a_registry_model_does(
+    s1, tmp_path, monkeypatch
+) -> None:
+    """The arm's path reaches ``dynquant eval`` as its positional model.
+
+    Turns red when: the driver keeps resolving the model through ``MODELS`` at call time,
+    so a path resolves to a KeyError or -- worse -- to whatever registry entry shares its
+    name, and the record says one model while another was scored.
+    """
+    monkeypatch.setattr(s1, "_git_head", lambda repo: "a" * 40)
+    arm = _checkpoint(tmp_path, "dq_3p25")
+    seen: list[list[str]] = []
+
+    class _Proc:
+        returncode = 0
+
+    def _fake_run(cmd, check=False, **kwargs):
+        seen.append(cmd)
+        return _Proc()
+
+    monkeypatch.setattr(s1.subprocess, "run", _fake_run)
+    out = tmp_path / "out"
+    code = s1.main(["--out", str(out), "--models", f"dq3p25={arm}", "--tasks", "gsm8k"])
+
+    assert code == 0
+    assert len(seen) == 1
+    assert seen[0][4] == str(arm), "the checkpoint path is the positional model"
+    assert (out / "dq3p25.gsm8k.commit").exists()

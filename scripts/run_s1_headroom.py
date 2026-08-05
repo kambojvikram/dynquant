@@ -21,10 +21,19 @@ cannot see that an output predates its input, and a stale record staples last we
 prompt-assembly to this week's conclusion. Each record therefore gets a ``.commit``
 sidecar and is re-run when it disagrees with ``HEAD``.
 
+S3 scores through this same driver rather than a second one. Its arms are directories on
+disk, not Hub ids, so ``--models`` also accepts ``name=path`` -- and that is the point: the
+property this file's docstring defends, that every reported number comes from one
+``dynquant eval`` invocation, is worth more than the tidiness of an S1-only script. A
+separate S3 evaluator would be a second set of prompt-assembly, framing and parsing
+decisions, differing from this one in ways no table would show.
+
 Usage::
 
     python scripts/run_s1_headroom.py --out reports/s1
     python scripts/run_s1_headroom.py --out reports/s1 --models phi4-mini --limit 200
+    python scripts/run_s1_headroom.py --out reports/s3 \\
+        --models dq3p25=/workspace/runs/s3/phi4-mini/dq_3p25 bf16=/workspace/runs/s2/phi4-mini.tulu3/merged
 """
 
 from __future__ import annotations
@@ -61,6 +70,44 @@ TASKS_UNVERIFIABLE = frozenset(name for name, spec in TASK_REGISTRY.items() if s
 
 #: What :func:`summarize` reads out of each record.
 RECORD_FIELDS = ("total", "accuracy", "chance", "unparseable")
+
+
+def resolve_model(spec: str) -> tuple[str, str, bool]:
+    """``name`` from the registry, or ``name=path`` for a checkpoint on disk.
+
+    Returns ``(record_name, what_to_load, gated)``.
+
+    Two things are rejected here rather than at the engine, and both are cheap to check
+    and expensive to discover:
+
+    * A ``name`` containing a dot. Records are ``{name}.{task}.json`` and :func:`summarize`
+      splits on the first one, so ``dq_3.25`` would file itself under model ``dq_3`` and
+      task ``25.gsm8k`` -- a row that reads as measured and names the wrong arm.
+    * A path that is not a directory holding ``config.json``. S3 arms are produced by a
+      separate step, and a mistyped or half-written arm should cost a message now, not an
+      engine build and a load failure per task.
+
+    A local path is never gated: gating is a Hub licence, and a directory on disk has
+    already resolved it one way or the other.
+    """
+    name, sep, target = spec.partition("=")
+    if not sep:
+        if spec not in MODELS:
+            raise SystemExit(
+                f"unknown model {spec!r}: expected one of {', '.join(sorted(MODELS))}, "
+                f"or name=path for a checkpoint on disk"
+            )
+        return spec, str(MODELS[spec]["repo"]), bool(MODELS[spec]["gated"])
+
+    if not name or "." in name:
+        raise SystemExit(
+            f"bad record name {name!r} in {spec!r}: it becomes the first dot-separated "
+            f"field of {name}.<task>.json, so it cannot be empty or contain a dot"
+        )
+    path = Path(target).expanduser()
+    if not (path / "config.json").is_file():
+        raise SystemExit(f"no config.json under {path} (from {spec!r}): not a checkpoint")
+    return name, str(path), False
 
 
 def _git_head(repo: Path) -> str:
@@ -122,7 +169,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", required=True, help="directory the records are written to")
     parser.add_argument("--repo", default=".", help="the dynquant checkout, for the commit stamp")
-    parser.add_argument("--models", nargs="*", choices=sorted(MODELS), default=sorted(MODELS))
+    parser.add_argument(
+        "--models",
+        nargs="*",
+        default=sorted(MODELS),
+        metavar="NAME|NAME=PATH",
+        help=(
+            f"registry keys ({', '.join(sorted(MODELS))}) and/or name=path checkpoints. "
+            f"Validated by resolve_model, not by argparse choices, so a path is accepted "
+            f"and a typo still gets the list back"
+        ),
+    )
     parser.add_argument("--tasks", nargs="*", choices=TASKS, default=list(TASKS))
     parser.add_argument("--backend", default="vllm", choices=("transformers", "vllm"))
     parser.add_argument("--dtype", default="bfloat16")
@@ -142,8 +199,16 @@ def main(argv: list[str] | None = None) -> int:
     have_token = bool(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"))
 
     planned, blocked = [], []
-    for name in args.models:
-        if MODELS[name]["gated"] and not have_token:
+    targets: dict[str, str] = {}
+    for spec in args.models:
+        name, target, gated = resolve_model(spec)
+        if name in targets:
+            # Two arms filing under one name would silently overwrite each other's records,
+            # and the survivor would be indistinguishable from a correct one. S3 runs ~32
+            # arms per model, which is where a collision stops being hypothetical.
+            raise SystemExit(f"two models both record as {name!r}: {targets[name]} and {target}")
+        targets[name] = target
+        if gated and not have_token:
             blocked.append(name)
             continue
         planned.extend((name, task) for task in args.tasks)
@@ -164,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[{index}/{len(planned)}] {name} {task}: already at {commit[:8]}", flush=True)
             continue
 
-        repo_id = str(MODELS[name]["repo"])
+        repo_id = targets[name]
         print(f"[{index}/{len(planned)}] {name} {task}: running", flush=True)
         proc = subprocess.run(_cell_command(repo_id, task, record, args), check=False)
         if proc.returncode != 0:
