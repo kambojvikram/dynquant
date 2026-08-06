@@ -20,6 +20,7 @@ mean anything is reachable from CPU CI.
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import sys
 from dataclasses import replace
@@ -272,3 +273,37 @@ def test_every_arm_names_a_signal_variant_that_gets_written(s3) -> None:
     produced = {"signal", "shuffled", None}
     assert all(spec["variant"] in produced for spec in s3.ARMS.values())
     assert s3.ARMS["rtn"]["variant"] is None, "the control arm allocates from nothing"
+
+
+# --------------------------------------------------------------------------
+# The commands the driver builds
+# --------------------------------------------------------------------------
+
+
+def test_the_anchor_command_asks_for_every_anchor_width(s3, tmp_path) -> None:
+    """Parsed by the CLI's own parser, because that is what decides what gets written.
+
+    ``--uniform`` is ``nargs="+"``: one flag per width silently keeps only the last, so
+    the driver asked for two anchors and got one, and the run continued until an arm
+    reached for the anchor that was never allocated. Checking the argv against the real
+    parser rather than against a hardcoded list means a future change to the flag's
+    arity turns this red instead of turning a sweep red.
+    """
+    from dynquant.cli import build_parser
+
+    args = argparse.Namespace(model="/some/merge", group_size=128, trust_remote_code=False)
+    cmd = s3.anchor_cmd(args, tmp_path / "map.rtn.json")
+
+    assert cmd[1:4] == ["-m", "dynquant", "inspect"], cmd
+    parsed = build_parser().parse_args(cmd[3:])
+    assert parsed.uniform == list(s3.ANCHORS)
+    assert parsed.stats is None, "the RTN anchor must not be allocated from a signal"
+    assert parsed.json and parsed.save_map
+
+
+def test_the_anchor_widths_are_widths_the_cli_will_accept(s3) -> None:
+    """``--uniform`` has ``choices``, so an anchor off the packing grid is an argparse
+    error two minutes into a model load rather than a wrong number."""
+    from dynquant.constants import BIT_OPTIONS
+
+    assert set(s3.ANCHORS) <= set(BIT_OPTIONS)

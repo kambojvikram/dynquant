@@ -242,18 +242,32 @@ def _inspect_cmd(args: argparse.Namespace, save_map: Path) -> list[str]:
     return cmd
 
 
+def anchor_cmd(args: argparse.Namespace, save_map: Path) -> list[str]:
+    """One ``--uniform`` carrying every anchor width, not one flag per width.
+
+    The flag is ``nargs="+"``, so a repeated option overwrites rather than accumulates
+    and only the last anchor is written. Nothing announces that: the run proceeds, the
+    4-bit anchor is there, and the 3-bit arm goes missing several minutes later when
+    something asks for it.
+    """
+    return [*_inspect_cmd(args, save_map), "--uniform", *[str(w) for w in ANCHORS]]
+
+
 def allocate_anchors(args: argparse.Namespace, work: Path) -> dict[int, Arm]:
     """Build the uniform arms, whose sizes every other arm is then held to."""
     save_map = work / "map.rtn.json"
-    cmd = _inspect_cmd(args, save_map)
-    for width in ANCHORS:
-        cmd += ["--uniform", str(width)]
-    _run(cmd, what="allocating the uniform anchors")
+    _run(anchor_cmd(args, save_map), what="allocating the uniform anchors")
 
     payload = json.loads(save_map.read_text(encoding="utf-8"))
     anchors: dict[int, Arm] = {}
     for width in ANCHORS:
         key = f"uniform-{width}"
+        if key not in payload["maps"]:
+            raise SystemExit(
+                f"the anchor allocation wrote {sorted(payload['maps'])} but not {key!r}. "
+                f"Every other arm is sized against these, so a missing one is a missing "
+                f"anchor rather than a missing row."
+            )
         body = payload["maps"][key]
         anchors[width] = Arm(
             name=f"rtn{width}",
