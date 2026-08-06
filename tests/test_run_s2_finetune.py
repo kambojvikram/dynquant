@@ -776,11 +776,50 @@ def test_the_subsample_is_shuffled_before_it_is_limited(s2, monkeypatch) -> None
     monkeypatch.setitem(
         sys.modules,
         "datasets",
-        types.SimpleNamespace(load_dataset=lambda repo, split: _Split()),
+        types.SimpleNamespace(load_dataset=lambda repo, name, split: _Split()),
     )
     s2.load_rows({"repo": "r", "split": "train", "column": "messages"}, examples=10, seed=7)
 
     assert order == ["shuffle(7)", "select(10)"]
+
+
+def test_every_registered_dataset_names_a_config_the_hub_will_accept(s2, monkeypatch) -> None:
+    """SmolTalk ships fourteen configs and no default one.
+
+    ``load_dataset("HuggingFaceTB/smoltalk", split="train")`` raises ``ValueError: Config
+    name is missing``, and the driver loads the *model* before it loads the rows -- so the
+    arm would have burned a GPU load and a queue slot to discover a one-word registry
+    omission. The registry now carries ``name`` where the repo has no default, and this
+    pins that the loader actually forwards it.
+
+    Turns red when: a dataset is registered without the config its repo requires, or
+    ``load_rows`` stops passing ``name`` through.
+    """
+    seen: list[tuple[str, str | None]] = []
+
+    class _Split:
+        def __len__(self) -> int:
+            return 4
+
+        def shuffle(self, seed: int):
+            return self
+
+        def select(self, indices):
+            return self
+
+    def _load(repo, name, split):
+        seen.append((repo, name))
+        return _Split()
+
+    monkeypatch.setitem(sys.modules, "datasets", types.SimpleNamespace(load_dataset=_load))
+    for spec in s2.DATASETS.values():
+        s2.load_rows(spec, examples=0, seed=0)
+
+    assert seen == [
+        ("allenai/tulu-3-sft-mixture", None),
+        ("HuggingFaceTB/smoltalk", "all"),
+        ("open-thoughts/OpenThoughts3-1.2M", None),
+    ]
 
 
 # --------------------------------------------------------------------------

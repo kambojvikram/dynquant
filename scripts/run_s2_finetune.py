@@ -84,9 +84,21 @@ from run_s1_headroom import MODELS
 #: ``{"from", "value"}`` turns and one ships ``{"role", "content"}``, and a registry that
 #: asserts which would be wrong the first time a dataset is re-uploaded.
 #: :func:`to_messages` reads the shape off the row instead.
+#:
+#: ``name`` is the Hub *config* and is only present where the repo has no default one.
+#: SmolTalk ships fourteen configs and no default, so ``load_dataset(repo, split=...)``
+#: raises ``ValueError: Config name is missing`` -- after the model is on the GPU, since
+#: the driver loads the model first. ``all`` is the full 1.1M-row mixture, which is what
+#: "SmolTalk" names; the other thirteen are its constituent subsets and picking one would
+#: quietly turn a mixture arm into a single-source arm.
 DATASETS: dict[str, dict[str, str]] = {
     "tulu3": {"repo": "allenai/tulu-3-sft-mixture", "split": "train", "column": "messages"},
-    "smoltalk": {"repo": "HuggingFaceTB/smoltalk", "split": "train", "column": "messages"},
+    "smoltalk": {
+        "repo": "HuggingFaceTB/smoltalk",
+        "name": "all",
+        "split": "train",
+        "column": "messages",
+    },
     "openthoughts3": {
         "repo": "open-thoughts/OpenThoughts3-1.2M",
         "split": "train",
@@ -644,7 +656,7 @@ def load_rows(spec: dict[str, str], *, examples: int, seed: int) -> Any:
     """
     from datasets import load_dataset
 
-    dataset = load_dataset(spec["repo"], split=spec["split"])
+    dataset = load_dataset(spec["repo"], spec.get("name"), split=spec["split"])
     dataset = dataset.shuffle(seed=seed)
     if examples > 0 and examples < len(dataset):
         dataset = dataset.select(range(examples))
@@ -838,7 +850,10 @@ def main(argv: list[str] | None = None) -> int:
 
     census = {
         "model": repo_id,
-        "dataset": spec["repo"],
+        # The config too, where there is one: "HuggingFaceTB/smoltalk" alone does not say
+        # which of fourteen subsets trained the model, and a census that cannot answer that
+        # cannot be compared against a later run.
+        "dataset": spec["repo"] if spec.get("name") is None else f"{spec['repo']}:{spec['name']}",
         "examples_requested": args.examples,
         "conversations_seen": total,
         "conversations_kept": len(dataset),
