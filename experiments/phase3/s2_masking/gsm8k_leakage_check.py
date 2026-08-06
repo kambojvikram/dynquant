@@ -34,8 +34,20 @@ neither is a usable duplicate.** Record: ``gsm8k_leakage.json``.
 2 / 1 319 caps the effect at 0.15 points either way, against the +1.54 phase 2 was
 separating. The GSM8K column is usable.
 
+**SmolTalk (config ``all``), same 50 000 rows at ``--seed 0``, measured 2026-08-06: 0 of
+1 319.** Record: ``gsm8k_leakage.smoltalk.json``. Nothing to discount there.
+
+A null from this scan is only worth as much as the evidence that it looked. ``row_text``
+went through ``row["messages"]`` directly until the SmolTalk run, which was right for two of
+the three mixtures and silently wrong for OpenThoughts3, whose turns are ShareGPT
+``{"from", "value"}`` under ``conversations`` -- every row would have extracted to the empty
+string and the scan would have reported perfect cleanliness having read no characters at
+all. It now normalises through :func:`run_s2_finetune.to_messages`, records
+``chars_scanned`` and ``rows_without_text``, and refuses to write a result when extraction
+fails on more than 1% of rows.
+
 Run it against another mixture before trusting that conclusion there: this is a property of
-Tulu-3 at one seed, not of SFT mixtures.
+one mixture at one seed, not of SFT mixtures.
 """
 
 from __future__ import annotations
@@ -83,14 +95,20 @@ def load_gsm8k_test() -> tuple[Any, str]:
     raise SystemExit("could not load GSM8K test from cache: " + "; ".join(errors))
 
 
-def row_text(row: dict) -> str:
-    messages = row.get("messages")
-    if not isinstance(messages, list):
+def row_text(row: dict, column: str, to_messages: Any) -> str:
+    """The conversation as one string, via the same normaliser the fine-tune uses.
+
+    Not ``row["messages"]``. Two of the phase-3 mixtures ship ShareGPT ``{"from", "value"}``
+    turns under ``conversations``, and reading a column that is not there returns nothing,
+    which this scan would report as *zero leakage* -- a clean bill of health issued by a
+    scan that never looked at a single character. ``to_messages`` reads the shape off the
+    row and is what S2 tokenizes, so what is scanned here is what the model is trained on.
+    """
+    messages = to_messages(row, column)
+    if not messages:
         return ""
     return "\n".join(
-        message["content"]
-        for message in messages
-        if isinstance(message, dict) and isinstance(message.get("content"), str)
+        message["content"] for message in messages if isinstance(message.get("content"), str)
     )
 
 
@@ -115,19 +133,26 @@ def main(argv: list[str] | None = None) -> int:
 
     # The run's own selection, not a fresh sample: seed and count are the ones S2 trains on,
     # so a row this scan clears is a row the model actually saw cleared.
-    rows = s2.load_rows(s2.DATASETS[args.dataset], examples=args.examples, seed=args.seed)
+    spec = s2.DATASETS[args.dataset]
+    rows = s2.load_rows(spec, examples=args.examples, seed=args.seed)
     print(f"mixture: {len(rows)} rows selected (seed {args.seed})", flush=True)
 
     hit_items: set[int] = set()
     hit_rows: list[dict] = []
     by_source: Counter = Counter()
     source_counts: Counter = Counter()
+    empty = 0
+    chars = 0
 
     for position, row in enumerate(rows):
         source = row.get("source") or "?"
         source_counts[source] += 1
+        text = row_text(row, spec["column"], s2.to_messages)
+        if not text:
+            empty += 1
+        chars += len(text)
         found: set[int] = set()
-        for shingle in shingles(tokens(row_text(row))):
+        for shingle in shingles(tokens(text)):
             owners = index.get(shingle)
             if owners:
                 found |= owners
@@ -141,10 +166,25 @@ def main(argv: list[str] | None = None) -> int:
         if position and position % 10_000 == 0:
             print(f"  {position} rows, {len(hit_items)} test items hit so far", flush=True)
 
+    # A leakage scan reports absence, and absence is what a scan that read nothing also
+    # reports. So the null has to carry evidence that it looked: how many rows yielded no
+    # text at all, and how many characters were searched. Both go in the record, and an
+    # extraction that failed wholesale refuses to write a clean bill of health.
+    if empty > len(rows) // 100:
+        raise SystemExit(
+            f"{empty} of {len(rows)} rows yielded no text from column {spec['column']!r} "
+            f"of {spec['repo']}: the scan did not read the conversations, so its zero is "
+            f"an artefact of extraction and not a finding. Check to_messages against the "
+            f"row shape before trusting any leakage number from this mixture."
+        )
+
     result = {
         "n_test": len(test),
         "n_rows": len(rows),
         "ngram": N,
+        "column": spec["column"],
+        "rows_without_text": empty,
+        "chars_scanned": chars,
         "test_items_hit": len(hit_items),
         "test_items_hit_rate": round(len(hit_items) / len(test), 6),
         "rows_hitting": sum(by_source.values()),

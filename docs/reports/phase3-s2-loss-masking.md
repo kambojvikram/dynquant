@@ -229,6 +229,24 @@ supervision, so that number is in-domain by construction and is reported as such
 This is a property of Tulu-3 at seed 0, not of SFT mixtures. S5's SmolTalk and OpenThoughts3
 arms get their own scan before their numbers are read.
 
+**SmolTalk (config `all`), same 50 000 rows at seed 0: 0 / 1 319.** Nothing to discount.
+
+And the scan learned something about itself on the way there. It read `row["messages"]`
+directly, which is right for Tulu-3 and SmolTalk and silently wrong for OpenThoughts3, whose
+turns are ShareGPT `{"from", "value"}` under `conversations`. Every row would have extracted
+to the empty string, no 13-gram would have matched, and the result would have been a clean
+`0 / 1 319` issued by a scan that read **zero characters**. Checked directly rather than
+argued: on a synthetic OpenThoughts3 row the old extractor returns 0 characters where the
+new one returns 28.
+
+It now normalises through `run_s2_finetune.to_messages` — the same function that decides what
+S2 tokenizes, so what is scanned is what is trained on — and the record carries
+`chars_scanned` and `rows_without_text`. Extraction failing on more than 1 % of rows raises
+instead of writing a result, because *a leakage scan reports absence, and absence is also
+what a scan that read nothing reports*. That is the third instance today of the same shape:
+a null that had to be made to prove it looked (see
+[the S3 control](phase3-s3-null-control.md)).
+
 ## 8. The runs, and one asymmetry in them
 
 | | Phi-4-mini | Ministral-8B |
