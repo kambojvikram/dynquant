@@ -361,13 +361,22 @@ def quantize_arm(args: argparse.Namespace, arm: Arm) -> Arm:
 
 
 def evaluate(args: argparse.Namespace, arms: list[Arm], out: Path) -> None:
-    """Hand the arms to the campaign's evaluator, which is not this file."""
+    """Hand the arms to the campaign's evaluator, which is not this file.
+
+    The unquantized merge goes in as ``bf16``. Without it every arm is measured only
+    against the others and the table can say which allocation is best but not what any
+    of them cost -- and "quantization is free here" and "quantization destroyed this
+    model equally in all four arms" have the same shape when the ceiling is missing.
+    It is not an allocated arm and so does not appear in ``arms.json``; it is the same
+    weights S2 produced, scored through the same evaluator.
+    """
     cmd = [
         sys.executable,
         str(Path(__file__).with_name("run_s1_headroom.py")),
         "--out",
         str(out),
         "--models",
+        f"bf16={args.model}",
         *[f"{arm.label}={arm.directory}" for arm in arms],
     ]
     if args.limit is not None:

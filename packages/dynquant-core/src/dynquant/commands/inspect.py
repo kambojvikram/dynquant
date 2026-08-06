@@ -273,6 +273,7 @@ def run(args: argparse.Namespace) -> int:
     )
     graph = inputs.graph
     scores = dict(inputs.scores)
+    score_report = inputs.score_report
 
     payload: dict[str, Any] = {
         "dynquant_core": __version__,
@@ -292,9 +293,12 @@ def run(args: argparse.Namespace) -> int:
             "unique": graph.unique_params(),
             "unquantized": graph.unquantized_params(),
         },
+        # Empty rather than absent when no ``--stats`` was given: a reader that keys
+        # into this dict gets three empty lists, which is the truth -- no module is
+        # missing a signal when no signal was asked for -- instead of a KeyError.
         "scores": {
-            "missing_stats": list(inputs.score_report.missing_stats),
-            "unexercised": list(inputs.score_report.unexercised),
+            "missing_stats": list(score_report.missing_stats) if score_report else [],
+            "unexercised": list(score_report.unexercised) if score_report else [],
             "zero": [name for name, score in scores.items() if score == 0.0],
         },
         "targets": {},

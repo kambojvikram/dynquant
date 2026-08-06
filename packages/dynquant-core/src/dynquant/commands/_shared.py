@@ -228,18 +228,20 @@ def build_inputs(
     from dynquant.signals.schema import load_stats
 
     graph = classify_model(model, overrides=overrides)
-    if stats is None:
-        raise DynQuantError(
-            "allocation needs the signals collected during fine-tuning: pass --stats "
-            "with the directory DynQuantCallback wrote to. Without it there is no "
-            "importance ordering, and a uniform map is the honest alternative "
-            "(`--uniform BITS`)."
-        )
 
-    report = score_modules(graph, load_stats(stats))
-    scores = report.scores()
-    if verbose:
-        print(report.summary(), flush=True)
+    # No stats is not an error here, because not every map is allocated from a score.
+    # `--uniform` needs the graph and nothing else, and it is precisely the arm a user
+    # without fine-tuning signals has: refusing it -- while recommending it in the
+    # refusal -- made the control arm reachable only by first collecting the signals it
+    # exists to be compared against. `allocate` still refuses, which is where the
+    # requirement actually is.
+    report = None
+    scores: Mapping[str, float] = {}
+    if stats is not None:
+        report = score_modules(graph, load_stats(stats))
+        scores = report.scores()
+        if verbose:
+            print(report.summary(), flush=True)
 
     table: SensitivityTable | None = None
     if moments is not None:
@@ -293,6 +295,14 @@ def allocate(
     """One bit map, from one budget, through the shipped knapsack."""
     from dynquant.allocate.budget import Budget
     from dynquant.allocate.knapsack import allocate_bits
+
+    if not inputs.scores:
+        raise DynQuantError(
+            "allocation needs the signals collected during fine-tuning: pass --stats "
+            "with the directory DynQuantCallback wrote to. Without it there is no "
+            "importance ordering, and a uniform map is the honest alternative "
+            "(`--uniform BITS`)."
+        )
 
     budget: Budget = Budget.from_target(
         inputs.graph,

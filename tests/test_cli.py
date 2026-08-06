@@ -345,8 +345,34 @@ def test_a_map_from_another_checkpoint_fails_before_a_weight_is_touched(graph) -
 
 
 def test_allocating_without_stats_points_at_the_honest_alternative() -> None:
+    """The requirement is real, but it belongs to ``allocate``, not to ``build_inputs``.
+
+    Scores are what the knapsack orders modules by, so a budgeted map without them is
+    not a worse map, it is an arbitrary one -- hence the raise. It lives one level down
+    from where it used to because the same inputs also feed ``uniform_map``, which needs
+    no ordering at all; see the test below for the failure that cost.
+    """
+    inputs = _shared.build_inputs(Qwen3_5ForCausalLM(), stats=None, verbose=False)
     with pytest.raises(DynQuantError, match=r"--uniform"):
-        _shared.build_inputs(Qwen3_5ForCausalLM(), stats=None, verbose=False)
+        _shared.allocate(inputs, target_bits=3.0)
+
+
+def test_a_uniform_arm_is_reachable_without_ever_fine_tuning(graph) -> None:
+    """``inspect --uniform`` has to run on a checkpoint that has no signals at all.
+
+    The guard this pins used to sit in ``build_inputs``, which every ``inspect`` run
+    goes through -- so asking for the RTN control arm died with an error recommending
+    the exact flag that had been passed, and the baseline was reachable only by first
+    collecting the fine-tuning signals it exists to be compared against. Caught on a
+    real checkpoint mid-campaign; red again if the requirement drifts back up.
+    """
+    inputs = _shared.build_inputs(Qwen3_5ForCausalLM(), stats=None, verbose=False)
+    assert inputs.scores == {}
+    assert inputs.score_report is None
+    assert {info.name for info in inputs.graph.quantizable()}  # classification still ran
+
+    uniform = _shared.uniform_map(inputs.graph, 4, policy=inputs.policy)
+    assert set(uniform.bits) == {info.name for info in graph.quantizable()}
 
 
 def test_a_uniform_map_does_not_put_structural_roles_at_the_uniform_width(graph) -> None:
