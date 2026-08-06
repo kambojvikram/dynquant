@@ -57,6 +57,25 @@ have reported `dq − shuf ≈ 0` — read as *the signal does not matter* — o
 ablation that never happened. The failure is silent in both directions: nothing errors, both
 arms complete, and the two maps agree to the bit.
 
+### Confirmed on the pre-fix run
+
+The four-arm `--allocate-only` validation was already in flight when this was found, so it
+was left to finish and the maps compared. Phi-4-mini × Tulu-3, 129 quantizable modules, all
+three arms held to the 3-bit uniform anchor's 1 558 302 720-byte ceiling:
+
+| pair | modules at a different width | bytes | average bits | floors breached |
+|---|---|---|---|---|
+| `shuf3` vs `dq3` | **0 / 129** | identical, 1 558 056 960 | identical, 3.249487442337263 | 88 vs 88 |
+| `rank3` vs `dq3` | 65 / 129 | — | — | 79 vs 88 |
+
+The two maps hash identically. Not "close" — the same allocation, because the same table
+produced it. `rank3` is the contrast that shows the machinery works: it allocates from the
+stats score with no moments at all, and it moves half the model.
+
+`_fallback_scale` makes the prediction exact rather than approximate. It assigns
+`fallback_scale` only to modules *without* a measured sensitivity, and with all 129 covered
+that set is empty, so no permuted quantity reaches the objective by any path.
+
 This is the same shape as the phase-2 finding that the 25.78-point margin at 3.25 b splits
 22.62 allocator / 3.16 signal. That decomposition was only trustworthy because its control
 permuted the thing the allocator was reading *at the time*. Adding the Gauss-Newton estimator

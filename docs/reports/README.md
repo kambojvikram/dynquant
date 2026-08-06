@@ -17,7 +17,7 @@ There are ten campaigns. They answer ten different questions, in this order:
 | 7 | Does the S2 fine-tune know which tokens are the assistant's? | **Yes on both tokenizers, ≤0.07 % unmaskable** — after the obvious method dropped 100 % of the data on one of them | [`phase3-s2-loss-masking.md`](phase3-s2-loss-masking.md) |
 | 8 | What does fusion cost the one panel model that has it? | **0.21 of 4.43 floor bits** — and the two panel models are in different regimes at the same target | [`phase3-s3-fused-floors.md`](phase3-s3-fused-floors.md) |
 | 9 | Did the S2 fine-tune produce a signal map worth spending? | **Yes, with one caveat** — `embed_tokens` scores on nothing and pays 67.8 % of the floor shortfall | [`phase3-s2-phi-signal-map.md`](phase3-s2-phi-signal-map.md) |
-| 10 | Is S3's shuffled control actually ablating the signal? | **No — it was a null by construction**, permuting a file the allocator had stopped reading | [`phase3-s3-null-control.md`](phase3-s3-null-control.md) |
+| 10 | Is S3's shuffled control actually ablating the signal? | **No — it was a null by construction.** 0 of 129 modules differed from the treatment; it permuted a file the allocator had stopped reading | [`phase3-s3-null-control.md`](phase3-s3-null-control.md) |
 
 The method itself — signals, sensitivity estimator, allocator, encoder, format, packed
 runtime, kernels — is documented end to end in the
@@ -339,8 +339,11 @@ the **stats** file and then passed `--moments` the real, unpermuted sidecar. Sin
 Gauss-Newton estimator was added, `move_value` prices every width change from the measured
 sensitivity table whenever the module has one and only falls back to the stats-derived score
 when it does not — and Phi's sidecar covers **all 129** quantizable modules. The permuted
-score was therefore never read: the control would have produced a bit-identical map to the
-treatment and reported *the signal does not matter*, silently, with both arms exiting 0.
+score was therefore never read. Confirmed on the pre-fix run rather than argued: `shuf3` and
+`dq3` differ on **0 of 129 modules**, hash identically, and land on the same byte count and
+the same 3.249487442337263 average bits — while `rank3`, which allocates from the score with
+no moments at all, moves 65. The control would have reported *the signal does not matter*,
+silently, with both arms exiting 0.
 
 Fixed by deriving one permutation and applying it to both artifacts, grouped by
 `(role, in-channels, out-channels)` — a no-op on a dense model, and there because a channel
