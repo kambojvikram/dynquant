@@ -67,6 +67,7 @@ import random
 import shutil
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -133,40 +134,94 @@ class Arm:
 # ---------------------------------------------------------------------------
 
 
-def shuffle_within_role(stats: Any, seed: int) -> Any:
-    """Move every measurement to a different module of the same role.
+def permutation_within_role(stats: Any, seed: int, *, moments: Any = None) -> dict[str, str]:
+    """Target module -> the module whose measurements it will carry.
 
-    A derangement is not attempted and would be the wrong thing to attempt: with a
-    fixed seed the permutation is reproducible, and forcing every module to move would
-    make the control depend on a rejection loop whose behaviour at small role sizes is
-    its own confound. What is reported instead is how many modules actually moved, so
-    a permutation that happened to be near-identity is visible rather than assumed
-    away.
+    One permutation, applied to every artifact the allocator reads, because a module
+    holding one donor's scalars and another's channel vectors carries a signal that
+    belongs to no module at all -- a third distribution rather than a relabelled one.
 
-    Singleton roles -- a tied embedding is one -- are fixed points by construction.
-    That is not a flaw in the control: there is no other module of that role to swap
-    with, and the arm is honest about the fact in ``moved``.
+    Grouped by role, and when the moments are given by channel shape as well. The shape
+    refinement is not a weakening of "within role": on a dense model every member of a
+    role has the same geometry, so the groups are unchanged. It exists because nothing
+    guarantees that -- and a channel vector of the wrong length does not fail loudly, it
+    broadcasts.
+
+    A derangement is not attempted and would be the wrong thing to attempt: with a fixed
+    seed the permutation is reproducible, and forcing every module to move would make
+    the control depend on a rejection loop whose behaviour at small role sizes is its own
+    confound. What is reported instead is how many modules actually moved, so a
+    permutation that happened to be near-identity is visible rather than assumed away.
+
+    Singleton roles -- a tied embedding is one -- are fixed points by construction. That
+    is not a flaw in the control: there is no other module of that role to swap with, and
+    the arm is honest about the fact in ``moved``.
     """
-    groups: dict[str, list[str]] = {}
+
+    def shape(name: str) -> tuple[int | None, int | None]:
+        if moments is None:
+            return (None, None)
+        x = moments.input_sq.get(name)
+        d = moments.output_grad_sq.get(name)
+        return (None if x is None else int(x.numel()), None if d is None else int(d.numel()))
+
+    groups: dict[tuple[Any, ...], list[str]] = {}
     for name, layer in stats.layers.items():
-        groups.setdefault(layer.role or "", []).append(name)
+        groups.setdefault((layer.role or "", *shape(name)), []).append(name)
 
     rng = random.Random(seed)
-    permuted = dict(stats.layers)
-    for _role, names in sorted(groups.items()):
+    permutation: dict[str, str] = {}
+    for _key, names in sorted(groups.items(), key=lambda kv: str(kv[0])):
         ordered = sorted(names)
         donors = list(ordered)
         rng.shuffle(donors)
-        for target, donor in zip(ordered, donors, strict=True):
-            source = stats.layers[donor]
-            permuted[target] = replace(
-                stats.layers[target],
-                **{field: getattr(source, field) for field in PERMUTED_FIELDS},
-            )
+        permutation.update(zip(ordered, donors, strict=True))
+    return permutation
+
+
+def shuffle_stats(stats: Any, permutation: Mapping[str, str]) -> Any:
+    """Relabel the per-module scalars, keeping name, role and parameter count in place."""
+    permuted = dict(stats.layers)
+    for target, donor in permutation.items():
+        source = stats.layers[donor]
+        permuted[target] = replace(
+            stats.layers[target],
+            **{field: getattr(source, field) for field in PERMUTED_FIELDS},
+        )
     return replace(stats, layers=permuted)
 
 
-def write_variants(stats_path: Path, destination: Path, seed: int) -> dict[str, dict[str, Any]]:
+def shuffle_moments(moments: Any, permutation: Mapping[str, str]) -> Any:
+    """Relabel the channel moments under the same permutation the scalars got.
+
+    Without this the ``shuf`` arm is not a control. ``--moments`` builds a measured
+    sensitivity table, and the knapsack prices a width change from that table whenever
+    the module has an entry, falling back to the stats-derived score only when it does
+    not. Phi's moments cover all 129 quantizable modules, so permuting the stats alone
+    changes nothing the allocator consults: the arm would have allocated identically to
+    the treatment and reported a null with the ablation never having happened.
+    """
+    from dynquant.signals.moments import ChannelMoments
+
+    out = ChannelMoments()
+    for target, donor in permutation.items():
+        for field_name in ("input_sq", "output_grad_sq"):
+            source = getattr(moments, field_name).get(donor)
+            if source is not None:
+                getattr(out, field_name)[target] = source
+    # Anything the stats never named keeps its own measurement rather than vanishing:
+    # dropping a module from the moments would change which modules the allocator can
+    # price, which is a structural difference and not a relabelling.
+    for field_name in ("input_sq", "output_grad_sq"):
+        for name, tensor in getattr(moments, field_name).items():
+            getattr(out, field_name).setdefault(name, tensor)
+    out.observations.update(moments.observations)
+    return out
+
+
+def write_variants(
+    stats_path: Path, moments_path: Path, destination: Path, seed: int
+) -> dict[str, dict[str, Any]]:
     """Write the derived signal files, and say how much each one actually differs.
 
     The real signal is copied rather than referenced so that the arms are reproducible
@@ -174,26 +229,34 @@ def write_variants(stats_path: Path, destination: Path, seed: int) -> dict[str, 
     the same loader -- a control that differs from its treatment in how it was *parsed*
     is not a control.
     """
+    from dynquant.signals.moments import load_moments, save_moments
     from dynquant.signals.schema import load_stats, save_stats
 
     destination.mkdir(parents=True, exist_ok=True)
     stats = load_stats(stats_path)
+    moments = load_moments(moments_path)
 
     written: dict[str, dict[str, Any]] = {}
-    signal_path = destination / "dynquant_stats.signal.json"
-    save_stats(stats, signal_path)
-    written["signal"] = {"path": str(signal_path), "seed": None, "moved": None}
+    signal_stats = destination / "dynquant_stats.signal.json"
+    signal_moments = destination / "dynquant_moments.signal.safetensors"
+    save_stats(stats, signal_stats)
+    save_moments(moments, signal_moments)
+    written["signal"] = {
+        "stats": str(signal_stats),
+        "moments": str(signal_moments),
+        "seed": None,
+        "moved": None,
+    }
 
-    shuffled = shuffle_within_role(stats, seed)
-    moved = sum(
-        1
-        for name, layer in shuffled.layers.items()
-        if any(getattr(layer, f) != getattr(stats.layers[name], f) for f in PERMUTED_FIELDS)
-    )
-    shuffled_path = destination / f"dynquant_stats.shuffled-{seed}.json"
-    save_stats(shuffled, shuffled_path)
+    permutation = permutation_within_role(stats, seed, moments=moments)
+    moved = sum(1 for target, donor in permutation.items() if target != donor)
+    shuffled_stats = destination / f"dynquant_stats.shuffled-{seed}.json"
+    shuffled_moments = destination / f"dynquant_moments.shuffled-{seed}.safetensors"
+    save_stats(shuffle_stats(stats, permutation), shuffled_stats)
+    save_moments(shuffle_moments(moments, permutation), shuffled_moments)
     written["shuffled"] = {
-        "path": str(shuffled_path),
+        "stats": str(shuffled_stats),
+        "moments": str(shuffled_moments),
         "seed": seed,
         "moved": moved,
         "total": len(stats.layers),
@@ -300,10 +363,15 @@ def allocate_arm(
     save_map = work / f"map.{kind}{anchor.anchor}.json"
     key = str(anchor.nbytes)
 
+    variant = variants[spec["variant"]]
     cmd = _inspect_cmd(args, save_map)
-    cmd += ["--stats", variants[spec["variant"]]["path"], "--target-size", key]
+    cmd += ["--stats", variant["stats"], "--target-size", key]
     if spec["moments"]:
-        cmd += ["--moments", str(args.moments)]
+        # The variant's own moments, never ``args.moments``: the sensitivity table is
+        # what the knapsack prices from whenever a module has an entry, so an arm that
+        # permuted the stats and then read the real moments would allocate exactly like
+        # the treatment and report a null it never tested.
+        cmd += ["--moments", variant["moments"]]
     _run(cmd, what=f"allocating {kind}{anchor.anchor}")
 
     body = json.loads(save_map.read_text(encoding="utf-8"))["maps"][key]
@@ -447,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
     work = out / "maps"
     work.mkdir(parents=True, exist_ok=True)
 
-    variants = write_variants(stats_path, work, args.seed)
+    variants = write_variants(stats_path, Path(args.moments), work, args.seed)
     print(
         f"\nshuffled control: {variants['shuffled']['moved']}/{variants['shuffled']['total']} "
         f"modules carry another module's measurements",
