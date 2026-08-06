@@ -76,6 +76,37 @@ stats score with no moments at all, and it moves half the model.
 `fallback_scale` only to modules *without* a measured sensitivity, and with all 129 covered
 that set is empty, so no permuted quantity reaches the objective by any path.
 
+### Confirmed again after the fix
+
+The same four arms re-allocated at `d74059a`, same model, same anchor, same ceiling:
+
+| pair | modules at a different width | bytes | average bits | floors breached |
+|---|---|---|---|---|
+| `shuf3` vs `dq3` — **before** | 0 / 129 | identical | identical | 88 vs 88 |
+| `shuf3` vs `dq3` — **after** | **55 / 129** | 1 557 270 528 vs 1 558 056 960 | 3.2478 vs 3.2495 | 88 vs 88 |
+| `rank3` vs `dq3` | 65 / 129 | 1 558 302 720 | 3.25 | 79 vs 88 |
+
+The permutation moved 122 of 130 entries and the allocation moved 55 of 129 modules — the
+arm is now ablating something. Two properties of the after-row are worth more than the
+count:
+
+* `dq3` hashes to `1665658612e607a6` in **both** runs. The treatment is byte-identical
+  before and after, so the fix moved the control and nothing else. Had `dq3` moved, the fix
+  would have been a change to the method wearing a control's name.
+* Both arms breach **88** floors, against `rank3`'s 79. Floor pressure is a property of the
+  budget and the role structure, which the permutation preserves by construction; that the
+  two agree here and disagree with the moments-free arm is the grouping doing its job.
+
+The width histograms differ by one module — `dq3` {2: 41, 3: 57, 4: 31} against `shuf3`
+{2: 42, 3: 56, 4: 31}. So the two arms spend the budget on nearly the same *shape* of
+allocation and disagree about *which* modules get which width, which is exactly the
+difference a correspondence ablation should produce and not, say, the difference a
+distribution ablation would.
+
+What this does not yet say is what the gap is *worth*. 55 modules moving is a statement
+about the map, not about accuracy; the quantize-and-eval arms are what turn it into points,
+and they need the GPU that Ministral currently holds.
+
 This is the same shape as the phase-2 finding that the 25.78-point margin at 3.25 b splits
 22.62 allocator / 3.16 signal. That decomposition was only trustworthy because its control
 permuted the thing the allocator was reading *at the time*. Adding the Gauss-Newton estimator
