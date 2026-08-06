@@ -40,6 +40,56 @@ COMMANDS = ("inspect", "quantize", "export", "eval", "bench", "doctor", "version
 
 
 # --------------------------------------------------------------------------
+# Entry points
+# --------------------------------------------------------------------------
+
+
+def test_the_cli_is_reachable_as_python_dash_m_dynquant() -> None:
+    """``sys.executable -m dynquant`` has to work, because the drivers only have that.
+
+    A console script lands in an install-chosen ``bin/`` that a subprocess cannot
+    assume is on ``PATH``; ``-m`` on the running interpreter is the form that is
+    guaranteed to reach *this* environment's package, so every phase-3 driver shells
+    out that way. ``scripts/run_s1_headroom.py`` did it before ``__main__.py``
+    existed and would have failed on every cell -- unnoticed, because the screen that
+    produced the S1 records used a different command.
+
+    Turns red if ``__main__.py`` is dropped, if it stops calling ``cli.main``, or if
+    it starts importing something that is not installed in a bare environment.
+    """
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
+    proc = subprocess.run(
+        [sys.executable, "-m", "dynquant", "version"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "dynquant" in proc.stdout.lower()
+
+
+def test_dash_m_exits_with_the_status_main_returns() -> None:
+    """A usage error through ``-m`` must be a non-zero exit, not a swallowed one.
+
+    ``runpy`` does not propagate a return value, so ``main()``'s status is only an
+    exit status if ``__main__`` passes it to ``sys.exit``. Without that the drivers'
+    ``check``/``returncode`` handling sees success on every failed cell.
+    """
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
+    proc = subprocess.run(
+        [sys.executable, "-m", "dynquant"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert proc.returncode != 0, "a bare invocation reported success"
+
+
+# --------------------------------------------------------------------------
 # Parser
 # --------------------------------------------------------------------------
 
