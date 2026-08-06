@@ -1,0 +1,1336 @@
+{
+  "hyperparameters": {
+    "activation_ema_beta": 0.99,
+    "coherence_ema_beta": null,
+    "eps": 1e-12
+  },
+  "layers": {
+    "lm_head": {
+      "activation_rms_ema": 15.942717552185059,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0013544148532673717,
+      "grad_norm_var": 9.379582479596139e-08,
+      "param_count": 614596608,
+      "role": "lm_head"
+    },
+    "model.embed_tokens": {
+      "activation_rms_ema": 0.16914060711860657,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 0,
+      "grad_norm_mean": 0.0,
+      "grad_norm_var": 0.0,
+      "param_count": 614596608,
+      "role": "embedding"
+    },
+    "model.layers.0.mlp.down_proj": {
+      "activation_rms_ema": 0.08373133093118668,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00045986444456502795,
+      "grad_norm_var": 4.84685394136856e-08,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.0.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.17438355088233948,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00045580294681712985,
+      "grad_norm_var": 5.364613995576898e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.0.self_attn.o_proj": {
+      "activation_rms_ema": 0.13774172961711884,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0007937639020383358,
+      "grad_norm_var": 2.393969528687497e-07,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.0.self_attn.qkv_proj": {
+      "activation_rms_ema": 1.1416771411895752,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0008102391147986054,
+      "grad_norm_var": 2.1324644330888986e-07,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.1.mlp.down_proj": {
+      "activation_rms_ema": 0.15557195246219635,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0011746115051209927,
+      "grad_norm_var": 3.6814079309503236e-07,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.1.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.192109614610672,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0003654385218396783,
+      "grad_norm_var": 2.4961858192303528e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.1.self_attn.o_proj": {
+      "activation_rms_ema": 0.041610199958086014,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0003452900273259729,
+      "grad_norm_var": 2.4753026082180442e-08,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.1.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.6977843046188354,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00054778071353212,
+      "grad_norm_var": 7.479761552531272e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.10.mlp.down_proj": {
+      "activation_rms_ema": 0.16419178247451782,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0002745115489233285,
+      "grad_norm_var": 1.0964906929681698e-08,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.10.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.3597588539123535,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0003305785357952118,
+      "grad_norm_var": 1.685710837288449e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.10.self_attn.o_proj": {
+      "activation_rms_ema": 0.1212567687034607,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00032430182909592986,
+      "grad_norm_var": 1.4638290546524028e-08,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.10.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.8467510342597961,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.000693403766490519,
+      "grad_norm_var": 6.928548100404441e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.11.mlp.down_proj": {
+      "activation_rms_ema": 0.16793933510780334,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0002626320638228208,
+      "grad_norm_var": 9.451437411674609e-09,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.11.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.3434116542339325,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0003245871630497277,
+      "grad_norm_var": 1.5562691260129214e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.11.self_attn.o_proj": {
+      "activation_rms_ema": 0.10578059405088425,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0002796715998556465,
+      "grad_norm_var": 1.1427617816176887e-08,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.11.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.8525120615959167,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0005483691929839551,
+      "grad_norm_var": 4.6968101135765514e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.12.mlp.down_proj": {
+      "activation_rms_ema": 0.1738891452550888,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00027125203632749617,
+      "grad_norm_var": 9.482382665737532e-09,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.12.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.3454882502555847,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00034016036079265177,
+      "grad_norm_var": 1.5494048663337403e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.12.self_attn.o_proj": {
+      "activation_rms_ema": 0.12030772119760513,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0002600871666800231,
+      "grad_norm_var": 9.062498065759428e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.12.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.820612907409668,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0005204356275498867,
+      "grad_norm_var": 4.0831907729928695e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.13.mlp.down_proj": {
+      "activation_rms_ema": 0.17846335470676422,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00026874657487496734,
+      "grad_norm_var": 8.722806645285648e-09,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.13.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.3482448160648346,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0003168507828377187,
+      "grad_norm_var": 1.2519939142900208e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.13.self_attn.o_proj": {
+      "activation_rms_ema": 0.14325064420700073,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0003075273707509041,
+      "grad_norm_var": 1.0822949358650173e-08,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.13.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.8331630229949951,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0004842571506742388,
+      "grad_norm_var": 3.308394904403637e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.14.mlp.down_proj": {
+      "activation_rms_ema": 0.18338583409786224,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00026525850989855826,
+      "grad_norm_var": 7.775137419230304e-09,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.14.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.3503449261188507,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0003157733881380409,
+      "grad_norm_var": 1.1756985865455741e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.14.self_attn.o_proj": {
+      "activation_rms_ema": 0.12400460988283157,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0002648194204084575,
+      "grad_norm_var": 6.477385492568525e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.14.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.8417351841926575,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0005019031814299524,
+      "grad_norm_var": 3.086642148749282e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.15.mlp.down_proj": {
+      "activation_rms_ema": 0.19906820356845856,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0002593725803308189,
+      "grad_norm_var": 6.936166149292451e-09,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.15.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.3578031361103058,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0003187496622558683,
+      "grad_norm_var": 1.119756901365084e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.15.self_attn.o_proj": {
+      "activation_rms_ema": 0.12494093179702759,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00024206955276895314,
+      "grad_norm_var": 6.35216201771982e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.15.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.826122522354126,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0004541391972452402,
+      "grad_norm_var": 2.619797063137715e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.16.mlp.down_proj": {
+      "activation_rms_ema": 0.22454522550106049,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0002772199222818017,
+      "grad_norm_var": 7.439935870934278e-09,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.16.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.3770536184310913,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00033756575430743396,
+      "grad_norm_var": 1.2591638854549577e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.16.self_attn.o_proj": {
+      "activation_rms_ema": 0.14767751097679138,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00028316827956587076,
+      "grad_norm_var": 7.369327552927037e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.16.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.8412081599235535,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0005581952282227576,
+      "grad_norm_var": 3.5998634605978924e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.17.mlp.down_proj": {
+      "activation_rms_ema": 0.24637995660305023,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00028047949308529496,
+      "grad_norm_var": 8.118850018945523e-09,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.17.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.3870505690574646,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00034584879176691175,
+      "grad_norm_var": 1.216933136068595e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.17.self_attn.o_proj": {
+      "activation_rms_ema": 0.14849646389484406,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00023823740775696933,
+      "grad_norm_var": 4.379330979039272e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.17.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.8429655432701111,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0004888421390205622,
+      "grad_norm_var": 2.8602415113709865e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.18.mlp.down_proj": {
+      "activation_rms_ema": 0.31342846155166626,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0003020334988832474,
+      "grad_norm_var": 8.57404059691665e-09,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.18.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.422070175409317,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0003714629274327308,
+      "grad_norm_var": 1.3443231485628833e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.18.self_attn.o_proj": {
+      "activation_rms_ema": 0.2005222886800766,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00026113822241313756,
+      "grad_norm_var": 5.1426662442584836e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.18.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.8541735410690308,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00045519767445512116,
+      "grad_norm_var": 2.41396749819008e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.19.mlp.down_proj": {
+      "activation_rms_ema": 0.3079172670841217,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0003002476005349308,
+      "grad_norm_var": 9.043386550426172e-09,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.19.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.42568010091781616,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00036242525675334036,
+      "grad_norm_var": 1.2087805468278627e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.19.self_attn.o_proj": {
+      "activation_rms_ema": 0.21903708577156067,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00022770023497287184,
+      "grad_norm_var": 5.052009328210261e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.19.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.8055134415626526,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0004122104437556118,
+      "grad_norm_var": 2.1268368679254005e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.2.mlp.down_proj": {
+      "activation_rms_ema": 0.06270694732666016,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0003126900701317936,
+      "grad_norm_var": 1.619088046330338e-08,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.2.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.18526782095432281,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0003776682715397328,
+      "grad_norm_var": 2.527150597112874e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.2.self_attn.o_proj": {
+      "activation_rms_ema": 0.037175294011831284,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00022703972354065627,
+      "grad_norm_var": 9.119561582338065e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.2.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.6910728216171265,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0007203713175840676,
+      "grad_norm_var": 1.3073232063713173e-07,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.20.mlp.down_proj": {
+      "activation_rms_ema": 0.3359053134918213,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00029859974165447056,
+      "grad_norm_var": 8.53445332419748e-09,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.20.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.45097815990448,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00035493497853167355,
+      "grad_norm_var": 1.1207088391529397e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.20.self_attn.o_proj": {
+      "activation_rms_ema": 0.1940174251794815,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00020443543326109648,
+      "grad_norm_var": 3.387043458739451e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.20.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.7949148416519165,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00036613186239264905,
+      "grad_norm_var": 1.4414328082542245e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.21.mlp.down_proj": {
+      "activation_rms_ema": 0.37768179178237915,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00030604921630583704,
+      "grad_norm_var": 9.157086727403415e-09,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.21.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.4572484493255615,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00034996267640963197,
+      "grad_norm_var": 1.1527929018484429e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.21.self_attn.o_proj": {
+      "activation_rms_ema": 0.2254251390695572,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00018016519607044756,
+      "grad_norm_var": 2.9635560470827234e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.21.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.8513837456703186,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0003921410534530878,
+      "grad_norm_var": 1.73272674146574e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.22.mlp.down_proj": {
+      "activation_rms_ema": 0.40338146686553955,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00029103763517923653,
+      "grad_norm_var": 7.93014017593426e-09,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.22.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.45669233798980713,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0003268145665060729,
+      "grad_norm_var": 1.037114270729944e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.22.self_attn.o_proj": {
+      "activation_rms_ema": 0.2189190685749054,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00018354748317506164,
+      "grad_norm_var": 3.1781410143594256e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.22.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.809210479259491,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00030524234171025455,
+      "grad_norm_var": 1.1130602312429498e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.23.mlp.down_proj": {
+      "activation_rms_ema": 0.4332086741924286,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00026819444610737264,
+      "grad_norm_var": 7.3700181625705835e-09,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.23.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.4455008804798126,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0003112509148195386,
+      "grad_norm_var": 9.995141833011681e-09,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.23.self_attn.o_proj": {
+      "activation_rms_ema": 0.20201823115348816,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00014245553757064044,
+      "grad_norm_var": 3.026423655683175e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.23.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.8682317733764648,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0002521050919312984,
+      "grad_norm_var": 9.555935321259312e-09,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.24.mlp.down_proj": {
+      "activation_rms_ema": 0.41965943574905396,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00026838641497306526,
+      "grad_norm_var": 6.82704679396314e-09,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.24.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.4495930075645447,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0003133905993308872,
+      "grad_norm_var": 1.067973183429179e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.24.self_attn.o_proj": {
+      "activation_rms_ema": 0.2447446882724762,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0001114150436478667,
+      "grad_norm_var": 1.3361536730371882e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.24.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.8771980404853821,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0002525275922380388,
+      "grad_norm_var": 8.097922545857728e-09,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.25.mlp.down_proj": {
+      "activation_rms_ema": 0.46804922819137573,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.000247910909820348,
+      "grad_norm_var": 6.935499186511152e-09,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.25.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.47524577379226685,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00030926987528800964,
+      "grad_norm_var": 1.0999605971543739e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.25.self_attn.o_proj": {
+      "activation_rms_ema": 0.22499461472034454,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00011234573321416974,
+      "grad_norm_var": 1.0922832795282982e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.25.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.8792048096656799,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0002724380465224385,
+      "grad_norm_var": 1.0766891743211697e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.26.mlp.down_proj": {
+      "activation_rms_ema": 0.539615273475647,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.000253110978519544,
+      "grad_norm_var": 7.565669875475578e-09,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.26.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.5014455914497375,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00031077570747584105,
+      "grad_norm_var": 1.229720995373403e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.26.self_attn.o_proj": {
+      "activation_rms_ema": 0.2712937593460083,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00014525183360092342,
+      "grad_norm_var": 1.966984806737552e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.26.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.8788677453994751,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0003121842455584556,
+      "grad_norm_var": 1.1004594853147865e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.27.mlp.down_proj": {
+      "activation_rms_ema": 0.5969913005828857,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.000267133058514446,
+      "grad_norm_var": 7.3397350206505505e-09,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.27.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.5329663753509521,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00032023241510614753,
+      "grad_norm_var": 1.2192585321220879e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.27.self_attn.o_proj": {
+      "activation_rms_ema": 0.29802602529525757,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00012932383106090128,
+      "grad_norm_var": 1.913059198462482e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.27.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.9349729418754578,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0002507928875274956,
+      "grad_norm_var": 1.4539627348616098e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.28.mlp.down_proj": {
+      "activation_rms_ema": 0.7063342332839966,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00029510914464481175,
+      "grad_norm_var": 8.227008341539962e-09,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.28.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.5994874238967896,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.000358793418854475,
+      "grad_norm_var": 1.4270081010181458e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.28.self_attn.o_proj": {
+      "activation_rms_ema": 0.3048732280731201,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00011512261698953807,
+      "grad_norm_var": 1.6408075680374168e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.28.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.9461243748664856,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00023370172129943967,
+      "grad_norm_var": 7.457307219738141e-09,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.29.mlp.down_proj": {
+      "activation_rms_ema": 1.1919764280319214,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00044527716818265617,
+      "grad_norm_var": 1.424423802139548e-08,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.29.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.7231943011283875,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00046092175762169063,
+      "grad_norm_var": 1.6824222257127985e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.29.self_attn.o_proj": {
+      "activation_rms_ema": 0.5365526080131531,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0001401982008246705,
+      "grad_norm_var": 1.9737093073975606e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.29.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.9738959670066833,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0002486847806721926,
+      "grad_norm_var": 9.144134310190566e-09,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.3.mlp.down_proj": {
+      "activation_rms_ema": 0.2559499144554138,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.008219297043979168,
+      "grad_norm_var": 1.0407417391737303e-05,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.3.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.22509807348251343,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0003926884674001485,
+      "grad_norm_var": 2.5001121684908868e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.3.self_attn.o_proj": {
+      "activation_rms_ema": 0.06281401216983795,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00030230829725041986,
+      "grad_norm_var": 1.9238604484902074e-08,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.3.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.7005951404571533,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0007198054809123278,
+      "grad_norm_var": 1.255238118271033e-07,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.30.mlp.down_proj": {
+      "activation_rms_ema": 2.6595709323883057,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0014141565188765526,
+      "grad_norm_var": 1.7006219907974202e-07,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.30.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.9799739718437195,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0008094814256764948,
+      "grad_norm_var": 3.879835761229818e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.30.self_attn.o_proj": {
+      "activation_rms_ema": 0.48325398564338684,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00014883714902680367,
+      "grad_norm_var": 1.8262461101888524e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.30.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.9827447533607483,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00021131047105882317,
+      "grad_norm_var": 4.700764899704761e-09,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.31.mlp.down_proj": {
+      "activation_rms_ema": 3.801567554473877,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0018760185921564698,
+      "grad_norm_var": 2.0193770372619231e-07,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.31.mlp.gate_up_proj": {
+      "activation_rms_ema": 1.3893245458602905,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0010279268026351929,
+      "grad_norm_var": 5.915286601521075e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.31.self_attn.o_proj": {
+      "activation_rms_ema": 0.9063146114349365,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0001707390183582902,
+      "grad_norm_var": 1.723247805784922e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.31.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.7980225682258606,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0002226481883553788,
+      "grad_norm_var": 4.115393797595364e-09,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.4.mlp.down_proj": {
+      "activation_rms_ema": 0.10125558078289032,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00030890063499100506,
+      "grad_norm_var": 1.3433942513074726e-08,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.4.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.26270636916160583,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00037567922845482826,
+      "grad_norm_var": 2.0680883608292788e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.4.self_attn.o_proj": {
+      "activation_rms_ema": 0.06820348650217056,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00024143610789906234,
+      "grad_norm_var": 8.560905068103845e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.4.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.7186815142631531,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0008260785252787173,
+      "grad_norm_var": 1.1251391454910239e-07,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.5.mlp.down_proj": {
+      "activation_rms_ema": 0.12744590640068054,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00030712553416378796,
+      "grad_norm_var": 1.274838966007034e-08,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.5.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.2958538234233856,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00037559345946647227,
+      "grad_norm_var": 1.9607296659766387e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.5.self_attn.o_proj": {
+      "activation_rms_ema": 0.08803479373455048,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0002635591954458505,
+      "grad_norm_var": 1.1552041542017832e-08,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.5.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.7722786664962769,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0007022454519756138,
+      "grad_norm_var": 8.119249347752581e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.6.mlp.down_proj": {
+      "activation_rms_ema": 0.13948264718055725,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00030003144638612866,
+      "grad_norm_var": 1.3308506216465806e-08,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.6.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.3058081269264221,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00037343011354096234,
+      "grad_norm_var": 2.017089476188024e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.6.self_attn.o_proj": {
+      "activation_rms_ema": 0.08719275891780853,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0002520719717722386,
+      "grad_norm_var": 9.523508803492102e-09,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.6.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.7697038650512695,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.000686260755173862,
+      "grad_norm_var": 7.727992973135163e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.7.mlp.down_proj": {
+      "activation_rms_ema": 0.19197888672351837,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0003077026049140841,
+      "grad_norm_var": 1.4179342542774976e-08,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.7.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.32013246417045593,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00036872312193736434,
+      "grad_norm_var": 2.0613886590581386e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.7.self_attn.o_proj": {
+      "activation_rms_ema": 0.09492316097021103,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0002691629051696509,
+      "grad_norm_var": 1.2954706714178126e-08,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.7.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.788953423500061,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0006615876336582005,
+      "grad_norm_var": 7.667875130816052e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.8.mlp.down_proj": {
+      "activation_rms_ema": 0.17133091390132904,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0002996738185174763,
+      "grad_norm_var": 1.2743148545268923e-08,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.8.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.33698081970214844,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.00034003276959992945,
+      "grad_norm_var": 1.723897609432849e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.8.self_attn.o_proj": {
+      "activation_rms_ema": 0.14816609025001526,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0003051858802791685,
+      "grad_norm_var": 1.3440020363001774e-08,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.8.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.8374821543693542,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0006314488127827644,
+      "grad_norm_var": 6.199442335249236e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    },
+    "model.layers.9.mlp.down_proj": {
+      "activation_rms_ema": 0.19299659132957458,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0002730316773522645,
+      "grad_norm_var": 1.113887265091762e-08,
+      "param_count": 25165824,
+      "role": "mlp.down"
+    },
+    "model.layers.9.mlp.gate_up_proj": {
+      "activation_rms_ema": 0.3380342125892639,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.000337559322360903,
+      "grad_norm_var": 1.7461511257958286e-08,
+      "param_count": 50331648,
+      "role": "mlp.gate_up"
+    },
+    "model.layers.9.self_attn.o_proj": {
+      "activation_rms_ema": 0.10287316143512726,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0002880468964576721,
+      "grad_norm_var": 1.4249878101206073e-08,
+      "param_count": 9437184,
+      "role": "attn.o"
+    },
+    "model.layers.9.self_attn.qkv_proj": {
+      "activation_rms_ema": 0.8260272145271301,
+      "forward_calls": 12004,
+      "grad_estimator": "outer_exact",
+      "grad_norm_count": 1501,
+      "grad_norm_mean": 0.0006274377228692174,
+      "grad_norm_var": 6.169649229074518e-08,
+      "param_count": 15728640,
+      "role": "attn.qkv"
+    }
+  },
+  "provenance": {
+    "canonical_names": true,
+    "created_at_unix": 1785988909.476772,
+    "dynquant_version": "0.2.0",
+    "grad_estimator": "outer_exact",
+    "model_name_or_path": "microsoft/Phi-4-mini-instruct",
+    "model_type": "phi3",
+    "notes": {
+      "channel_moments": {
+        "every": 16,
+        "modules": 129,
+        "sampled_steps": 94
+      },
+      "log_every": 50,
+      "saliency_source": "output",
+      "subsample_tokens": 256,
+      "tied_parameters": {
+        "model.embed_tokens": [
+          "lm_head"
+        ]
+      },
+      "tracked_modules": 130
+    },
+    "num_optimizer_steps": 1501
+  },
+  "schema": "dynquant_stats_v2",
+  "schema_version": 2
+}

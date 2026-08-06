@@ -300,6 +300,31 @@ with phase 2.
 
 ---
 
+## 9. Phase 3 — S2 arm 1, verifying the signal map before spending it
+
+Full report: [phase3-s2-phi-signal-map.md](phase3-s2-phi-signal-map.md). Phi-4-mini × Tulu-3
+finished in **12.68 h**, 1501 optimizer steps, final train loss **0.6747**. A run that completes
+is not a run that produced something, so the map is checked before S3 reads it.
+
+Structure is sound: 130 modules (2 + 32×4) under canonical names, the tie recorded,
+`grad_norm_count` equal to the optimizer-step count on every module that has one (bug 10 stays
+fixed), and `forward_calls` **uniformly 12 004** — the check that gradient checkpointing stayed
+off, without which one part of the model's saliency would sit on a squared EMA decay and rank
+against the rest on different terms. Saliency spans 428.9×.
+
+One module scores on nothing: `model.embed_tokens`, for **three** independent reasons — no
+`δxᵀ` to form under `outer_exact` (an embedding's gradient is a scatter-add), a guard that
+discards its measured saliency along with the missing plasticity, and a role group of size one,
+where a percentile rank is 0.5 by construction. It is 16% of the model and **pays 67.8% of the
+3.25-bit floor shortfall by itself**. Forcing its score across the full range moves it 2 → 4
+bits, so the neutrality is not structurally harmless; substituting its tied partner `lm_head`'s
+row — the same tensor, measured — scores 0.9264 and lands on the same 3 bits. Costs this
+checkpoint nothing, stated as a caveat rather than fixed. **Ministral is untied and must be
+re-checked**: two singleton role groups, and an `lm_head` whose real gradient signal per-role
+ranking would then discard.
+
+---
+
 ## Conventions that apply to every campaign
 
 **Paired tests on stored per-item hits.** Every arm stores which items it got right, so every

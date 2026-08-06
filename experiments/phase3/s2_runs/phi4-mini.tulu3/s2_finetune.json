@@ -1,0 +1,60 @@
+{
+  "model": "microsoft/Phi-4-mini-instruct",
+  "dataset": "allenai/tulu-3-sft-mixture",
+  "examples_requested": 50000,
+  "conversations_seen": 50000,
+  "conversations_kept": 48015,
+  "drop_rate": 0.0397,
+  "unmaskable_rate": 0.0,
+  "over_max_len_rate": 0.0397,
+  "dropped_by_reason": {
+    "too long": 1985
+  },
+  "tokens": 25975349,
+  "supervised_tokens": 18583548,
+  "mask_mode": "template",
+  "mask_mode_requested": "auto",
+  "mask_mode_probe": {
+    "template": 30,
+    "assemble": 30
+  },
+  "max_len": 2048,
+  "sources": {
+    "ai2-adapt-dev/tulu_v3.9_synthetic_finalresp_wildguardmixtrain_decontaminated_50k": 2671,
+    "ai2-adapt-dev/numinamath_tir_math_decontaminated": 3309,
+    "ai2-adapt-dev/tulu_v3.9_open_math_2_gsm8k_50k": 2615,
+    "ai2-adapt-dev/personahub_math_v5_regen_149960": 8102,
+    "ai2-adapt-dev/tulu_v3.9_wildchat_100k": 5338,
+    "ai2-adapt-dev/personahub_ifdata_manual_seed_v3_29980": 1477,
+    "ai2-adapt-dev/tulu_v3.9_aya_100k": 5442,
+    "ai2-adapt-dev/flan_v2_converted": 4877,
+    "ai2-adapt-dev/tulu_v3.9_wildjailbreak_decontaminated_50k": 2544,
+    "ai2-adapt-dev/personahub_code_v2_34999": 1834,
+    "ai2-adapt-dev/tulu_v3.9_personahub_math_interm_algebra_20k": 1132,
+    "ai2-adapt-dev/oasst1_converted": 383,
+    "ai2-adapt-dev/evol_codealpaca_heval_decontaminated": 5743,
+    "ai2-adapt-dev/tulu_v3.9_sciriff_10k": 543,
+    "allenai/tulu-3-sft-personas-math-grade": 2644,
+    "ai2-adapt-dev/coconot_converted": 563,
+    "ai2-adapt-dev/tulu_v3.9_table_gpt_5k": 271,
+    "ai2-adapt-dev/no_robots_converted": 500,
+    "ai2-adapt-dev/tulu_hard_coded_repeated_10": 12
+  },
+  "sources_overlapping_an_eval_task": [
+    "ai2-adapt-dev/tulu_v3.9_open_math_2_gsm8k_50k"
+  ],
+  "regime": "lora",
+  "lora_rank": 32,
+  "estimator": "outer_exact",
+  "epochs": 1.0,
+  "lr": 0.0001,
+  "effective_batch": 32,
+  "steps": 1501,
+  "train_loss": 0.6746600014142081,
+  "seconds": 45632.5,
+  "tracked_modules": 130,
+  "stats_file": "/workspace/runs/s2/phi4-mini.tulu3/stats/dynquant_stats.json",
+  "stats_modules": 130,
+  "output": "/workspace/runs/s2/phi4-mini.tulu3/merged",
+  "commit": "82a64e9e90679b10de1a988b67ac6bcaabb95fea"
+}

@@ -126,6 +126,11 @@ compile_commands.json
 # These are large and machine-specific. `stats/` is deliberately NOT ignored --
 # the two shipped stats files are test fixtures and the golden tests read them.
 *.safetensors
+# ...except the channel-moment sidecars, which are measurements rather than
+# weights -- the same reason `stats/` is kept. ~6.6 MB per fine-tune arm, they are
+# the cardinal sensitivity estimator's only input, and the box that produces them
+# is not a volume, so this repo is where they survive.
+!**/stats/dynquant_moments.safetensors
 *.bin
 *.gguf
 *.pt

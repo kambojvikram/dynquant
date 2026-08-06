@@ -1,0 +1,104 @@
+{
+  "model": "phi4-mini",
+  "stats": "experiments/phase3/s2_runs/phi4-mini.tulu3/stats/dynquant_stats.json",
+  "structure": {
+    "tracked_modules": 130,
+    "quantizable_modules": 129,
+    "leaves": {
+      "lm_head": 1,
+      "embed_tokens": 1,
+      "down_proj": 32,
+      "gate_up_proj": 32,
+      "o_proj": 32,
+      "qkv_proj": 32
+    },
+    "canonical_names": true,
+    "grad_estimator": "outer_exact",
+    "num_optimizer_steps": 1501,
+    "grad_norm_counts": [
+      0,
+      1501
+    ],
+    "welford_per_optimizer_step": true,
+    "forward_calls_distinct": [
+      12004
+    ],
+    "tied_parameters": {
+      "model.embed_tokens": [
+        "lm_head"
+      ]
+    },
+    "channel_moment_modules": 129
+  },
+  "spread": {
+    "activation_rms_ema": {
+      "min": 0.037175294011831284,
+      "median": 0.35407403111457825,
+      "max": 15.942717552185059,
+      "ratio": 428.8524940007518,
+      "zeros": 0
+    },
+    "grad_norm_var": {
+      "min": 0.0,
+      "median": 1.2180958340953414e-08,
+      "max": 1.0407417391737303e-05,
+      "ratio": null,
+      "zeros": 1
+    },
+    "grad_norm_mean": {
+      "min": 0.0,
+      "median": 0.00031002279138192534,
+      "max": 0.008219297043979168,
+      "ratio": null,
+      "zeros": 1
+    }
+  },
+  "coverage": {
+    "scored": 128,
+    "missing_stats": [],
+    "unexercised": [
+      "model.embed_tokens"
+    ]
+  },
+  "neutral_module_sensitivity": {
+    "model.embed_tokens": {
+      "alias": "lm_head",
+      "alias_score": 0.9263565891472868,
+      "num_params": 614596608,
+      "param_fraction": 0.1602,
+      "floor_bits": 8,
+      "role_group_size": 1,
+      "by_target": {
+        "3.25": {
+          "bits_at_score_0": 2,
+          "bits_at_score_1": 4,
+          "sensitive": true,
+          "bits_at_alias_score": 3,
+          "alias_changes_width": false
+        },
+        "4.0": {
+          "bits_at_score_0": 3,
+          "bits_at_score_1": 4,
+          "sensitive": true,
+          "bits_at_alias_score": 4,
+          "alias_changes_width": false
+        },
+        "4.25": {
+          "bits_at_score_0": 4,
+          "bits_at_score_1": 4,
+          "sensitive": false,
+          "bits_at_alias_score": 4,
+          "alias_changes_width": false
+        },
+        "4.5": {
+          "bits_at_score_0": 4,
+          "bits_at_score_1": 4,
+          "sensitive": false,
+          "bits_at_alias_score": 4,
+          "alias_changes_width": false
+        }
+      },
+      "share_of_deficit_at_3.25": 0.6784
+    }
+  }
+}
