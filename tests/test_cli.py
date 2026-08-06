@@ -400,6 +400,38 @@ def test_a_uniform_map_at_eight_bits_is_ordered_above_one_at_two(graph) -> None:
     assert _shared.uniform_map(graph, 8).nbytes > _shared.uniform_map(graph, 2).nbytes
 
 
+def test_the_control_arm_counts_the_floors_it_breaches(graph) -> None:
+    """A control that reports no violations is not a control that breaches none.
+
+    The structural exemption covers routers and the like; it does not cover the
+    embedding or the LM head, so a uniform 3-bit map puts both under their floors. This
+    only surfaced next to a real allocated arm: at the same byte count the allocated map
+    reported 79 breaches and the uniform one reported zero, which reads as the method
+    being reckless when in fact both breach and only one was counting.
+    """
+    from dynquant.allocate.policy import AllocationPolicy
+
+    policy = AllocationPolicy(group_size=128)
+    narrow = _shared.uniform_map(graph, 2, policy=policy)
+
+    breached = {v.name for v in narrow.violations}
+    expected = {
+        info.name
+        for info in graph.quantizable()
+        if not policy.is_structural(info.role, info.tied_roles)
+        and policy.floor_for(info.role, info.tied_roles) > 2
+    }
+    assert breached == expected
+    assert breached, "the fixture has no floor above 2 bits, so this proves nothing"
+    for violation in narrow.violations:
+        assert violation.assigned_bits < violation.floor_bits
+        assert narrow.bits[violation.name] == violation.assigned_bits
+
+    # A width above every floor breaches nothing -- the count tracks the map, not the
+    # fact that a uniform map was asked for.
+    assert _shared.uniform_map(graph, 8, policy=policy).violations == ()
+
+
 @pytest.mark.parametrize(
     ("pairs", "expected"),
     [

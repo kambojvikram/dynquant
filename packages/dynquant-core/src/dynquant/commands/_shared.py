@@ -338,24 +338,44 @@ def uniform_map(
     at 2 bits does not degrade an MoE model's answers, it sends every token to the
     wrong expert. A "uniform 2-bit" arm that included them would measure a broken
     model rather than a low-precision one.
+
+    Every *other* floor it breaches is reported, by the same rule the knapsack uses.
+    The exemption covers structural roles only, so a uniform 3-bit map puts the
+    embedding and the LM head at 3 bits as well -- under their 4- and 8-bit floors --
+    and a control that reported no violations while the allocated arm at the same
+    byte count reported seventy-nine would read as the allocated arm being the
+    reckless one. Both arms breach; only one was counting.
     """
     from dynquant.allocate.budget import module_stored_bits
-    from dynquant.allocate.knapsack import BitMap
+    from dynquant.allocate.knapsack import BitMap, FloorViolation
     from dynquant.allocate.policy import AllocationPolicy
     from dynquant.graph.roles import UNQUANTIZED_FLOOR
 
     policy = policy or AllocationPolicy(group_size=group_size)
     bits: dict[str, int] = {}
+    violations: list[FloorViolation] = []
     total = float(graph.unquantized_params() * UNQUANTIZED_FLOOR)
     for info in graph.quantizable():
         assigned = width
+        floor = policy.floor_for(info.role, info.tied_roles)
         if policy.is_structural(info.role, info.tied_roles):
-            assigned = max(width, policy.floor_for(info.role, info.tied_roles))
+            assigned = max(width, floor)
+        if assigned < floor:
+            violations.append(
+                FloorViolation(
+                    name=info.name,
+                    role=info.role,
+                    floor_bits=floor,
+                    assigned_bits=assigned,
+                    num_params=info.num_params,
+                )
+            )
         bits[info.name] = assigned
         total += module_stored_bits(info, assigned, group_size=group_size)
 
     return BitMap(
         bits=bits,
+        violations=tuple(violations),
         budget_bits=total,
         allocated_bits=total,
         denominator=graph.total_params(),
