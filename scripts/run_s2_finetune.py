@@ -901,7 +901,6 @@ def _train(
 
     from dynquant import DynQuantCallback
     from dynquant.constants import STATS_FILENAME
-    from dynquant.integration.peft_utils import merge_adapters
 
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
@@ -994,14 +993,7 @@ def _train(
     result = trainer.train()
     elapsed = time.time() - started
 
-    merged = destination / "merged"
-    # Merged, not saved as an adapter. Every downstream stage loads this directory as a
-    # plain causal LM: S3 quantizes it, S4 evaluates it. Saving adapter weights would make
-    # S4 silently score the *base* model -- an arm that looks measured and is not.
-    saved = merge_adapters(model) if regime == "lora" else model
-    saved.config.use_cache = True
-    saved.save_pretrained(str(merged))
-    tokenizer.save_pretrained(str(merged))
+    merged = save_outputs(model, tokenizer, destination, regime=regime)
     print(f"\nsaved fine-tuned model to {merged}", flush=True)
 
     tracked = len(callback.tracker) if callback.tracker is not None else 0
@@ -1043,6 +1035,36 @@ def _train(
         return 5
     print(f"-> signal map: {tracked} modules at {stats_file}", flush=True)
     return 0
+
+
+def save_outputs(model: Any, tokenizer: Any, destination: Path, *, regime: str) -> Path:
+    """Write what the arm produced, and return the directory downstream stages load.
+
+    That directory holds a **merged** model, not an adapter. Every stage after this one
+    opens it as a plain causal LM -- S3 quantizes it, S4 evaluates it -- so publishing
+    adapter weights as the deliverable would have S4 silently score the *base* model, an
+    arm that looks measured and is not.
+
+    The adapter is written anyway, beside the merge and never in its place. Order is the
+    whole point: ``merge_adapters`` folds the deltas into the base weights and unloads in
+    place, so the line below is the last moment the adapter exists as a separable object.
+    It costs a few percent of the merge's size and rebuilds it exactly, which is what
+    makes it worth writing at all -- these arms run on a box whose ``/workspace`` is not
+    a volume, where losing ``merged/`` costs a 13-hour fine-tune and losing ``adapter/``
+    costs a two-minute re-merge.
+    """
+    # Imported here, as everything heavy in this script is: `--dry-run` and `--help`
+    # have to work on a box with no torch installed.
+    from dynquant.integration.peft_utils import merge_adapters
+
+    if regime == "lora":
+        model.save_pretrained(str(destination / "adapter"))
+    saved = merge_adapters(model) if regime == "lora" else model
+    saved.config.use_cache = True
+    merged = destination / "merged"
+    saved.save_pretrained(str(merged))
+    tokenizer.save_pretrained(str(merged))
+    return merged
 
 
 def _modules_in(stats_file: Path) -> int:

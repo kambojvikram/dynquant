@@ -1009,6 +1009,93 @@ def test_the_signal_map_is_counted_from_the_file_not_from_the_tracker(s2, tmp_pa
 
 
 # --------------------------------------------------------------------------
+# Outputs
+# --------------------------------------------------------------------------
+
+
+class _Mergeable:
+    """A PEFT-shaped stub. ``is_peft_model`` duck-types on ``peft_config``, so this
+    reaches the merge branch without ``peft`` installed."""
+
+    def __init__(self, log: list[tuple[str, str]]) -> None:
+        self.peft_config = {"default": object()}
+        self.config = types.SimpleNamespace(use_cache=False)
+        self._log = log
+        self.merged = False
+
+    def save_pretrained(self, path: str) -> None:
+        self._log.append(("adapter" if not self.merged else "merged-as-peft", path))
+
+    def merge_and_unload(self, safe_merge: bool = True) -> _Merged:
+        self.merged = True
+        return _Merged(self._log)
+
+
+class _Merged:
+    def __init__(self, log: list[tuple[str, str]]) -> None:
+        self.config = types.SimpleNamespace(use_cache=False)
+        self._log = log
+
+    def save_pretrained(self, path: str) -> None:
+        self._log.append(("model", path))
+
+
+class _Tok:
+    def __init__(self, log: list[tuple[str, str]]) -> None:
+        self._log = log
+
+    def save_pretrained(self, path: str) -> None:
+        self._log.append(("tokenizer", path))
+
+
+def test_the_adapter_is_saved_before_the_merge_consumes_it(s2, tmp_path) -> None:
+    """Both artifacts are written, and the adapter is written *first*.
+
+    ``merge_adapters`` calls PEFT's ``merge_and_unload``, which folds the deltas into the
+    base weights and detaches the adapter in place. So the ordering is not a preference:
+    after that call there is no adapter left to save, and the same line moved two
+    statements down would write a second copy of the merged model under a directory named
+    ``adapter/`` -- 7.2 GB of the wrong thing, under a name that says the right thing.
+    That is the failure this pins, and it is invisible in a run log.
+
+    Why save it at all, when ``merged/`` is what every downstream stage opens: it is a few
+    percent of the size and reconstructs the merge exactly, and these arms run where
+    ``/workspace`` is not a volume.
+
+    Turns red when: the adapter save is dropped, moved after the merge, or starts being
+    written *instead* of the merged model -- which would have S4 score the base weights.
+    """
+    log: list[tuple[str, str]] = []
+    model = _Mergeable(log)
+
+    merged = s2.save_outputs(model, _Tok(log), tmp_path, regime="lora")
+
+    assert merged == tmp_path / "merged"
+    assert log == [
+        ("adapter", str(tmp_path / "adapter")),
+        ("model", str(tmp_path / "merged")),
+        ("tokenizer", str(tmp_path / "merged")),
+    ], "the adapter must be written before merge_and_unload detaches it"
+    assert model.merged, "the deliverable must be merged, not an adapter"
+
+
+def test_a_full_finetune_writes_no_adapter_directory(s2, tmp_path) -> None:
+    """There is no adapter to write when nothing was adapted.
+
+    Turns red when: the adapter save stops being conditional on the regime and an empty
+    or bogus ``adapter/`` appears beside a full fine-tune's merge.
+    """
+    log: list[tuple[str, str]] = []
+    model = _Merged(log)
+
+    merged = s2.save_outputs(model, _Tok(log), tmp_path, regime="full")
+
+    assert merged == tmp_path / "merged"
+    assert [kind for kind, _ in log] == ["model", "tokenizer"]
+    assert model.config.use_cache is True, "the saved model has to be generation-ready"
+
+
+# --------------------------------------------------------------------------
 # Collation
 # --------------------------------------------------------------------------
 
