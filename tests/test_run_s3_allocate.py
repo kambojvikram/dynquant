@@ -322,10 +322,12 @@ def test_the_moments_are_relabelled_and_not_rewritten(s3, phi, phi_moments) -> N
 def test_a_channel_vector_never_lands_on_a_module_of_another_shape(s3) -> None:
     """Length, not just role, decides who can donate to whom.
 
-    A vector of the wrong length does not raise where it is consumed; it broadcasts,
-    or it silently prices a subset of the channels. Grouping by ``(role, in, out)``
-    makes that unrepresentable. On a dense model the refinement is a no-op, which is
-    why the fixture deliberately gives one role two geometries.
+    A vector of the wrong length does not raise where it is consumed. ``_shapes_agree``
+    rejects the pair, ``_moments_for`` returns ``None``, and the module drops out of the
+    sensitivity table to be priced from the proxy -- so the control would be ablating
+    which modules can be measured at all, on top of the correspondence it means to
+    ablate. Grouping by ``(role, in, out)`` makes that unrepresentable. On a dense model
+    the refinement is a no-op, which is why the fixture gives one role two geometries.
     """
     stats = _synthetic({"attn.qkv": 8})
     names = sorted(stats.layers)

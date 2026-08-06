@@ -144,8 +144,11 @@ def permutation_within_role(stats: Any, seed: int, *, moments: Any = None) -> di
     Grouped by role, and when the moments are given by channel shape as well. The shape
     refinement is not a weakening of "within role": on a dense model every member of a
     role has the same geometry, so the groups are unchanged. It exists because nothing
-    guarantees that -- and a channel vector of the wrong length does not fail loudly, it
-    broadcasts.
+    guarantees that, and because a channel vector of the wrong length is not an error
+    the consumer reports. ``_shapes_agree`` rejects it and ``_moments_for`` returns
+    ``None``, so the module silently leaves the sensitivity table and is priced from the
+    proxy instead -- the control would then be ablating *coverage*, which is structural,
+    rather than correspondence, which is what it is for.
 
     A derangement is not attempted and would be the wrong thing to attempt: with a fixed
     seed the permutation is reproducible, and forcing every module to move would make

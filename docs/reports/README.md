@@ -344,7 +344,8 @@ treatment and reported *the signal does not matter*, silently, with both arms ex
 
 Fixed by deriving one permutation and applying it to both artifacts, grouped by
 `(role, in-channels, out-channels)` — a no-op on a dense model, and there because a channel
-vector of the wrong length broadcasts rather than raising. Nothing downstream had run, so no
+vector of the wrong length does not raise; it makes the module drop out of the sensitivity
+table, so the control would ablate coverage as well as correspondence. Nothing downstream had run, so no
 reported number changes; §8's 69-of-129 figure is unaffected, its allocation never loading
 moments at all. The transferable rule: **a control is defined by what the treatment reads,
 not by what it is named after**, and an ablation arm whose map is identical to its treatment's

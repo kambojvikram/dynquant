@@ -74,7 +74,10 @@ One permutation, applied to every artifact the allocator consumes.
 * Grouping is by `(role, len(input_sq), len(output_grad_sq))` rather than by role alone. On a
   dense model this is a no-op — every member of a role has the same geometry — and it exists
   because nothing guarantees that. A channel vector of the wrong length does not raise where
-  it is consumed; it broadcasts.
+  it is consumed: `_shapes_agree` rejects the pair, `_moments_for` returns `None`, and the
+  module quietly leaves the sensitivity table to be priced from the proxy. The control would
+  then be ablating *which modules can be measured at all*, which is structural, on top of the
+  correspondence it exists to ablate.
 * `write_variants` now emits four files, a stats/moments pair per variant, and re-saves the
   *real* moments through the same writer so treatment and control differ in the permutation
   and in nothing else, not even in which writer produced the file they were parsed from.
