@@ -4,7 +4,7 @@ Every experiment run on DynQuant since the package was built, what it measured, 
 full record lives. Nothing here is taken from the paper; everything is measured on this
 repository's own code, all of it on a single NVIDIA A100 80GB PCIe.
 
-There are seven campaigns. They answer seven different questions, in this order:
+There are ten campaigns. They answer ten different questions, in this order:
 
 | # | question | verdict | full record |
 |---|---|---|---|
@@ -15,6 +15,9 @@ There are seven campaigns. They answer seven different questions, in this order:
 | 5 | Do inference servers hold the same quantized weights the direct run holds? | **Yes, on both vLLM and SGLang** — after a real defect was found and fixed | [`serving-parity.md`](serving-parity.md) |
 | 6 | Do the phase-3 benchmarks have room for quantization damage to show? | **Yes, all four** — 54.5–83.2 %, no arm near ceiling; two harness defects caught | [`phase3-s1-headroom-screen.md`](phase3-s1-headroom-screen.md) |
 | 7 | Does the S2 fine-tune know which tokens are the assistant's? | **Yes on both tokenizers, ≤0.07 % unmaskable** — after the obvious method dropped 100 % of the data on one of them | [`phase3-s2-loss-masking.md`](phase3-s2-loss-masking.md) |
+| 8 | What does fusion cost the one panel model that has it? | **0.21 of 4.43 floor bits** — and the two panel models are in different regimes at the same target | [`phase3-s3-fused-floors.md`](phase3-s3-fused-floors.md) |
+| 9 | Did the S2 fine-tune produce a signal map worth spending? | **Yes, with one caveat** — `embed_tokens` scores on nothing and pays 67.8 % of the floor shortfall | [`phase3-s2-phi-signal-map.md`](phase3-s2-phi-signal-map.md) |
+| 10 | Is S3's shuffled control actually ablating the signal? | **No — it was a null by construction**, permuting a file the allocator had stopped reading | [`phase3-s3-null-control.md`](phase3-s3-null-control.md) |
 
 The method itself — signals, sensitivity estimator, allocator, encoder, format, packed
 runtime, kernels — is documented end to end in the
@@ -322,6 +325,30 @@ row — the same tensor, measured — scores 0.9264 and lands on the same 3 bits
 checkpoint nothing, stated as a caveat rather than fixed. **Ministral is untied and must be
 re-checked**: two singleton role groups, and an `lm_head` whose real gradient signal per-role
 ranking would then discard.
+
+---
+
+## 10. Phase 3 — S3, the control that was ablating nothing
+
+Full report: [phase3-s3-null-control.md](phase3-s3-null-control.md). Found by running the S3
+driver's CPU path on real weights, before any arm was quantized.
+
+S3's `shuf` arm permutes the signal within role and re-allocates at the same byte count; the
+`dq` − `shuf` gap is what the campaign calls the signal's contribution. The driver permuted
+the **stats** file and then passed `--moments` the real, unpermuted sidecar. Since the
+Gauss-Newton estimator was added, `move_value` prices every width change from the measured
+sensitivity table whenever the module has one and only falls back to the stats-derived score
+when it does not — and Phi's sidecar covers **all 129** quantizable modules. The permuted
+score was therefore never read: the control would have produced a bit-identical map to the
+treatment and reported *the signal does not matter*, silently, with both arms exiting 0.
+
+Fixed by deriving one permutation and applying it to both artifacts, grouped by
+`(role, in-channels, out-channels)` — a no-op on a dense model, and there because a channel
+vector of the wrong length broadcasts rather than raising. Nothing downstream had run, so no
+reported number changes; §8's 69-of-129 figure is unaffected, its allocation never loading
+moments at all. The transferable rule: **a control is defined by what the treatment reads,
+not by what it is named after**, and an ablation arm whose map is identical to its treatment's
+has not run.
 
 ---
 
