@@ -65,6 +65,7 @@ import argparse
 import json
 import random
 import shutil
+import struct
 import subprocess
 import sys
 from collections.abc import Callable, Mapping
@@ -222,22 +223,49 @@ def shuffle_moments(moments: Any, permutation: Mapping[str, str]) -> Any:
     return out
 
 
-def _write_if_changed(path: Path, write: Callable[[Path], None]) -> bool:
-    """Write through a scratch file, and keep the original when the bytes are identical.
+def _bytes_identical(left: Path, right: Path) -> bool:
+    return left.read_bytes() == right.read_bytes()
 
-    This is about the mtime, not the I/O. Both variants are a deterministic function of
-    the S2 stats and the seed, so rewriting them unconditionally leaves them permanently
-    newer than any map derived from them -- and ``--reuse-maps``, which asks whether a map
-    postdates its inputs, could then never answer yes for the three arms that read a
-    variant. Writing only on a real change makes the timestamp mean "the content changed",
-    which is the question the reuse guard is actually asking. If a serializer turns out not
-    to be byte-stable the only cost is that nothing is ever reused, which is the safe
-    direction to fail in.
+
+def _safetensors_identical(left: Path, right: Path) -> bool:
+    """Same numbers, ignoring the order safetensors happened to emit its metadata in.
+
+    ``save_file`` serialises ``__metadata__`` from a Rust hash map, and Rust seeds each map
+    separately, so two writes of the same object *in one process* differ. Measured on the
+    Ministral moments: 11 519 008 bytes both times, payload identical, header parses equal,
+    254 metadata entries equal as a mapping, first byte difference at offset 43 because the
+    key order starts differently. Comparing raw bytes would call every write a change and
+    make ``rewritten`` a constant true that attests to nothing.
+    """
+    a, b = left.read_bytes(), right.read_bytes()
+    if len(a) != len(b):
+        return False
+    n_a, n_b = struct.unpack("<Q", a[:8])[0], struct.unpack("<Q", b[:8])[0]
+    if a[8 + n_a :] != b[8 + n_b :]:
+        return False
+    return json.loads(a[8 : 8 + n_a]) == json.loads(b[8 : 8 + n_b])
+
+
+def _write_if_changed(
+    path: Path,
+    write: Callable[[Path], None],
+    *,
+    same: Callable[[Path, Path], bool] = _bytes_identical,
+) -> bool:
+    """Write through a scratch file, and keep the original when the content is unchanged.
+
+    This is about the record, not the I/O. Both variants are a deterministic function of
+    the S2 stats and the seed, and ``rewritten: false`` in ``arms.json`` is the only thing
+    that says the numbers a reused map was priced from are the numbers on disk now. That
+    claim is only worth having if "changed" means the values moved, so a serialiser free to
+    reorder its own output needs an equality test that looks past the reordering -- see
+    ``_safetensors_identical``. A comparison too strict does not fail safe here: it reports
+    a change on every run, and the flag stops distinguishing anything.
     """
     scratch = path.with_name(path.name + ".tmp")
     try:
         write(scratch)
-        if path.is_file() and scratch.read_bytes() == path.read_bytes():
+        if path.is_file() and same(scratch, path):
             return False
         scratch.replace(path)
         return True
@@ -266,7 +294,9 @@ def write_variants(
     signal_stats = destination / "dynquant_stats.signal.json"
     signal_moments = destination / "dynquant_moments.signal.safetensors"
     changed = _write_if_changed(signal_stats, lambda p: save_stats(stats, p))
-    changed |= _write_if_changed(signal_moments, lambda p: save_moments(moments, p))
+    changed |= _write_if_changed(
+        signal_moments, lambda p: save_moments(moments, p), same=_safetensors_identical
+    )
     written["signal"] = {
         "stats": str(signal_stats),
         "moments": str(signal_moments),
@@ -283,7 +313,9 @@ def write_variants(
         shuffled_stats, lambda p: save_stats(shuffle_stats(stats, permutation), p)
     )
     changed |= _write_if_changed(
-        shuffled_moments, lambda p: save_moments(shuffle_moments(moments, permutation), p)
+        shuffled_moments,
+        lambda p: save_moments(shuffle_moments(moments, permutation), p),
+        same=_safetensors_identical,
     )
     written["shuffled"] = {
         "stats": str(shuffled_stats),

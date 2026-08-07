@@ -251,3 +251,67 @@ def test_rewriting_identical_bytes_leaves_the_mtime_alone(driver, tmp_path) -> N
     assert driver._write_if_changed(target, lambda p: p.write_text("other", encoding="utf-8"))
     assert target.read_text(encoding="utf-8") == "other"
     assert not list(tmp_path.glob("*.tmp")), "the scratch file outlived the write"
+
+
+def _safetensors(payload: bytes, metadata: list[tuple[str, str]]) -> bytes:
+    """A safetensors file with its ``__metadata__`` in exactly the order given.
+
+    Synthesised rather than produced by ``save_file`` because the whole point is control
+    over key order, and the library's ordering is precisely what cannot be controlled.
+    """
+    header = {
+        "__metadata__": dict(metadata),
+        "x": {"dtype": "F32", "shape": [len(payload) // 4], "data_offsets": [0, len(payload)]},
+    }
+    blob = json.dumps(header).encode("utf-8")
+    return len(blob).to_bytes(8, "little") + blob + payload
+
+
+def test_a_moments_file_that_only_reordered_its_metadata_is_not_a_change(driver, tmp_path):
+    """safetensors emits ``__metadata__`` from a hash map, so its order is not a fact.
+
+    Rust seeds each hash map separately, so two writes of one object in a single process
+    disagree. Measured on the Ministral moments: same 11 519 008 bytes, identical payload,
+    headers equal as mappings, first difference at offset 43. Under byte equality every run
+    reports a rewrite, ``rewritten`` is a constant true, and the run record stops being able
+    to say whether a reused map was priced from the numbers now on disk.
+
+    Turns red when: the comparator goes back to raw bytes, or starts ignoring so much that
+    a real change reads as none -- both directions are asserted here.
+    """
+    order = [(f"obs:layer{i}", str(i)) for i in range(8)]
+    reordered = list(reversed(order))
+    payload = bytes(range(64))
+
+    left, right = tmp_path / "a.safetensors", tmp_path / "b.safetensors"
+    left.write_bytes(_safetensors(payload, order))
+    right.write_bytes(_safetensors(payload, reordered))
+
+    assert left.read_bytes() != right.read_bytes(), "the fixture did not reproduce the churn"
+    assert len(left.read_bytes()) == len(right.read_bytes())
+    assert driver._safetensors_identical(left, right)
+
+    # And the things that are genuinely different still read as different.
+    right.write_bytes(_safetensors(bytes(64), order))
+    assert not driver._safetensors_identical(left, right), "a changed payload read as unchanged"
+    right.write_bytes(_safetensors(payload, [(k, v + "0") for k, v in order]))
+    assert not driver._safetensors_identical(left, right), "changed metadata read as unchanged"
+
+
+def test_the_moments_are_compared_with_the_comparator_that_understands_them(driver, tmp_path):
+    """``_write_if_changed`` defaults to bytes; the moments must not be left on the default.
+
+    Both halves have to hold at once, and each is invisible from the other: a correct
+    comparator wired to nothing still reports every write as a change.
+
+    Turns red when: a ``save_moments`` call site loses its ``same=`` argument.
+    """
+    source = REPO_ROOT / "scripts" / "run_s3_allocate.py"
+    body = source.read_text(encoding="utf-8")
+    moment_writes = [line for line in body.splitlines() if "save_moments(" in line]
+    assert len(moment_writes) == 2, moment_writes
+
+    for call in moment_writes:
+        start = body.index(call)
+        window = body[body.rindex("_write_if_changed", 0, start) : start + len(call) + 120]
+        assert "same=_safetensors_identical" in window, call.strip()
