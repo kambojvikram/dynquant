@@ -222,6 +222,45 @@ assign both identically by construction, and neither is among the 39 of 254 modu
 two arms differ on. **S3's signal-ablation arm is silent on exactly the 13.4% of
 Ministral this report is about.**
 
+### The 4.25 anchor says the same thing from the other side
+
+The second anchor finished after the paragraphs above were written, and it is a control
+on the *regime* rather than a second headline. All four arms land on exactly
+4 260 364 288 bytes and 4.2500 average bits, with a widest drift of +0 B.
+
+| arm | allocator | `lm_head` | `model.embed_tokens` | floors breached | 8-bit tail |
+|---|---|---|---|---|---|
+| `rtn` | uniform | 4 b | 4 b | 1 | 0 |
+| `rank4` | rank-product | **8 b** | **4 b** | 0 | 2 |
+| `shuf4` | sensitivity | **8 b** | **4 b** | 0 | 34 |
+| `dq4` | sensitivity | **8 b** | **4 b** | 0 | 37 |
+
+**The neutral 0.5 costs the baseline nothing here.** `rank4` hands `lm_head` its full
+8-bit floor and `model.embed_tokens` its 4-bit floor, the same widths the two sensitivity
+arms choose. The budget affords every floor at this anchor -- demonstrated by all three
+allocating arms reaching zero violations -- so the score never has to break a tie, and a
+tensor ranked against nobody loses nothing by it.
+
+That is a second and independent line of support for the correction. The defect is only
+visible where the allocator is *forced to choose*, which is phase 2's finding about the
+signal restated in the negative: the signal earns its keep once the role floors stop
+being affordable, and so does the flaw in how the signal is ranked. A reader who saw only
+the 4.25 table would conclude the singleton handicap does not exist.
+
+`rtn4`'s lone breach is worth naming because it is not a budget fact. Uniform means
+uniform, so RTN gives `lm_head` 4 bits against an 8-bit floor -- not because the 4 extra
+bits were unaffordable, but because RTN has no mechanism for spending unevenly. Every
+allocating arm buys that floor back inside the same byte count.
+
+Where the two allocators actually part at 4.25 is the **8-bit tail**: `rank4` widens 2
+modules, `dq4` widens 37, and pays for them by dropping 62 modules to 3 b where
+rank-product drops 43. Measured sensitivity finds a tail the percentile score prices as
+ordinary. Whether that trade buys accuracy is an S4 question; the maps establish only
+that these are different assignments at identical bytes. The control ablates here too --
+`shuf4` and `dq4` differ on 28 of 254, fewer than 3.25's 39, which is what a looser budget
+should do to the size of any assignment difference -- and it remains blind to both
+singletons, which take the same widths in both arms.
+
 What stands: the singleton defect in `score_modules`, the bracket, the spill control,
 and the decision not to change the scorer mid-campaign. What does not: calling the
 rank-product map "the shipped map", and reading its 3 bits as the headline arm's.
@@ -233,13 +272,20 @@ above:
 
 1. **Read Ministral's `dq` arms knowing `model.embed_tokens` -- 6.7% of the model -- is
    the one tensor whose width the headline allocator sets from a neutral score**, and
-   that it sets it to 2 bits. `lm_head` is not in that category: it has moments, `dq`
-   prices it from measurement, and it lands on 4 b. Phi's caveat is 16.0% of the model
-   and does *not* reach its `dq` arm at all, because the tie supplies the moments.
+   that at the 3.25 anchor it sets it to 2 bits. At 4.25 it sets it to 4 b, its floor,
+   because nothing there is contested; the exposure is anchor-specific and belongs only
+   to the arms that breach floors. `lm_head` is not in that category at either anchor:
+   it has moments, `dq` prices it from measurement, and it lands on 4 b and 8 b
+   respectively. Phi's caveat is 16.0% of the model and does *not* reach its `dq` arm at
+   all, because the tie supplies the moments.
 2. **The `shuf` control cannot ablate either singleton**, so S3's signal arm measures
    the signal's contribution on the 252 modules in role groups of 36 and is silent on
    the two largest tensors. This is a property of within-role permutation, is stated in
-   the driver, and bounds what an S4 `shuf`-vs-`dq` gap can be read to mean.
+   the driver, and bounds what an S4 `shuf`-vs-`dq` gap can be read to mean. It holds at
+   both anchors -- the arms differ on 39 of 254 modules at 3.25 and 28 at 4.25, and
+   neither singleton is among them -- and is asserted against the committed maps in
+   [`tests/test_s3_allocation_arms.py`](../../tests/test_s3_allocation_arms.py) so that
+   it fails loudly if it ever stops being true.
 3. **Do not change the scorer mid-campaign.** Making `score_modules` keep a measured
    saliency when plasticity is absent, or ranking singleton groups globally, would
    change every model's allocation including phase 2's published comparisons. Both

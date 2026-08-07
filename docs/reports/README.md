@@ -404,6 +404,18 @@ check. And `shuf` cannot ablate either tensor: within-role permutation is a fixe
 group of one, so both are assigned identically to `dq` by construction and neither is among the
 39 of 254 modules the arms differ on.
 
+**The 4.25-bit anchor corroborates it from the other side.** Both anchors are now complete and
+byte-matched (4 260 364 288 B, +0 B widest drift). At 4.25 every role floor is affordable — all
+three allocating arms hit **zero violations** — so `rank4` hands `lm_head` its full **8 b** floor
+and `model.embed_tokens` its **4 b**, the same widths the sensitivity arms pick. The neutral 0.5
+costs the baseline nothing there. The defect is only visible where the allocator is *forced to
+choose*, which is §7's finding restated in the negative: the signal earns its keep once the role
+floors stop being affordable, and so does the flaw in how it is ranked. Where the allocators part
+at 4.25 is instead the **8-bit tail** — `rank4` widens 2 modules, `dq4` widens 37, paid for by
+dropping 62 to 3 b against rank-product's 43. The control ablates at both anchors (39 of 254 at
+3.25, 28 at 4.25) and is blind to both singletons at both. All of that is asserted against the
+committed maps in `tests/test_s3_allocation_arms.py`.
+
 Which map is better is an eval question and an S3 arm. The scorer was **not** changed —
 that would move every model's allocation including phase 2's published comparisons, and it is
 a decision, not a fix. The *verifier* was: it now enumerates singleton role groups, reports

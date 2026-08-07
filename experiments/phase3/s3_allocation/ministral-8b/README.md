@@ -64,7 +64,7 @@ headline: with the floors bought, an allocator's only remaining job is to spend 
 surplus.
 
 `rtn4`'s one breach is the exception that shows what the allocation is worth. Uniform
-means uniform, so RTN hands `lm_head` 4 bits against its 8-bit floor — not because the
+means uniform, so RTN hands `lm_head` 4 bits against its 8-bit floor â€” not because the
 budget could not afford the other 4, but because RTN has no mechanism for spending
 unevenly. Every allocating arm buys that floor back inside the same 4 260 364 288 bytes.
 
