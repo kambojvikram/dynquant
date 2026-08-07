@@ -1,0 +1,113 @@
+{
+  "model": "/workspace/runs/s2/ministral-8b.tulu3/merged",
+  "stats": "/workspace/runs/s2/ministral-8b.tulu3/stats",
+  "moments": "/workspace/runs/s2/ministral-8b.tulu3/stats/dynquant_moments.safetensors",
+  "group_size": 128,
+  "seed": 0,
+  "tolerance": 0.001,
+  "variants": {
+    "signal": {
+      "stats": "/workspace/runs/s3/ministral-8b/records/maps/dynquant_stats.signal.json",
+      "moments": "/workspace/runs/s3/ministral-8b/records/maps/dynquant_moments.signal.safetensors",
+      "seed": null,
+      "moved": null
+    },
+    "shuffled": {
+      "stats": "/workspace/runs/s3/ministral-8b/records/maps/dynquant_stats.shuffled-0.json",
+      "moments": "/workspace/runs/s3/ministral-8b/records/maps/dynquant_moments.shuffled-0.safetensors",
+      "seed": 0,
+      "moved": 237,
+      "total": 254
+    }
+  },
+  "arms": [
+    {
+      "name": "rtn3",
+      "anchor": 3,
+      "kind": "rtn",
+      "map": "/workspace/runs/s3/ministral-8b/records/maps/map.rtn.json",
+      "map_key": "uniform-3",
+      "nbytes": 3257925632,
+      "average_bits": 3.25,
+      "violations": 182,
+      "directory": null
+    },
+    {
+      "name": "rank3",
+      "anchor": 3,
+      "kind": "rank",
+      "map": "/workspace/runs/s3/ministral-8b/records/maps/map.rank3.json",
+      "map_key": "3257925632",
+      "nbytes": 3257925632,
+      "average_bits": 3.25,
+      "violations": 128,
+      "directory": null
+    },
+    {
+      "name": "shuf3",
+      "anchor": 3,
+      "kind": "shuf",
+      "map": "/workspace/runs/s3/ministral-8b/records/maps/map.shuf3.json",
+      "map_key": "3257925632",
+      "nbytes": 3257925632,
+      "average_bits": 3.25,
+      "violations": 98,
+      "directory": null
+    },
+    {
+      "name": "dq3",
+      "anchor": 3,
+      "kind": "dq",
+      "map": "/workspace/runs/s3/ministral-8b/records/maps/map.dq3.json",
+      "map_key": "3257925632",
+      "nbytes": 3257925632,
+      "average_bits": 3.25,
+      "violations": 104,
+      "directory": null
+    },
+    {
+      "name": "rtn4",
+      "anchor": 4,
+      "kind": "rtn",
+      "map": "/workspace/runs/s3/ministral-8b/records/maps/map.rtn.json",
+      "map_key": "uniform-4",
+      "nbytes": 4260364288,
+      "average_bits": 4.25,
+      "violations": 1,
+      "directory": null
+    },
+    {
+      "name": "rank4",
+      "anchor": 4,
+      "kind": "rank",
+      "map": "/workspace/runs/s3/ministral-8b/records/maps/map.rank4.json",
+      "map_key": "4260364288",
+      "nbytes": 4260364288,
+      "average_bits": 4.25,
+      "violations": 0,
+      "directory": null
+    },
+    {
+      "name": "shuf4",
+      "anchor": 4,
+      "kind": "shuf",
+      "map": "/workspace/runs/s3/ministral-8b/records/maps/map.shuf4.json",
+      "map_key": "4260364288",
+      "nbytes": 4260364288,
+      "average_bits": 4.25,
+      "violations": 0,
+      "directory": null
+    },
+    {
+      "name": "dq4",
+      "anchor": 4,
+      "kind": "dq",
+      "map": "/workspace/runs/s3/ministral-8b/records/maps/map.dq4.json",
+      "map_key": "4260364288",
+      "nbytes": 4260364288,
+      "average_bits": 4.25,
+      "violations": 0,
+      "directory": null
+    }
+  ]
+}
