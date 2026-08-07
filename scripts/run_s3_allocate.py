@@ -664,9 +664,9 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "skip allocating any map already on disk that names this model, group size, "
-            "stats file and allocator *and* is newer than all of them. Off by default: a "
-            "resume guard that cannot tell a fresh map from one predating its own input "
-            "is worse than the seven hours it saves"
+            "stats file and allocator *and* postdates S2's stats, moments and merged "
+            "checkpoint. Off by default: a resume guard that cannot tell a fresh map "
+            "from one predating its own input is worse than the seven hours it saves"
         ),
     )
     parser.add_argument(
