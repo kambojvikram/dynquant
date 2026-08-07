@@ -28,6 +28,7 @@ distinction that produces the two cases.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -125,6 +126,35 @@ def test_an_unexercised_module_has_no_own_signal_to_fall_back_on(phi, ministral)
         assert entry["own_score"] == pytest.approx(entry["shipped_score"])
         for target in entry["by_target"].values():
             assert target["own"]["modules_moved"] == 0
+
+
+def test_the_reports_quote_this_artifact_and_not_another_run() -> None:
+    """The write-ups quote hard numbers off Ministral's stats file; pin them to it.
+
+    ``phase3-s2-ministral-signal-map.md`` and ``docs/reports/README.md`` both say the
+    discarded tensor is rank 1 of 254 on saliency at 1.78x the runner-up and rank 6 of
+    254 on plasticity -- the pair of facts that makes the singleton 0.5 worth a report
+    rather than a footnote, since a head that topped saliency alone could be doing it
+    for scale reasons. Those numbers were read off this file. Swapping in another run's
+    artifact, or regenerating this one under a different estimator, would leave the
+    prose quoting measurements the repository no longer contains, and nothing else here
+    would notice: every other check in this file is about relative structure and would
+    stay green on any well-formed map.
+
+    Turns red when: the Ministral stats artifact is replaced or regenerated without the
+    two reports being re-read.
+    """
+    artifact = RUNS / "ministral-8b.tulu3" / "stats" / "dynquant_stats.json"
+    stats = json.loads(artifact.read_text())["layers"]
+    assert len(stats) == 254
+
+    by_saliency = sorted(stats, key=lambda n: -(stats[n].get("activation_rms_ema") or 0.0))
+    by_plasticity = sorted(stats, key=lambda n: -(stats[n].get("grad_norm_var") or 0.0))
+
+    assert by_saliency[0] == "lm_head"
+    head, runner_up = (stats[n]["activation_rms_ema"] for n in by_saliency[:2])
+    assert head / runner_up == pytest.approx(1.78, abs=0.01)
+    assert by_plasticity.index("lm_head") + 1 == 6
 
 
 def test_the_bracket_still_brackets(ministral) -> None:
