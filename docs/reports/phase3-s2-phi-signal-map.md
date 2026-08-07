@@ -120,21 +120,52 @@ same tensor, and rank globally (the only comparison a group of one admits):
 The step in the response sits above 0.93. A real measurement lands on 3 bits, which
 is where the neutral 0.5 already put it.
 
+### Correction, 2026-08-06: that was read off one width
+
+The line above is true and the conclusion drawn from it was not. This report
+concluded *"the gap costs this checkpoint nothing"*, on the strength of one tensor's
+width holding at four targets. The budget is shared. A score that changes where a
+614 M-parameter tensor sits in the ROI order changes how much budget reaches
+everything ranked below it, whether or not that tensor itself moves — and it did:
+
+| target | `model.embed_tokens` | other modules moved | bytes |
+|---|---|---|---|
+| 3.25 | 3 b → 3 b | **12** | 1 438 433 280 → 1 438 433 280 |
+| 4.0 | 4 b → 4 b | **5** | 1 797 586 944 → 1 797 586 944 |
+| 4.25 | 4 b → 4 b | **11** | 1 917 517 824 → 1 917 911 040 |
+| 4.5 | 4 b → 4 b | **8** | 2 037 448 704 → 2 037 055 488 |
+
+At matched bytes to within 0.02%, so this is a reallocation and not a budget change:
+`down_proj` and `qkv_proj` layers trade bits among themselves because the neutral 0.5
+put the embedding in the wrong place in the queue. Nothing was free; one width was
+watched while five to twelve others moved.
+
+The verifier now reports `other_modules_moved` alongside `changes_width` and
+[`tests/test_verify_signal_map.py`](../../tests/test_verify_signal_map.py) pins this
+exact case, so the narrow reading cannot be repeated. Whether the moved allocation is
+*better* is an eval question, not one the allocator can answer about itself.
+
 ## Verdict for S3
 
 The map is usable and nothing here blocks the campaign.
 
 1. 128 of 129 quantizable tensors are scored on real measurements with signals that
-   discriminate; the 129th is neutral for documented reasons and would take the same
-   width if it were not.
-2. **State the caveat rather than fixing it.** The gap costs this checkpoint nothing,
-   but it is luck of where 0.9264 falls, not a property of the design. A checkpoint
-   whose tied tensor ranked at the very top would be handed a bit it did not get.
+   discriminate; the 129th is neutral for documented reasons and takes the same width
+   with or without them.
+2. **State the caveat rather than fixing it.** The neutral score does not cost this
+   checkpoint the tied tensor's own width, and it does move 5–12 other tensors at
+   matched bytes. It is luck of where 0.9264 falls, not a property of the design: a
+   checkpoint whose tied tensor ranked at the very top would be handed a bit it did
+   not get.
 3. **Ministral-8B is a different case and must be re-checked when its map lands.**
    It is untied, so `embed_tokens` and `lm_head` are separate tensors in two
    singleton role groups — two neutral scores by reason 3 above, and `lm_head` will
    have its own gradient signal that per-role ranking then discards. Run this script
    on that arm before reading anything from it.
+   → It landed, it is worse, and it is written up in
+   [`phase3-s2-ministral-signal-map.md`](phase3-s2-ministral-signal-map.md): the head
+   scores 0.9783 on its own measurements against the 0.5 its group of one hands it,
+   and that is a whole bit on 6.7% of an 8B model at the headline target.
 4. Read alongside [`phase3-s3-fused-floors.md`](phase3-s3-fused-floors.md): that the
    tied tensor absorbs two-thirds of the shortfall is *why* Phi's floors are
    unaffordable in the first place, and it compounds with the +0.21 b fusion

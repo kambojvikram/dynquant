@@ -58,12 +58,20 @@
     "missing_stats": [],
     "unexercised": [
       "model.embed_tokens"
-    ]
+    ],
+    "singleton_role_groups": [],
+    "informed": 128
   },
   "neutral_module_sensitivity": {
     "model.embed_tokens": {
+      "reasons": [
+        "unexercised or no gradient observations",
+        "role group of one"
+      ],
       "alias": "lm_head",
       "alias_score": 0.9263565891472868,
+      "own_score": 0.5,
+      "shipped_score": 0.5,
       "num_params": 614596608,
       "param_fraction": 0.1602,
       "floor_bits": 8,
@@ -73,29 +81,93 @@
           "bits_at_score_0": 2,
           "bits_at_score_1": 4,
           "sensitive": true,
-          "bits_at_alias_score": 3,
-          "alias_changes_width": false
+          "own": {
+            "score": 0.5,
+            "bits": 3,
+            "changes_width": false,
+            "modules_moved": 0,
+            "other_modules_moved": 0,
+            "bytes_before": 1438433280,
+            "bytes_after": 1438433280
+          },
+          "alias": {
+            "score": 0.9263565891472868,
+            "bits": 3,
+            "changes_width": false,
+            "modules_moved": 12,
+            "other_modules_moved": 12,
+            "bytes_before": 1438433280,
+            "bytes_after": 1438433280
+          }
         },
         "4.0": {
           "bits_at_score_0": 3,
           "bits_at_score_1": 4,
           "sensitive": true,
-          "bits_at_alias_score": 4,
-          "alias_changes_width": false
+          "own": {
+            "score": 0.5,
+            "bits": 4,
+            "changes_width": false,
+            "modules_moved": 0,
+            "other_modules_moved": 0,
+            "bytes_before": 1797586944,
+            "bytes_after": 1797586944
+          },
+          "alias": {
+            "score": 0.9263565891472868,
+            "bits": 4,
+            "changes_width": false,
+            "modules_moved": 5,
+            "other_modules_moved": 5,
+            "bytes_before": 1797586944,
+            "bytes_after": 1797586944
+          }
         },
         "4.25": {
           "bits_at_score_0": 4,
           "bits_at_score_1": 4,
           "sensitive": false,
-          "bits_at_alias_score": 4,
-          "alias_changes_width": false
+          "own": {
+            "score": 0.5,
+            "bits": 4,
+            "changes_width": false,
+            "modules_moved": 0,
+            "other_modules_moved": 0,
+            "bytes_before": 1917517824,
+            "bytes_after": 1917517824
+          },
+          "alias": {
+            "score": 0.9263565891472868,
+            "bits": 4,
+            "changes_width": false,
+            "modules_moved": 11,
+            "other_modules_moved": 11,
+            "bytes_before": 1917517824,
+            "bytes_after": 1917911040
+          }
         },
         "4.5": {
           "bits_at_score_0": 4,
           "bits_at_score_1": 4,
           "sensitive": false,
-          "bits_at_alias_score": 4,
-          "alias_changes_width": false
+          "own": {
+            "score": 0.5,
+            "bits": 4,
+            "changes_width": false,
+            "modules_moved": 0,
+            "other_modules_moved": 0,
+            "bytes_before": 2037448704,
+            "bytes_after": 2037448704
+          },
+          "alias": {
+            "score": 0.9263565891472868,
+            "bits": 4,
+            "changes_width": false,
+            "modules_moved": 8,
+            "other_modules_moved": 8,
+            "bytes_before": 2037448704,
+            "bytes_after": 2037055488
+          }
         }
       },
       "share_of_deficit_at_3.25": 0.6784

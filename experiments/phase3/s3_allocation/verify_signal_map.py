@@ -24,29 +24,52 @@ Four checks, in the order they can invalidate each other:
    unexercised take a neutral rank, so this is the count of tensors allocated on no
    measurement at all.
 
-4. **Whether it matters.** The one that pays for the other three, and it needs two
-   measurements rather than one. Forcing a neutral module's score to 0.0 and to 1.0
-   brackets every width any signal could have bought it -- but that bracket is wider
-   than any real score, so a module can look "sensitive" to a value nothing would
-   ever produce. So the bracket is paired with the *realistic* counterfactual: where
-   the neutral module is a tie representative, substitute its tied partner's stats
-   row, which describes the same tensor, and re-score. A gap costs nothing only if
-   the realistic substitution lands on the same width.
+   That count is not the whole neutral set. A module in a role group of *one* also
+   scores 0.5 under the shipped per-role ranking -- percentile rank of a single value
+   against itself -- however complete its measurement is. It is not missing and not
+   unexercised, so it appears nowhere in check 3, and on an untied checkpoint the LM
+   head is exactly this: measured 1 492 times, ranked against nobody. Singletons are
+   therefore enumerated separately and carried into check 4 alongside the neutral set.
 
-On Phi-4-mini check 4 is the whole story, and the two measurements disagree in a
-way that matters. ``model.embed_tokens`` is tied to ``lm_head``, and under the
+4. **Whether it matters.** The one that pays for the other three, and it needs three
+   measurements rather than one. Forcing a module's score to 0.0 and to 1.0 brackets
+   every width any signal could have bought it -- but that bracket is wider than any
+   real score, so a module can look "sensitive" to a value nothing would ever
+   produce. So the bracket is paired with the *realistic* counterfactual: the score
+   the module's own measurements produce when ranked globally, or, for a tie
+   representative, its tied partner's stats row re-scored the same way. Both are
+   ranked globally rather than within role, because a group of one admits no other
+   comparison.
+
+   The third measurement is the one Phi was read without. A counterfactual that lands
+   the module on the same width has *not* shown the neutral score to be free: the
+   knapsack is a single budget, so a score that changes where a large tensor sits in
+   the ROI order changes how much budget reaches the tail even when the tensor itself
+   does not move. So each counterfactual also reports how many *other* modules moved
+   and what the byte total did. ``modules_moved`` is the honest headline;
+   ``changes_width`` is a detail of it.
+
+On Phi-4-mini ``model.embed_tokens`` is tied to ``lm_head``, and under the
 ``outer_exact`` estimator an embedding has no ``delta x^T`` to form -- its gradient
 is a scatter-add -- so it carries no plasticity signal, and no channel moments
 either, both deliberate (see ``signals/tracker.py``). It is also the only member of
-its role group, so per-role ranking gives it 0.5 whatever it carries. Three separate
-reasons for one neutral score on 16% of the model, and that module pays 68% of the
-shortfall at a 3.25-bit target.
+its role group. Three separate reasons for one neutral score on 16% of the model, and
+that module pays 68% of the shortfall at a 3.25-bit target. The bracket spans 2 to 4
+bits, so the neutral score is not structurally harmless; the alias substitution ranks
+0.93 and leaves that module on 3 bits at every target.
 
-The bracket says the width spans 2 to 4 bits over the score range -- so the neutral
-score is *not* structurally harmless. The realistic substitution says ``lm_head``'s
-own signal ranks 0.93 and lands on 3 bits, which is where the neutral score already
-put it. The gap costs this checkpoint nothing and would cost a differently-ranked
-one a bit either way; that is a caveat to state, not a blocker to fix.
+**That last fact was reported as "costs this checkpoint nothing", and the whole-map
+measurement says otherwise**: at the same substitution the map moves 12 / 5 / 11 / 8
+modules at 3.25 / 4.0 / 4.25 / 4.5, at byte totals equal to within 0.02%. Nothing was
+free; a reallocation happened and one width was watched.
+
+On Ministral-8B, untied, the same measurement is sharper. ``lm_head`` carries the
+highest saliency in the model (global rank 0.998) and ranks 0.978 globally, against
+the 0.5 its group of one hands it. At 3.25 b that is a whole bit on 6.7% of the
+parameters -- 3 b shipped against 4 b measured -- paid for by 24 projections dropping
+4 b to 3 b at an identical byte total. At 4.0 b the head's own width does not move and
+23 other modules do. Which map is better is an eval question and an S3 arm; that the
+shipped one is not the one the measurements imply is settled here.
 
 Usage::
 
@@ -95,21 +118,29 @@ def _spread(values: list[float]) -> dict:
     }
 
 
+def _global_scores(graph, stats) -> dict[str, float]:
+    """Every module's score ranked against the whole model instead of its role.
+
+    Ranking globally is not proposed as a better default -- per-role ranking exists
+    because on an 18k-expert model a global ranking drowns attention and MLP. It is
+    the only comparison a group of *one* admits, and a group of one is where the
+    shipped ranking returns 0.5 regardless of what was measured.
+    """
+    from dynquant.score.importance import ScoreConfig
+
+    return score_modules(graph, stats, ScoreConfig(rank_within_role=False)).scores()
+
+
 def _alias_score(graph, stats_path: Path, name: str, alias: str) -> float:
     """What ``name`` would score if it borrowed its tied partner's measurements.
 
-    Ranked *globally*, not within role, and that is not a detail. A tie
-    representative is the only member of its role group, so per-role ranking returns
-    0.5 for it whatever the underlying numbers are -- which would hide the very
-    thing this is trying to measure. Against the whole model is the only comparison
-    a group of one admits.
-
-    The role is carried over from the original row so the substitution changes the
-    signal and nothing else. The result is injected into the shipped per-role score
-    map by the caller: percentile ranks all live on (0, 1) and the knapsack only
-    ever compares them across modules, so this reads as "give this tensor a score
-    reflecting what was actually measured about it" -- but it is a hybrid, and a
-    width that moves under it is a reason to look, not a finished number.
+    Ranked globally for the reason in :func:`_global_scores`. The role is carried
+    over from the original row so the substitution changes the signal and nothing
+    else. The result is injected into the shipped per-role score map by the caller:
+    percentile ranks all live on (0, 1) and the knapsack only ever compares them
+    across modules, so this reads as "give this tensor a score reflecting what was
+    actually measured about it" -- but it is a hybrid, and a map that moves under it
+    is a reason to look, not a finished number.
     """
     from dataclasses import replace
 
@@ -119,6 +150,30 @@ def _alias_score(graph, stats_path: Path, name: str, alias: str) -> float:
     patched.layers[name] = replace(patched.layers[alias], role=patched.layers[name].role)
     config = ScoreConfig(rank_within_role=False)
     return score_modules(graph, patched, config).modules[name].score
+
+
+def _counterfactual(graph, scores: dict[str, float], budget, name: str, forced: float) -> dict:
+    """Re-allocate with one score replaced, and report what the *map* did.
+
+    Not just ``name``'s width. The budget is shared, so moving a large tensor's
+    position in the ROI order changes how much of it reaches everything ranked below,
+    and a counterfactual that leaves the tensor itself on the same width can still
+    have rewritten the tail. Phi's was read as costing nothing on exactly that basis
+    while twelve other modules moved.
+    """
+    base = allocate_bits(graph, scores, budget)
+    alt = allocate_bits(graph, {**scores, name: forced}, budget)
+    moved = [n for n in base.bits if base.bits[n] != alt.bits[n]]
+    params = {m.name: m.num_params for m in graph.quantizable()}
+    return {
+        "score": forced,
+        "bits": alt.bits[name],
+        "changes_width": alt.bits[name] != base.bits[name],
+        "modules_moved": len(moved),
+        "other_modules_moved": sum(1 for n in moved if n != name),
+        "bytes_before": sum(params[n] * base.bits[n] for n in base.bits) // 8,
+        "bytes_after": sum(params[n] * alt.bits[n] for n in alt.bits) // 8,
+    }
 
 
 def verify(stats_path: Path, kind: str) -> dict:
@@ -141,17 +196,29 @@ def verify(stats_path: Path, kind: str) -> dict:
     report = score_modules(graph, stats)
     neutral = sorted(set(report.missing_stats) | set(report.unexercised))
 
+    # A module alone in its role group scores 0.5 from the shipped ranker whatever it
+    # measured, so it is uninformed in exactly the way the neutral set is -- and it is
+    # in neither `missing_stats` nor `unexercised`, so check 3 never names it. Probe
+    # it on the same terms.
+    group_size = Counter(m.role for m in graph.quantizable())
+    singletons = sorted(
+        m.name for m in graph.quantizable() if group_size[m.role] == 1 and m.name not in neutral
+    )
+
     # Check 4. Forcing a score to 0.0 and to 1.0 brackets every allocation the
     # module could have received under *any* signal, so a width that is equal at
     # both ends is a width no measurement could have changed. Where the bracket is
-    # open, `alias_score` below says whether a real measurement would have moved it.
+    # open, the counterfactuals below say what a real measurement would have done --
+    # to this module and to the rest of the map.
     scores = report.scores()
+    global_scores = _global_scores(graph, stats)
     aliases = (prov.get("notes", {}).get("tied_parameters") or {}).get
     sensitivity: dict[str, dict] = {}
-    for name in neutral:
+    for name in sorted(set(neutral) | set(singletons)):
         info = next(m for m in graph.quantizable() if m.name == name)
         alias = next((a for a in (aliases(name) or []) if a in layers), None)
         alias_score = _alias_score(graph, stats_path, name, alias) if alias else None
+        own_score = global_scores[name]
         per_target = {}
         for target in PROBE_TARGETS:
             budget = Budget.from_target(graph, target_bits=target)
@@ -162,22 +229,36 @@ def verify(stats_path: Path, kind: str) -> dict:
                 "bits_at_score_0": widths[0],
                 "bits_at_score_1": widths[1],
                 "sensitive": widths[0] != widths[1],
+                # What this module's own measurements say, ranked globally. Equal to
+                # the shipped 0.5 exactly when there was nothing to measure, which is
+                # itself the answer for an unexercised module.
+                "own": _counterfactual(graph, scores, budget, name, own_score),
             }
             if alias_score is not None:
-                entry["bits_at_alias_score"] = allocate_bits(
-                    graph, {**scores, name: alias_score}, budget
-                ).bits[name]
-                entry["alias_changes_width"] = (
-                    entry["bits_at_alias_score"] != allocate_bits(graph, scores, budget).bits[name]
-                )
+                entry["alias"] = _counterfactual(graph, scores, budget, name, alias_score)
             per_target[f"{target}"] = entry
+        # All the reasons, not the first one. Phi's tied embedding is uninformed three
+        # times over -- no plasticity under `outer_exact`, no channel moments, and a
+        # role group of one -- and reporting only the reason that happened to be
+        # tested first makes a triply-determined 0.5 look incidental.
+        reasons = []
+        if name in report.missing_stats:
+            reasons.append("no stats entry")
+        if name in report.unexercised:
+            reasons.append("unexercised or no gradient observations")
+        if group_size[info.role] == 1:
+            reasons.append("role group of one")
+
         sensitivity[name] = {
+            "reasons": reasons,
             "alias": alias,
             "alias_score": alias_score,
+            "own_score": own_score,
+            "shipped_score": scores[name],
             "num_params": info.num_params,
             "param_fraction": round(info.num_params / graph.total_params(), 4),
             "floor_bits": info.floor_bits,
-            "role_group_size": sum(1 for m in graph.quantizable() if m.role is info.role),
+            "role_group_size": group_size[info.role],
             "by_target": per_target,
         }
 
@@ -214,6 +295,11 @@ def verify(stats_path: Path, kind: str) -> dict:
             "scored": len(report.modules) - len(neutral),
             "missing_stats": list(report.missing_stats),
             "unexercised": list(report.unexercised),
+            # Measured, and ranked against nobody. `scored` counts these as scored
+            # because they are; the number that matters for check 4 is scored minus
+            # this.
+            "singleton_role_groups": singletons,
+            "informed": len(report.modules) - len(neutral) - len(singletons),
         },
         "neutral_module_sensitivity": sensitivity,
     }
@@ -230,8 +316,9 @@ def main(argv: list[str] | None = None) -> int:
     s, cov = result["structure"], result["coverage"]
     print(
         f"{result['model']:<14} {s['tracked_modules']} modules tracked, "
-        f"{cov['scored']} scored, {len(cov['unexercised'])} unexercised, "
-        f"{len(cov['missing_stats'])} missing",
+        f"{cov['informed']} informed, {len(cov['unexercised'])} unexercised, "
+        f"{len(cov['missing_stats'])} missing, "
+        f"{len(cov['singleton_role_groups'])} ranked against nobody",
         flush=True,
     )
     print(
@@ -245,16 +332,22 @@ def main(argv: list[str] | None = None) -> int:
     for name, entry in result["neutral_module_sensitivity"].items():
         moves = [t for t, a in entry["by_target"].items() if a["sensitive"]]
         print(
-            f"    {name}: {100 * entry['param_fraction']:.1f}% of params, pays "
-            f"{100 * entry['share_of_deficit_at_3.25']:.1f}% of the 3.25b deficit, "
+            f"    {name} ({'; '.join(entry['reasons'])}): "
+            f"{100 * entry['param_fraction']:.1f}% of params, "
+            f"pays {100 * entry['share_of_deficit_at_3.25']:.1f}% of the 3.25b deficit, "
             f"bracket open at {moves or 'no target'}",
             flush=True,
         )
-        if entry["alias"]:
-            flips = [t for t, a in entry["by_target"].items() if a.get("alias_changes_width")]
+        for key, label in (("own", "its own signal"), ("alias", f"borrowing {entry['alias']}")):
+            arms = {t: a[key] for t, a in entry["by_target"].items() if key in a}
+            if not arms:
+                continue
+            score = next(iter(arms.values()))["score"]
+            flips = [t for t, a in arms.items() if a["changes_width"]]
+            spill = {t: a["other_modules_moved"] for t, a in arms.items()}
             print(
-                f"        borrowing {entry['alias']} scores {entry['alias_score']:.4f} and "
-                f"changes the width at {flips or 'no target'}",
+                f"        {label} scores {score:.4f}, changes this width at "
+                f"{flips or 'no target'}, and moves other modules {spill}",
                 flush=True,
             )
 

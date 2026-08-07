@@ -321,10 +321,13 @@ discards its measured saliency along with the missing plasticity, and a role gro
 where a percentile rank is 0.5 by construction. It is 16% of the model and **pays 67.8% of the
 3.25-bit floor shortfall by itself**. Forcing its score across the full range moves it 2 → 4
 bits, so the neutrality is not structurally harmless; substituting its tied partner `lm_head`'s
-row — the same tensor, measured — scores 0.9264 and lands on the same 3 bits. Costs this
-checkpoint nothing, stated as a caveat rather than fixed. **Ministral is untied and must be
-re-checked**: two singleton role groups, and an `lm_head` whose real gradient signal per-role
-ranking would then discard.
+row — the same tensor, measured — scores 0.9264 and lands on the same 3 bits.
+
+**Corrected 2026-08-06.** That was originally read as *costs this checkpoint nothing*, off one
+tensor's width. The budget is shared: at the same substitution the map moves **12 / 5 / 11 / 8**
+other modules at 3.25 / 4.0 / 4.25 / 4.5, at byte totals equal to within 0.02%. The tied tensor
+holds its width and the tail is rewritten around it. The verifier now reports
+`other_modules_moved` beside `changes_width`.
 
 ---
 
@@ -353,6 +356,43 @@ reported number changes; §8's 69-of-129 figure is unaffected, its allocation ne
 moments at all. The transferable rule: **a control is defined by what the treatment reads,
 not by what it is named after**, and an ablation arm whose map is identical to its treatment's
 has not run.
+
+---
+
+## 11. Phase 3 — S2 arm 2, the tensor ranked against nobody
+
+Full report: [phase3-s2-ministral-signal-map.md](phase3-s2-ministral-signal-map.md).
+Ministral-8B × Tulu-3 finished in **11.23 h**, 1492 optimizer steps, final train loss
+**0.6335**. Structure is sound on all four properties: 254 modules (2 + 36×7) under canonical
+names, `grad_norm_count` = 1492 everywhere it exists, `forward_calls` uniformly 23 865,
+saliency spanning 1221×.
+
+§9 predicted what would be different: Ministral is untied, so `lm_head` is its own quantizable
+tensor **in a role group of one**. It has a complete measurement — 1492 gradient observations
+and the **highest activation RMS in the model** — and the shipped per-role ranker computes its
+percentile against a set containing only itself and returns **0.5**. Ranked globally, the same
+measurements score **0.9783**.
+
+At the headline 3.25-bit target that is a whole bit on 6.7% of an 8B model: **3 bits shipped
+against 4 bits measured**, paid for by 24 projections dropping 4 b → 3 b at an *identical* byte
+total and identical 3.2500 average bits. At 4.0 b the head's own width does not move and **23
+other modules do**. With `model.embed_tokens` — same 536.9 M parameters, no gradient signal at
+all because the `outer_exact` hook never registers on a frozen embedding fed integer ids —
+**13.4% of the model is allocated on a number reflecting no comparison**.
+
+Controlled, because a greedy knapsack near its ceiling could just be chaotic: forcing the same
+0.9783 onto 24 ordinary projections moves a **median of 0** modules (max 8 at 3.25, max 2 at
+4.0). Nor is it a size effect — `embed_tokens` is the same size and moves **0** at 4.0, because
+it already sits at its floor and is not a knapsack candidate, while `lm_head` sits four bits
+below its 8-bit floor and its ROI position decides the tail. **The neutral score bites hardest
+where the tensor is large and its floor is breached**, which is the regime the headline targets
+are defined by.
+
+Which map is better is an eval question and an S3 arm. The scorer was **not** changed —
+that would move every model's allocation including phase 2's published comparisons, and it is
+a decision, not a fix. The *verifier* was: it now enumerates singleton role groups, reports
+`informed` apart from `scored`, and measures whole-map movement rather than one width, which
+is what forced §9's correction above.
 
 ---
 
