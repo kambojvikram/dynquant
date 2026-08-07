@@ -368,10 +368,11 @@ names, `grad_norm_count` = 1492 everywhere it exists, `forward_calls` uniformly 
 saliency spanning 1221×.
 
 §9 predicted what would be different: Ministral is untied, so `lm_head` is its own quantizable
-tensor **in a role group of one**. It has a complete measurement — 1492 gradient observations
-and the **highest activation RMS in the model** — and the shipped per-role ranker computes its
-percentile against a set containing only itself and returns **0.5**. Ranked globally, the same
-measurements score **0.9783**.
+tensor **in a role group of one**. It has a complete measurement — 1492 gradient observations,
+**rank 1 of 254 on saliency** (1.78× the runner-up) and **rank 6 of 254 on plasticity**, so both
+signals agree and this is not a tensor that merely has large activations for scale reasons — and
+the shipped per-role ranker computes its percentile against a set containing only itself and
+returns **0.5**. Ranked globally, the same measurements score **0.9783**.
 
 At the headline 3.25-bit target that is a whole bit on 6.7% of an 8B model: **3 bits shipped
 against 4 bits measured**, paid for by 24 projections dropping 4 b → 3 b at an *identical* byte

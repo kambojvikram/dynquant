@@ -84,10 +84,13 @@ are not the same failure:
   `estimators.py:161 embedding_gram` implements the token-equality Gram matrix for
   exactly this case. It is the hook that never fires.)
 - **`lm_head` has everything to rank and no one to rank against.** 1492 gradient
-  observations, and the **highest activation RMS in the model** — global saliency
-  rank 0.998, plasticity 0.978. Per-role ranking then computes its percentile against
-  a set containing only itself and returns 0.5. Phi never showed this because Phi's
-  head is tied and does not appear as a separate quantizable tensor.
+  observations, **rank 1 of 254 on saliency** (2.8528, 1.78× the runner-up
+  `layers.16.self_attn.k_proj` at 1.5984) and **rank 6 of 254 on plasticity** — so
+  this is not a tensor that merely has large activations for scale reasons, which is
+  the obvious way an LM head could top the saliency table without being fragile. Both
+  signals agree. Per-role ranking then computes its percentile against a set
+  containing only itself and returns 0.5. Phi never showed this because Phi's head is
+  tied and does not appear as a separate quantizable tensor.
 
 `score_modules` bins the first case into `unexercised`
 ([`score/importance.py:188`](../../packages/dynquant-core/src/dynquant/score/importance.py#L188))
