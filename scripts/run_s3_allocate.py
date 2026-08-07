@@ -348,16 +348,23 @@ def anchor_cmd(args: argparse.Namespace, save_map: Path) -> list[str]:
     return [*_inspect_cmd(args, save_map), "--uniform", *[str(w) for w in ANCHORS]]
 
 
-def _inputs_mtime(model: str, stats: str | None, moments: str | None) -> float:
-    """When the newest thing this map claims to summarise was last written."""
+def _inputs_mtime(args: argparse.Namespace) -> float:
+    """When the newest of this run's *sources* was last written.
+
+    The sources are S2's stats and moments and the merged checkpoint -- deliberately not
+    the signal/shuffled variants the arms are actually allocated from. Those are derived
+    by this same run and are a pure function of the sources and the seed, so stamping a
+    map against them would be asking whether the map predates a file the run just
+    regenerated: always yes, and nothing about whether the numbers changed. The variant
+    paths are still checked for *identity*, so an arm cannot reuse another arm's map.
+    """
     newest = 0.0
-    for candidate in (stats, moments):
-        if candidate and Path(candidate).is_file():
-            newest = max(newest, Path(candidate).stat().st_mtime)
-    root = Path(model)
-    for entry in sorted(root.iterdir()) if root.is_dir() else [root]:
-        if entry.is_file():
-            newest = max(newest, entry.stat().st_mtime)
+    for candidate in (args.stats, args.moments, args.model):
+        root = Path(candidate)
+        entries = sorted(root.iterdir()) if root.is_dir() else [root]
+        for entry in entries:
+            if entry.is_file():
+                newest = max(newest, entry.stat().st_mtime)
     return newest
 
 
@@ -390,7 +397,6 @@ def _reusable(
     keys: list[str],
     stats: str | None,
     allocator: str,
-    moments: str | None,
 ) -> dict[str, Any] | None:
     """The map already on disk, if it can be shown to postdate every input it names.
 
@@ -404,8 +410,8 @@ def _reusable(
     So existence is not the test. The map has to name this model, this group size, this
     stats file and this allocator -- which is what distinguishes ``rank`` from ``dq``, and
     is otherwise invisible in a finished map's bit widths -- and its mtime has to be later
-    than the stats, the moments and every file in the checkpoint. Anything else rebuilds,
-    and says which check failed rather than reporting a bare "rebuilding".
+    than every source file the run reads. Anything else rebuilds, and says which check
+    failed rather than reporting a bare "rebuilding".
     """
     if not args.reuse_maps or not save_map.is_file():
         return None
@@ -415,7 +421,7 @@ def _reusable(
         print(f"  rebuilding {save_map.name}: unreadable ({exc})", flush=True)
         return None
     reason = _map_mismatch(payload, args, keys=keys, stats=stats, allocator=allocator)
-    if reason is None and save_map.stat().st_mtime <= _inputs_mtime(args.model, stats, moments):
+    if reason is None and save_map.stat().st_mtime <= _inputs_mtime(args):
         reason = "it predates an input it summarises"
     if reason is not None:
         print(f"  rebuilding {save_map.name}: {reason}", flush=True)
@@ -433,7 +439,6 @@ def allocate_anchors(args: argparse.Namespace, work: Path) -> dict[int, Arm]:
         keys=[f"uniform-{width}" for width in ANCHORS],
         stats=None,
         allocator="rank_product",
-        moments=None,
     )
     if payload is None:
         _run(anchor_cmd(args, save_map), what="allocating the uniform anchors")
@@ -487,7 +492,6 @@ def allocate_arm(
         keys=[key],
         stats=variant["stats"],
         allocator="sensitivity" if spec["moments"] else "rank_product",
-        moments=moments,
     )
     if payload is None:
         cmd = _inspect_cmd(args, save_map)
