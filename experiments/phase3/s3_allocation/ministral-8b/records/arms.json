@@ -1,0 +1,71 @@
+{
+  "model": "/workspace/runs/s2/ministral-8b.tulu3/merged",
+  "stats": "/workspace/runs/s2/ministral-8b.tulu3/stats",
+  "moments": "/workspace/runs/s2/ministral-8b.tulu3/stats/dynquant_moments.safetensors",
+  "group_size": 128,
+  "seed": 0,
+  "tolerance": 0.001,
+  "variants": {
+    "signal": {
+      "stats": "/workspace/runs/s3/ministral-8b/records/maps/dynquant_stats.signal.json",
+      "moments": "/workspace/runs/s3/ministral-8b/records/maps/dynquant_moments.signal.safetensors",
+      "seed": null,
+      "moved": null,
+      "rewritten": false
+    },
+    "shuffled": {
+      "stats": "/workspace/runs/s3/ministral-8b/records/maps/dynquant_stats.shuffled-0.json",
+      "moments": "/workspace/runs/s3/ministral-8b/records/maps/dynquant_moments.shuffled-0.safetensors",
+      "seed": 0,
+      "moved": 237,
+      "total": 254,
+      "rewritten": false
+    }
+  },
+  "arms": [
+    {
+      "name": "rtn4",
+      "anchor": 4,
+      "kind": "rtn",
+      "map": "/workspace/runs/s3/ministral-8b/records/maps/map.rtn.json",
+      "map_key": "uniform-4",
+      "nbytes": 4260364288,
+      "average_bits": 4.25,
+      "violations": 1,
+      "directory": "/workspace/runs/s3/ministral-8b/rtn4"
+    },
+    {
+      "name": "rank4",
+      "anchor": 4,
+      "kind": "rank",
+      "map": "/workspace/runs/s3/ministral-8b/records/maps/map.rank4.json",
+      "map_key": "4260364288",
+      "nbytes": 4260364288,
+      "average_bits": 4.25,
+      "violations": 0,
+      "directory": "/workspace/runs/s3/ministral-8b/rank4"
+    },
+    {
+      "name": "shuf4",
+      "anchor": 4,
+      "kind": "shuf",
+      "map": "/workspace/runs/s3/ministral-8b/records/maps/map.shuf4.json",
+      "map_key": "4260364288",
+      "nbytes": 4260364288,
+      "average_bits": 4.25,
+      "violations": 0,
+      "directory": "/workspace/runs/s3/ministral-8b/shuf4"
+    },
+    {
+      "name": "dq4",
+      "anchor": 4,
+      "kind": "dq",
+      "map": "/workspace/runs/s3/ministral-8b/records/maps/map.dq4.json",
+      "map_key": "4260364288",
+      "nbytes": 4260364288,
+      "average_bits": 4.25,
+      "violations": 0,
+      "directory": "/workspace/runs/s3/ministral-8b/dq4"
+    }
+  ]
+}

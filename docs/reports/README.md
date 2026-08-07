@@ -4,7 +4,7 @@ Every experiment run on DynQuant since the package was built, what it measured, 
 full record lives. Nothing here is taken from the paper; everything is measured on this
 repository's own code, all of it on a single NVIDIA A100 80GB PCIe.
 
-There are twelve campaigns. They answer twelve different questions, in this order:
+There are thirteen campaigns. They answer thirteen different questions, in this order:
 
 | # | question | verdict | full record |
 |---|---|---|---|
@@ -20,6 +20,7 @@ There are twelve campaigns. They answer twelve different questions, in this orde
 | 10 | Is S3's shuffled control actually ablating the signal? | **No — it was a null by construction.** 0 of 129 modules differed from the treatment; it permuted a file the allocator had stopped reading | [`phase3-s3-null-control.md`](phase3-s3-null-control.md) |
 | 11 | Did the second S2 fine-tune produce a signal map worth spending? | **Yes, and it exposed a ranker defect** — a singleton role group scores 0.5 against itself, costing the baseline a whole bit on 6.7 % of the model | [`phase3-s2-ministral-signal-map.md`](phase3-s2-ministral-signal-map.md) |
 | 12 | Does S3's resume guard know a fresh map from a stale one? | **No, twice over** — it compared against a file it regenerates, and called a metadata reordering a content change | [`phase3-s3-reuse-guard.md`](phase3-s3-reuse-guard.md) |
+| 13 | At matched bytes, what are the allocator and the signal each worth? | **+4.31 over uniform at 3.25 bits, split 1.91 allocator / 2.41 signal — and nothing at all at 4.25** | [`phase3-s3-allocation.md`](phase3-s3-allocation.md) |
 
 The method itself — signals, sensitivity estimator, allocator, encoder, format, packed
 runtime, kernels — is documented end to end in the
@@ -465,6 +466,44 @@ Nothing downstream had run, so no reported number changes. The transferable rule
 guard must compare against what it reads, not against what it writes** — and a comparison that
 is too strict does not fail safe, it just stops distinguishing anything.
 
+## 13. Phase 3 — S3, what the allocator and the signal are each worth
+
+Full report: [phase3-s3-allocation.md](phase3-s3-allocation.md). Ministral-8B × Tulu-3, eight
+quantized arms over two budgets and four benchmarks, plus a bf16 ceiling — **36 eval cells**,
+each arm at an anchor byte-identical to its siblings (3 257 925 632 B at 3.25, 4 260 364 288 B
+at 4.25, widest drift +0 B).
+
+**At 3.25 bits the method works. At 4.25 nothing does.** `dq3` beats uniform by **+4.31** mean
+points and has the best mean at both budgets, but at 4.25 all sixteen comparisons sit between
+p = 0.22 and p = 1.00 — uniform is already within 6.15 points of bf16, every role floor is
+affordable, all three allocating arms report zero violations, and the maps converge. §11
+predicted exactly this from the allocation side: **the allocator earns its keep only where the
+floors stop being affordable.**
+
+**The signal is 56 % of the 3.25-bit margin — where on Qwen3.5-2B it was 12 %.** The
+decomposition is `dq − rtn = +4.31 = allocator +1.91 + signal +2.41`. Same anchor, same module
+granularity, opposite split. Both are real: on Qwen the uniform baseline was catastrophic and
+almost any reallocation recovered most of a 25.78-point gap, so knapsack mechanics dominated;
+here uniform is merely mediocre and *which* modules to protect is proportionally more of a
+smaller answer. **The signal's share grows as the allocator's structural advantage shrinks**,
+so the 12 % figure is scoped to its campaign, not retracted. The 4.25 row is deliberately left
+undecomposed — dividing a +0.74 margin that is inside noise prints "the signal is 139 % of it",
+and `s3_table.py` now refuses to compute the share unless something clears p < 0.05.
+
+**Two of forty-eight paired tests survive Bonferroni**, and the important one is the control
+comparison: `dq3` − `shuf3` on GSM8K, **+4.78, p = 4.8 × 10⁻⁵**. At identical bytes with the
+same allocator, pricing from the measured signal beats pricing from a within-role permutation
+of it — and the control is not a strawman, `shuf3` beats uniform by +1.91 on its own. The other
+survivor is `rank3` − `rtn3` on HumanEval at +14.02. `dq3` − `rtn3` on HumanEval (+11.59,
+p = 0.0034) does **not** clear correction and is reported as record, not result.
+
+**Negatives, stated as such.** The published rank-product score is a coin flip — it wins
+HumanEval by +14.02 and loses GSM8K and IFEval at 3.25, then does nothing at 4.25 — the fourth
+campaign in which it fails to reliably beat doing nothing. MBPP separates no arm anywhere (all
+four 3.25-bit arms within 1.0 point, discordant counts split evenly); it reads damage, not
+allocation, and belongs in no headline that claims an allocator difference. And **no arm wins
+all four tasks at 3.25**, so the mean is never quoted without the per-task table beside it.
+
 ## Conventions that apply to every campaign
 
 **Paired tests on stored per-item hits.** Every arm stores which items it got right, so every
@@ -493,6 +532,7 @@ as the wins.
 | [`experiments/four_point/`](../../experiments/four_point/) | the four campaign records and every stage script (`stage1`–`stage8`, `p2_*`, `run_*.sh`) |
 | [`experiments/screen/`](../../experiments/screen/) | the base-model headroom screen that selects a task |
 | [`stats/`](../../stats/) | the signal maps collected by the fine-tune hooks |
+| [`experiments/phase3/`](../../experiments/phase3/) | the phase-3 campaign: the headroom screen, the S2 signal maps, and S3's allocation maps and 36 eval cells with per-item hits |
 | [`docs/format-spec.md`](../format-spec.md) | the checkpoint format contract these experiments write and read |
 | [`docs/legacy-audit.md`](../legacy-audit.md) | what was wrong with the supplementary code, defect by defect |
 | [`decode-neutrality.md`](decode-neutrality.md) | the checkpoint's own `generation_config` reaching a "greedy" decode: how the phase-3 G4 gate found it, which campaigns it does and does not touch, and why the fix took two attempts — the first was correct on transformers 4.x and inert on the 5.x the campaign runs. Ends with what the fixed gate measures: −0.83 points, and a ±1.00 bound GSM8K is too small to resolve |
