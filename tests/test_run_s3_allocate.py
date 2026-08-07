@@ -390,6 +390,9 @@ def test_each_arm_is_allocated_from_its_own_moments(s3, tmp_path, monkeypatch) -
         group_size=128,
         trust_remote_code=False,
         moments="/the/real/moments.safetensors",
+        # This test is about the argv the allocation subprocess receives, so the reuse
+        # guard must not be allowed to skip the call it is inspecting.
+        reuse_maps=False,
     )
 
     seen: list[list[str]] = []

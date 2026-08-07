@@ -319,12 +319,96 @@ def anchor_cmd(args: argparse.Namespace, save_map: Path) -> list[str]:
     return [*_inspect_cmd(args, save_map), "--uniform", *[str(w) for w in ANCHORS]]
 
 
+def _inputs_mtime(model: str, stats: str | None, moments: str | None) -> float:
+    """When the newest thing this map claims to summarise was last written."""
+    newest = 0.0
+    for candidate in (stats, moments):
+        if candidate and Path(candidate).is_file():
+            newest = max(newest, Path(candidate).stat().st_mtime)
+    root = Path(model)
+    for entry in sorted(root.iterdir()) if root.is_dir() else [root]:
+        if entry.is_file():
+            newest = max(newest, entry.stat().st_mtime)
+    return newest
+
+
+def _map_mismatch(
+    payload: dict[str, Any],
+    args: argparse.Namespace,
+    *,
+    keys: list[str],
+    stats: str | None,
+    allocator: str,
+) -> str | None:
+    """Why the map on disk is not the map this invocation would have written."""
+    if payload.get("schema") != "dynquant_allocation_v1":
+        return f"schema is {payload.get('schema')!r}"
+    for field, want in (("model", args.model), ("stats", stats), ("group_size", args.group_size)):
+        if payload.get(field) != want:
+            return f"{field} is {payload.get(field)!r}, not {want!r}"
+    if payload.get("allocator") != allocator:
+        return f"allocator is {payload.get('allocator')!r}, not {allocator!r}"
+    missing = [key for key in keys if key not in payload.get("maps", {})]
+    if missing:
+        return f"no map for {missing}"
+    return None
+
+
+def _reusable(
+    save_map: Path,
+    args: argparse.Namespace,
+    *,
+    keys: list[str],
+    stats: str | None,
+    allocator: str,
+    moments: str | None,
+) -> dict[str, Any] | None:
+    """The map already on disk, if it can be shown to postdate every input it names.
+
+    A moments-priced map is about 1 h 45 m of CPU on an 8B model, so a run that only
+    wants to quantize and evaluate should not spend seven hours rebuilding six maps it
+    already has. But skipping a completed step is a resume guard, and the failure mode of
+    a resume guard is not "it did not skip" -- it is that existence-on-disk cannot see
+    that an artifact *predates its own input*, so a stale map gets stapled into a fresh
+    run and every downstream number silently describes the wrong allocation.
+
+    So existence is not the test. The map has to name this model, this group size, this
+    stats file and this allocator -- which is what distinguishes ``rank`` from ``dq``, and
+    is otherwise invisible in a finished map's bit widths -- and its mtime has to be later
+    than the stats, the moments and every file in the checkpoint. Anything else rebuilds,
+    and says which check failed rather than reporting a bare "rebuilding".
+    """
+    if not args.reuse_maps or not save_map.is_file():
+        return None
+    try:
+        payload = json.loads(save_map.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"  rebuilding {save_map.name}: unreadable ({exc})", flush=True)
+        return None
+    reason = _map_mismatch(payload, args, keys=keys, stats=stats, allocator=allocator)
+    if reason is None and save_map.stat().st_mtime <= _inputs_mtime(args.model, stats, moments):
+        reason = "it predates an input it summarises"
+    if reason is not None:
+        print(f"  rebuilding {save_map.name}: {reason}", flush=True)
+        return None
+    print(f"  reusing {save_map.name}", flush=True)
+    return payload
+
+
 def allocate_anchors(args: argparse.Namespace, work: Path) -> dict[int, Arm]:
     """Build the uniform arms, whose sizes every other arm is then held to."""
     save_map = work / "map.rtn.json"
-    _run(anchor_cmd(args, save_map), what="allocating the uniform anchors")
-
-    payload = json.loads(save_map.read_text(encoding="utf-8"))
+    payload = _reusable(
+        save_map,
+        args,
+        keys=[f"uniform-{width}" for width in ANCHORS],
+        stats=None,
+        allocator="rank_product",
+        moments=None,
+    )
+    if payload is None:
+        _run(anchor_cmd(args, save_map), what="allocating the uniform anchors")
+        payload = json.loads(save_map.read_text(encoding="utf-8"))
     anchors: dict[int, Arm] = {}
     for width in ANCHORS:
         key = f"uniform-{width}"
@@ -367,17 +451,28 @@ def allocate_arm(
     key = str(anchor.nbytes)
 
     variant = variants[spec["variant"]]
-    cmd = _inspect_cmd(args, save_map)
-    cmd += ["--stats", variant["stats"], "--target-size", key]
-    if spec["moments"]:
-        # The variant's own moments, never ``args.moments``: the sensitivity table is
-        # what the knapsack prices from whenever a module has an entry, so an arm that
-        # permuted the stats and then read the real moments would allocate exactly like
-        # the treatment and report a null it never tested.
-        cmd += ["--moments", variant["moments"]]
-    _run(cmd, what=f"allocating {kind}{anchor.anchor}")
+    moments = variant["moments"] if spec["moments"] else None
+    payload = _reusable(
+        save_map,
+        args,
+        keys=[key],
+        stats=variant["stats"],
+        allocator="sensitivity" if spec["moments"] else "rank_product",
+        moments=moments,
+    )
+    if payload is None:
+        cmd = _inspect_cmd(args, save_map)
+        cmd += ["--stats", variant["stats"], "--target-size", key]
+        if spec["moments"]:
+            # The variant's own moments, never ``args.moments``: the sensitivity table is
+            # what the knapsack prices from whenever a module has an entry, so an arm that
+            # permuted the stats and then read the real moments would allocate exactly like
+            # the treatment and report a null it never tested.
+            cmd += ["--moments", moments]
+        _run(cmd, what=f"allocating {kind}{anchor.anchor}")
+        payload = json.loads(save_map.read_text(encoding="utf-8"))
 
-    body = json.loads(save_map.read_text(encoding="utf-8"))["maps"][key]
+    body = payload["maps"][key]
     return Arm(
         name=f"{kind}{anchor.anchor}",
         anchor=anchor.anchor,
@@ -499,6 +594,16 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--evaluate", action="store_true", help="also run the evaluator")
+    parser.add_argument(
+        "--reuse-maps",
+        action="store_true",
+        help=(
+            "skip allocating any map already on disk that names this model, group size, "
+            "stats file and allocator *and* is newer than all of them. Off by default: a "
+            "resume guard that cannot tell a fresh map from one predating its own input "
+            "is worse than the seven hours it saves"
+        ),
+    )
     parser.add_argument(
         "--allocate-only",
         action="store_true",
