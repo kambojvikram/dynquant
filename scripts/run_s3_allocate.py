@@ -67,7 +67,7 @@ import random
 import shutil
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -222,6 +222,29 @@ def shuffle_moments(moments: Any, permutation: Mapping[str, str]) -> Any:
     return out
 
 
+def _write_if_changed(path: Path, write: Callable[[Path], None]) -> bool:
+    """Write through a scratch file, and keep the original when the bytes are identical.
+
+    This is about the mtime, not the I/O. Both variants are a deterministic function of
+    the S2 stats and the seed, so rewriting them unconditionally leaves them permanently
+    newer than any map derived from them -- and ``--reuse-maps``, which asks whether a map
+    postdates its inputs, could then never answer yes for the three arms that read a
+    variant. Writing only on a real change makes the timestamp mean "the content changed",
+    which is the question the reuse guard is actually asking. If a serializer turns out not
+    to be byte-stable the only cost is that nothing is ever reused, which is the safe
+    direction to fail in.
+    """
+    scratch = path.with_name(path.name + ".tmp")
+    try:
+        write(scratch)
+        if path.is_file() and scratch.read_bytes() == path.read_bytes():
+            return False
+        scratch.replace(path)
+        return True
+    finally:
+        scratch.unlink(missing_ok=True)
+
+
 def write_variants(
     stats_path: Path, moments_path: Path, destination: Path, seed: int
 ) -> dict[str, dict[str, Any]]:
@@ -242,27 +265,33 @@ def write_variants(
     written: dict[str, dict[str, Any]] = {}
     signal_stats = destination / "dynquant_stats.signal.json"
     signal_moments = destination / "dynquant_moments.signal.safetensors"
-    save_stats(stats, signal_stats)
-    save_moments(moments, signal_moments)
+    changed = _write_if_changed(signal_stats, lambda p: save_stats(stats, p))
+    changed |= _write_if_changed(signal_moments, lambda p: save_moments(moments, p))
     written["signal"] = {
         "stats": str(signal_stats),
         "moments": str(signal_moments),
         "seed": None,
         "moved": None,
+        "rewritten": changed,
     }
 
     permutation = permutation_within_role(stats, seed, moments=moments)
     moved = sum(1 for target, donor in permutation.items() if target != donor)
     shuffled_stats = destination / f"dynquant_stats.shuffled-{seed}.json"
     shuffled_moments = destination / f"dynquant_moments.shuffled-{seed}.safetensors"
-    save_stats(shuffle_stats(stats, permutation), shuffled_stats)
-    save_moments(shuffle_moments(moments, permutation), shuffled_moments)
+    changed = _write_if_changed(
+        shuffled_stats, lambda p: save_stats(shuffle_stats(stats, permutation), p)
+    )
+    changed |= _write_if_changed(
+        shuffled_moments, lambda p: save_moments(shuffle_moments(moments, permutation), p)
+    )
     written["shuffled"] = {
         "stats": str(shuffled_stats),
         "moments": str(shuffled_moments),
         "seed": seed,
         "moved": moved,
         "total": len(stats.layers),
+        "rewritten": changed,
     }
     if moved == 0:
         raise SystemExit(

@@ -167,3 +167,27 @@ def test_the_flag_is_off_by_default(driver, bench) -> None:
     """
     bench.args.reuse_maps = False
     assert driver._reusable(bench.map, bench.args, **bench.kwargs) is None
+
+
+def test_rewriting_identical_bytes_leaves_the_mtime_alone(driver, tmp_path) -> None:
+    """The reuse guard reads mtimes, so the variants must only touch theirs on a change.
+
+    Both S3 variants are a deterministic function of the S2 stats and the seed. Written
+    unconditionally they are newer than every map derived from them on every run, and
+    ``--reuse-maps`` can never answer yes for the three arms that read one -- which is
+    exactly what the first attempt at this did, rebuilding five of six maps.
+
+    Turns red when: the variants go back to writing unconditionally, in which case the
+    reuse flag still exists, still passes its own tests, and quietly saves nothing.
+    """
+    target = tmp_path / "dynquant_stats.signal.json"
+
+    assert driver._write_if_changed(target, lambda p: p.write_text("same", encoding="utf-8"))
+    stamp = target.stat().st_mtime_ns
+
+    assert not driver._write_if_changed(target, lambda p: p.write_text("same", encoding="utf-8"))
+    assert target.stat().st_mtime_ns == stamp, "an identical write moved the timestamp"
+
+    assert driver._write_if_changed(target, lambda p: p.write_text("other", encoding="utf-8"))
+    assert target.read_text(encoding="utf-8") == "other"
+    assert not list(tmp_path.glob("*.tmp")), "the scratch file outlived the write"
