@@ -157,6 +157,24 @@ def test_the_reports_quote_this_artifact_and_not_another_run() -> None:
     assert by_plasticity.index("lm_head") + 1 == 6
 
 
+def test_the_record_names_the_allocator_it_describes(phi, ministral) -> None:
+    """A bracket computed without a sensitivity table is a fact about one arm only.
+
+    ``allocate_bits`` prices a module from measured loss wherever the channel moments
+    cover it and from the percentile score only where they do not, so everything this
+    script measures describes the ``rank`` baseline. Read as the headline ``dq`` arm it
+    inverts: Ministral's ``lm_head`` scores 0.5 here and takes 3 bits, while ``dq3``
+    prices it from its moments and gives it 4. The record therefore has to say which
+    map it is about, out loud, rather than leaving it to be inferred from a keyword
+    argument that is absent three files away.
+
+    Turns red when: the verifier starts passing ``sensitivity=`` without relabelling
+    its output, or the label is dropped.
+    """
+    for result in (phi, ministral):
+        assert result["allocator"] == "rank_product"
+
+
 def test_the_bracket_still_brackets(ministral) -> None:
     """Score 0.0 and 1.0 must span the realistic counterfactual, or one of them is wrong.
 

@@ -389,6 +389,21 @@ below its 8-bit floor and its ROI position decides the tail. **The neutral score
 where the tensor is large and its floor is breached**, which is the regime the headline targets
 are defined by.
 
+**Corrected 2026-08-07 — which allocator reads the score.** Those numbers come from
+`verify_signal_map.py`, which allocates without a sensitivity table: the **rank-product** path,
+which is the `rank` *baseline* arm. `allocate_bits` prices a module from measured sensitivity
+wherever the channel moments cover it and from the score only where they do not. Ministral's
+sidecar covers 253 of 254 modules. So at the 3.25-bit anchor, all four arms landing on exactly
+3 257 925 632 bytes: `lm_head` gets **3 b under rank-product and 4 b under `dq`** — the headline
+arm reaches the width the measurement implies on its own, and the singleton handicap costs the
+baseline, not `dq`. The tensor that *does* carry a neutral score into the headline arm is
+`model.embed_tokens`: no moments, untied, no partner to borrow from, and `dq` puts it at **2 b**
+where rank-product left it at 3. Phi's tie is the contrast — it routes `lm_head`'s moments onto
+the same tensor, so Phi's `dq3` gives it **4 b**. Untying removes the coverage, not just the
+check. And `shuf` cannot ablate either tensor: within-role permutation is a fixed point on a
+group of one, so both are assigned identically to `dq` by construction and neither is among the
+39 of 254 modules the arms differ on.
+
 Which map is better is an eval question and an S3 arm. The scorer was **not** changed —
 that would move every model's allocation including phase 2's published comparisons, and it is
 a decision, not a fix. The *verifier* was: it now enumerates singleton role groups, reports

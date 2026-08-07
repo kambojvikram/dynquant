@@ -1,6 +1,6 @@
 {
   "model": "phi4-mini",
-  "stats": "experiments/phase3/s2_runs/phi4-mini.tulu3/stats/dynquant_stats.json",
+  "stats": "../s2_runs/phi4-mini.tulu3/stats/dynquant_stats.json",
   "structure": {
     "tracked_modules": 130,
     "quantizable_modules": 129,
@@ -62,6 +62,7 @@
     "singleton_role_groups": [],
     "informed": 128
   },
+  "allocator": "rank_product",
   "neutral_module_sensitivity": {
     "model.embed_tokens": {
       "reasons": [

@@ -145,6 +145,20 @@ The verifier now reports `other_modules_moved` alongside `changes_width` and
 exact case, so the narrow reading cannot be repeated. Whether the moved allocation is
 *better* is an eval question, not one the allocator can answer about itself.
 
+### Scope, 2026-08-07: this is the rank-product path
+
+`verify_signal_map.py` calls `allocate_bits` without a sensitivity table, so every
+number in this section describes the **rank-product** allocator -- the `rank` baseline
+arm. The headline `dq` arm prices from measured sensitivity wherever the channel
+moments cover a module, and on Phi the tie routes `lm_head`'s moments onto this exact
+tensor. So `dq3` gives the tied embedding **4 bits** where rank-product gives 3, at the
+same 3.25-bit anchor, and the neutral 0.5 is never read on the headline path at all.
+
+That makes the tie load-bearing in a second way. It was already the thing that supplied
+the `0.9264` check; it is also the thing that supplies the coverage which makes the
+check moot. Ministral, untied, has neither -- see
+[`phase3-s2-ministral-signal-map.md`](phase3-s2-ministral-signal-map.md).
+
 ## Verdict for S3
 
 The map is usable and nothing here blocks the campaign.

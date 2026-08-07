@@ -31,6 +31,16 @@ Four checks, in the order they can invalidate each other:
    head is exactly this: measured 1 492 times, ranked against nobody. Singletons are
    therefore enumerated separately and carried into check 4 alongside the neutral set.
 
+   **Scope: this is the rank-product path.** Every allocation below calls
+   ``allocate_bits`` without a sensitivity table, because pricing sensitivity needs the
+   model weights and about two hours per map. That is the ``rank`` *baseline* arm, not
+   the headline ``dq`` arm, and it is the only path on which a percentile score is
+   load-bearing at all: with moments present ``_Candidate.move_value`` prices a module
+   from measured loss and never reads its score. So a neutral score found here reaches
+   the shipped allocation only for modules the channel moments do *not* cover -- on an
+   untied checkpoint, the embedding. The output records ``"allocator": "rank_product"``
+   so the record cannot be read as describing a map it did not build.
+
 4. **Whether it matters.** The one that pays for the other three, and it needs three
    measurements rather than one. Forcing a module's score to 0.0 and to 1.0 brackets
    every width any signal could have bought it -- but that bracket is wider than any
@@ -301,6 +311,13 @@ def verify(stats_path: Path, kind: str) -> dict:
             "singleton_role_groups": singletons,
             "informed": len(report.modules) - len(neutral) - len(singletons),
         },
+        # Which allocator every number above describes. `allocate_bits` prices a
+        # module from measured sensitivity wherever the channel moments cover it and
+        # from this score only where they do not, so a bracket computed without a
+        # sensitivity table is a fact about the `rank` baseline arm. Naming it in the
+        # record is cheaper than a reader inferring it from the absence of a keyword
+        # argument three files away.
+        "allocator": "rank_product",
         "neutral_module_sensitivity": sensitivity,
     }
 

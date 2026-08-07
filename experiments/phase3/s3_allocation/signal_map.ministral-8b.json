@@ -1,6 +1,6 @@
 {
   "model": "ministral-8b",
-  "stats": "experiments/phase3/s2_runs/ministral-8b.tulu3/stats/dynquant_stats.json",
+  "stats": "../s2_runs/ministral-8b.tulu3/stats/dynquant_stats.json",
   "structure": {
     "tracked_modules": 254,
     "quantizable_modules": 254,
@@ -63,6 +63,7 @@
     ],
     "informed": 252
   },
+  "allocator": "rank_product",
   "neutral_module_sensitivity": {
     "lm_head": {
       "reasons": [

@@ -122,6 +122,11 @@ At 4.0 the head does not move and **23 other modules do**. That is the general s
 the budget is shared, so a large tensor's position in the ROI order decides how much
 budget reaches everything below it even when its own width is pinned.
 
+> **Scope, added 2026-08-07.** "The shipped map" here means the rank-product allocator,
+> which is what this script probes and what the `rank` **baseline** arm uses. The
+> headline `dq` arm prices this tensor from measured sensitivity and independently
+> lands it on 4 b. See the correction below.
+
 ### `model.embed_tokens`
 
 | target | score 0.0 | score 1.0 | shipped | on its own signal | other modules moved |
@@ -170,14 +175,72 @@ with that prior, which is suggestive and is not evidence. Only an eval decides i
 and that is an S3 arm — the same shape as the `shuf3` control in
 [`phase3-s3-null-control.md`](phase3-s3-null-control.md).
 
+## Correction, 2026-08-07: which allocator actually reads this score
+
+Everything above is measured correctly and the scope I gave it was too wide. Every
+number in this report came from `verify_signal_map.py`, which calls
+`allocate_bits(graph, scores, budget)` and never passes `sensitivity=`. That is the
+**rank-product** path. Since phase 2 the headline arm has not used it.
+
+`allocate_bits` takes a sensitivity table when the channel moments exist, and
+`_Candidate.move_value` prices a module from `sens` when it has one, falling back to
+`score x params x d(error)` only when it does not
+([`allocate/knapsack.py:177`](../../packages/dynquant-core/src/dynquant/allocate/knapsack.py#L177)).
+The neutral score is therefore read **only for modules the moments do not cover**.
+Ministral's sidecar holds 506 tensors -- 253 modules x `{input_sq, output_grad_sq}` --
+and the single module missing from it is `model.embed_tokens`.
+
+That splits this report's two tensors apart. At the S3 anchor, with all four arms
+landing on exactly 3 257 925 632 bytes and 3.2500 average bits:
+
+| arm | allocator | `lm_head` | `model.embed_tokens` | floors breached |
+|---|---|---|---|---|
+| `rtn` | uniform | 3 b | 3 b | 182 |
+| `rank3` | rank-product | 3 b | 3 b | 128 |
+| `shuf3` | sensitivity | **4 b** | **2 b** | 98 |
+| `dq3` | sensitivity | **4 b** | **2 b** | 104 |
+
+**`lm_head` is the case the headline arm already gets right.** It has moments, so `dq`
+never reads its 0.5 and prices it from measured loss instead -- landing on the 4 bits
+this report predicted its measurement buys. The singleton handicap is real and it costs
+the `rank` **baseline**, not `dq`. That the two agree is corroboration rather than
+coincidence: an independent cardinal measurement put the tensor where the global
+percentile said it belonged.
+
+**`model.embed_tokens` is the case that survives into the headline arm**, and it is
+worse than this report described. No moments, and -- untied -- no partner's moments to
+borrow. It is the only tensor in the campaign whose width `dq` decides from a neutral
+score, and `dq` sends it to **2 bits**, the bottom of the option set, where the
+rank-product arm left it at 3. Phi is the contrast: the tie routes `lm_head`'s moments
+onto the same tensor, so Phi's `dq3` prices it from measurement and gives it **4 bits**
+against rank-product's 3. Untying does not just remove the check, as this report said.
+It removes the coverage that makes the check unnecessary.
+
+And the control cannot see either tensor. `permutation_within_role` is a fixed point on
+a role group of one -- the driver says so and reports `moved` -- so `shuf` and `dq`
+assign both identically by construction, and neither is among the 39 of 254 modules the
+two arms differ on. **S3's signal-ablation arm is silent on exactly the 13.4% of
+Ministral this report is about.**
+
+What stands: the singleton defect in `score_modules`, the bracket, the spill control,
+and the decision not to change the scorer mid-campaign. What does not: calling the
+rank-product map "the shipped map", and reading its 3 bits as the headline arm's.
+
 ## Verdict for S3
 
-The map is usable. Two things carry forward:
+The map is usable. Three things carry forward, the first two revised by the correction
+above:
 
-1. **Ministral's arms must be read knowing 6.7% of the model is placed on 0.5 at
-   3.25 b.** Phi's equivalent caveat is 16.0% and was checkable; this one is 13.4%
-   across two tensors and half of it is not.
-2. **Do not change the scorer mid-campaign.** Making `score_modules` keep a measured
+1. **Read Ministral's `dq` arms knowing `model.embed_tokens` -- 6.7% of the model -- is
+   the one tensor whose width the headline allocator sets from a neutral score**, and
+   that it sets it to 2 bits. `lm_head` is not in that category: it has moments, `dq`
+   prices it from measurement, and it lands on 4 b. Phi's caveat is 16.0% of the model
+   and does *not* reach its `dq` arm at all, because the tie supplies the moments.
+2. **The `shuf` control cannot ablate either singleton**, so S3's signal arm measures
+   the signal's contribution on the 252 modules in role groups of 36 and is silent on
+   the two largest tensors. This is a property of within-role permutation, is stated in
+   the driver, and bounds what an S4 `shuf`-vs-`dq` gap can be read to mean.
+3. **Do not change the scorer mid-campaign.** Making `score_modules` keep a measured
    saliency when plasticity is absent, or ranking singleton groups globally, would
    change every model's allocation including phase 2's published comparisons. Both
    are defensible and both are a decision, not a fix. Recorded here; not taken.
