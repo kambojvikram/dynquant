@@ -20,7 +20,7 @@ There are thirteen campaigns. They answer thirteen different questions, in this 
 | 10 | Is S3's shuffled control actually ablating the signal? | **No — it was a null by construction.** 0 of 129 modules differed from the treatment; it permuted a file the allocator had stopped reading | [`phase3-s3-null-control.md`](phase3-s3-null-control.md) |
 | 11 | Did the second S2 fine-tune produce a signal map worth spending? | **Yes, and it exposed a ranker defect** — a singleton role group scores 0.5 against itself, costing the baseline a whole bit on 6.7 % of the model | [`phase3-s2-ministral-signal-map.md`](phase3-s2-ministral-signal-map.md) |
 | 12 | Does S3's resume guard know a fresh map from a stale one? | **No, twice over** — it compared against a file it regenerates, and called a metadata reordering a content change | [`phase3-s3-reuse-guard.md`](phase3-s3-reuse-guard.md) |
-| 13 | At matched bytes, what are the allocator and the signal each worth? | **+4.31 over uniform at 3.25 bits, split 1.91 allocator / 2.41 signal — and nothing at all at 4.25** | [`phase3-s3-allocation.md`](phase3-s3-allocation.md) |
+| 13 | At matched bytes, what are the allocator and the signal each worth? | **+4.31 over uniform at 3.25 bits, split 1.91 allocator / 2.41 signal — and nothing at 4.25, where the maps diverge just as far and buy nothing** | [`phase3-s3-allocation.md`](phase3-s3-allocation.md) |
 
 The method itself — signals, sensitivity estimator, allocator, encoder, format, packed
 runtime, kernels — is documented end to end in the
@@ -475,10 +475,24 @@ at 4.25, widest drift +0 B).
 
 **At 3.25 bits the method works. At 4.25 nothing does.** `dq3` beats uniform by **+4.31** mean
 points and has the best mean at both budgets, but at 4.25 all sixteen comparisons sit between
-p = 0.22 and p = 1.00 — uniform is already within 6.15 points of bf16, every role floor is
-affordable, all three allocating arms report zero violations, and the maps converge. §11
-predicted exactly this from the allocation side: **the allocator earns its keep only where the
-floors stop being affordable.**
+p = 0.22 and p = 1.00 — uniform is already within 6.15 points of bf16 and the floors stop
+binding (182 breaches at 3.25 against 1 at 4.25). §11 predicted exactly this from the
+allocation side: **the allocator earns its keep only where the floors stop being affordable.**
+
+**But not for the reason the first draft gave.** It said the 4.25 maps converge; they do not.
+`dq4` differs from uniform on **99 of 254 modules** — more than `dq3`'s 96 — and promotes 37 to
+8 bits where uniform has none. The null is not a degenerate allocation scoring like uniform
+because it *is* uniform; it is a heavy reallocation that buys nothing measurable. The exception
+is `rank4`, 82 % identical to uniform with 45 modules moved, which really did stop allocating —
+a different null with a different cause, hiding under the same p-values. The correction came
+from reading the committed maps instead of inferring their shape from floor counts and eval
+discordance.
+
+**The signal's whole footprint is 39 modules of 254.** `dq3` and `shuf3` share allocator,
+budget and byte total, so their disagreements are exactly what the measured signal moved: 15 %
+of modules over 24 of 36 layers, concentrated in `o_proj` (17), `q_proj` (11) and `gate_proj`
+(9), two-way at matched bytes — 14 promoted 2→3 paid for by 11 demoted 3→2. That is what
++2.41 mean points and the +4.78 on GSM8K are bought with.
 
 **The signal is 56 % of the 3.25-bit margin — where on Qwen3.5-2B it was 12 %.** The
 decomposition is `dq − rtn = +4.31 = allocator +1.91 + signal +2.41`. Same anchor, same module
