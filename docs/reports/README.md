@@ -4,7 +4,7 @@ Every experiment run on DynQuant since the package was built, what it measured, 
 full record lives. Nothing here is taken from the paper; everything is measured on this
 repository's own code, all of it on a single NVIDIA A100 80GB PCIe.
 
-There are ten campaigns. They answer ten different questions, in this order:
+There are twelve campaigns. They answer twelve different questions, in this order:
 
 | # | question | verdict | full record |
 |---|---|---|---|
@@ -18,6 +18,8 @@ There are ten campaigns. They answer ten different questions, in this order:
 | 8 | What does fusion cost the one panel model that has it? | **0.21 of 4.43 floor bits** — and the two panel models are in different regimes at the same target | [`phase3-s3-fused-floors.md`](phase3-s3-fused-floors.md) |
 | 9 | Did the S2 fine-tune produce a signal map worth spending? | **Yes, with one caveat** — `embed_tokens` scores on nothing and pays 67.8 % of the floor shortfall | [`phase3-s2-phi-signal-map.md`](phase3-s2-phi-signal-map.md) |
 | 10 | Is S3's shuffled control actually ablating the signal? | **No — it was a null by construction.** 0 of 129 modules differed from the treatment; it permuted a file the allocator had stopped reading | [`phase3-s3-null-control.md`](phase3-s3-null-control.md) |
+| 11 | Did the second S2 fine-tune produce a signal map worth spending? | **Yes, and it exposed a ranker defect** — a singleton role group scores 0.5 against itself, costing the baseline a whole bit on 6.7 % of the model | [`phase3-s2-ministral-signal-map.md`](phase3-s2-ministral-signal-map.md) |
+| 12 | Does S3's resume guard know a fresh map from a stale one? | **No, twice over** — it compared against a file it regenerates, and called a metadata reordering a content change | [`phase3-s3-reuse-guard.md`](phase3-s3-reuse-guard.md) |
 
 The method itself — signals, sensitivity estimator, allocator, encoder, format, packed
 runtime, kernels — is documented end to end in the
@@ -423,6 +425,45 @@ a decision, not a fix. The *verifier* was: it now enumerates singleton role grou
 is what forced §9's correction above.
 
 ---
+
+## 12. Phase 3 — S3, a resume guard that measured the wrong thing
+
+Full report: [phase3-s3-reuse-guard.md](phase3-s3-reuse-guard.md). Found while clearing the
+way for the S3 quantize-and-eval sweep, before any of it was launched.
+
+Six maps are allocated before a single weight is written, three of them priced from the
+channel moments at about 1 h 45 m of CPU each — seven hours before the GPU has anything to do.
+`--reuse-maps` skips that, and its whole burden is telling a current map from a stale one,
+because existence on disk says nothing about *when* a file was written. It got that wrong in
+both directions at once.
+
+**It stamped freshness against a file the same run regenerates.** The maps' mtimes were
+compared to the stats file each map *names* — but for the three signal arms that is a derived
+variant the driver writes at the top of every invocation. The comparison asked *is this map
+older than a file I wrote thirty seconds ago*, answered yes, and rebuilt five of six. The fix
+stamps against the run's sources — S2's stats and moments and the merged checkpoint — and
+leaves the variants their real job, which is the **identity** witness separating `shuf3` from
+`dq3`, two arms that name the same model, allocator and group size.
+
+**And it called a metadata reordering a content change.** With the first defect fixed,
+`arms.json`'s `rewritten: false` is the only record that a reused map was priced from the
+numbers now on disk — and it was a constant `true`. Root-caused, not waved off:
+`safetensors.torch.save_file` serialises `__metadata__` from a Rust hash map, and Rust seeds
+each map instance separately, so **two writes of the same object in one process differ**.
+Measured on the Ministral moments: both 11 519 008 B, payload byte-identical, headers equal as
+parsed mappings, 506 tensors with **0 differing values**, 254 metadata entries equal as a
+mapping — and the first differing byte at offset **43**, where the key order splits. So
+`sha256(file)` is not a content identity for a safetensors artifact, and every hash-based
+cache, dedup or provenance check built on one reports a change every time while distinguishing
+nothing.
+
+Verified end to end before the sweep launched: 7 of 7 maps reused, both variants
+`rewritten: false`, widest byte drift **+0 B** at both anchors. Independently, the seven maps
+on the box are sha256-identical to the seven committed — including `map.rank3.json`, which the
+aborted dry run had rebuilt from scratch, which is a determinism proof nobody designed.
+Nothing downstream had run, so no reported number changes. The transferable rule: **a resume
+guard must compare against what it reads, not against what it writes** — and a comparison that
+is too strict does not fail safe, it just stops distinguishing anything.
 
 ## Conventions that apply to every campaign
 
