@@ -6,9 +6,9 @@ records committed beside this file, so the report can be re-derived without the 
 Three things it does that a spreadsheet would not. It pairs: each cell stores per-item
 ``hits``, so every arm-vs-arm difference is an exact McNemar test rather than two independent
 proportions -- the arms are the same weights at different allocations and agree on most items,
-so only the disagreements carry information. It corrects: 28 comparisons are computed here and
-a p-value read without accounting for that is not what it appears to be, so the Bonferroni
-threshold is printed beside the raw ones. And it decomposes: ``dq - rtn`` splits into
+so only the disagreements carry information. It corrects: forty-eight comparisons are computed
+here and a p-value read without accounting for that is not what it appears to be, so the
+Bonferroni threshold is printed beside the raw ones. And it decomposes: ``dq - rtn`` splits into
 ``shuf - rtn`` (what the allocator is worth with the signal permuted) plus ``dq - shuf`` (what
 the signal adds on top), which is the whole question S3 exists to answer.
 
