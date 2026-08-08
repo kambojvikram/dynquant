@@ -1423,11 +1423,31 @@ Two constraints pull opposite ways, and they are not symmetric.
 underpowered panel is not a weaker conclusion -- it is a re-run of all seven arms, because `limit`
 is a pairing field and a larger set cannot be bolted onto records scored at a smaller one. The
 comparison is McNemar on the stored hit vectors, so the standard error of a paired difference is
-`sqrt(b + c) / n` in the discordant count `b + c`, not the much larger unpaired one. Taking 8%
-discordance between two quantizations of the same fine-tune -- the rate this campaign has seen
-between arms that agree on most items and disagree on the hard ones -- a 1.0-point difference lands
-at *z* = 1.58, *p* = 0.11 over 2 000 items and *z* = 2.24, *p* = 0.025 over 4 000. Four thousand is
-where a one-point effect becomes reportable; two thousand is where it becomes an anecdote.
+`sqrt(d / n)` in the *discordance rate* `d`, not the much larger unpaired one; and the head-to-head
+block is six comparisons under Holm, so the smallest *p* in it has to clear 0.05 / 6 = 0.0083, or
+*z* = 2.64.
+
+That leaves `d`. It was first written here as 8%, from memory, and it is wrong. Phase 3's stored hit
+vectors answer it directly, and they were already on disk: over the twelve same-width pairs among
+Ministral-8B's quantized arms, two quantizations of one model disagree on a **median 20.0% of IFEval
+items and 18.0% of HumanEval items**, and the 3-bit pairs run higher than the 4-bit ones -- `dq3` vs
+`rank3` at 25.7% against `rank4` vs `shuf4` at 11.6%. Quantization does not perturb a few hard items
+at the margin; it reshuffles a fifth of the benchmark and mostly breaks even. At `d = 0.20` the
+smallest difference Holm can call is:
+
+| items | s.e. of the paired difference | smallest callable difference |
+| ---: | ---: | ---: |
+| 4 000 | 0.71 pts | 1.87 pts |
+| 6 000 | 0.58 pts | 1.52 pts |
+| 8 000 | 0.50 pts | 1.32 pts |
+| 12 000 | 0.41 pts | 1.08 pts |
+| 21 729 | 0.30 pts | 0.80 pts |
+
+The prior DynQuant-over-GPTQ headline was **+1.54 points**. So 4 000 items -- the number the 8%
+figure endorsed two paragraphs ago -- buys a null result at full price, and the floor is **8 000**.
+Recorded as a correction rather than quietly applied, because the shape is worth keeping: the
+assumption was off by a factor of two and a half, it was the only input to the decision, and it
+reversed it. Checking it cost one pass over records this campaign had already written.
 
 **Wall clock is the other, and it was never measured.** No text-to-SQL eval in this campaign
 recorded its seconds against an item count, so the cost of an arm on this model is unknown to
@@ -1435,6 +1455,15 @@ within an order of magnitude, and the honest response to an unknown that decides
 measure it rather than to pick a limit that sounds reasonable. Hence `s4_probe.sh`: 128 items on
 the merge under the panel's own flags, byte for byte, differing only in the number being measured.
 It costs minutes and prices everything after it.
+
+The probe sweeps batch size while it is there, because that is the only lever that buys wall clock
+without costing power. `batch_size` is deliberately outside `PAIRING_FIELDS`: left-padded decode can
+move the last bits of a logit, so two batch sizes are not guaranteed identical per-item outcomes,
+but the prompts and the problems are the same and that is what pairing is about. Raising it
+uniformly across all seven arms is therefore legitimate where shortening the decode budget or
+thinning the item set is not. The task default is 32 on a 97 GiB card holding a 16.5 GB model whose
+KV cache spans six attention layers out of twenty-four -- so 32 is a default, not a measurement, and
+the probe measures 32, 64 and 128. An out-of-memory at 128 is a result and is reported as one.
 
 The probe earns its place twice over, because it also answers a question that should be asked
 before seven arms are spent on a checkpoint. The base model scored **57.75%** on 400 of these
