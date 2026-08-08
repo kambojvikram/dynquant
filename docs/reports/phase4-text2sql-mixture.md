@@ -1054,6 +1054,39 @@ exactly. Both are tracked on purpose. The routers are the ones that would matter
 not: a router is a `Linear` named `gate`, it is the module whose corruption collapses routing
 outright, and it is measured here rather than assumed.
 
+### The panel's interpreter is not the fine-tune's, so both were tested
+
+The fine-tune runs under transformers 5.14.1 / torch 2.11; the panel runs under
+`venv-llmc`, which is transformers **5.10.1** / torch 2.12, because that is where
+`llmcompressor` and its `lfm2_moe` support live. Two things follow, and neither was checked
+before the panel was already written.
+
+The first is forward compatibility. The trainer writes the checkpoint under 5.14.1 and the panel
+reads it under 5.10.1, which is the newer-writes-older direction -- the one that actually breaks.
+Tested rather than assumed, with the 38 M structural double: saved under 5.14.1, loaded under
+5.10.1, forward pass finite, 38,552,064 parameters. It works, and the seven-hour panel does not
+begin with a load error.
+
+The second is the decode settings, and this is the trap from an earlier campaign. LFM2.5-8B-A1B's
+`generation_config.json` ships `temperature: 0.2`, `top_k: 80`, and `repetition_penalty: 1.05` --
+chat defaults, reasonable for chat, not what a benchmark should decode with. Temperature and
+top-k are inert under greedy and transformers says so out loud (*"generation flags are not valid
+and may be ignored"*). The repetition penalty is not inert: it is a logits **processor**, not a
+sampling warper, so it rewrites the logits before the argmax whether or not sampling is on. That
+is the field that cost 19 GSM8K points once already, on a checkpoint shipping 1.1.
+
+`greedy_generation_config` pins it, along with the rest of `NEUTRAL_DECODE`. The question is
+whether the pin still holds on 5.10.1, and the honest answer required a control. Generating three
+ways on the double -- through the guard, through a fully pinned config, and through a config that
+names `do_sample=False` but leaves the penalty unset -- the first attempt returned *all three
+identical*, which reads like a pass and is worthless: with random weights a 1.05 penalty never
+flips an argmax, so the comparison could not have detected a failure either. Repeating it at
+`repetition_penalty: 5.0` separated them: guarded still equals fully-pinned, and both now differ
+from the unset one. So the 5.x refill is real on the panel's exact interpreter, the guard defeats
+it, and the earlier all-identical result was a fixture without resolution rather than a guard
+doing its job. A tripwire that cannot fire is the thing this campaign keeps re-learning; here it
+cost one extra command instead of a run.
+
 ---
 
 ## 13. Status
@@ -1077,7 +1110,10 @@ decode budget off (§8) -- `load_linearized` exercised on the real checkpoint, a
 mixture decontaminated against its own benchmark (§11), which removed 4016 rows the fine-tune
 would otherwise have been trained on and scored against.
 
-Also done since: the signal file audited mid-run -- 44 expert-bank tensors with none missing,
+Also done since: both interpreters tested against each other -- a 5.14.1-written checkpoint
+loads and runs under the panel's 5.10.1, and the greedy pin still defeats the checkpoint's
+repetition penalty there, verified with a control after the first check turned out to be blind.
+The signal file audited mid-run -- 44 expert-bank tensors with none missing,
 152 modules closing exactly as 112 quantizable plus 18 conv plus 22 routers, and both anchors
 cross-confirming the same fp16 remainder. And the table the panel lands in, written before the
 panel runs -- ten tests and thirteen mutations against a synthetic seven-arm run, sizes read from the manifest rather than from
