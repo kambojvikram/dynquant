@@ -774,6 +774,41 @@ before this change cannot be shown to match one written after it, and "unknown" 
 That costs a re-run of anything being compared against the older records; the alternative cost is a
 wrong number in a table.
 
+### The budget nobody was going to state
+
+The two guards above make the seven records agree with each other. Neither of them makes the
+records agree with the plan, and on the decode budget they did not.
+
+§8 ends by deciding that the arms run at the budget the fine-tuned bf16 ceiling is cleared at,
+and that 1024 is the number to try. The driver did not say so. `--max-new-tokens` defaulted to
+`None`, and `eval_flags` passed the flag only when it was set -- deliberately, on the reasoning
+that an inherited default is inherited identically by all seven arms and therefore pairs. That
+reasoning is sound and the premise is false: there are two defaults. `dynquant eval` resolves an
+unset budget through `_TaskSpec("text2sql").max_new_tokens`, which is **320**; the in-process
+`DEFAULT_CHAT_CONFIG` used by direct callers says **384**. The panel routes through the CLI, so
+all seven arms would have run at 320 -- consistently, pairably, and 704 tokens under the number
+the ceiling was supposed to establish.
+
+What that costs is not a small bias. A query cut mid-clause does not score as a near-miss; it
+fails to parse, or parses and errors, so a binding budget is a floor under accuracy rather than a
+tax on it. And it binds *unevenly*: the arm most likely to ramble is the most damaged one, which
+is the arm the campaign is trying to measure. The result would have read as quantization damage
+and been reported as such.
+
+Three changes. The flag now defaults to **1024** in the panel's own parser and is passed
+unconditionally, so the number is in the record rather than in a lookup table two packages away.
+`check_uncensored` runs on the ceiling -- the first arm, by `plan_arms`' ordering -- and refuses
+the panel if any generation was still deliberating at the cap, because a censored ceiling is a
+roof the flag set rather than one the model set, and every arm underneath is then compared
+beneath it. And `check_pairable` moved inside the loop, so a stale record is caught by the arm
+that exposed it rather than after six more have been spent.
+
+The censoring check is deliberately asymmetric: it fires for the ceiling and for nothing else. A
+3-bit arm that stops closing its queries inside a budget bf16 cleared comfortably is not a defect
+in the run, it is the finding -- `unfinished_reasoning` is already in the record so the table can
+report it. Refusing that arm would delete the result. Refusing a censored *ceiling* preserves the
+panel, and it costs one arm's rerun at an hour rather than the whole panel's at seven.
+
 ---
 
 ## 13. Status

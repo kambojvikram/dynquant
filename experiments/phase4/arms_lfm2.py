@@ -146,14 +146,18 @@ def eval_flags(args: argparse.Namespace, label: str) -> list[str]:
         str(args.shot_seed),
         "--prompt-style",
         args.prompt_style,
+        # Stated on every command rather than left to the task spec, which would answer
+        # 320 and censor the arms. Unconditional, unlike `--limit`: an absent budget is
+        # only safe when every arm inherits the same default, and the defaults differ
+        # between the CLI parser and the in-process config -- so the panel says it.
+        "--max-new-tokens",
+        str(args.max_new_tokens),
         "--keep-predictions",
         str(args.keep_predictions),
     ]
     for name, value in (("--limit", args.limit), ("--batch-size", args.batch_size)):
         if value is not None:
             flags += [name, str(value)]
-    if args.max_new_tokens is not None:
-        flags += ["--max-new-tokens", str(args.max_new_tokens)]
     return flags
 
 
@@ -349,6 +353,34 @@ def require_one_stack() -> None:
         )
 
 
+def check_uncensored(record: Path) -> None:
+    """The ceiling closed its reasoning inside the budget, so the roof is the model's.
+
+    Called on the ceiling alone and before anything else runs. A quantized arm that
+    deliberates past the cap is measuring a real effect of quantization and is recorded as
+    such; a *ceiling* that does is measuring the cap, and every arm underneath it is then
+    compared beneath a lowered roof -- differences between them come partly from how much
+    budget each had left, and the whole panel is scored against a headline that is not the
+    model's.
+
+    Strict rather than tolerant. This fires once, an hour into a seven-hour run, and the
+    answer to it is a larger ``--max-new-tokens`` and a rerun of one arm. A threshold here
+    would only be a number chosen to make the message stop.
+    """
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    detail = payload.get("detail") or {}
+    unfinished = int(detail.get("unfinished_reasoning", 0))
+    if unfinished:
+        total = int(payload.get("total", 0)) or 1
+        budget = (payload.get("decode") or {}).get("max_new_tokens")
+        raise SystemExit(
+            f"the bf16 ceiling left {unfinished}/{total} generations ({unfinished / total:.1%}) "
+            f"still deliberating at {budget} new tokens, so its {payload.get('accuracy', 0):.2%} "
+            f"is a decode budget and not a headroom. Raise --max-new-tokens and delete "
+            f"{record}; the six quantized arms have not been spent."
+        )
+
+
 def check_pairable(arms: list[Arm]) -> None:
     """Every record in the panel agrees on the settings a paired test refuses to cross.
 
@@ -369,11 +401,10 @@ def check_pairable(arms: list[Arm]) -> None:
     """
     from dynquant.commands.evaluate import _comparability
 
-    records = {
-        arm.label: json.loads(Path(arm.record).read_text(encoding="utf-8"))
-        for arm in arms
-        if arm.record
-    }
+    # Every arm passed in has been scored -- the caller hands over the prefix of the panel
+    # that has, not the whole panel. Filtering here instead would make the check silently
+    # weaker the earlier it is called, which is the opposite of what calling it early is for.
+    records = {arm.label: json.loads(Path(arm.record).read_text(encoding="utf-8")) for arm in arms}
     reference = arms[0].label
     expected = _comparability(records[reference])
     for label, record in records.items():
@@ -414,6 +445,7 @@ def do_run(args: argparse.Namespace) -> int:
         if arm.kind == "ceiling":
             if not reused:
                 _run(ceiling_cmd(args, arm, record), what=arm.label)
+            check_uncensored(record)
         elif arm.kind == "dq":
             if not reused:
                 _run(dq_inspect_cmd(args, arm, save_map), what=f"{arm.label} allocation")
@@ -429,8 +461,9 @@ def do_run(args: argparse.Namespace) -> int:
             if not reused:
                 _run(baseline_cmd(args, arm, record), what=arm.label)
         arm.record = str(record)
-
-    check_pairable(arms)
+        # Against everything scored so far rather than once at the end: a reused record
+        # from another run is caught after the arm that exposed it, not after six more.
+        check_pairable([one for one in arms if one.record])
 
     manifest = out / "arms.json"
     manifest.write_text(
@@ -489,7 +522,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--prompt-style", default="chat")
     run.add_argument("--limit", type=int, default=None)
     run.add_argument("--batch-size", type=int, default=None)
-    run.add_argument("--max-new-tokens", type=int, default=None)
+    # 1024, not the task spec's 320, and set here rather than left to default so all seven
+    # arms carry the same number into their records. The base model's closure distribution
+    # (report section 8) is p50 277 / p90 608 / p95 778 with 2.5% still deliberating at 1024,
+    # and a query truncated mid-clause scores as a syntax error rather than as an answer.
+    # That distribution does not transfer -- the arms quantize the *fine-tuned* model, which
+    # was taught to answer directly -- which is why the ceiling runs first and is checked for
+    # censoring before six more arms are spent under the same roof.
+    run.add_argument("--max-new-tokens", type=int, default=1024)
     # Zero, because the pairing does not ride on this. `hits` is written for every item
     # whatever this is set to; `predictions` is a debugging sample of raw generations, and
     # seven arms x 400 of them is a manifest nobody reads. Raise it to look at an arm.

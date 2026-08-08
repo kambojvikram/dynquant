@@ -648,6 +648,16 @@ Phi-4-mini's 68.76%. IFEval and the code tasks record their resolved style; `tex
 already go, and absence is exempted from the "this run always writes it" guard but still refuses
 against a record that has one — "unknown" is not "the same".
 
+The same pass caught the panel about to run at a budget nobody chose. `--max-new-tokens` was left
+unset on the reasoning that an inherited default is inherited identically by all seven arms; there
+are two defaults, the CLI's task spec says **320** and the in-process chat config says **384**, and
+the panel routes through the CLI. All seven would have been consistent, pairable, and 704 tokens
+under the 1024 the ceiling was meant to establish — and a truncated query does not near-miss, it
+fails to parse, so a binding budget is a floor under accuracy that binds hardest on the most
+damaged arm. The panel now states 1024 on every command, refuses a *ceiling* that was still
+deliberating at the cap, and pairs after each arm rather than after all seven. A censored
+quantized arm is left alone: that one is the finding, not a defect in the run.
+
 ## Conventions that apply to every campaign
 
 **Paired tests on stored per-item hits.** Every arm stores which items it got right, so every

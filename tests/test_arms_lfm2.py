@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -167,27 +168,35 @@ def test_the_pairing_fields_are_pinned_on_the_command_line_or_by_the_command(arm
     default: the record writes what was *resolved*, so an arm whose split was inherited
     records the same value under a different provenance and pairs by luck.
 
-    ``limit`` and ``max_new_tokens`` are the two that may legitimately be absent. Absent
-    means every arm inherits the same task default, which is what pairing needs; what would
-    break it is one arm carrying the flag and another not, so the assertion is on the pair
-    moving together.
+    ``limit`` is the one that may legitimately be absent. Absent means every arm inherits
+    the same task default, which is what pairing needs; what would break it is one arm
+    carrying the flag and another not, so the assertion is on it moving for all or none.
+
+    ``max_new_tokens`` used to be in that category and is not. Inheriting is only safe when
+    there is one default to inherit, and there are two: the CLI's task spec answers 320
+    while the in-process chat config answers 384. The panel therefore states its budget on
+    every command, and the number is the one the ceiling was measured at.
 
     Turns red when: a new pairing field is added to the eval contract and no flag here
-    carries it, or one of these stops being passed.
+    carries it, one of these stops being passed, or the decode budget goes back to being
+    inherited.
     """
     flags = arms.eval_flags(_args(arms), "dq_4b")
 
     fixed_by_the_command = {"task", "backend"}
-    optional = {"limit", "max_new_tokens"}
+    optional = {"limit"}
     for name in (*PAIRING_FIELDS, *DECODE_PAIRING_FIELDS):
         if name in fixed_by_the_command or name in optional:
             continue
         assert f"--{name.replace('_', '-')}" in flags, f"{name} is left to the eval default"
 
-    wider = _args(arms, [*RUN, "--limit", "400", "--max-new-tokens", "1024"])
-    with_both = arms.eval_flags(wider, "dq_4b")
-    assert "--limit" in with_both and "--max-new-tokens" in with_both
-    assert "--limit" not in flags and "--max-new-tokens" not in flags
+    assert flags[flags.index("--max-new-tokens") + 1] == "1024"
+    for kind in ("bf16", "gptq_4b", "dq_3b"):
+        assert arms.eval_flags(_args(arms), kind).count("--max-new-tokens") == 1
+
+    with_limit = arms.eval_flags(_args(arms, [*RUN, "--limit", "400"]), "dq_4b")
+    assert "--limit" in with_limit
+    assert "--limit" not in flags
 
 
 # --- matched bytes --------------------------------------------------------------------
@@ -452,6 +461,40 @@ def test_an_arm_asked_a_different_kind_of_question_is_refused(arms: Any, tmp_pat
         arms.check_pairable(panel)
 
 
+ANCHORS = {4: 4_399_629_312, 3: 3_332_904_576}
+PANEL = ("bf16", "gptq_4b", "awq_4b", "dq_4b", "gptq_3b", "awq_3b", "dq_3b")
+
+
+def _resumable(
+    arms: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    records: dict[str, dict[str, Any]],
+) -> tuple[Path, list[str]]:
+    """A directory `do_run --resume` can walk, and the list of arms it decided to spend.
+
+    Every DynQuant arm gets a map at its anchor, because a resumed one is still weighed;
+    ``records`` decides which arms are already scored, and anything absent from it is an
+    arm the run would have to launch. ``_run`` records rather than raises so a test can
+    assert on *where* the run stopped, not only that it did.
+    """
+    out = tmp_path / "arms"
+    (out / "maps").mkdir(parents=True)
+    for label, width in (("dq_4b", 4), ("dq_3b", 3)):
+        (out / "maps" / f"{label}.json").write_text(
+            json.dumps({"maps": {str(ANCHORS[width]): {"nbytes": ANCHORS[width], "bits": {}}}}),
+            encoding="utf-8",
+        )
+    for label, payload in records.items():
+        (out / f"{label}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    spent: list[str] = []
+    monkeypatch.setattr(arms, "require_one_stack", lambda: None)
+    monkeypatch.setattr(arms, "anchor_bytes", lambda model, group_size: ANCHORS)
+    monkeypatch.setattr(arms, "_run", lambda cmd, what: spent.append(what))
+    return out, spent
+
+
 def test_a_resumed_arm_is_weighed_even_though_it_is_not_run(
     arms: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -464,25 +507,10 @@ def test_a_resumed_arm_is_weighed_even_though_it_is_not_run(
 
     Turns red when: the resume branch short-circuits the arm before it is priced.
     """
-    out = tmp_path / "arms"
-    (out / "maps").mkdir(parents=True)
-    anchors = {4: 4_399_629_312, 3: 3_332_904_576}
-    for label, anchor in (("dq_4b", 4), ("dq_3b", 3)):
-        (out / "maps" / f"{label}.json").write_text(
-            json.dumps({"maps": {str(anchors[anchor]): {"nbytes": anchors[anchor], "bits": {}}}}),
-            encoding="utf-8",
-        )
-    for label in ("bf16", "gptq_4b", "gptq_3b", "awq_4b", "awq_3b", "dq_4b", "dq_3b"):
-        (out / f"{label}.json").write_text(json.dumps(_record()), encoding="utf-8")
+    out, spent = _resumable(arms, tmp_path, monkeypatch, {one: _record() for one in PANEL})
 
-    monkeypatch.setattr(arms, "require_one_stack", lambda: None)
-    monkeypatch.setattr(arms, "anchor_bytes", lambda model, group_size: anchors)
-    monkeypatch.setattr(
-        arms, "_run", lambda *a, **k: pytest.fail("a resumed arm must not be re-run")
-    )
-
-    argv = [*RUN[:-1], str(out), "--resume"]
-    assert arms.do_run(_args(arms, argv)) == 0
+    assert arms.do_run(_args(arms, [*RUN[:-1], str(out), "--resume"])) == 0
+    assert spent == [], "a resumed arm must not be re-run"
 
     manifest = json.loads((out / "arms.json").read_text(encoding="utf-8"))
     priced = {arm["label"]: arm["nbytes"] for arm in manifest["arms"]}
@@ -510,25 +538,14 @@ def test_the_run_itself_refuses_a_panel_it_cannot_pair(
 
     Turns red when: the call is dropped from ``do_run``, or moved after the manifest write.
     """
-    out = tmp_path / "arms"
-    (out / "maps").mkdir(parents=True)
-    anchors = {4: 4_399_629_312, 3: 3_332_904_576}
-    for label, anchor in (("dq_4b", 4), ("dq_3b", 3)):
-        (out / "maps" / f"{label}.json").write_text(
-            json.dumps({"maps": {str(anchors[anchor]): {"nbytes": anchors[anchor], "bits": {}}}}),
-            encoding="utf-8",
-        )
-    for label in ("bf16", "gptq_4b", "gptq_3b", "awq_4b", "awq_3b", "dq_4b"):
-        (out / f"{label}.json").write_text(json.dumps(_record()), encoding="utf-8")
-    (out / "dq_3b.json").write_text(json.dumps(_record(limit=200)), encoding="utf-8")
-
-    monkeypatch.setattr(arms, "require_one_stack", lambda: None)
-    monkeypatch.setattr(arms, "anchor_bytes", lambda model, group_size: anchors)
-    monkeypatch.setattr(arms, "_run", lambda *a, **k: pytest.fail("nothing should re-run"))
+    records = {one: _record() for one in PANEL}
+    records["dq_3b"] = _record(limit=200)
+    out, spent = _resumable(arms, tmp_path, monkeypatch, records)
 
     with pytest.raises(SystemExit, match="cannot be paired"):
         arms.do_run(_args(arms, [*RUN[:-1], str(out), "--resume"]))
 
+    assert spent == [], "nothing should re-run"
     assert not (out / "arms.json").exists()
 
 
@@ -546,3 +563,152 @@ def test_a_resumed_dynquant_arm_whose_allocation_is_gone_is_refused(
     """
     with pytest.raises(SystemExit, match="does not exist"):
         arms.map_nbytes(tmp_path / "dq_4b.json", "4399629312")
+
+
+# --- decode budget ----------------------------------------------------------------------
+#
+# The panel's roof. Every arm generates SQL under the same `--max-new-tokens`, and a query
+# cut mid-clause scores as a syntax error rather than as an answer -- so a budget that binds
+# is a floor under every arm's accuracy, and it binds unevenly because a damaged arm rambles.
+# The ceiling runs first and is checked for censoring so the roof is known to be the model's
+# before six quantization passes are spent under it.
+
+
+def test_a_ceiling_that_ran_out_of_budget_is_refused(arms: Any, tmp_path: Path) -> None:
+    """A censored ceiling is not a headroom, and the six arms beneath it are not comparable.
+
+    Quantized arms may legitimately run past the cap -- deliberating longer *is* damage, and
+    the record says so. The ceiling is the one arm where it means the opposite: the number
+    every difference in the table is measured against was set by the flag rather than by the
+    model, and the flag is the same for all seven, so the whole panel tilts together.
+
+    The message carries the count and the budget because the fix is a specific larger
+    number, and the operator reading it has an hour of ceiling and six hours of arms in
+    front of them.
+
+    Turns red when: the ceiling stops being checked, or the check reports the failure
+    without saying what budget produced it.
+    """
+    record = tmp_path / "bf16.json"
+    record.write_text(
+        json.dumps(
+            _record(
+                total=400,
+                accuracy=0.6125,
+                detail={"prompt_style": "chat", "unfinished_reasoning": 10, "by_source": {}},
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match=r"10/400 generations \(2\.5%\).*at 384 new tokens"):
+        arms.check_uncensored(record)
+
+
+def test_a_ceiling_that_closed_inside_the_budget_passes(arms: Any, tmp_path: Path) -> None:
+    """Zero unfinished is the whole condition -- no tolerance, and no other reason to fail.
+
+    Paired with the refusal above so the guard is pinned from both sides: one that fired on
+    every ceiling would be removed within a run, and one that never fired would not be
+    noticed at all. The record here is the ordinary shape, including an accuracy well short
+    of 100%, because being wrong is not being censored.
+
+    Turns red when: a threshold is introduced, or the check reads a field that an
+    uncensored record does not carry.
+    """
+    record = tmp_path / "bf16.json"
+    record.write_text(json.dumps(_record(total=400, accuracy=0.6125)), encoding="utf-8")
+
+    arms.check_uncensored(record)
+
+
+def test_the_run_stops_at_the_ceiling_before_a_quantized_arm_is_spent(
+    arms: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ordering is the point of the check, so the test is on what did not run.
+
+    ``plan_arms`` puts the ceiling first for exactly this: the censoring verdict is
+    available after one arm and invalidates the other six, and six hours is the cost of
+    learning it afterwards. A ``check_uncensored`` called at the end of ``do_run`` would
+    pass every unit test above and still let the whole panel run under a lowered roof.
+
+    Turns red when: the ceiling check moves after the loop, or the panel is reordered so a
+    quantized arm runs first.
+    """
+    censored = _record(
+        total=400, detail={"prompt_style": "chat", "unfinished_reasoning": 10, "by_source": {}}
+    )
+    out, spent = _resumable(arms, tmp_path, monkeypatch, {"bf16": censored})
+
+    with pytest.raises(SystemExit, match="the bf16 ceiling left"):
+        arms.do_run(_args(arms, [*RUN[:-1], str(out), "--resume"]))
+
+    assert spent == []
+
+
+def test_the_decode_budget_is_a_pairing_field_the_records_carry(arms: Any, tmp_path: Path) -> None:
+    """The budget the ceiling was cleared at is the budget the other six have to be scored at.
+
+    ``check_uncensored`` establishes that 1024 was enough for the ceiling. That says nothing
+    about an arm scored at 320, which is what the eval's own task spec answers when the flag
+    is absent -- and a resumed record from before the budget was pinned carries exactly that.
+    So the guard that clears the roof and the guard that pairs the arms are two halves of
+    one claim, and this is the half that catches the leftover.
+
+    Turns red when: ``max_new_tokens`` leaves ``DECODE_PAIRING_FIELDS``, or the panel's
+    pairing check stops reading the decode block.
+    """
+    panel = _panel(
+        arms,
+        tmp_path,
+        {"bf16": _record(), "dq_4b": _record(decode={"max_new_tokens": 320, "batch_size": 8})},
+    )
+
+    with pytest.raises(SystemExit, match=re.escape("decode.max_new_tokens")):
+        arms.check_pairable(panel)
+
+
+def test_a_mismatched_arm_stops_the_run_before_the_next_one_is_launched(
+    arms: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Checked after every arm, not once at the end, because the end is six hours away.
+
+    The realistic shape: a resume into a directory holding one record from an earlier,
+    narrower run. Pairing at the end would catch it -- after launching the five arms that
+    were not resumed, which is the entire cost the check exists to avoid. Here only the
+    ceiling and a stale ``gptq_4b`` are on disk, so an end-of-loop check would spend
+    ``awq_4b`` and everything after it.
+
+    Turns red when: ``check_pairable`` moves back out of the loop, or is passed the whole
+    panel including arms that have not been scored yet.
+    """
+    records = {"bf16": _record(), "gptq_4b": _record(limit=200)}
+    out, spent = _resumable(arms, tmp_path, monkeypatch, records)
+
+    with pytest.raises(SystemExit, match="gptq_4b was not scored under the same settings"):
+        arms.do_run(_args(arms, [*RUN[:-1], str(out), "--resume"]))
+
+    assert spent == []
+
+
+def test_a_quantized_arm_that_ran_out_of_budget_is_recorded_not_refused(
+    arms: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deliberating past the cap is a result for a quantized arm and a defect for the ceiling.
+
+    The same number means two different things depending on which arm produced it, which is
+    why the check is wired to one arm rather than applied to the record schema. A 3-bit arm
+    that stops closing its queries inside a budget the bf16 model cleared comfortably is the
+    damage this campaign exists to measure -- refusing it would delete the finding, and the
+    eval already records the count so the table can report it.
+
+    Turns red when: the censoring check is applied to every arm instead of the ceiling.
+    """
+    records = {one: _record() for one in PANEL}
+    records["dq_3b"] = _record(
+        total=400, detail={"prompt_style": "chat", "unfinished_reasoning": 37, "by_source": {}}
+    )
+    out, spent = _resumable(arms, tmp_path, monkeypatch, records)
+
+    assert arms.do_run(_args(arms, [*RUN[:-1], str(out), "--resume"])) == 0
+    assert spent == []
