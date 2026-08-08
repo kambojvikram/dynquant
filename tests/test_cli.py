@@ -30,7 +30,7 @@ import pytest
 from test_graph_classify import Qwen3_5ForCausalLM
 
 from dynquant.allocate.knapsack import BitMap, FloorViolation
-from dynquant.cli import EXIT_FAILED, build_parser, main
+from dynquant.cli import EVAL_TASKS, EXIT_FAILED, build_parser, main
 from dynquant.commands import _shared, bench, evaluate, inspect, quantize
 from dynquant.constants import ALLOCATION_FILENAME, ALLOCATION_SCHEMA, BIT_OPTIONS
 from dynquant.errors import DynQuantError
@@ -104,6 +104,21 @@ def test_every_command_is_registered_with_a_handler() -> None:
     assert set(subparsers.choices) == set(COMMANDS)
     for name, sub in subparsers.choices.items():
         assert sub.get_default("handler") is not None, f"{name} has no handler"
+
+
+def test_every_registered_eval_task_is_reachable_from_the_command_line() -> None:
+    """A task in the registry that argparse refuses is implemented and unrunnable.
+
+    This is not hypothetical. ``text2sql`` shipped with a loader, a scorer, a spec in
+    ``TASKS`` and its own test file, and could not be run: ``--task`` carried a
+    hand-written tuple of the other six. The usage error named those six, so it read as
+    a typo rather than as the omission it was, and nothing in the suite disagreed.
+
+    Turns red when a task is added to ``TASKS`` and the parser is not derived from it.
+    """
+    parser = build_parser()
+    for task in EVAL_TASKS:
+        assert parser.parse_args(["eval", "m", "--task", task]).task == task
 
 
 def test_building_the_parser_imports_nothing_heavy() -> None:
@@ -808,7 +823,8 @@ def test_every_task_is_sent_exactly_the_arguments_its_scorer_takes() -> None:
         assert {"label", "config", "progress", "keep_predictions"} <= accepted
         assert ("shots" in accepted) == spec.takes_shots, key
         assert ("on_unverifiable" in accepted) == spec.unverifiable, key
-        for name in ("allow_execution", "style", "timeout", "memory_mb"):
+        assert ("style" in accepted) == spec.takes_style, key
+        for name in ("allow_execution", "timeout", "memory_mb"):
             assert (name in accepted) == spec.executes_code, f"{key}.{name}"
 
         sent = evaluate._task_kwargs(spec, _eval_args(allow_execution=True), ["exemplar"])
@@ -817,8 +833,13 @@ def test_every_task_is_sent_exactly_the_arguments_its_scorer_takes() -> None:
         assert ("on_unverifiable" in sent) == spec.unverifiable, key
         # `timeout`/`memory_mb` are deliberately absent unless asked for, so only the
         # two the task cannot run without are required here.
-        for name in ("allow_execution", "style"):
-            assert (name in sent) == spec.executes_code, f"{key}.{name}"
+        # `style` is checked against `takes_style`, not `executes_code`. The two agreed
+        # on every task in the registry until text2sql, which takes a framing argument
+        # and runs nothing -- so the version of this assertion that read `style` off the
+        # sandbox flag was passing on a coincidence, and the first task to break the
+        # coincidence is the one it would have mis-scored.
+        assert ("style" in sent) == spec.takes_style, key
+        assert ("allow_execution" in sent) == spec.executes_code, key
 
 
 def test_the_field_counting_unscorable_generations_exists_on_every_result() -> None:

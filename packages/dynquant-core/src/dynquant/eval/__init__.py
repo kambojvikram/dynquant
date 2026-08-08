@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from .humaneval import evaluate_humaneval, load_humaneval
     from .ifeval import IfevalResult, evaluate_ifeval, load_ifeval
     from .mbpp import evaluate_mbpp, load_mbpp
+    from .text2sql import Text2SqlResult, evaluate_text2sql, load_text2sql
 
 __all__ = [
     "Banking77Result",
@@ -79,6 +80,7 @@ __all__ = [
     "Gsm8kResult",
     "IfevalResult",
     "PairedComparison",
+    "Text2SqlResult",
     "VllmBackend",
     "compare_paired",
     "evaluate_banking77",
@@ -87,6 +89,7 @@ __all__ = [
     "evaluate_humaneval",
     "evaluate_ifeval",
     "evaluate_mbpp",
+    "evaluate_text2sql",
     "generate_batched",
     "load_banking77",
     "load_casehold",
@@ -94,6 +97,7 @@ __all__ = [
     "load_humaneval",
     "load_ifeval",
     "load_mbpp",
+    "load_text2sql",
     "mcnemar_exact",
 ]
 
@@ -115,6 +119,9 @@ _LAZY = {
     "load_humaneval": "humaneval",
     "evaluate_mbpp": "mbpp",
     "load_mbpp": "mbpp",
+    "Text2SqlResult": "text2sql",
+    "evaluate_text2sql": "text2sql",
+    "load_text2sql": "text2sql",
     "EvalBackend": "harness",
     "EvalConfig": "harness",
     "generate_batched": "harness",

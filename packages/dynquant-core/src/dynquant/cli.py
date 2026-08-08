@@ -8,6 +8,12 @@ ones that exist. Two properties are worth keeping as it grows:
 importing an allocator it was never going to run. ``argparse`` builds the whole
 parser tree at startup, so parser construction must not import anything either.
 
+The one exception is :data:`dynquant.commands.evaluate.TASKS`, imported at module
+scope for ``eval --task``'s choices. It is stdlib-only at import time -- no torch,
+no transformers, nothing that can fail on a broken box -- so it does not cost the
+property above, and it buys the one that matters more: a task cannot be registered
+and remain unreachable, which is exactly what a second hand-written list allowed.
+
 **Exit codes are meaningful.** ``0`` success, ``1`` a DynQuant-level failure with
 a diagnosed message, ``2`` argparse usage error (argparse's own convention),
 ``130`` interrupted. Scripts and CI can branch on that; a traceback is only shown
@@ -23,6 +29,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from ._version import __version__
+from .commands.evaluate import TASKS as EVAL_TASKS
 from .constants import BIT_OPTIONS, COMPUTE_DTYPES, DEFAULT_GROUP_SIZE
 
 if TYPE_CHECKING:
@@ -427,7 +434,12 @@ def _add_eval(subparsers: _SubParsers) -> None:
     parser.add_argument(
         "--task",
         required=True,
-        choices=("gsm8k", "casehold", "banking77", "ifeval", "humaneval", "mbpp"),
+        # Read off the registry rather than listed here. A hand-written copy of this
+        # tuple is how `text2sql` came to be fully implemented, specced and registered
+        # and still unreachable from the command line: the registry had it, argparse
+        # refused it, and the failure was a usage error naming five other tasks rather
+        # than anything pointing at the omission.
+        choices=tuple(EVAL_TASKS),
         help="which task to score",
     )
     _add_loading(parser)
@@ -470,9 +482,9 @@ def _add_eval(subparsers: _SubParsers) -> None:
         default="auto",
         choices=("auto", "chat", "completion"),
         help=(
-            "framing for the code tasks; auto picks chat when the tokenizer has a chat "
-            "template. The largest artifact on these benchmarks, so it is recorded "
-            "with the score (default: auto)"
+            "framing for the tasks that take one (humaneval, mbpp, text2sql); auto "
+            "picks chat when the tokenizer has a chat template. The largest artifact "
+            "on these benchmarks, so it is recorded with the score (default: auto)"
         ),
     )
     parser.add_argument(

@@ -4,7 +4,7 @@ Every experiment run on DynQuant since the package was built, what it measured, 
 full record lives. Nothing here is taken from the paper; everything is measured on this
 repository's own code, all of it on a single NVIDIA A100 80GB PCIe.
 
-There are thirteen campaigns. They answer thirteen different questions, in this order:
+There are fourteen campaigns. They answer fourteen different questions, in this order:
 
 | # | question | verdict | full record |
 |---|---|---|---|
@@ -21,6 +21,7 @@ There are thirteen campaigns. They answer thirteen different questions, in this 
 | 11 | Did the second S2 fine-tune produce a signal map worth spending? | **Yes, and it exposed a ranker defect** — a singleton role group scores 0.5 against itself, costing the baseline a whole bit on 6.7 % of the model | [`phase3-s2-ministral-signal-map.md`](phase3-s2-ministral-signal-map.md) |
 | 12 | Does S3's resume guard know a fresh map from a stale one? | **No, twice over** — it compared against a file it regenerates, and called a metadata reordering a content change | [`phase3-s3-reuse-guard.md`](phase3-s3-reuse-guard.md) |
 | 13 | At matched bytes, what are the allocator and the signal each worth? | **+4.31 over uniform at 3.25 bits, split 1.91 allocator / 2.41 signal — and nothing at 4.25, where the maps diverge just as far and buy nothing** | [`phase3-s3-allocation.md`](phase3-s3-allocation.md) |
+| 14 | Can the phase-4 text-to-SQL benchmark tell a correct answer from a broken one? | **Only after four defects were removed** — two SQLite-semantics bugs discarding a third of one corpus, a DML block teaching an unscoreable answer format, and a registered task argparse refused | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) |
 
 The method itself — signals, sensitivity estimator, allocator, encoder, format, packed
 runtime, kernels — is documented end to end in the
@@ -518,6 +519,41 @@ four 3.25-bit arms within 1.0 point, discordant counts split evenly); it reads d
 allocation, and belongs in no headline that claims an allocator difference. And **no arm wins
 all four tasks at 3.25**, so the mean is never quoted without the per-task table beside it.
 
+## 14. Phase 4 — the text-to-SQL mixture, before any of it is scored
+
+[`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) · screened 2026-08-08
+
+Phase 4 quantizes `LiquidAI/LFM2.5-8B-A1B` six ways against a bf16 ceiling. This entry is the
+benchmark those seven arms will be compared on, and it is here as its own campaign because
+building it found four things, none of which would have shown up as a number that looked wrong.
+
+**Execution accuracy has one failure mode with three shapes.** Two queries that both return
+nothing compare equal, so a set of items whose gold returns nothing scores `SELECT 0` near the
+ceiling. `COUNT(*)` over an empty schema returns `[(0,)]` and an unmatched `AVG` returns
+`[(None,)]` — both pass a naive "did it return rows?" test. Admission requires the database to
+hold rows, the gold to find some, and the answer not to be a single all-NULL/all-zero row.
+
+**A third of WikiSQL was being discarded for the wrong reason.** Its condition values are the
+annotator's typing, its cells are Wikipedia's, and SQLite `=` on `TEXT` is case-sensitive.
+33 % of golds matched nothing and were refused as "gold finds no rows" — a correct refusal with
+an incorrect cause. Declaring `COLLATE NOCASE` took it to 0.4 %.
+
+**Gretel is a SQL corpus, not a query corpus.** 10.2 % of test and 11.3 % of train golds are
+`UPDATE`/`INSERT`/`DELETE`/`CREATE`. The evaluation already excluded them, but as
+`empty_result` — the wrong diagnosis. Training has no row filter, so they survived, and the
+scorer reads an answer by cutting at `SELECT`: an 11 % `UPDATE` diet teaches a response format
+scored `unparseable` on a zero-floor metric, identically across all seven arms. Closed before
+the fine-tune; Gretel's training admission fell from ~78 % to 68.8 %, which is the leak.
+
+**`text2sql` was fully implemented and unreachable.** `dynquant eval --task` carried a
+hand-written copy of the registry, so argparse refused the task with a usage error naming the
+other six. Choices now derive from the registry. Fixing it exposed a test asserting the
+`style` capability against `executes_code` — passing on a coincidence until the first task that
+takes a framing and runs nothing.
+
+Measured admission: 2 796 items on the evaluation split, 5 326 on the training split, balanced
+per source and round-robin interleaved so a truncated run still sees every corpus.
+
 ## Conventions that apply to every campaign
 
 **Paired tests on stored per-item hits.** Every arm stores which items it got right, so every
@@ -547,6 +583,7 @@ as the wins.
 | [`experiments/screen/`](../../experiments/screen/) | the base-model headroom screen that selects a task |
 | [`stats/`](../../stats/) | the signal maps collected by the fine-tune hooks |
 | [`experiments/phase3/`](../../experiments/phase3/) | the phase-3 campaign: the headroom screen, the S2 signal maps, and S3's allocation maps and 36 eval cells with per-item hits |
+| [`experiments/phase4/`](../../experiments/phase4/) | the phase-4 campaign: the text-to-SQL admission screen for both splits, per source, with the refusal broken down by cause |
 | [`docs/format-spec.md`](../format-spec.md) | the checkpoint format contract these experiments write and read |
 | [`docs/legacy-audit.md`](../legacy-audit.md) | what was wrong with the supplementary code, defect by defect |
 | [`decode-neutrality.md`](decode-neutrality.md) | the checkpoint's own `generation_config` reaching a "greedy" decode: how the phase-3 G4 gate found it, which campaigns it does and does not touch, and why the fix took two attempts — the first was correct on transformers 4.x and inert on the 5.x the campaign runs. Ends with what the fixed gate measures: −0.83 points, and a ±1.00 bound GSM8K is too small to resolve |

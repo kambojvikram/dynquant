@@ -820,6 +820,11 @@ def test_every_registered_dataset_names_a_config_the_hub_will_accept(s2, monkeyp
 
     monkeypatch.setitem(sys.modules, "datasets", types.SimpleNamespace(load_dataset=_load))
     for spec in s2.DATASETS.values():
+        # Entries with a `builder` are not one Hub conversation repo and do not take this
+        # path -- text2sql mixes three corpora and executes every gold. Their contract is
+        # pinned by the test below instead of by widening this one until it means nothing.
+        if spec.get("builder"):
+            continue
         s2.load_rows(spec, examples=0, seed=0)
 
     assert seen == [
@@ -827,6 +832,24 @@ def test_every_registered_dataset_names_a_config_the_hub_will_accept(s2, monkeyp
         ("HuggingFaceTB/smoltalk", "all"),
         ("open-thoughts/OpenThoughts3-1.2M", None),
     ]
+
+
+def test_the_text2sql_entry_names_the_corpora_it_actually_reads(s2) -> None:
+    """Its ``repo`` is three Hub ids joined by ``+``, and nothing loads it.
+
+    That string exists to be copied into the run manifest, so it is the only record of
+    what an arm was trained on -- and being inert, it cannot fail loudly when the
+    mixture changes underneath it. A manifest naming two corpora for a run that read
+    three is worse than no manifest: it reads as measured provenance.
+
+    Turns red when: a source is added to, removed from or renamed in ``SOURCES`` and the
+    registry entry is not updated with it.
+    """
+    from dynquant.eval.text2sql_sources import SOURCES
+
+    spec = s2.DATASETS["text2sql"]
+    assert spec["builder"] == "text2sql"
+    assert spec["repo"] == "+".join(source.repo for source in SOURCES.values())
 
 
 # --------------------------------------------------------------------------

@@ -56,6 +56,9 @@ MODELS: dict[str, dict[str, object]] = {
     "gemma3-4b": {"repo": "google/gemma-3-4b-it", "gated": True},
     "phi4-mini": {"repo": "microsoft/Phi-4-mini-instruct", "gated": False},
     "ministral-8b": {"repo": "mistralai/Ministral-8B-Instruct-2410", "gated": False},
+    # No dot in the key, deliberately: records are `{name}.{task}.json` and `summarize`
+    # splits on the first one, so "lfm2.5-8b-a1b" would file itself under model "lfm2".
+    "lfm25-8b-a1b": {"repo": "LiquidAI/LFM2.5-8B-A1B", "gated": False},
 }
 
 #: Ordered cheapest-first so a broken cell surfaces before the expensive ones run.
@@ -180,7 +183,17 @@ def main(argv: list[str] | None = None) -> int:
             f"and a typo still gets the list back"
         ),
     )
-    parser.add_argument("--tasks", nargs="*", choices=TASKS, default=list(TASKS))
+    parser.add_argument(
+        "--tasks",
+        nargs="*",
+        # Selectable from the whole registry, defaulted to the campaign's four. The two
+        # are different questions: `TASKS` is what a bare sweep screens, and the registry
+        # is what this driver can score at all. Tying the choices to the default would
+        # mean a task usable here only by also making it part of every sweep -- which for
+        # text2sql would put a per-item SQL execution into four models' screening runs.
+        choices=tuple(TASK_REGISTRY),
+        default=list(TASKS),
+    )
     parser.add_argument("--backend", default="vllm", choices=("transformers", "vllm"))
     parser.add_argument("--dtype", default="bfloat16")
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.85)

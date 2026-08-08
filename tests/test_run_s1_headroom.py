@@ -222,7 +222,16 @@ def test_the_gated_models_are_the_ones_the_hub_actually_gates(s1) -> None:
     """
     gated = {name for name, entry in s1.MODELS.items() if entry["gated"]}
     assert gated == {"llama31-8b", "gemma3-4b"}
-    assert set(s1.MODELS) == {"llama31-8b", "gemma3-4b", "phi4-mini", "ministral-8b"}
+    # LFM2.5-8B-A1B is the phase-4 model and is open: it was fetched onto the box with
+    # no HF_TOKEN in the environment at all, which is a stronger check than the API's
+    # `gated` field because it is the operation the driver actually performs.
+    assert set(s1.MODELS) == {
+        "llama31-8b",
+        "gemma3-4b",
+        "phi4-mini",
+        "ministral-8b",
+        "lfm25-8b-a1b",
+    }
 
 
 def test_gated_models_are_skipped_loudly_when_there_is_no_token(
@@ -258,7 +267,9 @@ def test_gated_models_are_skipped_loudly_when_there_is_no_token(
     assert code == 0
 
     ran = {cmd[4] for cmd in calls}
-    assert ran == {"microsoft/Phi-4-mini-instruct", "mistralai/Ministral-8B-Instruct-2410"}
+    assert ran == {str(entry["repo"]) for entry in s1.MODELS.values() if not entry["gated"]}, (
+        "an open model was skipped, or a gated one was attempted"
+    )
 
 
 def test_a_failed_cell_does_not_cost_the_others_their_run(
@@ -288,7 +299,10 @@ def test_a_failed_cell_does_not_cost_the_others_their_run(
 
     code = s1.main(["--out", str(tmp_path), "--tasks", "gsm8k"])
 
-    assert len(seen) == 4, "every cell was attempted"
+    # Derived, not the literal 4: the registry gains a model per campaign, and a
+    # hardcoded count turns "the sweep grew" into a failure that reads like a
+    # regression in the failure handling this test is about.
+    assert len(seen) == len(s1.MODELS), "every cell was attempted"
     assert code == 1
     assert "1 cell(s) failed: gemma3-4b.gsm8k (exit 1)" in capsys.readouterr().out
     assert not (tmp_path / "gemma3-4b.commit").exists(), "a failed cell is not stamped"

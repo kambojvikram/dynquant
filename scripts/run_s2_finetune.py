@@ -104,6 +104,16 @@ DATASETS: dict[str, dict[str, str]] = {
         "split": "train",
         "column": "conversations",
     },
+    # Not a Hub conversation dataset: three text-to-SQL corpora, mixed and turned into
+    # single-turn conversations by `load_text2sql`. `builder` marks that, and `repo` is
+    # the three repos joined so the run manifest names what was actually trained on
+    # rather than one of them.
+    "text2sql": {
+        "repo": "gretelai/synthetic_text_to_sql+Salesforce/wikisql+b-mc2/sql-create-context",
+        "split": "train",
+        "column": "messages",
+        "builder": "text2sql",
+    },
 }
 
 #: Full fine-tuning moves every weight and needs the smaller step; LoRA moves a low-rank
@@ -654,6 +664,9 @@ def load_rows(spec: dict[str, str], *, examples: int, seed: int) -> Any:
     this project on a label-sorted classification split, where it read as a destroyed
     model rather than as a bad sample.
     """
+    if spec.get("builder") == "text2sql":
+        return load_text2sql_rows(examples=examples, seed=seed)
+
     from datasets import load_dataset
 
     dataset = load_dataset(spec["repo"], spec.get("name"), split=spec["split"])
@@ -661,6 +674,41 @@ def load_rows(spec: dict[str, str], *, examples: int, seed: int) -> Any:
     if examples > 0 and examples < len(dataset):
         dataset = dataset.select(range(examples))
     return dataset
+
+
+def load_text2sql_rows(*, examples: int, seed: int) -> list[dict[str, Any]]:
+    """The text-to-SQL mixture, as single-turn conversations.
+
+    Two properties this has to preserve and neither is visible downstream if it breaks.
+
+    The user turn comes from :func:`dynquant.eval.text2sql.instruction`, which is the
+    same function the chat evaluation calls -- so the model is asked at eval time in the
+    words it was trained on. A driver that rendered its own phrasing here would produce a
+    fine-tune that scores badly for a reason no arm of the comparison could reveal,
+    because every arm would share it.
+
+    ``load_text2sql`` balances and interleaves the three sources itself, so the
+    ``examples`` limit takes a proportional sample rather than a prefix of whichever
+    source came first. It also drops the evaluation's "gold must return rows" rule for
+    ``train``: an empty result set is still correct supervision, and enforcing it here
+    would discard most of two sources.
+    """
+    from dynquant.eval.text2sql import instruction, load_text2sql
+
+    items = load_text2sql("train", limit=examples if examples > 0 else None, seed=seed)
+    return [
+        {
+            "messages": [
+                {"role": "user", "content": instruction(item)},
+                {"role": "assistant", "content": item.gold},
+            ],
+            # Read by `report_sources`, so the run manifest records the realised mixture.
+            # The balance is a quota over *admitted* items, and admission rates differ by
+            # source, so the achieved split is worth recording rather than assuming.
+            "source": f"text2sql/{item.source}",
+        }
+        for item in items
+    ]
 
 
 # --------------------------------------------------------------------------

@@ -88,6 +88,7 @@ class _TaskSpec:
         add_special_tokens: bool = True,
         unscored: str = "unparseable",
         executes_code: bool = False,
+        takes_style: bool = False,
         unverifiable: bool = False,
         detail: bool = False,
     ) -> None:
@@ -102,6 +103,7 @@ class _TaskSpec:
         self.add_special_tokens = add_special_tokens
         self.unscored = unscored
         self.executes_code = executes_code
+        self.takes_style = takes_style
         self.unverifiable = unverifiable
         self.detail = detail
 
@@ -212,6 +214,33 @@ TASKS = {
         shot_split=None,
         unscored="empty",
         executes_code=True,
+        takes_style=True,
+        detail=True,
+    ),
+    # Text-to-SQL, scored by running the query. Three datasets mixed and balanced by
+    # `load_text2sql`, so the headline is not an average weighted by whichever source
+    # survives its admission filter most often; `detail` carries the per-source split.
+    #
+    # Two shots, from a `shots` pseudo-split rather than from `train`: the training
+    # mixture is ~230k rows and every one of them costs a gold-query execution at load
+    # time, which is hours to choose two exemplars. It resolves to a bounded slice of
+    # `train`, disjoint from `test` in both scored sources.
+    #
+    # 320 new tokens because a Gretel gold with a CTE and two joins runs long, and a
+    # query truncated mid-clause is scored as a syntax error rather than as an answer.
+    # `unscored="unparseable"` is generations with no SQL in them at all, which on a
+    # zero-floor task is the first thing to move when quantization breaks format
+    # compliance rather than accuracy.
+    "text2sql": _TaskSpec(
+        "text2sql",
+        shots=2,
+        chance=0.0,
+        max_new_tokens=320,
+        max_prompt_tokens=3072,
+        batch_size=32,
+        split="test",
+        shot_split="shots",
+        takes_style=True,
         detail=True,
     ),
     # MBPP's exemplars are its own `prompt` split, which is not scored. The budgets
@@ -229,6 +258,7 @@ TASKS = {
         shot_split="prompt",
         unscored="empty",
         executes_code=True,
+        takes_style=True,
         detail=True,
     ),
 }
@@ -472,7 +502,6 @@ def _task_kwargs(spec: _TaskSpec, args: argparse.Namespace, shots: list[Any]) ->
                 f"against before pointing it at an untrusted checkpoint."
             )
         kwargs["allow_execution"] = True
-        kwargs["style"] = args.prompt_style
         # Left unset rather than defaulted here: the task module owns the sandbox
         # budget, and a second copy of the number in the CLI is a second thing to
         # forget to change.
@@ -480,6 +509,12 @@ def _task_kwargs(spec: _TaskSpec, args: argparse.Namespace, shots: list[Any]) ->
             kwargs["timeout"] = args.exec_timeout
         if args.exec_memory_mb is not None:
             kwargs["memory_mb"] = args.exec_memory_mb
+    # Its own capability rather than a rider on `executes_code`. The two coincided
+    # while only the code tasks took a framing argument, and text2sql takes one
+    # without running anything -- reading `--prompt-style` off the sandbox flag
+    # would have made the SQL task silently unstyleable.
+    if spec.takes_style:
+        kwargs["style"] = args.prompt_style
     return kwargs
 
 
