@@ -71,7 +71,14 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from dynquant._logging import get_logger
 
-from .harness import EvalConfig, Prompt, generate_batched, render_chat, strip_reasoning
+from .harness import (
+    EvalConfig,
+    Prompt,
+    generate_batched,
+    reasoning_state,
+    render_chat,
+    strip_reasoning,
+)
 from .text2sql_sources import (
     MAX_CONTEXT_CHARS,
     RawItem,
@@ -245,6 +252,20 @@ class Text2SqlResult:
     dataset's formatting rather than the task.
     """
 
+    unfinished_reasoning: int = 0
+    """Generations that opened a reasoning trace and never closed it.
+
+    A subset of :attr:`unparseable`, and the reason that counter stays readable on a
+    model that thinks before it answers. These items have no answer region at all: the
+    decode budget ran out mid-deliberation, so the model never got as far as a query.
+    That is a decode setting, not a model failing the task, and without this count it
+    arrives in the record wearing the costume of one.
+
+    Zero for every model that does not emit a trace. Non-zero anywhere means the
+    headline is bounded above by ``1 - unfinished_reasoning / total``, and the budget
+    rather than the method is what the arm is measuring.
+    """
+
     predictions: list[str] = field(default_factory=list)
 
     by_source: dict[str, tuple[int, int]] = field(default_factory=dict)
@@ -271,7 +292,14 @@ class Text2SqlResult:
             f"({self.correct}/{self.total} execution match, "
             f"{self.errored} would not run, {self.unparseable} no query)"
         )
-        return headline + (f"\n{'':<28} by source: {parts}" if parts else "")
+        lines = headline
+        if self.unfinished_reasoning:
+            share = self.unfinished_reasoning / self.total if self.total else 0.0
+            lines += (
+                f"\n{'':<28} {self.unfinished_reasoning} never finished "
+                f"reasoning ({share:.1%}) -- the headline is capped at {1 - share:.1%}"
+            )
+        return lines + (f"\n{'':<28} by source: {parts}" if parts else "")
 
     def as_dict(self) -> dict[str, Any]:
         """The three failure modes separately, because they mean different things.
@@ -291,6 +319,7 @@ class Text2SqlResult:
             "unparseable": self.unparseable,
             "errored": self.errored,
             "exact": self.exact,
+            "unfinished_reasoning": self.unfinished_reasoning,
             "by_source": {k: list(v) for k, v in sorted(self.by_source.items())},
         }
 
@@ -730,9 +759,12 @@ def evaluate_text2sql(
     generations = generate_batched(model, tokenizer, prompts, config, progress=progress)
 
     hits: list[bool] = []
-    correct = unparseable = errored = exact = 0
+    correct = unparseable = errored = exact = unfinished = 0
     for example, generation in zip(subset, generations, strict=True):
         sql = extract_sql(generation)
+        # Counted on every item rather than only the unparseable ones: the ratio worth
+        # knowing is how much of the *whole* set ran out of budget mid-thought.
+        unfinished += reasoning_state(generation) == "unclosed"
         if not sql:
             unparseable += 1
             hits.append(False)
@@ -763,6 +795,7 @@ def evaluate_text2sql(
         errored=errored,
         hits=hits,
         exact=exact,
+        unfinished_reasoning=unfinished,
         predictions=list(generations[:keep_predictions]),
         by_source=by_source,
     )

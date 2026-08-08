@@ -67,6 +67,7 @@ __all__ = [
     "encode_prompts",
     "generate_batched",
     "greedy_generation_config",
+    "reasoning_state",
     "render_chat",
     "strip_reasoning",
 ]
@@ -607,6 +608,31 @@ def strip_reasoning(text: str) -> str:
     if closed:
         return text[closed[-1].end() :]
     return "" if _REASONING_OPEN.search(text) else text
+
+
+def reasoning_state(text: str) -> Literal["absent", "closed", "unclosed"]:
+    """Which of :func:`strip_reasoning`'s three cases this generation is.
+
+    The classification the extractor throws away, and the record needs. An unclosed
+    trace reaches the scorer as an empty answer region and is counted unparseable --
+    correctly, since the model never answered -- but that makes it indistinguishable
+    from a generation that emitted prose instead of SQL. The two have opposite causes:
+    one is a decode budget that was too small, the other is a model that has stopped
+    complying with the format.
+
+    Which matters because the second is the first visible sign of quantization damage,
+    and it is what a quantized arm is being watched for. An arm that reasons more
+    verbosely than the baseline -- entirely plausible, since quantization perturbs the
+    token distribution -- loses items to the cap and posts them as "stopped answering".
+    Tallying this separately is what lets the comparison say which of the two happened
+    instead of assuming.
+
+    ``absent`` for every model that does not emit a trace, so the tally is zero
+    throughout and costs nothing to carry.
+    """
+    if _REASONING_CLOSE.search(text):
+        return "closed"
+    return "unclosed" if _REASONING_OPEN.search(text) else "absent"
 
 
 def _truncate(text: str, stops: Sequence[str]) -> str:

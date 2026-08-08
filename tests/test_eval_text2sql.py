@@ -23,7 +23,7 @@ import inspect
 
 import pytest
 
-from dynquant.eval.harness import strip_reasoning
+from dynquant.eval.harness import reasoning_state, strip_reasoning
 from dynquant.eval.text2sql import (
     FEWSHOT_STOP,
     Text2SqlExample,
@@ -404,3 +404,123 @@ def test_the_answer_region_starts_after_the_last_close_tag_not_the_first() -> No
     # would leave both tag choices landing on the same answer, and this test would pass
     # without testing anything.
     assert extract_sql(generation) == "SELECT name FROM staff WHERE dept = 'eng'"
+
+
+# --- when the model runs out of budget mid-thought ------------------------------------
+
+
+def _score(generations: list[str], monkeypatch: pytest.MonkeyPatch) -> Text2SqlResult:
+    """Run the real evaluator over canned generations.
+
+    Through ``evaluate_text2sql`` rather than by calling ``reasoning_state`` in a loop,
+    because what can break is the wiring -- a counter incremented in the wrong branch,
+    or against the wrong text -- and a test that reimplements the loop cannot see that.
+    """
+    import dynquant.eval.text2sql as module
+
+    items = [example("SELECT name FROM staff") for _ in generations]
+    monkeypatch.setattr(module, "generate_batched", lambda *_a, **_k: list(generations))
+    return module.evaluate_text2sql(
+        None, _NoChatTokenizer(), items, label="tally", style="completion"
+    )
+
+
+class _NoChatTokenizer:
+    """Enough tokenizer for the completion framing, which needs no template."""
+
+    chat_template = None
+    eos_token_id = 0
+    pad_token_id = 0
+
+
+def test_a_generation_that_never_stopped_thinking_is_classified_as_such() -> None:
+    """The classification that separates a small decode budget from a broken model.
+
+    Both reach the scorer as "no query". Only the second is the model's fault, and a
+    quantization campaign is watching for exactly that -- so an arm that loses items to
+    the cap has to say so rather than posting them as lost format compliance.
+
+    Turns red when: the open-tag branch stops being distinguished from no tag at all.
+    """
+    assert reasoning_state("<think>still working on it") == "unclosed"
+    assert reasoning_state("<think>done</think> SELECT 1") == "closed"
+    assert reasoning_state("SELECT 1") == "absent"
+
+
+def test_the_tally_is_zero_for_a_model_that_does_not_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Carried by every task, paid for by none of them.
+
+    Note on what is *not* covered here: moving the tally inside the ``if not sql`` branch
+    changes nothing today, because ``extract_sql`` cuts the trace first, so an unclosed
+    trace always yields no SQL and the two placements count the same items. It stays
+    outside the branch anyway -- that keeps the count independent of the extractor's
+    internals rather than dependent on them -- but no assertion here can hold it there,
+    and claiming otherwise would be the inert kind of test.
+
+    If this could be non-zero without a trace, the field would be noise in six other
+    tasks' records, and the first person to see a 3 in it would go looking for a
+    reasoning model that was never involved.
+
+    Turns red when: the tally counts something other than an unclosed trace.
+    """
+    result = _score(
+        ["SELECT name FROM staff", "there is no query in this text", "SELECT name FROM staff"],
+        monkeypatch,
+    )
+    assert result.unfinished_reasoning == 0
+    assert result.unparseable == 1
+    assert result.correct == 2
+
+
+def test_an_unfinished_generation_is_unparseable_and_also_named(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It has to be both.
+
+    Unparseable because there is no answer region, and named because the record must say
+    which of the two reasons it was. Counting it *only* as unparseable is the state this
+    test exists to prevent -- it is what the first run of this campaign looked like.
+
+    Two closed traces against one unclosed, deliberately: with one of each, a tally that
+    counted *closed* traces would report the same number as one that counted unclosed and
+    the test would pass on a mutation that inverts it. It did, until the counts differed.
+
+    Turns red when: the tally counts closed traces, stops reaching the result, or stops
+    being recorded in ``as_dict``.
+    """
+    result = _score(
+        [
+            "<think>I should join staff to",
+            "<think>ok</think> SELECT name FROM staff",
+            "there is no query here either",
+            "<think>this one finished too</think> SELECT name FROM staff",
+        ],
+        monkeypatch,
+    )
+    assert result.unfinished_reasoning == 1
+    assert result.unparseable == 2
+    assert result.correct == 2
+    assert result.as_dict()["unfinished_reasoning"] == 1
+
+
+def test_the_summary_says_what_the_headline_could_not_have_exceeded() -> None:
+    """A capped headline is not a comparable one.
+
+    An arm that lost a fifth of its items to the decode budget cannot be compared with
+    one that lost none, and the number needed to notice that is the cap. Printed only
+    when non-zero, so it stays out of the six tasks that never see a trace.
+
+    Turns red when: the cap is computed from the wrong denominator, or printed
+    unconditionally.
+    """
+    capped = Text2SqlResult(
+        label="arm", correct=40, total=100, unparseable=25, errored=6, unfinished_reasoning=20
+    )
+    line = capped.summary()
+    assert "20 never finished reasoning" in line
+    assert "capped at 80.0%" in line
+
+    clean = Text2SqlResult(label="arm", correct=40, total=100, unparseable=5, errored=6)
+    assert "never finished" not in clean.summary()
