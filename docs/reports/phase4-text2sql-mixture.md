@@ -1111,6 +1111,46 @@ Hub push is separate work with a real hole in it -- P8, the grouped packed path 
 rather than a byproduct of the panel. Recorded now so it is a scheduled task and not a discovery
 made at upload time.
 
+Read against the writers rather than projected, the hole has a shape and a floor. Two of the six
+variants publish today: GPTQ 4-bit and AWQ 4-bit, packed, at the bytes their manifest claims. Two
+cannot be written by anything in the tree: the 3-bit baselines, because the container does not have
+a 3-bit form and the only thing `save_pretrained` could write is a full-size bf16 folder wearing a
+3-bit label. The two DynQuant arms are the interesting case, because *which* writer they fail is
+not the one the P8 note implies. `dynquant export` -- the packed writer, the one a server loads --
+refuses them, and refuses them by name: `_resolve` catches the `AttributeError`, asks
+`resolves_to_weight`, and says *"is a tensor, not a module -- a batched expert bank ... this map
+cannot be exported yet"*. `dynquant quantize --map` does not refuse them. It encodes at the map's
+widths and writes the values back in the compute dtype, which is a directory
+`AutoModelForCausalLM.from_pretrained` reads with DynQuant not installed at all, holding exactly
+the numbers the packed checkpoint would hold. So the DynQuant variants are publishable as
+*accuracy*-faithful artifacts now and *size*-faithful artifacts only after P8 -- and the command
+that writes them already prints the packed size beside the directory size on every run, for the
+specific reason that the research supplement reported storage savings from this path while the
+model it loaded was fp16 all along. Publishing the encoded form under a "4-bit" name without that
+distinction printed on the card would be the supplement's own error, committed deliberately.
+
+So the push is two variants that are ready, two that need P8 to be honest about their size, and two
+that need a 3-bit container that does not exist. That is a decision about what to publish, not a
+gap to be discovered at upload time.
+
+### The chat template is in a file, not the tokenizer config
+
+Every arm renders its prompts with `--prompt-style chat`, which asks the tokenizer to lay out a
+turn. On this model the template is not in `tokenizer_config.json` -- there is no `chat_template`
+key at all -- it is a sibling file, `chat_template.jinja`. The panel therefore depends on a
+round-trip nothing in the campaign had exercised: the fine-tune saves a tokenizer beside the merge
+under transformers 5.14.1, and all seven arms load it under 5.10.1. A template lost anywhere along
+that path does not raise. `apply_chat_template` falls back to rendering a bare string, seven arms
+render the same wrong prompt, and the A/B stays perfectly self-consistent while measuring a model
+nobody prompted correctly -- which is the shape of §8's shots defect, one layer lower.
+
+Checked rather than assumed, before the merge existed, by saving the base checkpoint's tokenizer
+with the fine-tune's interpreter and rendering a turn with the panel's: `chat_template.jinja` is
+written by the newer version and read by the older one, and the rendered turn is identical --
+`<|startoftext|><|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n`, 77 characters, byte for
+byte. It survives. The reason to write down a check that passed is that its failure would have been
+invisible in every artifact the panel produces.
+
 ### Both anchors allocated four hours before the checkpoint existed
 
 The tracker rewrites the stats file periodically, so the allocation could be run against the real
