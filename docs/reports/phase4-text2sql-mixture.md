@@ -1406,7 +1406,7 @@ Every setting in `eval_flags` is stated on every arm's command line, including t
 perfectly good defaults, for a reason §8 paid for: a setting left to a default is a setting two arms
 can disagree about while their commands read identically. `--limit` is the exception. It is
 forwarded only when it is not `None`, and an absent `--limit` means `dynquant eval` scores the
-whole test split -- which on this benchmark is **21 729 items**, on each of seven arms.
+whole test split -- which on this benchmark is **16 143 items**, on each of seven arms.
 
 Nothing about that is a bug in the arms. It is a wall-clock decision of the first magnitude that
 nobody had made: the panel would have run until it was killed, or until the box was recycled with
@@ -1449,7 +1449,19 @@ smallest difference Holm can call is:
 | 6 000 | 0.58 pts | 1.52 pts |
 | 8 000 | 0.50 pts | 1.32 pts |
 | 12 000 | 0.41 pts | 1.08 pts |
-| 21 729 | 0.30 pts | 0.80 pts |
+| 16 143 | 0.35 pts | 0.93 pts |
+
+The last row is the ceiling, and it is worth saying why it is 16 143 and not the 21 729 this report
+quotes elsewhere. Those are different populations and both numbers are right. 21 729 is the raw row
+count of Gretel's and WikiSQL's `test` splits, which is the correct denominator for the
+decontamination scan in section 6 -- a training row leaks whether or not the evaluator would have
+admitted it. The evaluator admits fewer, on three documented conditions: the source must carry
+`INSERT`s (so `create-context`, whose contexts are bare `CREATE TABLE`, is excluded from scoring
+altogether and trains only -- two queries returning nothing compare equal, and `SELECT 0` would
+score near the ceiling), the gold must lead with `SELECT` or `WITH` (9.8% of Gretel's are DML, which
+the extractor cannot read back), and the gold must actually return rows against its own schema. That
+leaves 16 143 scoreable items, which is what `--limit` unset means in practice and what the last row
+prices.
 
 The prior DynQuant-over-GPTQ headline was **+1.54 points**. So 4 000 items -- the number the 8%
 figure endorsed two paragraphs ago -- buys a null result at full price, and the floor is **8 000**.
@@ -1480,39 +1492,63 @@ not a checkpoint to quantize six ways -- and finding that out from a five-minute
 from finding it out from a bf16 ceiling arm that has already run.
 
 
-### The measured 8.46% is not an implementation gap -- it is the trained set
+### The measured 8.46% is a moments gap, not a gradient gap
 
-Two numbers in this report have been described as separate facts, and they are the same fact.
+*This subsection replaces an earlier version that got the cause wrong. The reasoning is left
+visible because the wrong version was plausible, was written down, and would have sent the next
+experiment to the wrong place.*
 
 The allocator prices **89 modules by the Gauss-Newton form (716 570 624 params, 8.46%) and 44
-expert banks by the rescaled rank-product proxy (7 751 073 792 params, 91.54%)**, and the reason
-given has been structural: a batched expert bank has no module boundary at which the measured form
-exists. True, and incomplete.
+expert banks by the rescaled rank-product proxy (7 751 073 792 params, 91.54%)**. Two candidate
+explanations, and the campaign briefly committed to the second.
 
-The fine-tune is LoRA with `target_modules="all-linear"`, and the trainer reports **0.13% of 8.48 B
-trainable** -- about 11 M adapter parameters. That number settles what "all-linear" reached without
-needing to inspect the module tree. The checkpoint stores experts per expert, 2134 tensors across
-22 MoE layers, but at runtime they are batched parameters rather than `nn.Linear` children; if LoRA
-had wrapped those 2112 expert matrices, the adapter alone would cost roughly 130 M parameters at
-rank 16, an order of magnitude more than was trained. It did not wrap them. The expert banks were
-**frozen for the entire fine-tune**.
+The first is that the fine-tune never trained the banks. That part is true. LoRA with
+`target_modules="all-linear"` reports **0.13% of 8.48 B trainable**, about 11 M adapter parameters;
+wrapping the 2112 expert matrices at the configured rank of 32 would cost on the order of 260 M.
+At runtime the banks are batched `nn.Parameter`s rather than `nn.Linear` children, so PEFT's module
+walk cannot see them, and the checkpoint's per-expert storage (2134 tensors) makes this look untrue
+on disk. The banks were frozen for the whole run.
 
-So the measured set and the adapted set are the same set, and the boundary that stops the
-Gauss-Newton pricing is the same boundary that stopped the gradient. That is coherent rather than
-embarrassing: the plasticity half of the DynQuant signal is gradient-derived, and there is no
-gradient on a frozen parameter to derive it from. The proxy is not standing in for a measurement
-that was skipped; it is standing in for one that does not exist for those tensors under this
-training recipe. `--measure-expert-banks` still reaches them because the saliency half is
-activation-derived and needs no gradient at all -- which is exactly why the coverage claim in §9
-and the pricing split here can both be true at once.
+The inference drawn from it -- that the pricing split *follows* from the freeze, because plasticity
+is gradient-derived and a frozen parameter has no gradient -- is wrong, and the signal file says so
+directly: **all 44 banks carry `grad_norm_count = 1560`**, every optimizer step, the same as every
+trained module. Not updated is not the same as not differentiated. `--measure-expert-banks` calls
+`requires_grad_(True)` on the banks for the duration of the run, autograd fills `.grad` for the
+whole batched tensor, and `_collect_bank_grads` reads its norm and immediately releases it -- the
+release being load-bearing, because these parameters sit in no optimizer and `zero_grad()` never
+reaches them, so an unreleased `.grad` would accumulate monotonically and plasticity, being a
+*variance* of gradient norms, would rank experts by how late in the run they were touched.
 
-Two consequences to carry into the results. First, whatever the panel shows, this run does not
-test DynQuant's signal on 91.5% of the model's parameters; it tests the allocator's structural
-priors there, with saliency as the only live input. Second, the obvious next experiment is now
-well-posed and cheap to state: a recipe that unfreezes the banks -- full fine-tune, or LoRA after
-`linearize_moe` -- would move that mass from the proxy to the measured form, and the campaign
-already knows from Ministral-8B that the signal's share of the margin grows as the allocator's
-structural advantage shrinks.
+That path is not a degraded substitute. It is the **most** exact plasticity measurement in the
+system: every other module is priced by `outer_exact`, which reconstructs `∇W = δxᵀ` on a bounded
+256-token subsample, while the banks are priced from the gradient autograd actually computed over
+every token. The only entries that never saw a gradient at all are `embed_tokens` and 18 depthwise
+`conv.conv` modules of 6144 parameters each. Both halves of the DynQuant signal cover 100% of the
+quantizable model.
+
+What is actually missing is a different artifact. Gauss-Newton sensitivity is priced from
+per-channel second moments in `dynquant_moments.safetensors`, and that file holds **178 tensors --
+89 modules x {`input_sq`, `output_grad_sq`} -- and not one key containing `expert`**. So the banks
+fall through to the proxy for want of moments, not for want of gradients. `--measure-expert-banks`
+teaches the *stats tracker* about batched parameters; there is no equivalent for the *moments
+collector*, which is the `named_modules`-misses-raw-parameters blind spot for the third time in
+this project -- first costing bytes in the denominator, then costing LoRA coverage, now costing
+sensitivity pricing.
+
+The distinction matters for what the fix is. A parameter gradient is free: autograd computes it
+whether or not anything consumes it, so plasticity needed only a flag. Moments are not, because the
+Kronecker form needs the `x` and `δ` of a *single* matmul, and a batched MoE bank's forward runs
+gate-up, a non-linearity and down inside one fused call -- there is no module boundary where that
+pairing is exposed, which is why section 12 elsewhere calls the banks unmeasurable by construction
+rather than unmeasured by omission. Reaching them means instrumenting inside the MoE forward and
+then re-collecting the signal, which is another fine-tune-length run, not a collector patch.
+
+So the honest description of this panel is: **full DynQuant signal on 100% of the model, measured
+sensitivity pricing on 8.46% of it** -- a narrower and more accurate claim than "the signal is
+untested on 91.5% of the parameters". The earlier version reached roughly the right cost estimate
+for the follow-up through the wrong mechanism, which is the failure mode worth naming: it would
+have sent the next experiment at the training recipe, where there is nothing to fix, instead of at
+the moments collector, where there is.
 
 ### The calibration cost is worth measuring and not worth probing
 
@@ -1525,7 +1561,7 @@ are counted. AWQ resolves 704 expert sets. A dense 8 B model is a poor guide to 
 The obvious move is to probe it -- one GPTQ pass at 16 samples and one at 64 separates the fixed
 per-module term from the per-sample term and extrapolates to 256. It is the wrong move, and the
 reason is worth keeping. The calibration cost is **additive and independent of `--limit`**: it is
-the same number whether the panel scores 8000 items or 21 729. Lowering the item count cannot buy
+the same number whether the panel scores 8000 items or 16 143. Lowering the item count cannot buy
 any of it back, and the item count is already floored at 8000 by the power calculation. So a
 measurement taken before the launch cannot change the launch -- there is no value of the number
 that selects a different limit, and dropping a baseline arm is not available because the six
@@ -1641,7 +1677,7 @@ tokenizer, AWQ had no mappings for this architecture and would have been skipped
 than raised, and upstream's own grouped-query guard is inert on a model that spells the output
 projection `out_proj`. Nineteen tests and sixteen mutations across those four, all caught. The
 fifth is not code and has no test: `--limit` is forwarded only when set, so the panel as staged
-would have scored the whole 21 729-item split on every one of seven arms. The launcher now refuses
+would have scored the whole 16 143-item split on every one of seven arms. The launcher now refuses
 to launch without an item count, and `s4_probe.sh` measures what one costs before any are spent.
 The sixth came from reading the resume path against a failure this campaign has already had:
 `--resume` reuses any record whose file exists, and the pairing check that looks like it would

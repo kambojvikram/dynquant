@@ -28,7 +28,7 @@ widths, and whether the driver that runs the arms runs at all are five separate 
 | 15 | Does the training mixture contain the questions the arms are scored on? | **Yes — 189 of the 200 WikiSQL evaluation items are questions in `b-mc2/sql-create-context`**, and the guard that reported the mixture clean could not have fired | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §11 |
 | 16 | “At matched bytes” — whose bytes? | **The baselines’** — DynQuant’s own format costs 4.25 bits/param at 4 bits against `compressed-tensors`’ 4.15625, so anchoring on its uniform arm would hand it **2.3% more bytes inside the arm whose accuracy is the claim** | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
 | 17 | Which of DynQuant’s two prices chose the widths, and on how much of the model? | **44 of 133 modules — 91.54% of parameters — by the rank-product proxy rescaled by 1.807e-17**, because a batched expert bank has no boundary where the Gauss–Newton form exists; the concordance guard reads 1.000 over the other 8.46% | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
-| 18 | Does the seven-arm panel driver run? | **Not until six defects were removed** — three of them fail *after* the calibration pass, one would have finished and entered the table as round-to-nearest wearing an AWQ label, the fifth would have run all seven arms over the whole 21 729-item test split because `--limit` is forwarded only when set, and the sixth would have let `--resume` staple in a record scored on another checkpoint | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
+| 18 | Does the seven-arm panel driver run? | **Not until six defects were removed** — three of them fail *after* the calibration pass, one would have finished and entered the table as round-to-nearest wearing an AWQ label, the fifth would have run all seven arms over the whole 16 143-item test split because `--limit` is forwarded only when set, and the sixth would have let `--resume` staple in a record scored on another checkpoint | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
 
 The method itself — signals, sensitivity estimator, allocator, encoder, format, packed
 runtime, kernels — is documented end to end in the
@@ -793,7 +793,7 @@ one arm at a time, each time after the expensive part.
 **And the fifth, which the rehearsal supplied rather than tested.** Every setting in `eval_flags` is
 stated on every arm's command line, because a setting left to a default is one two arms can disagree
 about while their commands read identically. `--limit` is the exception: it is forwarded only when
-set, and unset means the whole test split — **21 729 items**, on each of seven arms. The rehearsal
+set, and unset means the whole test split — **16 143 items**, on each of seven arms. The rehearsal
 ran four problems at 32 new tokens, so it *passed the flag whose absence is the defect*. That is
 general, and worth stating once: a rehearsal is only worth running if it is cheap, and what it
 passes on the command line to make itself cheap is exactly what it cannot test. The launcher now
