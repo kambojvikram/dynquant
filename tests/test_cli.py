@@ -355,6 +355,51 @@ def test_a_map_from_another_checkpoint_fails_before_a_weight_is_touched(graph) -
         _shared.check_map_covers(model, {"model.layers.99.mlp.up_proj": 4})
 
 
+def test_the_guard_accepts_every_name_the_quantizer_behind_it_would_encode() -> None:
+    """A batched expert bank is a parameter, and the pre-flight check used to deny it exists.
+
+    ``get_submodule("...experts.gate_up_proj")`` raises, because the bank keeps its experts
+    as bare 3-D parameters rather than as child modules. Every other part of the pipeline
+    already knows that -- the tracker writes those names, the graph classifies them, the
+    allocator prices them, and ``quantize_model`` resolves them -- but the guard in front
+    of all three asked ``get_submodule`` and refused. On LFM2.5-8B-A1B that is 91.5% of the
+    parameters, and the refusal arrives phrased as "modules this model does not have",
+    which reads as a stale map rather than as a guard that cannot see parameters.
+
+    Asserted as an agreement rather than as two separate behaviours: the guard's whole job
+    is to predict what the quantizer will do, so a test that pinned them independently
+    would let them drift apart again in the same direction.
+
+    Turns red when: the guard resolves names by itself instead of asking the quantizer.
+    """
+    import torch
+    from torch import nn
+
+    from dynquant.quant.quantizer import quantize_model
+
+    class _Bank(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.gate_up_proj = nn.Parameter(torch.randn(4, 256, 128))
+            self.down_proj = nn.Parameter(torch.randn(4, 128, 128))
+
+    class _Tiny(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.experts = _Bank()
+            self.o_proj = nn.Linear(128, 128, bias=False)
+
+    model = _Tiny()
+    bits = {"experts.gate_up_proj": 4, "experts.down_proj": 3, "o_proj": 4}
+
+    _shared.check_map_covers(model, bits)
+    report = quantize_model(model, bits, group_size=128, compute_device=None)
+    assert set(report.layers) == set(bits)
+
+    with pytest.raises(DynQuantError, match="different checkpoint"):
+        _shared.check_map_covers(model, {"experts.absent_proj": 4})
+
+
 # --------------------------------------------------------------------------
 # Allocation seam
 # --------------------------------------------------------------------------

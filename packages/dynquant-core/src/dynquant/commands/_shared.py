@@ -522,28 +522,28 @@ def _as_bits(raw: Any, source: Path) -> dict[str, int]:
 
 
 def check_map_covers(model: nn.Module, bits: Mapping[str, int]) -> None:
-    """Fail before touching a weight if the map names modules this model lacks.
+    """Fail before touching a weight if the map names tensors this model lacks.
 
     Applying a mismatched map is the failure worth catching early: the names that
     do resolve get quantized at widths chosen for a different model, and the
     result is a working model with damage nobody allocated.
+
+    Asked through the quantizer's own resolver rather than ``get_submodule``. A bit map
+    entry does not have to be a module -- a batched MoE expert bank keeps its experts as
+    bare parameters, which is what the state dict, the graph and the stats file all call
+    them -- and a guard that only knows about modules refuses those maps while the
+    quantizer behind it would have applied them. That is what it did on LFM2.5-8B-A1B.
     """
-    missing = [name for name in bits if not _has_module(model, name)]
+    from dynquant.quant.quantizer import resolves_to_weight
+
+    missing = [name for name in bits if not resolves_to_weight(model, name)]
     if missing:
         shown = ", ".join(sorted(missing)[:5])
         raise DynQuantError(
-            f"the bit map names {len(missing)} module(s) this model does not have "
+            f"the bit map names {len(missing)} tensor(s) this model does not have "
             f"({shown}{', ...' if len(missing) > 5 else ''}). Was it built for a "
             f"different checkpoint?"
         )
-
-
-def _has_module(model: nn.Module, name: str) -> bool:
-    try:
-        model.get_submodule(name)
-    except AttributeError:
-        return False
-    return True
 
 
 def parse_overrides(pairs: Sequence[str] | None) -> dict[str, str] | None:

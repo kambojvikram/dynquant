@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 
     from torch import Tensor, nn
 
-__all__ = ["LayerQuantResult", "QuantizationReport", "quantize_model"]
+__all__ = ["LayerQuantResult", "QuantizationReport", "quantize_model", "resolves_to_weight"]
 
 _log = get_logger(__name__)
 
@@ -203,6 +203,27 @@ def quantize_model(
 
     _log.info("%s", report.summary())
     return report
+
+
+def resolves_to_weight(model: nn.Module, name: str) -> bool:
+    """Whether ``name`` addresses a tensor :func:`quantize_model` would encode.
+
+    The pre-flight check every command runs before it starts quantizing needs to answer
+    exactly the question the quantizer will answer later, and the only way to be sure of
+    that is to ask the quantizer. A separate lookup drifts: this one did, using
+    ``get_submodule`` alone, which is right for every module in the map and wrong for
+    every batched MoE expert bank -- so on LFM2.5-8B-A1B the guard refused a map that
+    :func:`quantize_model` would have applied without complaint, and the refusal named the
+    banks as modules the model does not have.
+
+    Cheap enough to run per name: resolution is attribute lookups, no arithmetic and no
+    copies.
+    """
+    try:
+        _target_tensor(model, name)
+    except DynQuantError:
+        return False
+    return True
 
 
 def _target_tensor(model: nn.Module, name: str) -> Tensor:
