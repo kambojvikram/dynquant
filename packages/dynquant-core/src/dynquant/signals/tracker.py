@@ -73,7 +73,7 @@ from torch import Tensor, nn
 from dynquant._logging import get_logger
 from dynquant._version import __version__
 from dynquant.errors import SignalCollectionError
-from dynquant.graph.experts import batched_expert_params
+from dynquant.graph.experts import batched_expert_params, reads_hidden
 from dynquant.graph.naming import canonical_name, is_adapter_name
 from dynquant.graph.roles import ModuleRole, role_of_name
 
@@ -188,6 +188,31 @@ class TrackerConfig:
 
     Only meaningful with the ``outer_exact`` estimator, which is the only one that
     produces a shape-stable per-output-channel vector cheaply."""
+
+    measure_expert_banks: bool = False
+    """Whether to measure batched MoE expert banks -- the 3-D ``nn.Parameter``
+    tensors every MoE family on ``transformers`` 5.x stores its experts in.
+
+    Off by default, and the default is about memory rather than about correctness.
+    A gradient is what makes plasticity measurable, and a gradient only exists for a
+    parameter that requires one -- so turning this on calls ``requires_grad_(True)``
+    on every expert tensor and pays one gradient buffer for the whole expert mass.
+    On ``LFM2.5-8B-A1B`` that is 7.75 B parameters, 15.5 GB in bfloat16, against
+    17 GB of weights. Defaulting to on would turn a working LoRA run on an MoE into
+    an OOM on upgrade, which is not a trade this can make on the user's behalf.
+
+    Leaving it off is not free either, and the cost is larger than it looks: on that
+    model it is 88.4% of the parameters unmeasured, so the allocator has no signal on
+    the part of the checkpoint holding nearly all of the bytes.
+    :meth:`SignalTracker._discover` warns with the measured share and names this flag,
+    so the choice is at least visible rather than a silent skip.
+
+    The experts are measured, not trained. Nothing here puts them in an optimizer.
+    A gradient norm says how much the loss would move if the weight moved, which is
+    what plasticity is defined as, and that is well defined for a weight that never
+    moves -- so this is a real measurement of a frozen tensor, not a side effect of
+    training one.
+    """
 
     grad_estimator: str = GradEstimatorMode.OUTER_EXACT.value
     saliency_source: str = "output"
@@ -327,6 +352,25 @@ class _Tracked:
     """``"linear"``, ``"embedding"`` or ``"other"``. Decides whether the Gram
     identity applies, and how the input Gram is built."""
 
+    saliency_from: str | None = None
+    """Which boundary activation this entry's saliency reads, overriding the config.
+
+    ``None`` for an ordinary module, which follows
+    :attr:`TrackerConfig.saliency_source`. A batched expert bank pins it per tensor,
+    because the bank is one module holding two weights and each weight owns exactly
+    one of the module's two boundary activations: ``gate_up_proj`` consumes the
+    bank's input, ``down_proj`` produces the bank's output, and the two activations
+    between them are locals of the bank's forward that no module hook can reach.
+
+    So the two entries measure opposite sides of their respective matmuls. That is
+    sound only because ranking happens within role
+    (:attr:`~dynquant.score.importance.ImportanceConfig.rank_within_role`, on by
+    default) and the two tensors carry different roles -- every
+    ``MOE_EXPERT_GATE_UP`` saliency is ranked against 21 other input-side readings
+    and never against an output-side one. Under global ranking the two would be
+    compared, and the comparison would be between two different quantities.
+    """
+
     forward_calls: int = 0
     coherence_calls: int = 0
     pending_observations: int = 0
@@ -372,6 +416,12 @@ class SignalTracker:
 
         self._tracked: list[_Tracked] = []
         self._by_module: dict[int, _Tracked] = {}
+        # Separate from _by_module rather than widening it to a list: a bank module
+        # owns no `.weight`, so it never appears there, and keeping the two apart
+        # means the forward hook's hot path for ordinary modules stays a single dict
+        # lookup returning a single entry instead of a list to iterate.
+        self._bank_by_module: dict[int, tuple[_Tracked, ...]] = {}
+        self._bank_grad_enabled: list[nn.Parameter] = []
         self._skipped: dict[str, str] = {}
         self._handles: list[RemovableHandle] = []
         self._attached = False
@@ -501,10 +551,12 @@ class SignalTracker:
                 continue
             weight = _quantizable_weight(module)
             if weight is None:
-                refused = _unmeasurable_experts(name, module)
-                if refused:
-                    self._skipped.update(refused)
-                    unmeasurable_params += sum(p.numel() for _, p in batched_expert_params(module))
+                bank = batched_expert_params(module)
+                if bank and self.config.measure_expert_banks:
+                    self._track_bank(name, module, bank, roles)
+                elif bank:
+                    self._skipped.update(_unmeasurable_experts(name, module))
+                    unmeasurable_params += sum(p.numel() for _, p in bank)
                 continue
 
             key = canonical_name(name)
@@ -548,14 +600,68 @@ class SignalTracker:
             share = unmeasurable_params / max(tracked_params + unmeasurable_params, 1)
             _log.warning(
                 "%.1f%% of quantizable parameters (%s) sit in batched MoE expert banks "
-                "and are NOT being measured -- their signals are not separable at the "
-                "bank's module boundary. The allocator will see them as unmeasured and "
-                "give them a neutral score, so bit widths across the experts will not be "
-                "signal-driven. See dynquant.graph.experts for what per-expert tracking "
-                "would require.",
+                "and are NOT being measured. The allocator will see them as unmeasured "
+                "and give them a neutral score, so bit widths across the experts will "
+                "not be signal-driven -- on a sparse model that is most of the "
+                "checkpoint allocated by role floors alone. Set "
+                "TrackerConfig.measure_expert_banks=True to measure them; it costs one "
+                "gradient buffer for the expert mass, and see that field for the "
+                "trade. Per-*expert* widths within a bank remain out of reach either "
+                "way -- see dynquant.graph.experts.",
                 share * 100.0,
                 f"{unmeasurable_params:,}",
             )
+
+    def _track_bank(
+        self,
+        name: str,
+        module: nn.Module,
+        bank: tuple[tuple[str, Any], ...],
+        roles: dict[str, ModuleRole],
+    ) -> None:
+        """Register one entry per 3-D expert tensor in a batched bank.
+
+        Keyed ``<bank module>.<parameter>``, which is the name
+        :func:`~dynquant.graph.classify.classify_model` gives the same tensor. That
+        agreement is the whole point of doing it here rather than under the module's
+        own name: the quantizer joins a stats entry to a weight by the graph's name,
+        and a bank measured as one entry named after the module would be a file the
+        allocator silently fails to match against the two tensors it has to widen.
+
+        A tensor whose name :func:`reads_hidden` does not recognise is skipped with a
+        reason rather than assigned a side. Picking would mean measuring saliency
+        against whichever activation happened to be on the other end of the bank,
+        which produces a number for every module and a signal for none.
+        """
+        entries: list[_Tracked] = []
+        for param_name, param in bank:
+            key = canonical_name(f"{name}.{param_name}")
+            side = reads_hidden(param_name)
+            if side is None:
+                self._skipped[key] = (
+                    f"batched expert tensor {param_name!r} is not a projection this "
+                    "package can place -- see dynquant.graph.experts.reads_hidden"
+                )
+                continue
+            if not self._selected(key):
+                self._skipped[key] = "filtered by include/exclude"
+                continue
+            if not param.requires_grad:
+                self._bank_grad_enabled.append(param)
+            entries.append(
+                _Tracked(
+                    slot=len(self._tracked),
+                    name=key,
+                    module=module,
+                    weight=param,
+                    role=roles.get(key) or role_of_name(key),
+                    kind="expert_bank",
+                    saliency_from="input" if side else "output",
+                )
+            )
+            self._tracked.append(entries[-1])
+        if entries:
+            self._bank_by_module[id(module)] = tuple(entries)
 
     def _selected(self, key: str) -> bool:
         if self.config.include and not any(fnmatch.fnmatch(key, p) for p in self.config.include):
@@ -613,7 +719,22 @@ class SignalTracker:
         """Register hooks. Idempotent."""
         if self._attached:
             return self
+        # Enabled here rather than at discovery so it is symmetric with detach. A
+        # tracker that was constructed and never attached must not leave the expert
+        # mass requiring gradients, and one that has been detached has to give the
+        # buffers back.
+        for param in self._bank_grad_enabled:
+            param.requires_grad_(True)
+        seen: set[int] = set()
         for entry in self._tracked:
+            # One hook per module, not one per entry. A batched expert bank carries
+            # two entries on a single module, and registering twice would run the
+            # observation twice for both tensors -- doubling forward_calls, which is
+            # the k in the EMA's 1 - beta**k debias, so the saliency would come out
+            # debiased by the wrong exponent rather than merely double-counted.
+            if id(entry.module) in seen:
+                continue
+            seen.add(id(entry.module))
             self._handles.append(entry.module.register_forward_hook(self._forward_hook))
         self._attached = True
         return self
@@ -631,6 +752,13 @@ class SignalTracker:
         self._gram_x.clear()
         self._prev_channel.clear()
         self._last_gram = None
+        for param in self._bank_grad_enabled:
+            param.requires_grad_(False)
+            # Not tidiness. This reference is the only thing keeping a gradient
+            # buffer for the whole expert mass alive, and nothing else will release
+            # it, because no optimizer owns these parameters and zero_grad never
+            # reaches them.
+            param.grad = None
         self._attached = False
         return self
 
@@ -647,6 +775,9 @@ class SignalTracker:
     def _forward_hook(self, module: nn.Module, args: tuple[Any, ...], output: Any) -> None:
         entry = self._by_module.get(id(module))
         if entry is None:
+            bank = self._bank_by_module.get(id(module))
+            if bank is not None:
+                self._observe_bank_forward(bank, args, output)
             return
         try:
             self._observe_forward(entry, args, output)
@@ -715,6 +846,40 @@ class SignalTracker:
         out.register_hook(  # type: ignore[no-untyped-call]
             lambda grad: self._grad_output_hook(slot, grad)
         )
+
+    def _observe_bank_forward(
+        self, bank: tuple[_Tracked, ...], args: tuple[Any, ...], output: Any
+    ) -> None:
+        """Saliency for a batched expert bank: each tensor from the side it owns.
+
+        Deliberately not :meth:`_observe_forward`. That method also builds the input
+        Gram for ``outer_exact`` and stages per-channel moments, and both are
+        Kronecker-form machinery resting on ``dY = dW x`` holding across the module's
+        boundary. It does not hold here: the boundary spans two matmuls and a
+        non-linearity, so a Gram built at it would pair the bank's input with the
+        bank's output gradient and yield a well-formed number for a factorisation
+        that does not exist. Plasticity comes from the parameters' own gradients in
+        :meth:`_collect_bank_grads` instead -- which needs nothing from the forward
+        pass, and is exact rather than reconstructed.
+
+        The replay test runs once for the module rather than once per entry, so a
+        checkpointed bank contributes one recompute to the counter and not two.
+        """
+        replay = _in_backward()
+        if replay:
+            self._recompute_calls += 1
+            if not self.config.observe_recompute:
+                return
+        for entry in bank:
+            try:
+                entry.forward_calls += 1
+                source = (
+                    _first_tensor(args) if entry.saliency_from == "input" else _first_tensor(output)
+                )
+                if source is not None and source.numel() and source.is_floating_point():
+                    self._update_saliency(entry, source)
+            except Exception as exc:  # noqa: BLE001 -- see "Hook failures" in the module docstring
+                self._note_error(entry, "forward", exc)
 
     def _update_saliency(self, entry: _Tracked, source: Tensor) -> None:
         """Reduce the activation to per-channel norms; defer the rest to a flush.
@@ -1106,6 +1271,14 @@ class SignalTracker:
             self._collect_param_grads()
         elif self._estimator is GradEstimatorMode.LOWRANK:
             self._collect_lowrank_grads()
+        # Unconditional, and outside the branch above rather than a fourth arm of it:
+        # a bank has no 2-D boundary for `outer_exact` to reconstruct dW across and no
+        # adapter factors for `lowrank` to compose from, so whichever estimator the
+        # run selected, the only gradient a bank tensor has is the one autograd wrote
+        # to the parameter. The estimator choice is about how to reach a frozen 2-D
+        # weight; it has no bearing on a tensor whose gradient is simply present.
+        if self._bank_by_module:
+            self._collect_bank_grads()
         # After the collectors, not before: `lowrank` stages from inside them, and a
         # flush that ran first would leave its observations for the next step.
         self._flush_backward()
@@ -1157,6 +1330,11 @@ class SignalTracker:
         grads: list[Tensor] = []
         slots: list[int] = []
         for entry in self._tracked:
+            # Banks belong to _collect_bank_grads, which also releases `.grad`. Both
+            # writing the same slot would be harmless duplicate work; both racing on
+            # the release would not.
+            if entry.kind == "expert_bank":
+                continue
             grad = _legacy_param_grad(entry)
             if grad is not None:
                 grads.append(grad)
@@ -1167,6 +1345,43 @@ class SignalTracker:
         norms = torch.stack(torch._foreach_norm(grads)).to(self._device, torch.float32)
         index = torch.as_tensor(slots, dtype=torch.long, device=self._device)
         self._grad_stage.index_copy_(0, index, norms)
+
+    def _collect_bank_grads(self) -> None:
+        """Plasticity for batched expert banks: the parameter's own gradient norm.
+
+        Exact, which none of the other estimators are: ``outer_exact`` reconstructs
+        ``dW = d x^T`` on a bounded token subsample and ``lowrank`` composes from
+        adapter factors, while this reads the gradient autograd already computed for
+        the whole tensor. The bank being unreachable by the clever paths leaves it
+        measured by the plain one.
+
+        The gradients are then released, and that is load-bearing rather than
+        housekeeping. These parameters sit in no optimizer, so
+        ``optimizer.zero_grad()`` never reaches them: left alone, ``.grad``
+        accumulates across every step of the run and the norm read here grows
+        monotonically. Welford over a monotone sequence returns variance that is
+        almost entirely drift, so plasticity -- defined as a *variance* of gradient
+        norms -- would rank experts by how late in the run they were touched. It
+        would be a smooth, plausible, well-populated column, and it would be
+        measuring the accumulation and not the model.
+        """
+        grads: list[Tensor] = []
+        slots: list[int] = []
+        params: list[nn.Parameter] = []
+        for entry in self._tracked:
+            if entry.kind != "expert_bank" or entry.weight.grad is None:
+                continue
+            grads.append(entry.weight.grad)
+            slots.append(entry.slot)
+            params.append(entry.weight)
+            entry.pending_observations = 1
+        if not grads:
+            return
+        norms = torch.stack(torch._foreach_norm(grads)).to(self._device, torch.float32)
+        index = torch.as_tensor(slots, dtype=torch.long, device=self._device)
+        self._grad_stage.index_copy_(0, index, norms)
+        for param in params:
+            param.grad = None
 
     def _collect_lowrank_grads(self) -> None:
         for entry in self._tracked:

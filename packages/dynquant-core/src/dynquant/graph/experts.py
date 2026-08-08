@@ -75,6 +75,7 @@ __all__ = [
     "bank_orientation",
     "batched_expert_params",
     "is_expert_container",
+    "reads_hidden",
 ]
 
 if TYPE_CHECKING:
@@ -132,6 +133,28 @@ def batched_expert_params(module: nn.Module) -> tuple[tuple[str, Any], ...]:
         for name, param in module.named_parameters(recurse=False)
         if param.ndim == 3 and not name.endswith(_BIAS_SUFFIX)
     )
+
+
+def reads_hidden(param_name: str) -> bool | None:
+    """Whether this expert tensor's *input* is the residual stream.
+
+    ``True`` for a gate/up projection, ``False`` for a down projection, and ``None``
+    when the name is not one this module recognises. Three-way for the same reason
+    :func:`bank_orientation` is: which side of a matrix the residual stream sits on
+    is not guessable, and a caller that guesses gets a plausible number computed
+    against the wrong activation.
+
+    Callers need this because a bank is one module holding two weights. Its forward
+    reads the residual stream, projects up, applies a non-linearity, projects down
+    and returns to the residual stream -- so of the four activations involved, only
+    the first and last cross the module boundary where a hook can see them. This says
+    which of the two a given tensor owns.
+    """
+    if param_name in _READS_HIDDEN:
+        return True
+    if param_name in _WRITES_HIDDEN:
+        return False
+    return None
 
 
 def bank_orientation(module: nn.Module, config: Any) -> str:
