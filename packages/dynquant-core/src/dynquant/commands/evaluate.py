@@ -329,7 +329,11 @@ def run(args: argparse.Namespace, *, model: Any = None) -> int:
 
     A caller that passes ``model`` still owns ``args.model``: it is the record's
     provenance field and the default label, so it has to describe where those weights
-    came from. Nothing here can check that, which is why it is said out loud.
+    came from. Nothing here can check that, which is why it is said out loud. It is also
+    the default for ``--tokenizer``, and that one *is* resolved as a path -- so a caller
+    that qualifies the field to say which recipe produced the weights has to pass
+    ``--tokenizer`` too, or the run dies loading a tokenizer from a string that was
+    never meant to be one.
     """
     from dynquant._version import __version__
     from dynquant.errors import DynQuantError

@@ -135,6 +135,25 @@ def test_the_recorded_model_says_which_recipe_produced_the_weights(driver: Any) 
     assert namespace.label == "gptq-4b"
 
 
+def test_the_provenance_qualification_does_not_reach_the_tokenizer(driver: Any) -> None:
+    """The field above stops being a path, and one thing downstream still reads it as one.
+
+    ``eval`` defaults ``--tokenizer`` to ``--model``. Six of the seven arms pass a model
+    object and a qualified string, so the default resolves ``<path>#gptq-4b-g128`` and
+    ``from_pretrained`` rejects it as a Hub repo id -- after the calibration pass has been
+    paid for, which is where the whole cost of a baseline arm is. It cost the seven-arm
+    rehearsal its second arm, which is what the rehearsal is for.
+
+    Turns red when: the tokenizer goes back to being defaulted, or is pointed at the
+    qualified string rather than at the directory the weights were loaded from.
+    """
+    namespace = driver.eval_namespace(_args(driver, RUN))
+
+    assert namespace.tokenizer == "/runs/lfm25/finetuned"
+    assert "#" not in namespace.tokenizer
+    assert "#" in namespace.model
+
+
 def test_the_decode_budget_is_never_defaulted_by_this_driver(driver: Any) -> None:
     """Unset here on purpose, because it is a measurement elsewhere.
 

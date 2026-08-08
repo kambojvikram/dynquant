@@ -397,6 +397,13 @@ def eval_namespace(args: argparse.Namespace) -> argparse.Namespace:
         args.prompt_style,
         "--label",
         args.label,
+        # Stated because the model field below stops being a path. `eval` defaults the
+        # tokenizer to `--model`, and the qualification that makes the record readable --
+        # `<path>#gptq-4b-g128` -- is not a directory, so leaving it to the default sends a
+        # `#` into `from_pretrained` and the arm dies at the tokenizer having already paid
+        # for the calibration pass.
+        "--tokenizer",
+        args.model,
     ]
     for flag, value in (
         ("--limit", args.limit),
