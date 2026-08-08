@@ -28,7 +28,7 @@ widths, and whether the driver that runs the arms runs at all are five separate 
 | 15 | Does the training mixture contain the questions the arms are scored on? | **Yes — 189 of the 200 WikiSQL evaluation items are questions in `b-mc2/sql-create-context`**, and the guard that reported the mixture clean could not have fired | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §11 |
 | 16 | “At matched bytes” — whose bytes? | **The baselines’** — DynQuant’s own format costs 4.25 bits/param at 4 bits against `compressed-tensors`’ 4.15625, so anchoring on its uniform arm would hand it **2.3% more bytes inside the arm whose accuracy is the claim** | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
 | 17 | Which of DynQuant’s two prices chose the widths, and on how much of the model? | **44 of 133 modules — 91.54% of parameters — by the rank-product proxy rescaled by 1.807e-17**, because a batched expert bank has no boundary where the Gauss–Newton form exists; the concordance guard reads 1.000 over the other 8.46% | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
-| 18 | Does the seven-arm panel driver run? | **Not until four defects were removed** — three of them fail *after* the calibration pass, and one would have finished, written a record and entered the table as round-to-nearest wearing an AWQ label | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
+| 18 | Does the seven-arm panel driver run? | **Not until five defects were removed** — three of them fail *after* the calibration pass, one would have finished and entered the table as round-to-nearest wearing an AWQ label, and the fifth would have run all seven arms over the whole 21 729-item test split because `--limit` is forwarded only when set | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
 
 The method itself — signals, sensitivity estimator, allocator, encoder, format, packed
 runtime, kernels — is documented end to end in the
@@ -735,7 +735,7 @@ the one that reports the proxied share as a module count, since 44 of 133 reads 
 and is 91.5% of the checkpoint.
 
 
-## 18. Phase 4 — seven arms on 38 M parameters, and the four they stopped
+## 18. Phase 4 — seven arms on 38 M parameters, and the five they stopped
 
 [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 · measured 2026-08-08
 
@@ -743,7 +743,8 @@ The panel is seven arms over one 8 B checkpoint: a bf16 ceiling, GPTQ and AWQ at
 and DynQuant at two anchors. Nothing had ever run the *driver* — arms in sequence, records into the
 manifest, manifest into the pairing guard and the table. Rehearsing it on a structurally identical
 38 M double (the same `lfm2_moe` config with every dimension shrunk, random weights, four problems,
-32 new tokens, CPU) costs about four minutes a pass. It failed four times.
+32 new tokens, CPU) costs about four minutes a pass. It failed four times, and reading the
+driver against the real split afterwards found a fifth the rehearsal could not have reached.
 
 **`run` could only load on the GPU.** `--device` existed on `linearize` alone; the one subcommand
 the driver invokes hardcoded `device_map="cuda"`. The box's GPU is held for hours by the fine-tune
@@ -788,6 +789,17 @@ All seven arms then ran into the table. Every accuracy is 0.0%, which is correct
 38 M random weights answering four text-to-SQL problems. The rehearsal measures plumbing, and the
 plumbing is what four of the real panel's GPU-hours would otherwise have been spent discovering,
 one arm at a time, each time after the expensive part.
+
+**And the fifth, which the rehearsal supplied rather than tested.** Every setting in `eval_flags` is
+stated on every arm's command line, because a setting left to a default is one two arms can disagree
+about while their commands read identically. `--limit` is the exception: it is forwarded only when
+set, and unset means the whole test split — **21 729 items**, on each of seven arms. The rehearsal
+ran four problems at 32 new tokens, so it *passed the flag whose absence is the defect*. That is
+general, and worth stating once: a rehearsal is only worth running if it is cheap, and what it
+passes on the command line to make itself cheap is exactly what it cannot test. The launcher now
+refuses `--go` without an item count, and a 128-item timed probe prices an arm before seven are
+spent — which also catches a merge that landed below the 57.75% the base model scored, from five
+minutes rather than from a finished bf16 ceiling.
 
 ## Conventions that apply to every campaign
 

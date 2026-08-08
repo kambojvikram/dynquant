@@ -1392,6 +1392,56 @@ answering four text-to-SQL problems in 32 new tokens. The rehearsal measures the
 plumbing is what four of the real panel's GPU-hours would otherwise have been spent discovering,
 one arm at a time, each time after the expensive part.
 
+### The rehearsal passed `--limit 4`, and that is the one flag it could not rehearse
+
+Every setting in `eval_flags` is stated on every arm's command line, including the ones that have
+perfectly good defaults, for a reason §8 paid for: a setting left to a default is a setting two arms
+can disagree about while their commands read identically. `--limit` is the exception. It is
+forwarded only when it is not `None`, and an absent `--limit` means `dynquant eval` scores the
+whole test split -- which on this benchmark is **21 729 items**, on each of seven arms.
+
+Nothing about that is a bug in the arms. It is a wall-clock decision of the first magnitude that
+nobody had made: the panel would have run until it was killed, or until the box was recycled with
+nothing pushed off it, and either way the first three arms would have been thrown away.
+
+The rehearsal could not have found it, and the reason is structural rather than an oversight. A
+rehearsal is only worth running if it is cheap, so this one ran four problems at 32 new tokens --
+it *supplied* the flag whose absence is the defect. A cheap rehearsal exercises every code path the
+real run takes and is blind to precisely those settings that make the real run expensive, because
+supplying them is what made it cheap. Worth stating once, because it applies to every rehearsal
+this campaign will run: what the rehearsal passes on the command line is what it cannot test.
+
+So the limit stops being a default and becomes an argument. The launcher refuses `--go` without an
+item count and says why, which is the same move as §10's set-count prediction -- convert a silence into
+a refusal at the cheapest point.
+
+### Pricing the evaluation set: power first, then wall clock
+
+Two constraints pull opposite ways, and they are not symmetric.
+
+**Power binds.** This panel exists to separate arms that differ by one or two points, and an
+underpowered panel is not a weaker conclusion -- it is a re-run of all seven arms, because `limit`
+is a pairing field and a larger set cannot be bolted onto records scored at a smaller one. The
+comparison is McNemar on the stored hit vectors, so the standard error of a paired difference is
+`sqrt(b + c) / n` in the discordant count `b + c`, not the much larger unpaired one. Taking 8%
+discordance between two quantizations of the same fine-tune -- the rate this campaign has seen
+between arms that agree on most items and disagree on the hard ones -- a 1.0-point difference lands
+at *z* = 1.58, *p* = 0.11 over 2 000 items and *z* = 2.24, *p* = 0.025 over 4 000. Four thousand is
+where a one-point effect becomes reportable; two thousand is where it becomes an anecdote.
+
+**Wall clock is the other, and it was never measured.** No text-to-SQL eval in this campaign
+recorded its seconds against an item count, so the cost of an arm on this model is unknown to
+within an order of magnitude, and the honest response to an unknown that decides the run is to
+measure it rather than to pick a limit that sounds reasonable. Hence `s4_probe.sh`: 128 items on
+the merge under the panel's own flags, byte for byte, differing only in the number being measured.
+It costs minutes and prices everything after it.
+
+The probe earns its place twice over, because it also answers a question that should be asked
+before seven arms are spent on a checkpoint. The base model scored **57.75%** on 400 of these
+problems at this decode budget (§8). A merge that lands below that is a fine-tune to investigate,
+not a checkpoint to quantize six ways -- and finding that out from a five-minute probe is different
+from finding it out from a bf16 ceiling arm that has already run.
+
 
 ---
 
@@ -1450,11 +1500,14 @@ mutations added, 17 of 17 caught, and the allocation is bit-identical before and
 what an observability fix should be.
 
 Also done since: the driver itself, rehearsed end to end -- seven arms on a 38 M structural
-double, into the manifest and out to the table -- which found **four more defects**, three of them
+double, into the manifest and out to the table -- which found **five more defects**, three of them
 failing after the calibration pass: `run` was CUDA-only, the provenance qualification reached the
 tokenizer, AWQ had no mappings for this architecture and would have been skipped silently rather
 than raised, and upstream's own grouped-query guard is inert on a model that spells the output
-projection `out_proj`. Nineteen tests and sixteen mutations across the four, all caught.
+projection `out_proj`. Nineteen tests and sixteen mutations across those four, all caught. The
+fifth is not code and has no test: `--limit` is forwarded only when set, so the panel as staged
+would have scored the whole 21 729-item split on every one of seven arms. The launcher now refuses
+to launch without an item count, and `s4_probe.sh` measures what one costs before any are spent.
 
 Not done, in order: the fine-tune, with the expert mass measured; then the six arms at matched
 bytes -- GPTQ and AWQ through the linearized structure verified bit-exact in §10, all three widths
