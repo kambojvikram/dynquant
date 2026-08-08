@@ -866,6 +866,46 @@ both for a name the model does not have and for a name that addresses a tensor, 
 runtime reported both as "not a module of this model" -- which sends someone to re-check a map
 that is right. Those are separate messages now, and the tensor one names the mode that works.
 
+### What the two anchors are, before either arm runs
+
+Recorded now rather than after, because a claim about what the allocator did is worth more
+when the shape of the problem was written down before it did it. Both figures come from the
+checkpoint's own module tree on the meta device -- no weights, no signal file, no run.
+
+The model has 8.4676 B quantizable parameters and 0.111 M it will not touch (eighteen depthwise
+`[2048, 1, 3]` convolutions, classified `other` and left in fp16 -- 0.0013% of the model, and
+correctly excluded rather than fed to a group-128 encoder with a contracted dimension of three).
+Paying every role's default floor costs **29 700 587 520 bits**.
+
+| anchor | budget | floors | |
+|---|---|---|---|
+| 4 bits (4 399 629 312 B) | 35 197 034 496 bits | 29 700 587 520 | **655 MiB free** |
+| 3 bits (3 332 904 576 B) | 26 663 236 608 bits | 29 700 587 520 | **362 MiB short** |
+
+So the two arms are not the same exercise at two sizes. At 4 bits the floors are affordable and
+the greedy knapsack spends 655 MiB upward, which is the regime the score was designed for. At 3
+bits **no assignment exists that honours every floor**, and the soft-floor descent -- the thing
+added because the paper's allocator silently returned the floor map here and let the score do
+nothing (bug 4) -- decides the map by choosing which floors to breach and in what order.
+
+Stronger, and specific to this architecture: stripping *every other role* to the hard 2-bit
+minimum releases 2.953 G bits against a 3.037 G-bit deficit. Even destroying the LM head, the
+embedding, every attention projection and every routed expert's `down_proj` does not close it. The
+expert `gate_up` banks -- 5 167 M parameters at a floor of 4 -- have to be breached at the 3-bit
+anchor no matter what the signal says. What the signal decides is *which* of the twenty-two banks
+and by how much, and that is the whole of the 3-bit result.
+
+The census also settles an open question that had been carried in the wrong terms. The conv
+block's `out_proj` matches the name table's `("out_proj", ATTN_O)` entry, so on this model the
+`attn.o` role holds 24 modules of which **18 are convolutions and 6 are attention**. That had been
+noted as a possible floor error; it is not one -- `attn.o` and `ssm.out` both floor at 4, so no
+module gets a different width for it. What it does change is the *within-role percentile rank*:
+eighteen conv output projections and six attention output projections are ranked against each
+other as one population. Whether that distorts either is measurable once the signal file exists
+and is not measurable before, so it is left as it is for this panel rather than changed on a
+guess -- a role reassignment made now would move the bit map for reasons nobody could then
+separate from the result.
+
 The rehearsal cost four minutes of CPU. Both defects sit on the DynQuant arms, which `plan_arms`
 schedules fourth and seventh, so in the real panel the first one would have arrived roughly four
 hours in, after the ceiling and both GPTQ arms had been paid for, phrased as though the bit map
