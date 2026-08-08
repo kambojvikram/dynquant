@@ -42,7 +42,7 @@ from . import _shared
 if TYPE_CHECKING:
     import argparse
 
-__all__ = ["PAIRING_FIELDS", "TASKS", "run"]
+__all__ = ["DECODE_PAIRING_FIELDS", "PAIRING_FIELDS", "TASKS", "run"]
 
 #: Everything two records must agree on before their hit vectors may be paired.
 #:
@@ -51,6 +51,26 @@ __all__ = ["PAIRING_FIELDS", "TASKS", "run"]
 #: the items the two arms disagree on -- so a cross-backend pair would put engine
 #: disagreement into the one cell the test counts.
 PAIRING_FIELDS = ("task", "backend", "split", "shots", "shot_seed", "limit")
+
+#: The same contract, for settings the record keeps under ``decode``.
+#:
+#: The budget is here because of what it did once. On text2sql, a 256-token cap on a
+#: model that deliberates before answering scored 5.50%, and that number was taken for a
+#: headroom measurement and a campaign was nearly configured off it; at 1024 the same
+#: model on the same 400 problems scores 57.75%. Two arms at different caps are not
+#: being asked the same question, and until now nothing in the guard said so.
+#:
+#: ``batch_size`` is deliberately *not* here. Left-padded batched decode can perturb the
+#: last bits of a logit, so two batch sizes are not guaranteed identical per-item
+#: outcomes -- but the prompts and the problems are the same, which is what pairing is
+#: about, and requiring a match would stop a 3-bit arm from running at the batch size its
+#: memory allows. The residual risk is real and is accepted here rather than unnoticed.
+DECODE_PAIRING_FIELDS = ("max_new_tokens",)
+
+#: Distinguishes "this record does not carry the field" from "it carries ``None``".
+#: ``split`` is legitimately ``None`` for a single-set dataset, so absence cannot be
+#: spelled that way.
+_ABSENT = object()
 
 
 class _TaskSpec:
@@ -625,6 +645,28 @@ def _pack(model: Any, args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _comparability(record: dict[str, Any]) -> dict[str, Any]:
+    """Flatten a record down to the settings a pair has to agree on.
+
+    Two tuples rather than one because the record keeps them in two places. The decode
+    budget lives under ``decode``, written by the harness beside the batch size and the
+    prompt cap; reading it there rather than promoting it to the top level is what keeps
+    every record this campaign has already written pairable against a new one.
+
+    Missing is not ``None``. ``split`` is legitimately ``None`` for a dataset with a
+    single set, so a record that never wrote the field has to be distinguishable from one
+    that wrote nothing into it -- otherwise the guard compares absence against absence and
+    waves through the mismatch it exists to catch.
+    """
+    values = {field: record.get(field, _ABSENT) for field in PAIRING_FIELDS}
+    decode = record.get("decode")
+    for field in DECODE_PAIRING_FIELDS:
+        values[f"decode.{field}"] = (
+            decode.get(field, _ABSENT) if isinstance(decode, dict) else _ABSENT
+        )
+    return values
+
+
 def _compare(record: dict[str, Any], path: str) -> dict[str, Any]:
     """Paired McNemar against a record written by an earlier run."""
     from dynquant.errors import DynQuantError
@@ -635,23 +677,25 @@ def _compare(record: dict[str, Any], path: str) -> dict[str, Any]:
         raise DynQuantError(f"no evaluation record at {source}")
     other = json.loads(source.read_text(encoding="utf-8"))
 
-    for field in PAIRING_FIELDS:
-        if field not in record:
+    theirs = _comparability(other)
+    for field, mine in _comparability(record).items():
+        if mine is _ABSENT:
             # Not a user error: this run built its own record a moment ago. A field
-            # dropped from it would make the guard below compare None against None and
-            # wave through every mismatch, so the check that the guard can still see
+            # dropped from it would make the guard below compare absence against absence
+            # and wave through every mismatch, so the check that the guard can still see
             # has to come first.
             raise DynQuantError(
                 f"this run's record has no {field!r} field, so it cannot be checked "
                 f"against {source} for comparability. That is a bug in `dynquant eval`, "
                 f"not something the command line did wrong."
             )
-        if other.get(field) != record.get(field):
+        if theirs[field] != mine:
+            was = "absent" if theirs[field] is _ABSENT else repr(theirs[field])
             raise DynQuantError(
-                f"{source} was measured with {field}={other.get(field)!r} but this run "
-                f"used {record.get(field)!r}. A paired test needs the same problems in "
-                f"the same order; comparing across settings would report a harness "
-                f"difference as a quantization effect."
+                f"{source} was measured with {field}={was} but this run used {mine!r}. "
+                f"A paired test needs the same problems in the same order; comparing "
+                f"across settings would report a harness difference as a quantization "
+                f"effect."
             )
     if len(other.get("hits", [])) != len(record["hits"]):
         raise DynQuantError(

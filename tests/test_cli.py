@@ -1077,6 +1077,10 @@ def test_comparing_different_problem_counts_is_refused(tmp_path: Path) -> None:
         "shot_seed": 0,
         "limit": None,
         "label": "b",
+        # A real record always carries this, and the budget is part of the
+        # comparability contract -- a fixture without it is a record `dynquant eval`
+        # could not have written.
+        "decode": {"max_new_tokens": 256, "batch_size": 8, "greedy": True},
         "hits": [True, False, True],
     }
     path = tmp_path / "other.json"
@@ -1094,6 +1098,10 @@ def test_a_matched_pair_compares(tmp_path: Path, capsys) -> None:
         "shot_seed": 0,
         "limit": None,
         "label": "quantized",
+        # A real record always carries this, and the budget is part of the
+        # comparability contract -- a fixture without it is a record `dynquant eval`
+        # could not have written.
+        "decode": {"max_new_tokens": 256, "batch_size": 8, "greedy": True},
         "hits": [True, True, False, False],
     }
     path = tmp_path / "other.json"

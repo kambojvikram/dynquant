@@ -219,3 +219,104 @@ def test_a_path_is_still_loaded_when_no_model_is_passed(monkeypatch: pytest.Monk
 
     assert evaluate.run(_args()) == 0
     assert spec.scored is loaded
+
+
+# --- the comparability contract ---------------------------------------------------------
+
+
+def _record(**overrides: Any) -> dict[str, Any]:
+    """A record shaped the way ``run`` writes one."""
+    base: dict[str, Any] = {
+        "task": "text2sql",
+        "backend": "transformers",
+        "split": "test",
+        "shots": 2,
+        "shot_seed": 0,
+        "limit": 400,
+        "label": "arm",
+        "decode": {"max_new_tokens": 1024, "batch_size": 32, "greedy": True},
+        "hits": [True, False, True],
+    }
+    base.update(overrides)
+    return base
+
+
+def test_two_arms_at_different_decode_budgets_do_not_pair(tmp_path: Path) -> None:
+    """The setting that was worth 52 points on this task, and was not in the contract.
+
+    A 256-token cap on a model that deliberates before answering scored 5.50% on text2sql;
+    the same model on the same 400 problems at 1024 scores 57.75%. Paired against each
+    other those two records would have produced a McNemar test with p < 1e-50 and a
+    quantization story attached to it.
+
+    Turns red when: ``DECODE_PAIRING_FIELDS`` empties, or the comparison stops reaching
+    into ``decode`` -- which is the easy mistake, because every other field is top-level.
+    """
+    other = tmp_path / "ceiling.json"
+    other.write_text(
+        json.dumps(_record(label="ceiling", decode={"max_new_tokens": 256, "greedy": True})),
+        encoding="utf-8",
+    )
+    with pytest.raises(DynQuantError, match=r"decode\.max_new_tokens=256"):
+        evaluate._compare(_record(), str(other))
+
+
+def test_a_record_written_before_the_budget_was_recorded_does_not_pair_silently(
+    tmp_path: Path,
+) -> None:
+    """Absent is not equal, and absent is not ``None`` either.
+
+    ``split`` is legitimately ``None`` for a single-set dataset, so absence cannot be
+    spelled that way -- and a guard that used ``.get()`` for both sides would compare
+    ``None`` against ``None`` on a record that never wrote the field, and pass.
+
+    Turns red when: the sentinel is replaced by ``None``, or the missing field is filled in
+    from a default rather than refused.
+    """
+    other = tmp_path / "old.json"
+    payload = _record(label="old")
+    del payload["decode"]
+    other.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(DynQuantError, match="absent"):
+        evaluate._compare(_record(), str(other))
+
+
+def test_a_matched_pair_still_compares(tmp_path: Path, capsys: Any) -> None:
+    """The guard has to let the campaign's own arms through.
+
+    Every arm in the six-arm panel differs from the bf16 ceiling in exactly one thing --
+    the weights -- and a contract that refused those would be a contract nobody could use.
+
+    Turns red when: a field is added to the contract that the arms cannot hold constant.
+    """
+    other = tmp_path / "ceiling.json"
+    other.write_text(
+        json.dumps(_record(label="ceiling", hits=[True, True, True])), encoding="utf-8"
+    )
+    assert evaluate._compare(_record(), str(other))
+    capsys.readouterr()
+
+
+def test_a_top_level_field_missing_from_this_run_is_a_bug_not_a_match(tmp_path: Path) -> None:
+    """The sentinel has to work on the flat fields too, and one test did not prove it.
+
+    ``split`` is ``None`` for a single-set dataset. So a record that never wrote ``split``
+    and one that wrote ``None`` into it are indistinguishable under ``.get()`` -- the guard
+    compares ``None`` to ``None``, agrees, and the "that is a bug in `dynquant eval`" check
+    above it never fires. Every other field in the contract has the same hole, and the
+    consequence is a paired test run across a setting nobody checked.
+
+    Found by mutation: deleting the sentinel from the ``PAIRING_FIELDS`` comprehension left
+    the suite green, because the only test of it deleted ``decode``, which is read on the
+    other branch.
+
+    Turns red when: the sentinel is dropped from the top-level read.
+    """
+    other = tmp_path / "single_set.json"
+    other.write_text(json.dumps(_record(label="other", split=None)), encoding="utf-8")
+
+    mine = _record()
+    del mine["split"]
+    with pytest.raises(DynQuantError, match="bug in `dynquant eval`"):
+        evaluate._compare(mine, str(other))
