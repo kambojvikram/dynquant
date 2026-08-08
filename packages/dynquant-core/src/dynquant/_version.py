@@ -31,7 +31,7 @@ __all__ = [
     "__version__",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 KERNEL_ABI_VERSION = 2
 """Current kernel ABI the Python side speaks.

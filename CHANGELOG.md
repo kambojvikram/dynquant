@@ -19,6 +19,86 @@ ones that invalidate artifacts a user has already produced.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-08
+
+No version contract moves: `KERNEL_ABI_VERSION` stays 2, `CHECKPOINT_FORMAT_VERSION`
+stays 2, `STATS_SCHEMA_VERSION` stays 2. Checkpoints and stats files written by 0.1.x
+or 0.2.0 are read unchanged, and a 0.1.x kernels wheel already installed keeps working.
+The kernels wheel version moves to 0.3.0 regardless — PyPI refuses a filename it
+already holds — so the meta package's ceiling moves from `<0.3` to `<0.4`.
+
+### Added — `dynquant.integration.sglang_plugin`, reached through SGLang's own entry point
+
+Serving a DynQuant checkpoint on SGLang, with no patch to SGLang. Registration, config,
+parameter and linear method, wired to the `sglang.srt.plugins` entry point that
+`load_plugins()` calls in the spawned scheduler process.
+
+SGLang's quantization layer is a fork of vLLM v0.5.5/v0.6.4, so most of this is a port.
+The parts that are not: SGLang predates registration decorators, so `register()` writes
+`QUANTIZATION_METHODS`, `QUANTIZATION_CHOICES` and `WEIGHT_LOADER_V2_SUPPORTED` directly
+with each write guarded by a check that names the installed version; `tp_rank` is an
+argument to the placement hooks rather than cached state, and the column/row hooks give
+it no default so `weight_loader_v2`'s `except TypeError` fallback re-raises instead of
+loading rank 0's rows on every rank; `packed_modules_mapping` arrives inside the dict
+handed to `from_config` and nothing copies it onto the instance, so the config lifts it
+itself.
+
+**And a defect that only a real serve could find.** The first packed checkpoint served on
+SGLang loaded every unfused layer, silently dropped every fused one, printed
+`SGLang resolved quantization='dynquant'`, started, and answered requests. SGLang injects
+`getattr(model_class, "packed_modules_mapping", {})`, and on 0.5.16 that attribute is
+absent from **172 of the 210 files** in `srt/models/` — including `Qwen2ForCausalLM`,
+which fuses q/k/v inside `load_weights` all the same. `CONVENTIONAL_FUSED_MODULES` now
+supplies the modal declaration, applied only where the leaf declares nothing and the
+checkpoint holds no tensor at the prefix itself, so a mapping SGLang does declare always
+wins. `resolve_shards` is all-or-none, so a wrong guess lands on the same unquantized
+path as before rather than mislabelling a shard.
+
+### Added — `integration/serving_common/`, the half of the plugin that fails quietly
+
+`geometry.py`, `schema.py` and `fuse.py` moved out of `vllm_plugin/`, since SGLang's
+quantization layer is a fork of vLLM's and both plugins need identical arithmetic. A pure
+move, no behaviour change.
+
+`fuse.py` belongs here for a reason stronger than sharing: it registers
+`dynquant::fused_shard_concat` in the process-global `torch.library` namespace, so a
+per-plugin copy raises on whichever import came second — which a harness comparing both
+backends in one process hits immediately.
+
+The split is along how the two halves fail. A framework half fails loudly: a renamed base
+class is an `ImportError` at registration. A shard offset wrong by one group loads
+plausible weights into the wrong rows and serves a model that is merely slightly worse,
+which is indistinguishable from quantization loss. This is also the only half testable off
+Linux, since neither vLLM nor SGLang ships a wheel that installs elsewhere.
+
+### Added — IFEval, HumanEval and MBPP, and a vLLM backend for every task
+
+Three tasks join `casehold`, `banking77` and `gsm8k`, and `eval/backends.py` lets any of
+them score through vLLM.
+
+**IFEval** ports the 25 verifiers literally from google-research's
+`instruction_following_eval`, including where the original is arguably wrong —
+`keywords:existence` matches inside words while `keywords:forbidden_words` does not;
+`nth_paragraph_first_word` counts non-blank paragraphs but indexes the unfiltered list.
+Fixing those would produce numbers that are not IFEval numbers. Each is pinned by a test.
+
+**HumanEval and MBPP** execute the model's output, so the sandbox now sits in the
+measurement path and its failure modes produce numbers rather than errors. Six are closed
+structurally: `sys.exit(0)` before the assertions no longer reads as a pass (a sentinel
+file written from a guard script the candidate cannot reach is required alongside the exit
+code); every timeout is re-run once serially before being counted; the child gets an
+env allow-list rather than a copy of a parent holding an HF token and a W&B key; stdout to
+`DEVNULL` with a 2 KB stderr tail so a candidate printing in a loop cannot deadlock the
+run; stdin to `DEVNULL` so `input()` raises instead of burning the timeout.
+
+**The backend boundary carries ids, not strings.** vLLM tokenizes with
+`add_special_tokens=True`, so handing it a chat-templated string double-BOSes every
+Llama-3 and Gemma-3 prompt while the transformers arm gets one. The harness owns encoding,
+decoding and stop truncation; a backend's only job is prompt ids to continuation ids.
+`generate_batched` dispatches on `isinstance(model, EvalBackend)` rather than taking a
+`generate=` injection point, so no task can be scorable through one path and not the other.
+
+
 ### Added — the phase-3 S2 fine-tune driver, and a loss mask that is measured rather than assumed
 
 `scripts/run_s2_finetune.py`. Everything in an SFT driver is standard except one thing no
@@ -1494,7 +1574,8 @@ and `mma.sync` accumulation — the AWQ/Marlin route — which is P7.
   Python costs. CUDA Graphs (P8) and a `flash-linear-attention` fast path are what address
   it. `experiments/qwen35_2b/RESULTS.md` has the measurement.
 
-[Unreleased]: https://github.com/kambojvikram/dynquant/compare/v0.2.0...main
+[Unreleased]: https://github.com/kambojvikram/dynquant/compare/v0.3.0...main
+[0.3.0]: https://github.com/kambojvikram/dynquant/releases/tag/v0.3.0
 [0.2.0]: https://github.com/kambojvikram/dynquant/releases/tag/v0.2.0
 [0.1.2]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.2
 [0.1.1]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.1
