@@ -740,6 +740,48 @@ def _git_head(repo: Path) -> str:
     return out.stdout.strip()
 
 
+def resolve_bank_measurement(model: Any, requested: bool | None) -> bool:
+    """Decide whether to measure batched expert banks, refusing to guess on an MoE.
+
+    ``requested`` is tri-state on purpose. ``True``/``False`` are the caller's decision and
+    are returned unchanged. ``None`` means the flag was never passed, and what happens then
+    depends on whether this model has expert banks at all:
+
+    - **No banks.** Returns ``False``. Every dense model takes this path, so nothing about
+      the existing panel changes and no caller has to learn a new flag.
+    - **Banks present.** Raises. Not because the right answer is unknowable, but because
+      both answers fail in ways the run will not show you. Measuring costs a gradient
+      buffer for the whole expert mass and can exhaust a smaller card; not measuring
+      completes normally and writes a stats file whose UNMEASURED share is most of the
+      checkpoint. The second is the dangerous one, because it produces numbers.
+
+    The tracker already warns in the second case. That warning arrives after the model is
+    loaded and the hooks are attached, in a log nobody reads until the results look wrong.
+    This arrives before the first step, as a non-zero exit.
+    """
+    if requested is not None:
+        return requested
+
+    # Imported here rather than at module scope, matching the rest of this script: it is
+    # runnable on a box where dynquant is not installed, and argparse --help should not
+    # depend on that.
+    from dynquant.graph.experts import batched_expert_params
+
+    banked = sum(
+        param.numel() for module in model.modules() for _, param in batched_expert_params(module)
+    )
+    if not banked:
+        return False
+
+    raise SystemExit(
+        f"this model keeps {banked:,} parameters in batched expert banks, and neither "
+        "--measure-expert-banks nor --no-measure-expert-banks was passed. Measuring them "
+        "costs one gradient buffer for that mass; not measuring them means the allocator "
+        "scores them neutrally and their bit widths come from role floors rather than from "
+        "the signal. Choose explicitly -- there is no safe default."
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True, choices=sorted(MODELS))
@@ -755,6 +797,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-steps", type=int, default=-1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--estimator", default="outer_exact")
+    parser.add_argument(
+        "--measure-expert-banks",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "measure the 3-D expert tensors an MoE stores its experts in. Unset is an "
+            "error on a model that has them, rather than a default, because both answers "
+            "are defensible and the wrong one is nearly invisible: off, the run completes "
+            "and writes a stats file in which most of the checkpoint is UNMEASURED. On "
+            "LFM2.5-8B-A1B that is 88.4%% of the weights allocated by role floors alone, "
+            "in a campaign whose claim is that the signal decides the allocation. It costs "
+            "one gradient buffer for the expert mass (~15.5 GB in bf16 on that model), so "
+            "--no-measure-expert-banks is the right call on a card that cannot hold it"
+        ),
+    )
     parser.add_argument(
         "--lora-rank",
         type=int,
@@ -1005,6 +1062,8 @@ def _train(
             flush=True,
         )
 
+    measure_banks = resolve_bank_measurement(model, args.measure_expert_banks)
+
     # Created before the callback is constructed, and that is load-bearing rather than
     # tidiness. ``StatsFile.save`` decides between "directory" and "file path" with
     # ``Path.is_dir()`` -- a filesystem test, not a reading of the argument -- so the same
@@ -1018,6 +1077,7 @@ def _train(
         grad_estimator=args.estimator,
         log_every=50,
         subsample_tokens=256,
+        measure_expert_banks=bool(measure_banks),
     )
 
     training_args = TrainingArguments(

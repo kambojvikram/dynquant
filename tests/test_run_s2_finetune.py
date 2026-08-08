@@ -25,6 +25,7 @@ import types
 from pathlib import Path
 
 import pytest
+import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVER = REPO_ROOT / "scripts" / "run_s2_finetune.py"
@@ -1186,3 +1187,75 @@ def test_padding_keeps_labels_aligned_and_unsupervised(s2) -> None:
     assert batch["input_ids"].tolist() == [[5, 6, 7], [8, 0, 0]]
     assert batch["labels"].tolist() == [[-100, 6, 7], [8, -100, -100]]
     assert batch["attention_mask"].tolist() == [[1, 1, 1], [1, 0, 0]]
+
+
+# --- choosing whether to measure the expert mass --------------------------------------
+
+
+class _Experts(torch.nn.Module):
+    """A batched bank, shaped the way every MoE family on transformers 5.x stores one.
+
+    The class name matters: ``is_expert_container`` tests the ``Experts`` suffix *and* the
+    presence of 3-D parameters, so a stand-in named anything else is not a bank.
+    """
+
+    def __init__(self, experts: int = 4, hidden: int = 8, inter: int = 16) -> None:
+        super().__init__()
+        self.gate_up_proj = torch.nn.Parameter(torch.zeros(experts, 2 * inter, hidden))
+        self.down_proj = torch.nn.Parameter(torch.zeros(experts, hidden, inter))
+
+
+class _Sparse(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.experts = _Experts()
+
+
+def test_a_dense_model_needs_no_decision(s2) -> None:
+    """The flag must cost the existing panel nothing.
+
+    Four dense models have already been run through this driver. If an unset flag raised
+    for them too, every one of those commands would have to be rewritten to say "no" to a
+    question their architecture never poses.
+
+    Turns red when: the no-banks case starts demanding the flag, or stops defaulting off.
+    """
+    dense = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Linear(4, 4))
+
+    assert s2.resolve_bank_measurement(dense, None) is False
+
+
+def test_an_moe_with_no_flag_refuses_to_start(s2) -> None:
+    """The failure this whole tri-state exists to prevent.
+
+    Defaulting off is what produced the 11.6%-coverage run: it completed, saved a model,
+    and wrote a stats file in which 88.4% of the checkpoint was UNMEASURED and allocated
+    on role floors. That run looked exactly like a successful one. Defaulting *on* is not
+    safe either -- it silently commits a gradient buffer for the entire expert mass. So
+    the driver refuses, before the first step rather than in a warning after it.
+
+    Turns red when: the unset case starts picking either answer on an MoE.
+    """
+    with pytest.raises(SystemExit) as caught:
+        s2.resolve_bank_measurement(_Sparse(), None)
+
+    message = str(caught.value)
+    # The count, so the message says how much is at stake rather than that something is.
+    assert f"{4 * 2 * 16 * 8 + 4 * 8 * 16:,}" in message
+    assert "--measure-expert-banks" in message
+
+
+def test_an_explicit_answer_is_never_second_guessed(s2) -> None:
+    """Both explicit answers pass through, including on a model that has banks.
+
+    ``--no-measure-expert-banks`` is a real choice -- it is the only way to run this model
+    on a card that cannot hold the extra gradient buffer -- so the refusal must key on the
+    flag being *absent*, not on the model having banks.
+
+    Turns red when: the guard keys on the architecture instead of on the flag, which would
+    make the opt-out unreachable.
+    """
+    banked = _Sparse()
+
+    assert s2.resolve_bank_measurement(banked, True) is True
+    assert s2.resolve_bank_measurement(banked, False) is False
