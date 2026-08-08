@@ -223,7 +223,13 @@ def test_accuracy_is_over_every_item_including_the_ones_with_no_query() -> None:
     Turns red when: ``accuracy`` starts excluding ``unparseable`` or ``errored``.
     """
     result = Text2SqlResult(
-        label="x", correct=3, total=10, unparseable=4, errored=2, hits=[True] * 3 + [False] * 7
+        label="x",
+        correct=3,
+        total=10,
+        unparseable=4,
+        errored=2,
+        prompt_style="chat",
+        hits=[True] * 3 + [False] * 7,
     )
     assert result.accuracy == pytest.approx(0.3)
     assert len(result.hits) == result.total
@@ -516,11 +522,71 @@ def test_the_summary_says_what_the_headline_could_not_have_exceeded() -> None:
     unconditionally.
     """
     capped = Text2SqlResult(
-        label="arm", correct=40, total=100, unparseable=25, errored=6, unfinished_reasoning=20
+        label="arm",
+        correct=40,
+        total=100,
+        unparseable=25,
+        errored=6,
+        prompt_style="chat",
+        unfinished_reasoning=20,
     )
     line = capped.summary()
     assert "20 never finished reasoning" in line
     assert "capped at 80.0%" in line
 
-    clean = Text2SqlResult(label="arm", correct=40, total=100, unparseable=5, errored=6)
+    clean = Text2SqlResult(
+        label="arm", correct=40, total=100, unparseable=5, errored=6, prompt_style="chat"
+    )
     assert "never finished" not in clean.summary()
+
+
+# --- the framing the arm actually got --------------------------------------------------
+
+
+class _ChatTokenizer:
+    """A tokenizer that can frame a turn, which is what ``auto`` actually probes for.
+
+    ``chat_prompt_style`` calls ``apply_chat_template`` and reads the result rather than
+    reading ``tokenizer.chat_template``, because Mistral's backend leaves that attribute
+    unset while the method works. So this has to render, not merely declare.
+    """
+
+    chat_template = "{{ messages }}"
+    eos_token_id = 0
+    pad_token_id = 0
+
+    def apply_chat_template(self, messages: object, **kwargs: object) -> str | list[int]:
+        if kwargs.get("tokenize") is False:
+            return "<|user|>ping<|assistant|>"
+        return [0]
+
+
+@pytest.mark.parametrize(
+    ("tokenizer", "resolved"), [(_NoChatTokenizer(), "completion"), (_ChatTokenizer(), "chat")]
+)
+def test_the_result_records_the_style_it_resolved_not_the_one_it_was_asked_for(
+    tokenizer: object, resolved: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--prompt-style auto`` is the default, and it is answered by the tokenizer.
+
+    Which makes this the one pairing field two arms of one panel can disagree about while
+    their command lines are byte-identical. A quantized checkpoint whose saved tokenizer
+    lost its chat template resolves to ``completion`` where the ceiling resolved to
+    ``chat``; both arms run clean, and the difference between being asked a chat question
+    and a completion question lands in the table as quantization damage.
+
+    Recording ``"auto"`` would be worse than recording nothing -- it would look like a
+    matched setting. The assertion is therefore on the resolved value, on both branches,
+    so a result that echoes the request fails on one of them.
+
+    Turns red when: the result stores the argument, or stops storing a style at all.
+    """
+    import dynquant.eval.text2sql as module
+
+    monkeypatch.setattr(module, "generate_batched", lambda *_a, **_k: ["SELECT 1"])
+    result = module.evaluate_text2sql(
+        None, tokenizer, [example("SELECT 1")], label="arm", style="auto"
+    )
+
+    assert result.prompt_style == resolved
+    assert result.as_dict()["prompt_style"] == resolved, "not in `detail`, so not in the pairing"

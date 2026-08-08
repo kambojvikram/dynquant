@@ -354,6 +354,7 @@ def _record(**overrides: Any) -> dict[str, Any]:
         "shot_seed": 0,
         "limit": 400,
         "decode": {"max_new_tokens": 384, "batch_size": 8},
+        "detail": {"prompt_style": "chat", "by_source": {}},
         "accuracy": 0.5,
         "hits": [1, 0],
     }
@@ -422,6 +423,33 @@ def test_the_arms_may_differ_in_everything_the_pairing_does_not_read(
 
     assert "batch_size" not in PAIRING_FIELDS
     assert "max_new_tokens" in DECODE_PAIRING_FIELDS
+
+
+def test_an_arm_asked_a_different_kind_of_question_is_refused(arms: Any, tmp_path: Path) -> None:
+    """The framing is resolved from the tokenizer, so it can differ with the flags equal.
+
+    Every arm is launched by this driver with the same ``--prompt-style``, which is
+    ``auto``, which the tokenizer answers. A quantized checkpoint saved with a tokenizer
+    that lost its chat template is then asked bare-text questions while the ceiling is
+    asked chat questions, and the gap arrives in the table wearing quantization's costume.
+
+    Covered here rather than only in the eval's own tests because it is the reason
+    ``check_pairable`` reads through ``_comparability`` instead of a field list written
+    when only the CLI-level settings were known.
+
+    Turns red when: the panel's guard stops reading the detail block.
+    """
+    panel = _panel(
+        arms,
+        tmp_path,
+        {
+            "bf16": _record(),
+            "gptq_4b": _record(detail={"prompt_style": "completion", "by_source": {}}),
+        },
+    )
+
+    with pytest.raises(SystemExit, match="cannot be paired"):
+        arms.check_pairable(panel)
 
 
 def test_a_resumed_arm_is_weighed_even_though_it_is_not_run(

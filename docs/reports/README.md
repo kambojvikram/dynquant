@@ -637,6 +637,17 @@ of one interpreter, refusing to start if llm-compressor is not importable from i
 environments would score the baselines and the DynQuant arms under two transformers versions,
 which is a difference in the measuring instrument reported as a difference between methods.
 
+Wiring the panel's own guard through the eval command's `_comparability` then exposed a hole in the
+contract. Every field in `PAIRING_FIELDS` comes off the command line, so seven arms from one driver
+cannot differ in any of them — but **`prompt_style` does not**. `--prompt-style auto` is answered by
+the tokenizer, so a quantized checkpoint whose saved tokenizer lost its chat template is asked
+bare-text questions while the ceiling is asked chat questions, with byte-identical commands on both.
+That failure is already measured here: it put Ministral-8B-Instruct at 24.77% on IFEval against
+Phi-4-mini's 68.76%. IFEval and the code tasks record their resolved style; `text2sql` did not.
+`DETAIL_PAIRING_FIELDS` now reads it out of the record's `detail` block, where a task's own metrics
+already go, and absence is exempted from the "this run always writes it" guard but still refuses
+against a record that has one — "unknown" is not "the same".
+
 ## Conventions that apply to every campaign
 
 **Paired tests on stored per-item hits.** Every arm stores which items it got right, so every

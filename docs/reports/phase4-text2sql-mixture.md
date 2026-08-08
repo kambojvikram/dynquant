@@ -741,6 +741,39 @@ about everything that legitimately differs per arm: accuracy, runtime, packed si
 that fit in VRAM. The run stops before the manifest is written, since a manifest listing seven
 unpairable arms is worse than no manifest at all -- it is the artefact the comparison reads.
 
+### The one setting two identical commands can still disagree about
+
+Wiring the panel's guard to `_comparability` exposed a hole in the contract itself, and closing
+it is the reason this subsection exists rather than a footnote.
+
+Every field in `PAIRING_FIELDS` comes off the command line, so seven arms launched by one driver
+cannot differ in any of them. **`prompt_style` does not.** `--prompt-style auto` is the default and
+it is answered by the tokenizer: `chat_prompt_style` asks the tokenizer to render a turn and reads
+what comes back. A quantized checkpoint whose saved tokenizer lost its chat template therefore
+resolves to `completion` where the ceiling resolved to `chat` -- both arms run clean, both commands
+are byte-identical, and one of them was asked a different kind of question.
+
+The size of that mistake is already measured in this project. On IFEval the same failure put
+Ministral-8B-Instruct at **24.77%** with 195 of 541 generations empty, against Phi-4-mini's 68.76%
+with none: low enough to look like a broken model, stable enough to look real. IFEval and the code
+tasks record their resolved style for exactly that reason. `text2sql` -- the task this campaign runs
+-- did not.
+
+Three changes close it. `Text2SqlResult` gains a required `prompt_style`, set from the *resolved*
+value rather than the requested one, because recording `"auto"` would be worse than recording
+nothing: it would look like a matched setting. It goes into `as_dict`, which is what `dynquant eval`
+writes into the record's `detail` block. And `DETAIL_PAIRING_FIELDS = ("prompt_style",)` reads it
+back out of there, the same route `decode.max_new_tokens` takes.
+
+One asymmetry was needed. Every other pairing field is written on every run, so `_compare` treats
+its absence from *this* run's record as a bug in the command. The detail block is the task's: three
+tasks carry none at all and the rest carry different keys, so absence has to mean "this task reports
+no style". `_OPTIONAL_COMPARABILITY` names the exemption explicitly rather than testing for a
+`detail.` prefix. Absence still refuses against a record that *has* a style -- a record written
+before this change cannot be shown to match one written after it, and "unknown" is not "the same".
+That costs a re-run of anything being compared against the older records; the alternative cost is a
+wrong number in a table.
+
 ---
 
 ## 13. Status

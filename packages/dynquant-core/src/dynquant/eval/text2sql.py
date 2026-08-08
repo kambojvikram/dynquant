@@ -95,6 +95,8 @@ from .text2sql_sources import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
+    from ._code_exec import PromptStyle
+
 __all__ = [
     "DEFAULT_CHAT_CONFIG",
     "DEFAULT_COMPLETION_CONFIG",
@@ -237,6 +239,20 @@ class Text2SqlResult:
     """Parseable SQL that sqlite refused to run. Wrong, but wrong in a recoverable way
     -- a syntax slip or a hallucinated column, rather than a collapse."""
 
+    prompt_style: PromptStyle
+    """Whether the questions were asked through the chat template or as raw completions.
+
+    Resolved from the tokenizer when ``--prompt-style auto``, so two arms of one panel can
+    disagree about it without either command saying anything different: a quantized
+    checkpoint whose saved tokenizer lost its chat template resolves to ``completion``
+    while the ceiling resolves to ``chat``, and the arm is then asked a different question
+    and scored as though it were the same one. The gap arrives looking like quantization
+    damage, which is the largest effect this campaign measures.
+
+    Required rather than defaulted for that reason -- a result that does not know how it
+    was framed is the hole, and a default would fill it with a plausible answer.
+    """
+
     hits: list[bool] = field(default_factory=list)
     """Per-item correctness in dataset order, always recorded.
 
@@ -323,6 +339,11 @@ class Text2SqlResult:
             "errored": self.errored,
             "exact": self.exact,
             "unfinished_reasoning": self.unfinished_reasoning,
+            # Into `detail`, where `dynquant eval` puts every task's own metrics -- and
+            # from there into the pairing contract via `DETAIL_PAIRING_FIELDS`, the same
+            # route `decode.max_new_tokens` takes. Recording it anywhere else would leave
+            # the comparison guard unable to see it.
+            "prompt_style": self.prompt_style,
             "by_source": {k: list(v) for k, v in sorted(self.by_source.items())},
         }
 
@@ -849,6 +870,7 @@ def evaluate_text2sql(
         hits=hits,
         exact=exact,
         unfinished_reasoning=unfinished,
+        prompt_style=resolved,
         predictions=list(generations[:keep_predictions]),
         by_source=by_source,
     )

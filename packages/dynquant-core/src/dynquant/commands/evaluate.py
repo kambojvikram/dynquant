@@ -42,7 +42,7 @@ from . import _shared
 if TYPE_CHECKING:
     import argparse
 
-__all__ = ["DECODE_PAIRING_FIELDS", "PAIRING_FIELDS", "TASKS", "run"]
+__all__ = ["DECODE_PAIRING_FIELDS", "DETAIL_PAIRING_FIELDS", "PAIRING_FIELDS", "TASKS", "run"]
 
 #: Everything two records must agree on before their hit vectors may be paired.
 #:
@@ -66,6 +66,29 @@ PAIRING_FIELDS = ("task", "backend", "split", "shots", "shot_seed", "limit")
 #: about, and requiring a match would stop a 3-bit arm from running at the batch size its
 #: memory allows. The residual risk is real and is accepted here rather than unnoticed.
 DECODE_PAIRING_FIELDS = ("max_new_tokens",)
+
+#: The same contract again, for settings only the *task* knows.
+#:
+#: ``prompt_style`` is resolved from the tokenizer, not passed on the command line, so
+#: it is the one pairing field two arms can disagree about while their commands are
+#: byte-identical. A quantized checkpoint whose saved tokenizer lost its chat template
+#: resolves to ``completion`` where the ceiling resolves to ``chat``; both arms then run
+#: clean, and the difference between being asked a chat question and a completion
+#: question is reported as the effect of quantization.
+#:
+#: Read out of ``detail`` because that is where a task's own metrics already go. Tasks
+#: that record no style are ``_ABSENT`` on both sides and pair as before -- absence is
+#: only a mismatch against a record that has one.
+DETAIL_PAIRING_FIELDS = ("prompt_style",)
+
+#: Comparability keys whose absence from *this* run's record is legitimate.
+#:
+#: Every other pairing field is written by ``dynquant eval`` on every run, so missing one
+#: is a bug in the command and is raised as such. The detail block is different: it is the
+#: task's, three tasks carry none at all, and the ones that do carry different keys. So
+#: absence here has to mean "this task does not report a style", which pairs cleanly
+#: against another record that does not report one and refuses against one that does.
+_OPTIONAL_COMPARABILITY = frozenset(f"detail.{field}" for field in DETAIL_PAIRING_FIELDS)
 
 #: Distinguishes "this record does not carry the field" from "it carries ``None``".
 #: ``split`` is legitimately ``None`` for a single-set dataset, so absence cannot be
@@ -648,10 +671,12 @@ def _pack(model: Any, args: argparse.Namespace) -> dict[str, Any]:
 def _comparability(record: dict[str, Any]) -> dict[str, Any]:
     """Flatten a record down to the settings a pair has to agree on.
 
-    Two tuples rather than one because the record keeps them in two places. The decode
-    budget lives under ``decode``, written by the harness beside the batch size and the
-    prompt cap; reading it there rather than promoting it to the top level is what keeps
-    every record this campaign has already written pairable against a new one.
+    Three tuples rather than one because the record keeps them in three places. The
+    decode budget lives under ``decode``, written by the harness beside the batch size
+    and the prompt cap; the prompt style lives under ``detail``, written by the task that
+    resolved it. Reading them where they already are, rather than promoting them to the
+    top level, is what keeps every record this campaign has already written pairable
+    against a new one.
 
     Missing is not ``None``. ``split`` is legitimately ``None`` for a dataset with a
     single set, so a record that never wrote the field has to be distinguishable from one
@@ -659,11 +684,12 @@ def _comparability(record: dict[str, Any]) -> dict[str, Any]:
     waves through the mismatch it exists to catch.
     """
     values = {field: record.get(field, _ABSENT) for field in PAIRING_FIELDS}
-    decode = record.get("decode")
-    for field in DECODE_PAIRING_FIELDS:
-        values[f"decode.{field}"] = (
-            decode.get(field, _ABSENT) if isinstance(decode, dict) else _ABSENT
-        )
+    for prefix, fields in (("decode", DECODE_PAIRING_FIELDS), ("detail", DETAIL_PAIRING_FIELDS)):
+        block = record.get(prefix)
+        for field in fields:
+            values[f"{prefix}.{field}"] = (
+                block.get(field, _ABSENT) if isinstance(block, dict) else _ABSENT
+            )
     return values
 
 
@@ -679,7 +705,7 @@ def _compare(record: dict[str, Any], path: str) -> dict[str, Any]:
 
     theirs = _comparability(other)
     for field, mine in _comparability(record).items():
-        if mine is _ABSENT:
+        if mine is _ABSENT and field not in _OPTIONAL_COMPARABILITY:
             # Not a user error: this run built its own record a moment ago. A field
             # dropped from it would make the guard below compare absence against absence
             # and wave through every mismatch, so the check that the guard can still see
@@ -691,8 +717,9 @@ def _compare(record: dict[str, Any], path: str) -> dict[str, Any]:
             )
         if theirs[field] != mine:
             was = "absent" if theirs[field] is _ABSENT else repr(theirs[field])
+            used = "nothing" if mine is _ABSENT else repr(mine)
             raise DynQuantError(
-                f"{source} was measured with {field}={was} but this run used {mine!r}. "
+                f"{source} was measured with {field}={was} but this run used {used}. "
                 f"A paired test needs the same problems in the same order; comparing "
                 f"across settings would report a harness difference as a quantization "
                 f"effect."

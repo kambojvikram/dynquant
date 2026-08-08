@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -1111,6 +1112,89 @@ def test_a_matched_pair_compares(tmp_path: Path, capsys) -> None:
     comparison = evaluate._compare(record, str(path))
     assert comparison
     capsys.readouterr()
+
+
+def _styled(style: str | None) -> dict:
+    """A text2sql record, with or without the style its task resolved."""
+    record = {
+        "task": "text2sql",
+        "backend": "transformers",
+        "split": "test",
+        "shots": 2,
+        "shot_seed": 0,
+        "limit": 400,
+        "label": "arm",
+        "decode": {"max_new_tokens": 384, "batch_size": 8, "greedy": True},
+        "detail": {"accuracy": 0.5, "by_source": {}},
+        "hits": [True, False],
+    }
+    if style is not None:
+        record["detail"]["prompt_style"] = style  # type: ignore[index]
+    return record
+
+
+def test_two_arms_that_resolved_different_prompt_styles_are_refused(tmp_path: Path) -> None:
+    """The one pairing field two byte-identical commands can still disagree about.
+
+    ``--prompt-style auto`` is answered by the tokenizer, so a quantized checkpoint whose
+    saved tokenizer lost its chat template is asked bare-text questions while the ceiling
+    is asked chat questions. On IFEval that gap was worth 44 points on Ministral-8B -- low
+    enough to look like a broken model, stable enough to look real. Nothing on either
+    command line differs, so the record is the only place it can be caught.
+
+    Turns red when: ``prompt_style`` leaves ``DETAIL_PAIRING_FIELDS``, or the detail block
+    stops being read.
+    """
+    path = tmp_path / "other.json"
+    path.write_text(json.dumps(_styled("completion")), encoding="utf-8")
+
+    with pytest.raises(DynQuantError, match=re.escape("detail.prompt_style")):
+        evaluate._compare(_styled("chat"), str(path))
+
+
+def test_a_task_that_reports_no_style_pairs_exactly_as_it_did_before(tmp_path: Path) -> None:
+    """Absence is legitimate here, unlike every other field in the contract.
+
+    Three tasks carry no detail block at all, and the ones that do carry different keys.
+    So a missing style has to mean "this task does not report one" and pair cleanly
+    against another record that does not report one -- otherwise adding this field would
+    have broken every GSM8K and MMLU comparison the package can make.
+
+    Turns red when: the missing-field guard stops exempting the detail-sourced keys, or
+    the exemption widens to cover fields ``dynquant eval`` writes on every run.
+    """
+    both_absent = _styled(None)
+    path = tmp_path / "other.json"
+    path.write_text(json.dumps(dict(both_absent, label="fp16")), encoding="utf-8")
+
+    assert evaluate._compare(both_absent, str(path))
+
+    assert set(evaluate._OPTIONAL_COMPARABILITY) == {"detail.prompt_style"}
+    assert not any(
+        key.split(".", 1)[0] not in {"decode", "detail"} for key in evaluate._OPTIONAL_COMPARABILITY
+    )
+
+
+def test_a_record_that_knows_its_style_will_not_pair_against_one_that_does_not(
+    tmp_path: Path,
+) -> None:
+    """ "Unknown" is not "the same". It is refused in both directions.
+
+    Records written before the task recorded a style are the realistic source, and the
+    honest reading of one is that its framing cannot be established -- not that it matches
+    whatever this run happened to resolve. The refusal costs a re-run; the alternative
+    costs a wrong number in a table.
+
+    Turns red when: absence starts comparing equal to a value, in either direction.
+    """
+    path = tmp_path / "other.json"
+    path.write_text(json.dumps(_styled(None)), encoding="utf-8")
+    with pytest.raises(DynQuantError, match=re.escape("detail.prompt_style=absent")):
+        evaluate._compare(_styled("chat"), str(path))
+
+    path.write_text(json.dumps(_styled("chat")), encoding="utf-8")
+    with pytest.raises(DynQuantError, match="this run used nothing"):
+        evaluate._compare(_styled(None), str(path))
 
 
 # --------------------------------------------------------------------------
