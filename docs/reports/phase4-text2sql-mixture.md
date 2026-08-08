@@ -1259,6 +1259,100 @@ as `1.000e+00` -- all caught, 17 of 17 overall. The module count is the mutation
 133 reads like an edge case and is 91.5% of the checkpoint, so the parameter share goes first in the
 line and the count second.
 
+### The whole driver, rehearsed on 38 M parameters, and the four arms it stopped
+
+The rehearsal above ran the DynQuant arm alone. What had still never run was the *driver* --
+seven arms in sequence, each record into the manifest, the manifest into the pairing guard and
+the table. On the double it costs about four minutes on the CPU, beside the fine-tune that owns
+the GPU. It failed four times, and all four would have failed the real panel; three of them fail
+after the calibration pass, which is where the entire cost of a baseline arm sits.
+
+**One: `run` could not load anywhere but the GPU.** `--device` existed on `linearize` and nowhere
+else. `run` -- the only subcommand `arms_lfm2.py` invokes -- passed nothing, and `load_linearized`
+defaulted to `device_map="cuda"`. That is why the rehearsal had been deferred rather than run: the
+box's GPU is held for hours by the fine-tune that produces the signal being scored, so the one
+machine the panel is scheduled on was the one machine the panel could not be rehearsed on. A
+driver that can only be rehearsed on the hardware the real run needs is a driver that gets
+rehearsed for the first time during the real run. `--device` is now a single flag on the arms
+driver, threaded into the shared `eval_flags` so it reaches all seven arms -- a panel where one
+arm loaded somewhere else is not a panel either. `dq_inspect_cmd` is deliberately left out of it:
+allocation reads a stats file and a config, `inspect` already defaults to `cpu`, and routing the
+one CPU-only step of the panel to the panel's device would put it on the GPU the passthrough
+exists to keep clear. Four mutations, all caught, including the flag parsed and then ignored --
+which would leave a CPU rehearsal OOMing against the fine-tune it was meant to run beside.
+
+**Two: the provenance qualification reached the tokenizer.** Found at the second arm. The baseline
+arms deliberately set `--model` to a non-path -- the qualified string `<merge>#gptq-4b-g128`, so
+six records built from one checkpoint do not all claim to be the same weights. `evaluate.run`
+defaults `--tokenizer` to `--model`, and handed that string to `from_pretrained`, which rejected it
+as a Hub repo id. On the real panel that is four arms x a 256-sample pass over 8 B parameters, each
+one dying at the tokenizer with the quantized weights already in memory and nothing written.
+`eval_namespace` now states `--tokenizer` as the directory the weights were loaded from, and
+`evaluate.run`'s docstring says the sentence that would have prevented it: the field a caller owns
+is also the tokenizer default.
+
+**Three: AWQ had no mappings for this architecture, and would not have said so.** AWQ divides a
+linear's input channels by a per-channel scale and folds the inverse into whatever produced that
+input. Which module that is comes from a per-architecture table, and `Lfm2MoeForCausalLM` is in
+neither of llm-compressor's two: not the static `AWQ_MAPPING_REGISTRY`, and not the dynamic
+builder, whose hybrid-stack shape is exactly right but whose `_get_hybrid_attention_config`
+returns `None` unless `layer_types` contains `linear_attention` -- this model says `conv`. So the
+Llama defaults applied, and on this architecture they are wrong in both halves of every block: the
+pre-mixer norm is `operator_norm`, not `input_layernorm`; the pre-feed-forward norm is `ffn_norm`,
+not `post_attention_layernorm`; and attention's output projection is `out_proj`, not `o_proj`.
+`q/k/v_proj` matched, their smooth partner never did, and `match_modules_set` raised on the
+incomplete set -- `awq_4b failed with exit code 1`, after the calibration pass.
+
+The mappings themselves are seven regexes and were the easy half. The half that matters is the
+number beside each one. A mapping that matches *nothing* does not raise: `_set_resolved_mappings`
+logs a `debug` line and moves on, so the arm runs to completion, writes a record, and enters the
+table as round-to-nearest wearing an AWQ label. That is the failure `materialize_quantization`
+exists to prevent (§10) in a different disguise, and it wants the same treatment -- predict the
+set count from the config, resolve it against the real tree with llm-compressor's own matcher, and
+fail before the calibration pass rather than after it. The prediction is read off `layer_types`,
+`num_dense_layers` and `num_experts`: six attention blocks, eighteen convolution blocks, two dense
+feed-forwards, twenty-two MoE feed-forwards and thirty-two experts give **`[2, 2, 6, 18, 22, 704]`
+sets across six mappings**. The 704 is the one that would have been quietly wrong --
+`match_modules_set` yields when the lowest common ancestor of the matched set changes, so a pair
+that sits inside one expert yields one set per *expert*, not one per layer. Checking with
+llm-compressor's own matcher rather than a hand-rolled name scan is deliberate for the same
+reason: a scan can agree with the regexes and disagree with the matcher, and the disagreement is
+the whole defect. (`_match_name` calls `re.match`, not `fullmatch`, so every pattern is
+`$`-anchored and the layer alternation is emitted widest-first -- `(21|18|...|2)` -- which makes
+`(2|21)` matching `layers.21.` a property of the expression rather than of backtracking.)
+
+**Four: AWQ's own grouped-query guard is inert on this model.** With the mappings resolving, the
+arm reached `_apply_smoothing` and died -- `The size of tensor a (128) must match the size of
+tensor b (256)`, at `_smooth`'s `weight[-scales.size(0):].div_(scales.view(-1, 1))`. The pair is
+`v_proj -> out_proj`, and under grouped-query attention it cannot exist: `v_proj` emits
+`num_key_value_heads x head_dim` rows and `out_proj` consumes `num_attention_heads x head_dim`, so
+there is no per-channel scale that divides one and multiplies the other. LFM2.5-8B-A1B is 4:1 GQA,
+32 heads against 8 KV heads. Upstream knows this and drops the pair -- but
+`_check_layers_are_compatible` tests `balance_name.endswith(".o_proj")`, so on a model that spells
+it `out_proj` the guard never fires. Ours is conditional on `kv_heads == heads` read from the
+config, which is the same fact stated where it is true rather than where it happens to be spelled,
+and the consequence is recorded rather than assumed: `self_attn.out_proj` is quantized without an
+AWQ scale, and it appears in `unsmoothed_linears` beside `conv.out_proj` and `lm_head`, neither of
+which has a linear producer to fold an inverse scale into.
+
+The double is 2:1 GQA for the same reason the real model is 4:1 -- it is the config, shrunk. Both
+AWQ arms now record **6 mappings, 145 Linear modules, 138 smoothed**, unsmoothed
+`{conv.out_proj: 4, lm_head: 1, self_attn.out_proj: 2}`, and `145/145` weights materialized, which
+is the shape §10 says an AWQ arm should have. Nine tests and ten mutations; the first pass caught
+nine of ten, and the one that got through is worth naming. The selection test asserted that every
+balance layer sits under a *selected* block, but not the converse -- so an attention-norm pattern
+with its layer scope deleted, matching all 24 blocks against 6 attention blocks, passed. It is the
+raising case from the other side. Set equality in both directions closes it, and the re-run caught
+10 of 10.
+
+The seven arms then ran end to end into `arms.json` and the table rendered: all seven rows, both
+DynQuant width histograms, the pricing line, the floor-breach lists, and both Holm-corrected
+McNemar blocks. Every accuracy is 0.0%, which is the correct answer -- 38 M random weights
+answering four text-to-SQL problems in 32 new tokens. The rehearsal measures the plumbing. The
+plumbing is what four of the real panel's GPU-hours would otherwise have been spent discovering,
+one arm at a time, each time after the expensive part.
+
+
 ---
 
 ## 13. Status
@@ -1314,6 +1408,13 @@ defect reads 1.000 at 4 bits and is computed entirely inside the measured 8.46%.
 paths that had been reporting the unmeasured mass as measured-and-worthless are fixed, four
 mutations added, 17 of 17 caught, and the allocation is bit-identical before and after -- which is
 what an observability fix should be.
+
+Also done since: the driver itself, rehearsed end to end -- seven arms on a 38 M structural
+double, into the manifest and out to the table -- which found **four more defects**, three of them
+failing after the calibration pass: `run` was CUDA-only, the provenance qualification reached the
+tokenizer, AWQ had no mappings for this architecture and would have been skipped silently rather
+than raised, and upstream's own grouped-query guard is inert on a model that spells the output
+projection `out_proj`. Nineteen tests and sixteen mutations across the four, all caught.
 
 Not done, in order: the fine-tune, with the expert mass measured; then the six arms at matched
 bytes -- GPTQ and AWQ through the linearized structure verified bit-exact in §10, all three widths

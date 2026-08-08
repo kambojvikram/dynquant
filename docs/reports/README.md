@@ -4,10 +4,10 @@ Every experiment run on DynQuant since the package was built, what it measured, 
 full record lives. Nothing here is taken from the paper; everything is measured on this
 repository's own code, all of it on a single NVIDIA A100 80GB PCIe.
 
-There are fourteen campaigns. They answer seventeen questions, in this order — phase 4
-answers four of them, because whether a benchmark can read damage, whether the model has
-already seen its answers, whose bytes “matched bytes” means, and which of two prices chose
-the widths are four separate failures:
+There are fourteen campaigns. They answer eighteen questions, in this order — phase 4
+answers five of them, because whether a benchmark can read damage, whether the model has
+already seen its answers, whose bytes “matched bytes” means, which of two prices chose the
+widths, and whether the driver that runs the arms runs at all are five separate failures:
 
 | # | question | verdict | full record |
 |---|---|---|---|
@@ -28,6 +28,7 @@ the widths are four separate failures:
 | 15 | Does the training mixture contain the questions the arms are scored on? | **Yes — 189 of the 200 WikiSQL evaluation items are questions in `b-mc2/sql-create-context`**, and the guard that reported the mixture clean could not have fired | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §11 |
 | 16 | “At matched bytes” — whose bytes? | **The baselines’** — DynQuant’s own format costs 4.25 bits/param at 4 bits against `compressed-tensors`’ 4.15625, so anchoring on its uniform arm would hand it **2.3% more bytes inside the arm whose accuracy is the claim** | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
 | 17 | Which of DynQuant’s two prices chose the widths, and on how much of the model? | **44 of 133 modules — 91.54% of parameters — by the rank-product proxy rescaled by 1.807e-17**, because a batched expert bank has no boundary where the Gauss–Newton form exists; the concordance guard reads 1.000 over the other 8.46% | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
+| 18 | Does the seven-arm panel driver run? | **Not until four defects were removed** — three of them fail *after* the calibration pass, and one would have finished, written a record and entered the table as round-to-nearest wearing an AWQ label | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
 
 The method itself — signals, sensitivity estimator, allocator, encoder, format, packed
 runtime, kernels — is documented end to end in the
@@ -733,6 +734,60 @@ which is what an observability fix should be. Four mutations added, 17 of 17 cau
 the one that reports the proxied share as a module count, since 44 of 133 reads like an edge case
 and is 91.5% of the checkpoint.
 
+
+## 18. Phase 4 — seven arms on 38 M parameters, and the four they stopped
+
+[`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 · measured 2026-08-08
+
+The panel is seven arms over one 8 B checkpoint: a bf16 ceiling, GPTQ and AWQ at two widths each,
+and DynQuant at two anchors. Nothing had ever run the *driver* — arms in sequence, records into the
+manifest, manifest into the pairing guard and the table. Rehearsing it on a structurally identical
+38 M double (the same `lfm2_moe` config with every dimension shrunk, random weights, four problems,
+32 new tokens, CPU) costs about four minutes a pass. It failed four times.
+
+**`run` could only load on the GPU.** `--device` existed on `linearize` alone; the one subcommand
+the driver invokes hardcoded `device_map="cuda"`. The box's GPU is held for hours by the fine-tune
+that produces the signal being scored, so the only machine the panel is scheduled on was the one
+machine it could not be rehearsed on — which is why the rehearsal had been deferred rather than
+run.
+
+**The provenance qualification reached the tokenizer.** Baseline arms set `--model` to
+`<merge>#gptq-4b-g128` so six records from one checkpoint do not all claim to be the same weights;
+`--tokenizer` defaults to `--model`, and `from_pretrained` rejected it as a Hub repo id. It fails
+after the calibration pass — on the real panel, four arms × a 256-sample pass over 8 B parameters,
+each dying with the quantized weights already in memory.
+
+**AWQ had no mappings for this architecture, and would not have said so.** `Lfm2MoeForCausalLM` is
+in neither of llm-compressor's two registries — the dynamic hybrid-stack builder is the right shape
+but requires `linear_attention` in `layer_types`, and this model says `conv` — so the Llama defaults
+applied, and they are wrong in both halves of every block (`operator_norm` not `input_layernorm`,
+`ffn_norm` not `post_attention_layernorm`, `out_proj` not `o_proj`). The visible failure is a raise
+on a partially matched set. The invisible one is the reason the fix is a *count* and not a regex: a
+mapping that matches **nothing** does not raise. It is logged at `debug` and skipped, and the arm
+finishes as round-to-nearest under an AWQ label. Predicting the set count from `layer_types`,
+`num_dense_layers` and `num_experts` — `[2, 2, 6, 18, 22, 704]` over six mappings — turns that
+silence into a pre-calibration abort. The 704 is the one that would have been quietly wrong:
+`match_modules_set` groups by lowest common ancestor, so an expert-local pair yields one set per
+expert, not one per layer.
+
+**Upstream's grouped-query guard is inert here.** `v_proj → out_proj` cannot be smoothed under
+GQA — `v_proj` emits `kv_heads × head_dim` rows and `out_proj` consumes `heads × head_dim`.
+llm-compressor drops the pair, but its check reads `balance_name.endswith(".o_proj")`, so on this
+model `_smooth` reached `weight[-scales.size(0):]` with 256 scales for 128 rows. The pair is now
+conditional on `kv_heads == heads` from the config, and the consequence — `self_attn.out_proj`
+quantized unsmoothed — is written into the record rather than assumed.
+
+Both AWQ arms now report **6 mappings, 138 of 145 Linear modules smoothed**, the seven that are not
+named by suffix, and 145/145 weights rounded. Nineteen tests and sixteen mutations across the four
+defects, all caught — after the first mutation pass caught nine of ten. The miss is the instructive
+one: the selection test checked that every balance layer sits under a selected block but not the
+converse, so deleting a mapping's layer scope, which selects all 24 blocks where 6 belong, passed.
+Set equality in both directions closes it.
+
+All seven arms then ran into the table. Every accuracy is 0.0%, which is correct and meaningless —
+38 M random weights answering four text-to-SQL problems. The rehearsal measures plumbing, and the
+plumbing is what four of the real panel's GPU-hours would otherwise have been spent discovering,
+one arm at a time, each time after the expensive part.
 
 ## Conventions that apply to every campaign
 
