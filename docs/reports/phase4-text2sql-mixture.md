@@ -293,6 +293,45 @@ mypy complaint about returning `Any`.
 All three are the same shape as §4 and §7: **not wrong answers, but wrong records** — and a
 wrong record is worse, because a wrong answer eventually contradicts something.
 
+### The honest number, and where the arms' decode budget comes from
+
+Re-run with all three fixes in and the cap raised to 1024 tokens, on the same 400 problems:
+
+| | budget | correct | unparseable | wall |
+|---|---|---|---|---|
+| withdrawn | 256 | 22 / 400 = **5.50%** | — | — |
+| measured | 1024 | 231 / 400 = **57.75%** | 10 | 4304.5 s |
+
+Split by source: gretel 133/200, wikisql 98/200. Of the 169 misses, 85 are execution errors
+against the schema and 49 are queries that ran and returned the wrong rows — which is the
+distribution a model with real but imperfect SQL has, not the distribution of a broken
+extractor.
+
+The point of raising the cap was to read the arms' budget off the closure distribution rather
+than guess it, and that read came back **censored**: 10 of 400 generations (2.5%) were still
+deliberating when they hit 1024. Over the 390 that closed, total length is p50 277, p90 608,
+p95 778, p99 1024; the deliberation prefix alone is p95 666 with a max of 965, and the answer
+after it is p95 49, max 107. So the reasoning is what consumes the budget, and 256 never had a
+chance — the median generation is longer than the entire cap that produced 5.50%.
+
+Two decisions follow, and only one of them is the obvious one.
+
+**The 57.75% stands as a headroom judgement even though it is censored.** Censoring is
+one-directional here: the 10 unclosed generations can only ever be scored correct, never
+incorrect-because-truncated-differently. So the true value is in [57.75%, 60.25%], and with 40
+points of room to the ceiling that interval does not change any decision the screen exists to
+make. Re-running at 2048 to close it would cost another ~2.4 h and buy a tighter bound on a
+number nothing depends on.
+
+**But this distribution is not the one that should set the arms' budget.** The six arms
+quantize the *fine-tuned* model, and fine-tuning on text-to-SQL teaches direct answering — the
+whole point of the mixture is that the target is a query, not a derivation. A base model's
+deliberation length does not predict a fine-tuned model's. Reading 1280 off this table and
+stamping it on the arms would be transferring a measurement across the one intervention
+designed to invalidate it. The budget comes from the fine-tuned bf16 ceiling instead, measured
+the same way; and if that run at 1024 comes back uncensored, the ceiling record *is* the
+ceiling arm — same budget, so it pairs, at no extra cost.
+
 ### What this cost, and what it saved
 
 It cost one 400-item run and a 32-item probe. It saved a fine-tune and six quantization arms

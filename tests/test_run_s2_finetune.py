@@ -926,6 +926,9 @@ def test_too_many_unmaskable_conversations_refuses_to_train(
     monkeypatch.setattr(
         s2,
         "load_rows",
+        # `(rows, decontaminated)`: the second element is the per-source count of rows
+        # dropped for asking a question the evaluation asks, and it is `{}` here because
+        # this mixture has no decontamination step -- not because one ran and found none.
         lambda spec, examples, seed: (
             [
                 {
@@ -935,7 +938,8 @@ def test_too_many_unmaskable_conversations_refuses_to_train(
                     ]
                 }
             ]
-            * 4
+            * 4,
+            {},
         ),
     )
 
@@ -979,7 +983,8 @@ def test_auto_mode_rescues_a_tokenizer_the_walk_cannot_handle(s2, monkeypatch, t
                     ]
                 }
             ]
-            * 3
+            * 3,
+            {},
         ),
     )
     monkeypatch.setattr(s2, "_train", lambda *a, **k: pytest.fail("dry run trained"))
@@ -1023,7 +1028,8 @@ def test_a_dry_run_writes_the_census_and_touches_no_gpu(s2, monkeypatch, tmp_pat
                     ],
                 }
             ]
-            * 3
+            * 3,
+            {},
         ),
     )
     monkeypatch.setattr(s2, "_train", lambda *a, **k: pytest.fail("dry run trained"))
@@ -1043,6 +1049,14 @@ def test_a_dry_run_writes_the_census_and_touches_no_gpu(s2, monkeypatch, tmp_pat
     assert census["sources_overlapping_an_eval_task"] == [
         "ai2-adapt-dev/tulu_v3.9_open_math_2_gsm8k_50k"
     ]
+    # And what that list was checked against, because an empty one is worth exactly as
+    # much as the markers behind it. On the text-to-SQL mixture it was worth nothing: no
+    # SQL corpus name contains "gsm8k", "humaneval" or "mbpp", so the empty result was a
+    # check that could not fire rather than a mixture that passed.
+    assert census["contamination_markers"] == list(s2._CONTAMINATING)
+    # The check that can fire, and it reports per source rather than as a boolean. Empty
+    # here because this mixture takes the generic Hub path, which has no filter to run.
+    assert census["decontaminated"] == {}
 
 
 def test_the_signal_map_is_counted_from_the_file_not_from_the_tracker(s2, tmp_path) -> None:

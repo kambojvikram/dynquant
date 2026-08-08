@@ -40,7 +40,15 @@ from dynquant._logging import get_logger
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
 
-__all__ = ["SOURCES", "RawItem", "Source", "is_readable_query", "resolve_sources"]
+__all__ = [
+    "SOURCES",
+    "RawItem",
+    "Source",
+    "evaluation_questions",
+    "is_readable_query",
+    "question_key",
+    "resolve_sources",
+]
 
 _log = get_logger(__name__)
 
@@ -362,6 +370,73 @@ def read_source(
     yield from source.reader(raw)
 
 
+# --------------------------------------------------------------------------
+# Decontamination
+# --------------------------------------------------------------------------
+
+_QUESTION_COLUMN = {
+    "gretel": "sql_prompt",
+    "wikisql": "question",
+    "create-context": "question",
+}
+"""The raw column each reader takes ``RawItem.question`` from.
+
+Restated here rather than derived, because :attr:`Source.reader` builds whole items and
+this needs one column out of a corpus that is 20x larger than the split it evaluates --
+synthesising 16k WikiSQL tables to read 16k question strings is minutes of work to answer
+a question that is seconds of work. :func:`test_question_columns_match_the_readers` holds
+the two in agreement.
+"""
+
+_NOT_WORD = re.compile(r"[^\w\s]")
+_WHITESPACE = re.compile(r"\s+")
+
+
+def question_key(text: str) -> str:
+    """Fold the differences between two writings of the same question.
+
+    Case, punctuation and whitespace, and nothing else. Deliberately not stemming or
+    synonym folding: this decides whether a training row is an evaluation item, and a
+    looser rule starts deleting legitimate training data for resembling the test set,
+    which is a silent cost paid against an unmeasurable benefit.
+    """
+    return _WHITESPACE.sub(" ", _NOT_WORD.sub(" ", text.lower())).strip()
+
+
+def evaluation_questions(
+    names: Sequence[str] | None = None, *, seed: int = 0, cache_dir: str | None = None
+) -> frozenset[str]:
+    """Every question in the evaluated sources' *whole* test splits.
+
+    The whole split, not the items a particular run draws. A run takes ``--limit`` items
+    at a seed; what a fine-tune is exposed to is whatever any future run might draw. A
+    decontamination keyed on one run's sample would be undone by changing the limit, and
+    nothing would report that it had been.
+
+    Unfiltered by admission, for the same reason: an item the evaluator rejects today is
+    still an item it might accept after a filter changes, and a training set built around
+    today's admission rule would become contaminated by a later one.
+
+    ``seed`` is here only for holdout sources, whose test split is a slice of a shuffle
+    and therefore genuinely does depend on it -- :func:`read_source` takes the first
+    ``holdout`` rows *after* shuffling at ``seed``, and reading an unshuffled prefix here
+    instead would name a set of rows that is not the test set and report it as clean.
+    """
+    from datasets import load_dataset
+
+    questions: set[str] = set()
+    for source in resolve_sources(names, split="test"):
+        kwargs: dict[str, Any] = {"split": source.splits["test"], "cache_dir": cache_dir}
+        if source.revision:
+            kwargs["revision"] = source.revision
+        raw = load_dataset(source.repo, source.config, **kwargs)
+        if source.holdout:
+            raw = raw.shuffle(seed=seed).select(range(source.holdout))
+        column = _QUESTION_COLUMN[source.name]
+        questions.update(question_key(str(row[column])) for row in raw)
+    return frozenset(questions)
+
+
 def is_ordered(gold: str) -> bool:
     """Whether row order is significant, i.e. whether the gold asked for one."""
     return bool(_ORDER_BY.search(gold))
@@ -405,6 +480,7 @@ BREAKDOWN_FIELDS = (
     "no_data",
     "too_long",
     "failed",
+    "contaminated",
 )
 
 
@@ -442,6 +518,16 @@ class SourceTally:
     too_long: int = 0
     failed: int = 0
     """The schema or the gold query would not execute at all."""
+
+    contaminated: int = 0
+    """Training rows dropped for asking a question the evaluation asks.
+
+    Not a defect in the source -- ``b-mc2/sql-create-context`` is an aggregate and never
+    claimed to respect WikiSQL's split -- and not a rounding error either: 189 of the 200
+    WikiSQL items in this campaign's evaluation set are in it. Counted, so a mixture that
+    silently stops needing the filter is distinguishable from a filter that silently
+    stopped running.
+    """
 
     errors: dict[str, int] = field(default_factory=dict)
 

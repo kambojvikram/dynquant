@@ -70,6 +70,7 @@ from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, Literal
 
 from dynquant._logging import get_logger
+from dynquant.errors import DynQuantError
 
 from .harness import (
     EvalConfig,
@@ -83,8 +84,10 @@ from .text2sql_sources import (
     MAX_CONTEXT_CHARS,
     RawItem,
     SourceTally,
+    evaluation_questions,
     is_ordered,
     is_readable_query,
+    question_key,
     read_source,
     resolve_sources,
 )
@@ -552,6 +555,8 @@ def load_text2sql(
     limit: int | None = None,
     seed: int = 0,
     require_rows: bool | None = None,
+    decontaminate: bool | None = None,
+    tallies: dict[str, SourceTally] | None = None,
     cache_dir: str | None = None,
 ) -> list[Text2SqlExample]:
     """Load a balanced mixture of text-to-SQL items.
@@ -573,6 +578,32 @@ def load_text2sql(
             Defaults to on for every split except ``train``, where a gold query that
             returns nothing is still correct supervision and dropping it would throw
             away most of two sources.
+        decontaminate: Drop training rows that ask a question the *evaluation* asks.
+            Defaults to on for ``train`` and is refused for anything else -- see below.
+            ``False`` is for measuring the contamination, not for training through it.
+        tallies: Filled in with the per-source admission breakdown, if given. An
+            out-parameter rather than a second return value because every existing caller
+            wants the items and only the run manifest wants the accounting -- and the
+            accounting is what tells a later reader whether the decontamination ran at
+            all, which a count that only reaches the log cannot.
+
+    Three sources train and two evaluate, and the third is why this has a
+    decontamination step at all. ``b-mc2/sql-create-context`` is a community aggregate
+    built from WikiSQL and Spider, shipped as a single ``train`` split; it never claimed
+    to respect WikiSQL's own train/test boundary, and it does not. Measured against this
+    campaign's evaluation set, **189 of its 200 WikiSQL items are questions present in
+    ``create-context``** -- so a fine-tune on the untreated mixture is trained on 94.5% of
+    half its benchmark, and would post a number that is partly recall.
+
+    It is filtered by question rather than by provenance because provenance is not
+    recorded: the aggregate does not say which upstream corpus each row came from, so
+    "drop the WikiSQL-derived rows" is not an operation the data supports. Filtering on
+    the question is, and it is also the stronger rule -- it catches an item that reaches
+    the training mixture by any route, including a source not yet added.
+
+    Refused on ``test`` rather than ignored: decontaminating the evaluation against
+    itself would empty it, and a caller who asked for that has misunderstood which side
+    is being protected.
     """
     if split == SHOT_SPLIT:
         # A pseudo-split, and the alternative was worse. `_pick_shots` loads a whole
@@ -586,15 +617,35 @@ def load_text2sql(
     chosen = resolve_sources(sources, split=split)
     if require_rows is None:
         require_rows = split != "train"
+    if decontaminate is None:
+        decontaminate = split == "train"
+    elif decontaminate and split != "train":
+        raise DynQuantError(
+            f"decontaminate=True was passed with split={split!r}. The filter removes rows "
+            f"that appear in the evaluation set; applied to the evaluation set it removes "
+            f"all of it. It is only meaningful on 'train'."
+        )
+    # Always the default evaluable sources, never ``sources``: that argument names what
+    # *trains*, and the training list legitimately contains ``create-context``, which
+    # `resolve_sources` refuses for ``test``. Passing it through would turn "decontaminate
+    # this mixture" into an error about a source that is not being evaluated.
+    banned = evaluation_questions(seed=seed, cache_dir=cache_dir) if decontaminate else frozenset()
     quotas = _quotas(limit, len(chosen)) if limit is not None else [None] * len(chosen)
 
     per_source: list[list[Text2SqlExample]] = []
-    tallies: dict[str, SourceTally] = {}
+    if tallies is None:
+        tallies = {}
     for source, quota in zip(chosen, quotas, strict=True):
         tally = SourceTally()
         tallies[source.name] = tally
         kept: list[Text2SqlExample] = []
         for item in read_source(source, split, seed=seed, cache_dir=cache_dir):
+            # Before admission, not after: a contaminated row is not a row this mixture
+            # may keep, so it should not consume a quota slot or be counted as admitted.
+            if banned and question_key(item.question) in banned:
+                tally.seen += 1
+                tally.contaminated += 1
+                continue
             example = admit(item, require_rows=require_rows, tally=tally)
             if example is not None:
                 kept.append(example)
@@ -612,7 +663,8 @@ def load_text2sql(
     for name, tally in tallies.items():
         _log.info(
             "text2sql %s/%s: kept %d of %d seen (%d not a query, %d no rows in db, "
-            "%d gold matched nothing, %d all-null/zero, %d would not run, %d over %d chars)",
+            "%d gold matched nothing, %d all-null/zero, %d would not run, %d over %d chars, "
+            "%d in the evaluation set)",
             split,
             name,
             tally.kept,
@@ -624,6 +676,7 @@ def load_text2sql(
             tally.failed,
             tally.too_long,
             MAX_CONTEXT_CHARS,
+            tally.contaminated,
         )
     if limit is not None and len(examples) < limit:
         _log.warning(

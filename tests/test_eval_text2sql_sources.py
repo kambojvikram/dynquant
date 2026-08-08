@@ -25,6 +25,9 @@ No network. Every source read is faked; what is under test is this repository's 
 
 from __future__ import annotations
 
+import random
+from dataclasses import replace
+
 import pytest
 
 from dynquant.errors import DynQuantError
@@ -37,11 +40,18 @@ from dynquant.eval.text2sql import (
     run_query,
 )
 from dynquant.eval.text2sql_sources import (
+    DEFAULT_TRAIN,
     MAX_TABLE_ROWS,
+    SOURCES,
     RawItem,
+    Source,
     SourceTally,
+    _read_create_context,
     _wikisql_item,
+    evaluation_questions,
     is_readable_query,
+    question_key,
+    read_source,
     resolve_sources,
 )
 
@@ -230,6 +240,7 @@ def test_a_dml_gold_is_refused_in_training_too_and_says_so() -> None:
 
 def wikisql_row(
     *,
+    question="who?",
     header=("Home team", "Away team", "Year"),
     types=("text", "text", "real"),
     rows=(("Hawthorn FC", "Terrence Ross", 2011.0),),
@@ -240,7 +251,7 @@ def wikisql_row(
 ):
     conds = conds or {"column_index": [1], "operator_index": [0], "condition": ["terrence ross"]}
     return {
-        "question": "who?",
+        "question": question,
         "table": {
             "id": table_id,
             "header": list(header),
@@ -452,3 +463,315 @@ def test_the_mixture_is_interleaved_so_a_truncated_run_still_sees_every_source(
     assert [e.source for e in examples[:4]] == ["gretel", "wikisql", "gretel", "wikisql"]
     counts = {name: sum(e.source == name for e in examples) for name in ("gretel", "wikisql")}
     assert counts == {"gretel": 5, "wikisql": 5}
+
+
+# --- decontamination ------------------------------------------------------------------
+#
+# The S2 driver has had a contamination check since phase 3 and it reported nothing on
+# this mixture. It could not have reported anything: its markers are ``("gsm8k",
+# "humaneval", "mbpp")`` and no SQL corpus name contains one, so the empty result was a
+# check that could not fire rather than a mixture that passed. Measured properly, 189 of
+# the 200 WikiSQL items this campaign scores are questions present in
+# ``b-mc2/sql-create-context`` -- a community aggregate that ships one ``train`` split and
+# never claimed to respect WikiSQL's boundary.
+#
+# So these tests are not about a hypothetical. They are about the ways the filter that
+# replaced that check can be present and useless.
+
+
+class _Split:
+    """Enough of a ``datasets.Dataset`` for a source read: iterate, count, shuffle, slice.
+
+    Shuffling is real rather than the identity, because one of the tests below turns on
+    whether the caller shuffled before slicing, and a fake that returned itself would let
+    an unshuffled prefix pass.
+    """
+
+    def __init__(self, rows: list[dict]) -> None:
+        self.rows = list(rows)
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def shuffle(self, seed: int) -> _Split:
+        order = list(range(len(self.rows)))
+        random.Random(seed).shuffle(order)
+        return _Split([self.rows[index] for index in order])
+
+    def select(self, indices) -> _Split:
+        return _Split([self.rows[index] for index in indices])
+
+
+def fake_hub(monkeypatch, splits: dict[tuple[str, str], list[dict]]) -> None:
+    """Serve ``{(repo, split): rows}`` in place of the Hub.
+
+    Patched on the ``datasets`` module rather than on this repository's callers, because
+    both :func:`read_source` and :func:`evaluation_questions` do their own
+    ``from datasets import load_dataset`` at call time -- and a test that patched only one
+    of them would be comparing the two against different data, which is the exact mistake
+    the first version of ``experiments/phase4/leak_text2sql.py`` made.
+    """
+    import datasets
+
+    def load_dataset(repo, config=None, **kwargs):
+        return _Split(splits[(repo, kwargs["split"])])
+
+    monkeypatch.setattr(datasets, "load_dataset", load_dataset)
+
+
+def gretel_row(question: str, gold: str = "SELECT a FROM t") -> dict:
+    return {"id": question, "sql_prompt": question, "sql_context": POPULATED, "sql": gold}
+
+
+def create_context_row(question: str) -> dict:
+    return {"question": question, "context": BARE, "answer": "SELECT a FROM t"}
+
+
+EVAL_QUESTION = "Which staff are in engineering?"
+WIKISQL_EVAL_QUESTION = "Who was the home team?"
+
+
+def three_sources(train: dict[str, list[dict]] | None = None) -> dict[tuple[str, str], list[dict]]:
+    """A hub holding one question per evaluated source, plus whatever training rows.
+
+    The ``test`` splits are the point: they are what the banned set is built from, and
+    every training row below is contaminated or clean relative to *those two* strings.
+    """
+    train = train or {}
+    return {
+        ("gretelai/synthetic_text_to_sql", "test"): [gretel_row(EVAL_QUESTION)],
+        ("gretelai/synthetic_text_to_sql", "train"): train.get("gretel", []),
+        ("Salesforce/wikisql", "test"): [wikisql_row(question=WIKISQL_EVAL_QUESTION)],
+        ("Salesforce/wikisql", "train"): train.get("wikisql", []),
+        ("b-mc2/sql-create-context", "train"): train.get("create-context", []),
+    }
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "same"),
+    [
+        ("How many staff?", "how many staff", True),
+        ("How  many\n staff ?", "How many staff?", True),
+        ("Count the rows.", "Count the rows!", True),
+        # And nothing beyond writing. A stemmer would fold these two, and folding them
+        # deletes a legitimate training row for resembling a test item.
+        ("List the orders", "List the order", False),
+        ("How many staff in eng?", "How many staff in ops?", False),
+        # Same words, different question. Found by mutation: a fold to a sorted token
+        # set survived every case above it, and it is the shape a "make the match a bit
+        # more robust" edit takes.
+        ("Is a manager an employee?", "Is an employee a manager?", False),
+    ],
+)
+def test_question_key_folds_writing_and_not_meaning(left, right, same) -> None:
+    """The looser this gets, the more training data it silently deletes.
+
+    Both directions cost something and only one of them is visible. Too strict and a
+    leaked item survives, which shows up as an inflated accuracy. Too loose and legitimate
+    rows are dropped for resembling the test set, which shows up as nothing at all -- a
+    slightly smaller training set and a number nobody can attribute.
+
+    Turns red when: the fold stops normalising case, punctuation or whitespace; or starts
+    stemming, matching on a token set, or matching on a similarity threshold.
+    """
+    assert (question_key(left) == question_key(right)) is same
+
+
+def test_question_columns_match_the_readers(monkeypatch) -> None:
+    """The banned set has to name the same strings the readers put in ``RawItem.question``.
+
+    ``evaluation_questions`` reads one raw column per source instead of running the
+    reader, because synthesising 16k WikiSQL tables to collect 16k question strings is
+    minutes of work for something that takes seconds. The cost of that shortcut is a
+    second place the column name is written down, and if the two drift the filter compares
+    training questions against a set of *something else* -- an empty intersection, a clean
+    report, and a contaminated fine-tune.
+
+    Turns red when: a reader changes which field it reads, or ``_QUESTION_COLUMN`` is
+    edited without it -- either direction, because this asserts equality rather than
+    containment.
+    """
+    fake_hub(monkeypatch, three_sources())
+
+    through_the_readers = {
+        question_key(item.question)
+        for source in resolve_sources(None, split="test")
+        for item in read_source(source, "test", seed=0, cache_dir=None)
+    }
+    assert through_the_readers == {question_key(EVAL_QUESTION), question_key(WIKISQL_EVAL_QUESTION)}
+    assert evaluation_questions() == through_the_readers
+
+
+def test_a_holdout_sources_banned_rows_are_the_shuffled_slice_not_the_prefix(monkeypatch) -> None:
+    """A single-split source's test set is a slice of a *shuffle*, and the seed decides it.
+
+    Reading an unshuffled prefix here would name 4000 rows that are not the test set, ban
+    those, and leave the real ones in training -- a decontamination that runs, reports a
+    healthy count, and protects nothing.
+
+    Nothing in the registry reaches this branch today: the only source with a ``holdout``
+    is ``create-context``, which has no rows and is therefore refused for ``test``. It is
+    exercised through an injected source because the branch is one edit away from being
+    live -- a data-bearing single-split corpus is the obvious next addition -- and an
+    untested branch that is currently unreachable is how it would arrive already broken.
+
+    Turns red when: the shuffle is dropped here, or ``read_source`` starts slicing at a
+    different point in its pipeline than this does.
+    """
+    rows = [create_context_row(f"question number {index}") for index in range(20)]
+    injected = Source(
+        name="create-context",  # its ``_QUESTION_COLUMN`` entry, reused
+        repo="fake/holdout",
+        has_data=True,
+        splits={"train": "train", "test": "train"},
+        reader=_read_create_context,
+        holdout=5,
+    )
+    monkeypatch.setitem(SOURCES, "held-out", injected)
+    fake_hub(monkeypatch, {("fake/holdout", "train"): rows})
+
+    banned = evaluation_questions(["held-out"], seed=0)
+    through_read_source = {
+        question_key(item.question)
+        for item in read_source(injected, "test", seed=0, cache_dir=None)
+    }
+
+    assert len(banned) == 5
+    assert banned == through_read_source
+    assert banned != {question_key(f"question number {index}") for index in range(5)}, (
+        "an unshuffled prefix would name five rows that are not the test set"
+    )
+
+
+def test_a_training_row_that_asks_an_evaluation_question_is_dropped_and_counted(
+    monkeypatch,
+) -> None:
+    """The filter, doing the one thing it exists for, and saying that it did.
+
+    Counted rather than only dropped, because a run whose manifest carries no number is
+    indistinguishable from a run where the filter stopped working -- and on this mixture
+    the expected count is 189 of 200, so "zero" has to be readable as suspicious rather
+    than as clean.
+
+    Turns red when: the comparison stops going through ``question_key`` (the two spellings
+    below would stop matching), or the drop stops incrementing ``contaminated``.
+    """
+    train = {
+        "gretel": [
+            gretel_row("which staff are in engineering"),  # the eval question, rewritten
+            gretel_row("How many departments are there?"),
+        ]
+    }
+    fake_hub(monkeypatch, three_sources(train))
+
+    tallies: dict[str, SourceTally] = {}
+    kept = load_text2sql("train", sources=["gretel"], tallies=tallies)
+
+    assert [item.question for item in kept] == ["How many departments are there?"]
+    assert tallies["gretel"].contaminated == 1
+    assert tallies["gretel"].kept == 1
+    assert tallies["gretel"].seen == 2
+
+    # And ``decontaminate=False`` still measures it. That is the seam
+    # ``experiments/phase4/leak_text2sql.py`` reads the untreated mixture through; if the
+    # default became unconditional, the scan would report the leak it had just removed.
+    measuring: dict[str, SourceTally] = {}
+    untreated = load_text2sql("train", sources=["gretel"], decontaminate=False, tallies=measuring)
+    assert len(untreated) == 2
+    assert measuring["gretel"].contaminated == 0
+
+
+def test_a_contaminated_row_does_not_consume_a_quota_slot(monkeypatch) -> None:
+    """Dropped before admission, not filtered out of the result afterwards.
+
+    Filtering after the quota is met costs items: the mixture asks for N per source, one
+    slot goes to a row that is then removed, and the run trains on N-1 while reporting N.
+    Small on one source and not small across three at 50 000 examples -- and invisible,
+    because the shortfall reads as an admission rate.
+
+    Turns red when: the check moves below ``admit``, or the drop starts incrementing
+    ``kept``.
+    """
+    train = {
+        "gretel": [
+            gretel_row(EVAL_QUESTION),
+            gretel_row("first clean question"),
+            gretel_row("second clean question"),
+        ]
+    }
+    fake_hub(monkeypatch, three_sources(train))
+
+    tallies: dict[str, SourceTally] = {}
+    kept = load_text2sql("train", sources=["gretel"], limit=2, tallies=tallies)
+
+    # Sorted, because ``read_source`` shuffles: what is asserted is that both clean rows
+    # survived a quota of two, not the order they arrived in.
+    assert sorted(item.question for item in kept) == [
+        "first clean question",
+        "second clean question",
+    ]
+    assert tallies["gretel"].kept == 2, "the dropped row was not admitted and then removed"
+    assert tallies["gretel"].contaminated == 1
+
+
+def test_the_evaluation_set_is_not_decontaminated_against_itself(monkeypatch) -> None:
+    """Applied to ``test``, the filter removes all of it -- so it is refused, not ignored.
+
+    Ignoring the argument would be the friendlier implementation and the worse one: a
+    caller who passed it has misunderstood which side is being protected, and silently
+    doing nothing leaves them believing something was done.
+
+    Turns red when: the default stops being split-dependent (the first half empties the
+    evaluation set), or the refusal degrades to a warning.
+    """
+    fake_hub(monkeypatch, three_sources())
+
+    assert [item.question for item in load_text2sql("test", sources=["gretel"])] == [EVAL_QUESTION]
+
+    with pytest.raises(DynQuantError, match="only meaningful on 'train'"):
+        load_text2sql("test", sources=["gretel"], decontaminate=True)
+
+
+def test_the_banned_set_comes_from_the_evaluated_sources_not_the_training_list(
+    monkeypatch,
+) -> None:
+    """Two failures at once, and the first one raises rather than mismeasures.
+
+    ``sources`` names what *trains*, and the training list legitimately contains
+    ``create-context``, which ``resolve_sources`` refuses for ``test``. Threading it into
+    the banned set turns "decontaminate this mixture" into an error about a source nobody
+    is evaluating -- which is what the first version of this did.
+
+    The second half is the reason the filter exists at all: ``create-context`` is where the
+    WikiSQL evaluation questions actually are, so the row banned here is one whose question
+    comes from a *different* source's test split. A banned set built per source would leave
+    it in.
+
+    Turns red when: ``sources`` is passed through to ``evaluation_questions``, or the
+    banned set is rebuilt per source inside the loop.
+    """
+    train = {
+        "gretel": [gretel_row("a clean gretel question")],
+        "wikisql": [wikisql_row(question="a clean wikisql question")],
+        "create-context": [
+            create_context_row(WIKISQL_EVAL_QUESTION),
+            create_context_row("a clean create-context question"),
+        ],
+    }
+    # The real holdout is 4000 rows out of 78 577 and this fake corpus has two, so
+    # ``train`` would be ``range(4000, 2)`` -- empty, and the source would contribute
+    # nothing without saying so. Set aside here rather than worked around, because the
+    # holdout is what the test above pins and this test is about something else.
+    monkeypatch.setitem(SOURCES, "create-context", replace(SOURCES["create-context"], holdout=0))
+    fake_hub(monkeypatch, three_sources(train))
+
+    tallies: dict[str, SourceTally] = {}
+    kept = load_text2sql("train", sources=list(DEFAULT_TRAIN), tallies=tallies)
+
+    assert WIKISQL_EVAL_QUESTION not in [item.question for item in kept]
+    assert tallies["create-context"].contaminated == 1
+    assert tallies["gretel"].contaminated == 0
+    assert tallies["wikisql"].contaminated == 0

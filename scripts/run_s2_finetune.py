@@ -655,7 +655,7 @@ def report_sources(rows: Any) -> tuple[Counter, list[str]]:
     return counts, sorted(flagged)
 
 
-def load_rows(spec: dict[str, str], *, examples: int, seed: int) -> Any:
+def load_rows(spec: dict[str, str], *, examples: int, seed: int) -> tuple[Any, dict[str, int]]:
     """Load the mixture and take a shuffled subsample of it.
 
     Shuffled before the limit, always. These splits arrive grouped -- Tulu-3 is ordered by
@@ -663,6 +663,12 @@ def load_rows(spec: dict[str, str], *, examples: int, seed: int) -> Any:
     and calls it a sample of the mixture. That failure has already been paid for once in
     this project on a label-sorted classification split, where it read as a destroyed
     model rather than as a bad sample.
+
+    Returns the rows and, beside them, how many rows the loader dropped for appearing in
+    the evaluation set, per source. Returned rather than logged, and returned rather than
+    stashed on the module, because it goes into ``mask_census.json`` -- and a census that
+    reported a stale count from a previous call would be worse than one that reported
+    none.
     """
     if spec.get("builder") == "text2sql":
         return load_text2sql_rows(examples=examples, seed=seed)
@@ -673,10 +679,12 @@ def load_rows(spec: dict[str, str], *, examples: int, seed: int) -> Any:
     dataset = dataset.shuffle(seed=seed)
     if examples > 0 and examples < len(dataset):
         dataset = dataset.select(range(examples))
-    return dataset
+    # No decontamination on this path, and the empty dict says so rather than implying a
+    # clean result: these mixtures are name-checked against `_CONTAMINATING` and kept.
+    return dataset, {}
 
 
-def load_text2sql_rows(*, examples: int, seed: int) -> list[dict[str, Any]]:
+def load_text2sql_rows(*, examples: int, seed: int) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """The text-to-SQL mixture, as single-turn conversations.
 
     Two properties this has to preserve and neither is visible downstream if it breaks.
@@ -694,9 +702,26 @@ def load_text2sql_rows(*, examples: int, seed: int) -> list[dict[str, Any]]:
     would discard most of two sources.
     """
     from dynquant.eval.text2sql import instruction, load_text2sql
+    from dynquant.eval.text2sql_sources import SourceTally
 
-    items = load_text2sql("train", limit=examples if examples > 0 else None, seed=seed)
-    return [
+    tallies: dict[str, SourceTally] = {}
+    items = load_text2sql(
+        "train", limit=examples if examples > 0 else None, seed=seed, tallies=tallies
+    )
+    # Decontamination is on by default for `train`, and this is where it becomes visible.
+    # `b-mc2/sql-create-context` holds 189 of the 200 WikiSQL items this campaign scores;
+    # `load_text2sql` drops them, and a run whose manifest does not say how many were
+    # dropped cannot be told apart from a run where the filter silently stopped working.
+    decontaminated = {
+        name: tally.contaminated for name, tally in tallies.items() if tally.contaminated
+    }
+    for name, dropped in decontaminated.items():
+        print(
+            f"decontaminated: dropped {dropped} {name} rows that ask a question the "
+            f"evaluation asks",
+            flush=True,
+        )
+    rows = [
         {
             "messages": [
                 {"role": "user", "content": instruction(item)},
@@ -709,6 +734,7 @@ def load_text2sql_rows(*, examples: int, seed: int) -> list[dict[str, Any]]:
         }
         for item in items
     ]
+    return rows, decontaminated
 
 
 # --------------------------------------------------------------------------
@@ -899,7 +925,7 @@ def main(argv: list[str] | None = None) -> int:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    rows = load_rows(spec, examples=args.examples, seed=args.seed)
+    rows, decontaminated = load_rows(spec, examples=args.examples, seed=args.seed)
     sources, flagged = report_sources(rows)
     if sources:
         top = ", ".join(f"{name} {count}" for name, count in sources.most_common(8))
@@ -974,6 +1000,18 @@ def main(argv: list[str] | None = None) -> int:
         "max_len": args.max_len,
         "sources": dict(sources),
         "sources_overlapping_an_eval_task": flagged,
+        # What that check actually checked. An empty list above is only as strong as this
+        # list, and on the text-to-SQL mixture it is worth nothing: the markers are
+        # phase 3's, no SQL corpus name contains one, and the empty result was a check
+        # that could not fire rather than a mixture that passed. Recorded so a later
+        # reader can tell those two apart without reading this file.
+        "contamination_markers": list(_CONTAMINATING),
+        # The check that can. Names are a weak test for a mixture whose sources share a
+        # repo with the evaluation and differ only by split; this is the per-source count
+        # of rows dropped for asking a question the evaluation asks. Empty means the
+        # loader had no decontamination step to run, not that it ran and found nothing --
+        # `load_rows` returns `{}` on the generic Hub path.
+        "decontaminated": decontaminated,
     }
     (destination / "mask_census.json").write_text(json.dumps(census, indent=2), encoding="utf-8")
 
