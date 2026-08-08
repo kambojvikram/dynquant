@@ -1010,6 +1010,46 @@ disagreement: the fixture's role string `moe_expert_gate`, which no allocation h
 against the enum's actual `moe.expert.gate_up`. Neither defect needed the panel to run, and
 neither would have been found by a test that only compared the writer to a copy of itself.
 
+### The signal file, audited at 41% instead of at the end
+
+The S2 gate is pre-registered: signal collection must reach all 44 expert-bank tensors, because
+91.5% of this model's parameters live in batched banks and a stats file that misses them would
+send the allocator into the panel with no information about the mass it is allocating. The gate
+was written to run on the finished file. It ran on the partial one instead, because the callback
+rewrites the stats file periodically -- so the structural question could be answered four hours
+before the fine-tune lands, when a bad answer would still leave time to restart. **44 bank
+tensors, 0 missing.**
+
+The gate did not run as written. It imported `canonical_name` from
+`dynquant.integration.peft_utils`; the function lives in `dynquant.graph.naming`, so the script
+would have raised `ImportError` at the moment it was needed -- the fine-tune finished, the gate
+invoked, and nothing checked. This is the same shape as the stop-sequence defect earlier in this
+campaign: a check that measures zero because it never executed is indistinguishable, in the log,
+from a check that passed. It cost nothing here only because it was run early and deliberately.
+
+Auditing the whole file rather than just the banks then produced an apparent contradiction worth
+recording, because it is the tied-embedding trap running in the harmless direction. The stats file
+holds 152 modules. Enumerating the model's quantizable tensors gives 112, all 112 present -- and
+their parameter mass is 8,728,346,624, which is **103.08%** of the model's 8,467,856,128
+parameters. Covering more than everything is not a coverage result; it is a double count.
+`tie_word_embeddings` is `True` and vocab x hidden is 262,144,000, so `embed_tokens` and `lm_head`
+are one tensor enumerated under two names. `model.parameters()` deduplicates shared storage and
+the audit did not.
+
+The question that actually matters is whether the *anchors* share the error, since they define
+every matched-byte comparison in the panel. They do not. Dividing each anchor by its accounted
+bits-per-parameter backs out ~8.4685 G parameters -- the deduplicated total, not the 8.728 G
+double count. Better than that, the two widths cross-confirm each other: the small excess over
+the deduplicated total is the fp16 remainder, which is charged 16 bits while the denominator
+charges 4.15625 or 3.1484375, and solving for it gives 211,684 parameters at 4 bits and 211,706
+at 3 bits. Two independent anchors agreeing on the same unquantized remainder to 0.01% is a
+stronger statement about the accounting than either number alone.
+
+The remaining 40 modules are 18 `Conv1d` and 22 `Lfm2MoeTopKRouter` -- 112 + 40 = 152, closing
+exactly. Both are tracked on purpose. The routers are the ones that would matter if they were
+not: a router is a `Linear` named `gate`, it is the module whose corruption collapses routing
+outright, and it is measured here rather than assumed.
+
 ---
 
 ## 13. Status
@@ -1033,8 +1073,10 @@ decode budget off (§8) -- `load_linearized` exercised on the real checkpoint, a
 mixture decontaminated against its own benchmark (§11), which removed 4016 rows the fine-tune
 would otherwise have been trained on and scored against.
 
-Also done since: the table the panel lands in, written before the panel runs -- ten tests and
-thirteen mutations against a synthetic seven-arm run, sizes read from the manifest rather than from
+Also done since: the signal file audited mid-run -- 44 expert-bank tensors with none missing,
+152 modules closing exactly as 112 quantizable plus 18 conv plus 22 routers, and both anchors
+cross-confirming the same fp16 remainder. And the table the panel lands in, written before the
+panel runs -- ten tests and thirteen mutations against a synthetic seven-arm run, sizes read from the manifest rather than from
 the fp16-resident scored model, drift refused in both directions, and twelve comparisons Holm-
 corrected in two blocks with the verdict following the adjusted p. Checking that reader against a
 real saved map, rather than against its own fixture, is what caught the width histogram being
