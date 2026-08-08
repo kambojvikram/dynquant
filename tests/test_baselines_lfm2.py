@@ -18,6 +18,7 @@ guard and the save refusal are all reachable from CPU CI.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
 import sys
 from pathlib import Path
@@ -272,3 +273,93 @@ def test_a_three_bit_arm_refuses_to_be_saved(driver: Any) -> None:
     )
     with pytest.raises(SystemExit, match="packs 4 and 8 bits"):
         driver.do_save(args)
+
+
+# --- the linearization gate -------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def _fake_stack(model: Any, *, surviving: int, seen: dict[str, Any]) -> Any:
+    """Stand in for llm-compressor's detector and transformers' loader.
+
+    Both are faked because the assertion under test is the driver's *reaction* to what the
+    detector reports, and the detector's own agreement with this checkpoint is a GPU-or-host-RAM
+    fact that ``baselines_lfm2.py linearize`` exists to establish separately.
+    """
+    import types
+
+    calls = {"n": 0}
+
+    def detect(_model: Any) -> list[Any]:
+        calls["n"] += 1
+        return [object()] * (22 if calls["n"] == 1 else surviving)
+
+    modules = {
+        "llmcompressor": types.ModuleType("llmcompressor"),
+        "llmcompressor.modeling": types.ModuleType("llmcompressor.modeling"),
+        "llmcompressor.modeling.moe": types.ModuleType("llmcompressor.modeling.moe"),
+        "llmcompressor.modeling.moe.linearize": types.SimpleNamespace(
+            get_non_linearized_moes=detect,
+            linearize_moe=lambda _m: seen.setdefault("linearized", True),
+        ),
+        "transformers": types.SimpleNamespace(
+            AutoConfig=types.SimpleNamespace(
+                from_pretrained=lambda _s: types.SimpleNamespace(hidden_act="silu")
+            ),
+            AutoModelForCausalLM=types.SimpleNamespace(
+                from_pretrained=lambda _s, **kw: (seen.update(kw), model)[1]
+            ),
+        ),
+    }
+    saved = {name: sys.modules.get(name) for name in modules}
+    sys.modules.update(modules)  # type: ignore[arg-type]
+    try:
+        yield
+    finally:
+        for name, module in saved.items():
+            if module is None:
+                del sys.modules[name]
+            else:
+                sys.modules[name] = module
+
+
+def test_a_surviving_bank_aborts_rather_than_quantizing_eight_percent(driver: Any) -> None:
+    """The failure that succeeds if nobody checks.
+
+    ``linearize_moe`` returns nothing and raises nothing. If it converted no banks -- a
+    checkpoint whose module tree the detector's mappings do not match -- the recipe would run
+    over the 8.5% reachable as ``nn.Linear``, finish, and emit an arm whose label says 4-bit
+    and whose weights are 91.5% bf16.
+
+    Turns red when: the post-conversion count is dropped, or is compared against the *before*
+    count instead of zero, which passes whenever conversion is partial.
+    """
+    import torch
+
+    with (
+        _fake_stack(torch.nn.Linear(4, 4), surviving=3, seen={}),
+        pytest.raises(SystemExit, match=r"8\.5%"),
+    ):
+        driver.load_linearized("/unused", device="cpu")
+
+
+def test_the_gate_runs_on_the_device_it_was_asked_for(driver: Any) -> None:
+    """``--device cpu`` is what makes this check runnable while the GPU is busy.
+
+    Conversion is module surgery over weights it never reads, so the count it produces is the
+    same on either device. A hardcoded ``cuda`` would make the cheapest guard in the driver the
+    one that has to queue.
+
+    Turns red when: ``device`` stops reaching ``from_pretrained``, which leaves the flag
+    accepted and ignored -- an OOM on a box whose GPU is full, reported as a linearization
+    failure.
+    """
+    import torch
+
+    seen: dict[str, Any] = {}
+    with _fake_stack(torch.nn.Linear(4, 4), surviving=0, seen=seen):
+        args = _args(driver, ["linearize", "--model", "/unused", "--device", "cpu"])
+        assert driver.do_linearize(args) == 0
+
+    assert seen["device_map"] == "cpu"
+    assert seen["linearized"] is True

@@ -224,7 +224,9 @@ def accounted_bytes(source: str, bits: int, group_size: int) -> dict[str, Any]:
     }
 
 
-def load_linearized(source: str, *, dtype: str = "bfloat16") -> tuple[Any, dict[str, Any]]:
+def load_linearized(
+    source: str, *, dtype: str = "bfloat16", device: str = "cuda"
+) -> tuple[Any, dict[str, Any]]:
     """Load the model with its expert banks turned into ``nn.Linear``, and say so in numbers.
 
     Loaded here rather than letting ``oneshot`` load it from a path, for one reason: the
@@ -235,6 +237,11 @@ def load_linearized(source: str, *, dtype: str = "bfloat16") -> tuple[Any, dict[
     The report is the guard. ``banks_before`` comes from llm-compressor's own detector, and
     ``banks_after`` must be zero -- a run where linearization silently did nothing is exactly
     the 8.5% run this driver exists to prevent, and it does not fail on its own.
+
+    ``device`` exists so that guard can be run without a GPU. The conversion is module surgery
+    over weights it does not read, so ``cpu`` answers the same question at the cost of host RAM
+    -- which means the check does not have to queue behind whatever is holding the GPU, and a
+    box with no GPU at all can still tell you the recipe would have seen 8.5%.
     """
     import torch
     from llmcompressor.modeling.moe.linearize import get_non_linearized_moes, linearize_moe
@@ -245,7 +252,7 @@ def load_linearized(source: str, *, dtype: str = "bfloat16") -> tuple[Any, dict[
         config.hidden_act = EXPERT_ACT
 
     model = AutoModelForCausalLM.from_pretrained(
-        source, config=config, dtype=getattr(torch, dtype), device_map="cuda"
+        source, config=config, dtype=getattr(torch, dtype), device_map=device
     )
     before = len(get_non_linearized_moes(model))
     if before:
@@ -259,7 +266,12 @@ def load_linearized(source: str, *, dtype: str = "bfloat16") -> tuple[Any, dict[
         )
 
     linears = sum(1 for m in model.modules() if isinstance(m, torch.nn.Linear))
-    report = {"banks_before": before, "banks_after": after, "linear_modules": linears}
+    report = {
+        "banks_before": before,
+        "banks_after": after,
+        "linear_modules": linears,
+        "device": device,
+    }
     print(json.dumps(report), flush=True)
     return model, report
 
@@ -421,6 +433,18 @@ def do_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def do_linearize(args: argparse.Namespace) -> int:
+    """Run the 22-banks-to-zero gate and nothing else.
+
+    Separate from ``run`` because it is the one assertion in this driver that no CPU unit test
+    can reach -- it depends on llm-compressor's detector agreeing with this checkpoint's module
+    tree -- and finding out it fails should not cost a calibration pass first. On ``--device
+    cpu`` it costs host RAM and a few minutes.
+    """
+    load_linearized(args.model, dtype=args.dtype, device=args.device)
+    return 0
+
+
 def do_run(args: argparse.Namespace) -> int:
     model, meta = quantize(args)
     return score(args, model, meta)
@@ -487,6 +511,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model", required=True)
     p.add_argument("--group-size", type=int, default=128)
     p.set_defaults(func=do_plan)
+
+    lin = sub.add_parser("linearize", help="check the banks convert, and nothing else")
+    lin.add_argument("--model", required=True)
+    lin.add_argument("--dtype", default="bfloat16")
+    lin.add_argument("--device", default="cuda")
+    lin.set_defaults(func=do_linearize)
 
     r = sub.add_parser("run", help="quantize and score in one process (no checkpoint)")
     r.add_argument("--model", required=True)
