@@ -19,6 +19,36 @@ ones that invalidate artifacts a user has already produced.
 
 ## [Unreleased]
 
+### Fixed — CI, red since `a428231`, on two rules the repository set against itself
+
+Nothing here reaches the wheel: `scripts/` and `tests/` are not packaged, so the
+v0.3.0 artifacts are what they were. Both failures were in the guard rails.
+
+**The confidential-material guard refused two files `.gitignore` explicitly invites.**
+`.gitignore` carries `!**/stats/dynquant_moments.safetensors` as a deliberate negation
+of its own `*.safetensors` line — the channel-moment sidecars are measurements rather
+than weights, they are the cardinal sensitivity estimator's only input, and the box that
+produces them is not a volume, so this repo is where they survive. The guard matched on
+extension alone and knew nothing about it, so one file invited what the other refused.
+`ALLOWED_BINARY_PATHS` now names the same two exceptions, and is deliberately narrower
+than the ignore rule: the directory *and* the filename are pinned, so a checkpoint
+copied into `stats/` is still refused.
+
+The reason nothing caught it locally is worth more than the fix. The repository-wide
+test scanned `REPO_ROOT.rglob("*")` filtered to `TEXT_SUFFIXES` — so a rule about
+`.safetensors` was verified against a file list that could not contain one. It now
+scans `git ls-files`, which is the exact list the CI job pipes into the guard, so the
+test and the job cannot reach different verdicts.
+
+**Two test modules imported `transformers` at collection time.** The core-only `test`
+matrix job installs no transformers on purpose, and both new modules reach it
+indirectly — `test_run_s2_finetune` through `run_s1_headroom` to the eval command,
+`test_verify_signal_map` through `floor_headroom`, which builds the two real configs.
+An unguarded import there is a collection error, not a skip, so six matrix cells went
+red over a dependency they were never meant to have. Both now declare
+`pytest.importorskip("transformers")` at module scope, matching what the eval and
+export tests already do; the two pinned-transformers jobs are where they actually run.
+
 ## [0.3.0] — 2026-08-08
 
 No version contract moves: `KERNEL_ABI_VERSION` stays 2, `CHECKPOINT_FORMAT_VERSION`

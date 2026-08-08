@@ -38,6 +38,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "experiments" / "phase3" / "s3_allocation" / "verify_signal_map.py"
 RUNS = REPO_ROOT / "experiments" / "phase3" / "s2_runs"
 
+# The verifier imports `floor_headroom`, which builds the two real configs and therefore
+# imports transformers at module scope. Without it the module cannot load at all, which
+# in the core-only `test` matrix job is a collection error rather than a skip; the two
+# pinned-transformers jobs are where these run.
+pytest.importorskip("transformers")
+
 
 @pytest.fixture(scope="module")
 def verifier():

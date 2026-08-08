@@ -35,6 +35,26 @@ FORBIDDEN_PATHS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\.(pem|key|p12|pfx)$", re.IGNORECASE),
 )
 
+#: Binary artifacts the repository has deliberately decided to keep, checked before
+#: :data:`FORBIDDEN_PATHS` so the two rules cannot disagree.
+#:
+#: They exist because ``.gitignore`` grants exactly these two negations against its own
+#: ``*.safetensors`` line, and a guard that refuses what the ignore rules invite is a
+#: guard that gets bypassed with ``--no-verify`` until it means nothing. The same
+#: decision is written down twice on purpose: the ignore file cannot stop ``git add -f``
+#: and this script cannot stop an accident, so both have to name the exception.
+#:
+#: * ``**/stats/dynquant_moments.safetensors`` -- channel-moment sidecars, ~6-12 MB per
+#:   fine-tune arm. They are measurements, not weights: the cardinal sensitivity
+#:   estimator's only input, produced on a box that is not a volume. Both the directory
+#:   and the filename are pinned, so a checkpoint dropped in the same tree is still
+#:   refused.
+#: * ``tests/**/*.safetensors`` -- fixtures the round-trip tests read.
+ALLOWED_BINARY_PATHS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(^|/)stats/dynquant_moments\.safetensors$"),
+    re.compile(r"^tests/.*\.safetensors$"),
+)
+
 #: Files that legitimately contain the *word* token, key, secret and so on: this
 #: script, the ignore rules that name them, and the docs explaining the policy.
 #: ``docs/legacy-audit.md`` quotes the offending lines verbatim as evidence, which
@@ -144,8 +164,9 @@ def check(paths: list[str]) -> list[str]:
         path = Path(raw)
         posix = path.as_posix()
 
+        allowed = any(pattern.search(posix) for pattern in ALLOWED_BINARY_PATHS)
         for pattern in FORBIDDEN_PATHS:
-            if pattern.search(posix):
+            if pattern.search(posix) and not allowed:
                 problems.append(
                     f"{posix}: this file type must never be committed "
                     f"(matched {pattern.pattern!r}). If it is genuinely needed, it "

@@ -29,6 +29,13 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVER = REPO_ROOT / "scripts" / "run_s2_finetune.py"
 
+# The driver reaches `run_s1_headroom` for `MODELS`, which imports the eval command,
+# which imports transformers -- so the module cannot even load without it, and in the
+# core-only `test` matrix job that is a collection error rather than a skip. The two
+# pinned-transformers jobs are where these run. Declared here rather than inside the
+# fixture so collection reports "skipped" instead of erroring on every test in the file.
+pytest.importorskip("transformers")
+
 
 @pytest.fixture(scope="module")
 def s2():

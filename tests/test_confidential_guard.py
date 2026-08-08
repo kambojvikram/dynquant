@@ -14,6 +14,7 @@ broken pattern too, and the bug would have survived its own test.
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -99,22 +100,58 @@ def test_the_guard_exempts_the_files_that_must_quote_the_literals(guard):
     assert guard.check(["scripts/check_no_confidential.py"]) == []
 
 
+def test_the_moment_sidecars_the_ignore_rules_invite_are_not_then_refused(guard):
+    """``.gitignore`` un-ignores these two paths; the guard has to agree with it.
+
+    It did not, and CI was red for two pushes over it: ``*.safetensors`` in the guard
+    against ``!**/stats/dynquant_moments.safetensors`` in ``.gitignore``, one file
+    inviting exactly what the other refuses. Nothing caught it locally, because the
+    repository-wide test below filtered to ``TEXT_SUFFIXES`` and so never looked at a
+    single file of the type the rule is about.
+    """
+    for arm in ("ministral-8b.tulu3", "phi4-mini.tulu3"):
+        assert (
+            guard.check([f"experiments/phase3/s2_runs/{arm}/stats/dynquant_moments.safetensors"])
+            == []
+        )
+    assert guard.check(["tests/fixtures/tiny.safetensors"]) == []
+
+
+def test_the_carve_out_is_the_filename_and_not_the_directory(guard):
+    """A checkpoint dropped beside the sidecars is still refused.
+
+    The exception is granted to one measurement file, not to ``stats/``. Widening it to
+    the directory would make the obvious accident -- ``cp model.safetensors stats/`` --
+    the one thing that passes.
+    """
+    assert guard.check(["experiments/phase3/s2_runs/x/stats/model.safetensors"])
+    assert guard.check(["experiments/phase3/s2_runs/x/dynquant_moments.safetensors"])
+    assert guard.check(["experiments/phase3/s2_runs/x/stats/dynquant_moments.bin"])
+
+
 def test_the_whole_repository_is_clean_except_the_research_tree(guard):
-    """Everything DynQuant itself ships must pass, or the hook is unusable."""
-    scanned = [
-        p
-        for p in REPO_ROOT.rglob("*")
-        if p.is_file()
-        and p.suffix.lower() in guard.TEXT_SUFFIXES
-        and not any(
-            part in {".git", ".claude", "__pycache__", ".venv", "build", "_skbuild", ".mypy_cache"}
-            for part in p.parts
-        )
-        # The research tree is the thing being audited; it is expected to fail.
-        and not any(
-            p.as_posix().startswith((REPO_ROOT / d).as_posix())
-            for d in ("dynquant_paper", "inference", "fine-tuning_and_stats_hook", "pipeline")
-        )
-    ]
-    problems = guard.check([str(p.relative_to(REPO_ROOT)) for p in scanned])
+    """Everything DynQuant itself ships must pass, or the hook is unusable.
+
+    The file list is ``git ls-files``, which is the same list the CI job pipes into the
+    guard -- so this test and that job cannot reach different verdicts. It used to be an
+    ``rglob`` narrowed to ``TEXT_SUFFIXES``, and that filter is what let two committed
+    ``.safetensors`` files turn CI red while the suite stayed green: the test excluded
+    the one file type the rule it was checking is written about. Tracked files also
+    means an untracked local ``out/`` full of checkpoints cannot fail somebody's run.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if tracked.returncode != 0:
+        pytest.skip("not a git checkout")
+    paths = [p for p in tracked.stdout.split("\0") if p]
+    assert len(paths) > 100, "git ls-files returned too little to be the repository"
+
+    # The research tree is the thing being audited; it is expected to fail.
+    audited = ("dynquant_paper/", "inference/", "fine-tuning_and_stats_hook/", "pipeline/")
+    problems = guard.check([p for p in paths if not p.startswith(audited)])
     assert problems == [], problems
