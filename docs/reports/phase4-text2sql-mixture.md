@@ -955,6 +955,21 @@ significant raw (p = 0.0309 and 0.0243) and **neither survives correction** (0.0
 3-bit result does. A test pins that the printed verdict and the JSON field both follow the
 adjusted number, so a future edit that quietly reads the raw one turns red.
 
+Writing the reader also found two defects in the writer, which is the cheap half of the
+rehearsal lesson. The driver built its manifest only after all seven arms succeeded, so a panel
+that died at the fifth would have left six hours of scored records with no manifest -- and the
+manifest is the only thing that says which record belongs to which arm at which budget. It is now
+rewritten after every arm, with unscored arms carrying `"record": null`, which the table already
+renders as a missing row rather than a missing comparison. The refusal path keeps its stronger
+property: an arm the pairing guard rejects is *not* named in the manifest, so its record can sit
+in the directory without being read back into the comparison that just refused it. Second, the
+driver stores each record's path as it was given, so a run launched with a relative `--out` writes
+paths that only resolve from the directory it ran in; the table now retries beside the manifest,
+which cannot pick up a foreign file because the writer's own invariant is that a record is named
+for its arm and lives in `out`. Read literally, a manifest copied off the box would have reported
+`0/7 arms scored` for a panel that finished -- an answer, not an error. The fixture is now built
+through the driver's own writer rather than a hand-copy of its keys, so the two cannot drift.
+
 Two smaller things the table also does. It prints the allocation next to the accuracy -- average
 bits, the width histogram, and the *names* of any roles whose floors the budget could not afford
 -- because the §12 prediction is that 4 bits breaches nothing and 3 bits must breach the expert
