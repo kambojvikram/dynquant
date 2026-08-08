@@ -1492,6 +1492,52 @@ not a checkpoint to quantize six ways -- and finding that out from a five-minute
 from finding it out from a bf16 ceiling arm that has already run.
 
 
+**Measured.** The probe ran three batch sizes over the same 128 items and returned something the
+sweep was not designed to find: on this model, bigger batches are *slower*.
+
+| batch | accuracy | wall clock | per item |
+| ---: | ---: | ---: | ---: |
+| 32 | 86.72% | 90.7 s | **0.709 s** |
+| 64 | 85.16% | 94.7 s | 0.740 s |
+| 128 | 85.94% | 112.6 s | 0.880 s |
+
+Nothing ran out of memory, and the ordering is monotone in the unexpected direction: 128 costs 24%
+more per item than 32. The mechanism is the decode budget, not the card. A batch runs until its
+*longest* member emits a stop token, and `--max-new-tokens` is 1024, so every member of a batch pays
+for its straggler and widening the batch widens the chance of drawing one. Text-to-SQL sharpens
+this, because the answer-length distribution is badly skewed -- most golds are one short `SELECT`, a
+few are joins over subqueries -- so each additional lane of parallelism is bought against a longer
+tail. The default of 32 turned out to be the right setting, but it is worth recording that it was
+checked and why it wins: the reflex on a 97 GiB card holding a 16.5 GB model is to raise the batch
+size, and here the reflex costs 24%.
+
+The accuracy column carries no signal and must not be read as one. At n = 128 and p near 0.86 the
+standard error of a single proportion is 3.1 points, so the 1.56-point spread across the three rows
+sits well inside noise. That is the expected result for a lever deliberately left outside
+`PAIRING_FIELDS` -- and had the spread been larger, the exclusion would have needed revisiting
+before the panel, not after it.
+
+**The fine-tune worked, decisively.** 86.72% against the base model's 57.75% at the same decode
+budget on the same task (section 8). That is the gate the probe existed to be: a merge landing at or
+below the base model is a training run to investigate, not a checkpoint to quantize six ways, and
+five minutes is the right price to learn which one this is.
+
+**So the panel runs 12 000 items at batch 32.** 12 000 items x 7 arms x 0.709 s is 16.5 hours of
+scoring, plus the 45-64 s per-invocation overhead measured across 36 phase-3 records, plus GPTQ and
+AWQ calibration, which nothing in this campaign has ever timed and which this panel will record for
+the first time. It buys a smallest-callable-difference of **1.08 points** against a +1.54-point
+headline: above the 8 000-item floor, one row short of the 0.93-point ceiling, and inside the
+pre-committed budget of about sixteen hours. The remaining 4 143 items would buy 0.15 points of
+resolution for another 5.7 hours, which is the wrong trade when the effect under test is more than
+ten times the resolution already purchased.
+
+One defect closed on the way there. The probe wrote `probe.b$B.json` and its summary read the
+records back through a glob -- so a batch size that ran out of memory would have written no record,
+and the summary would have silently priced the whole panel off a *previous* probe's file. The
+records are now removed before each batch runs, on the same principle that produced
+`check_resumable`: a missing row is a result, a stale row wearing this run's timestamp is not.
+
+
 ### The measured 8.46% is a moments gap, not a gradient gap
 
 *This subsection replaces an earlier version that got the cause wrong. The reasoning is left
