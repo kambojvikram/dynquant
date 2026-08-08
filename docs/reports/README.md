@@ -4,7 +4,9 @@ Every experiment run on DynQuant since the package was built, what it measured, 
 full record lives. Nothing here is taken from the paper; everything is measured on this
 repository's own code, all of it on a single NVIDIA A100 80GB PCIe.
 
-There are fourteen campaigns. They answer fourteen different questions, in this order:
+There are fourteen campaigns. They answer fifteen questions, in this order — phase 4
+answers two of them, because whether a benchmark can read damage and whether the model has
+already seen its answers are separate failures:
 
 | # | question | verdict | full record |
 |---|---|---|---|
@@ -22,6 +24,7 @@ There are fourteen campaigns. They answer fourteen different questions, in this 
 | 12 | Does S3's resume guard know a fresh map from a stale one? | **No, twice over** — it compared against a file it regenerates, and called a metadata reordering a content change | [`phase3-s3-reuse-guard.md`](phase3-s3-reuse-guard.md) |
 | 13 | At matched bytes, what are the allocator and the signal each worth? | **+4.31 over uniform at 3.25 bits, split 1.91 allocator / 2.41 signal — and nothing at 4.25, where the maps diverge just as far and buy nothing** | [`phase3-s3-allocation.md`](phase3-s3-allocation.md) |
 | 14 | Can the phase-4 text-to-SQL benchmark tell a correct answer from a broken one? | **Only after four defects were removed** — two SQLite-semantics bugs discarding a third of one corpus, a DML block teaching an unscoreable answer format, and a registered task argparse refused | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) |
+| 15 | Does the training mixture contain the questions the arms are scored on? | **Yes — 189 of the 200 WikiSQL evaluation items are questions in `b-mc2/sql-create-context`**, and the guard that reported the mixture clean could not have fired | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §11 |
 
 The method itself — signals, sensitivity estimator, allocator, encoder, format, packed
 runtime, kernels — is documented end to end in the
@@ -553,6 +556,55 @@ takes a framing and runs nothing.
 
 Measured admission: 2 796 items on the evaluation split, 5 326 on the training split, balanced
 per source and round-robin interleaved so a truncated run still sees every corpus.
+
+The same report carries three later screens. The base model reaches **57.75 %** on the mixture
+once it is given room to finish reasoning, so there is headroom for damage to show — the first
+attempt read 5.50 %, and 34 of the missing points were a truncated reasoning trace rather than a
+model that cannot do the task. And the architecture is only partly visible: DynQuant's signal
+collection reached **11.6 %** of its parameters and `llmcompressor`'s GPTQ and AWQ reach
+**8.5 %**, because 91.5 % of the weights live in batched expert banks that are not `nn.Linear`
+modules. Linearizing the banks takes both to 100 %, verified bit-exact against the original
+forward.
+
+## 15. Phase 4 — the benchmark's answers were already in the training set
+
+[`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §11 · measured 2026-08-08
+
+The S2 driver has carried a contamination check since phase 3 and it reported nothing on this
+mixture. It could not have reported anything: its markers are `("gsm8k", "humaneval", "mbpp")`,
+and no SQL corpus name contains one. **An empty result from a check that cannot fire reads
+exactly like a mixture that passed.**
+
+Measured against each training pool in full: Gretel is clean in both directions, WikiSQL's own
+train split contributes 1 of 200, and `b-mc2/sql-create-context` — a community aggregate
+assembled from WikiSQL and Spider, shipping a single `train` split — holds **189 of the 200
+WikiSQL evaluation questions**. In the 50 000-row mixture this run would have sampled at seed 0,
+38 of those 200 are present.
+
+What that does and does not invalidate was written down before the number arrived, so the number
+did not get to decide it. **The A/B stays valid**: all seven arms quantize the same fine-tuned
+model, so contamination inflates them equally and the paired test still measures quantization
+damage. What it would have cost is the *absolute* accuracy as a claim about text-to-SQL, and the
+base→fine-tuned difference as a claim about learning.
+
+**The scan that found it first reported clean.** Its sampled arm compared the rendered *user
+turn* — the question wrapped in a schema and a directive — against the bare evaluation question,
+so `0 / 200` printed directly beneath the pool scan's `189 / 200`. That is the same failure as
+`_CONTAMINATING`, committed inside the tool written to expose it; it is recorded in that
+function's docstring rather than quietly fixed.
+
+The filter matches on the **question**, not provenance — the aggregate does not record which
+upstream corpus a row came from, and a question match catches an item arriving by any route.
+It matches against Gretel's and WikiSQL's **whole** test splits (21 729 rows, 21 681 distinct
+keys) rather than the 400 sampled items, so changing `--limit` or the seed cannot undo it
+silently. And it drops **before admission**, so a contaminated row never consumes a quota slot
+and is never counted as kept. It removed 5 Gretel, 21 WikiSQL and 3 990 create-context rows with
+every quota still met.
+
+Both checks are now in the census, and it says what each is worth: the empty
+`sources_overlapping_an_eval_task` is kept, the marker list is written beside it, and
+`decontaminated` reports per source rather than as a boolean — because on this mixture the
+expected number is four thousand, so zero has to be readable as suspicious rather than as clean.
 
 ## Conventions that apply to every campaign
 

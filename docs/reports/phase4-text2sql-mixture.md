@@ -544,7 +544,130 @@ replace -- which is how §8's 5.50% happened.
 
 ---
 
-## 11. Status
+## 11. The contamination check that could not fire — 189 of 200
+
+The S2 dry run of §10 wrote a census, and one line of it read
+`"sources_overlapping_an_eval_task": []`. That is the driver's contamination guard, it has
+been there since phase 3, and on this mixture it is worth nothing:
+
+```python
+_CONTAMINATING = ("gsm8k", "humaneval", "mbpp")
+```
+
+Those are phase 3's markers. No SQL corpus name contains any of them, so the guard could not
+have named a source whatever the data held. **An empty result from a check that cannot fire
+reads exactly like a mixture that passed** — the same shape as §4 and §7, and the same shape
+as a determinism guard whose stated reason for firing is a hypothesis rather than a diagnosis.
+
+The specific worry was not hypothetical. Evaluation draws `test` from Gretel and WikiSQL;
+training draws `train` from those two **and** from `b-mc2/sql-create-context`, which ships a
+single `train` split and is a community aggregate assembled from WikiSQL and Spider. If it was
+built from all of WikiSQL rather than WikiSQL's training half, then evaluation questions are
+inside the training mixture.
+
+### What that would and would not invalidate, written down before the number arrived
+
+So the number could not decide it retroactively:
+
+* **The A/B stays valid.** Every arm — bf16 ceiling, GPTQ ×2, AWQ ×2, DynQuant ×2 — quantizes
+  the *same* fine-tuned model. Contamination inflates all seven equally, and the paired test
+  measures quantization damage regardless.
+* **The absolute accuracy stops being a claim about text-to-SQL.** "The fine-tune reached X%"
+  becomes "the fine-tune reached X%, of which some is recall."
+* **And the headroom argument weakens**, because §8's 57.75% was measured on the base model
+  with none of this, and the fine-tuned number would be measured with it. The gain between
+  them would not be all learning.
+
+### Measured
+
+`experiments/phase4/leak_text2sql.py`, against the 400-item evaluation set (200 Gretel, 200
+WikiSQL) and each training pool **in full** — the pool rather than the sample, because a
+sample is what one seed draws and a pool overlap is what any seed can draw:
+
+| training pool | rows | distinct questions | Gretel eval items present | WikiSQL eval items present |
+|---|---:|---:|---:|---:|
+| `gretelai/synthetic_text_to_sql` train | 100 000 | 99 805 | 0 / 200 | 0 / 200 |
+| `Salesforce/wikisql` train | 56 355 | 56 105 | 0 / 200 | 1 / 200 |
+| `b-mc2/sql-create-context` | 78 577 | 78 251 | 0 / 200 | **189 / 200** |
+
+**94.5% of the WikiSQL evaluation half is in the aggregate.** Gretel is clean in both
+directions. WikiSQL's own train split contributes one item — a question that appears on both
+sides of its own boundary under a fold that ignores case and punctuation, which is either a
+duplicate in the corpus or two questions about different tables that read identically. It is
+dropped either way; that is the conservative direction and it costs one row.
+
+In the 50 000-row mixture this run would actually have sampled at seed 0, **38 of the 200
+WikiSQL items are present** — one fifth of half the benchmark, in the training set, unremarked.
+
+### The scan's own false clean
+
+The first version of the sampled arm reported **0 / 200** directly beneath a pool scan
+reporting 189 / 200, and the two are not in conflict. It walked the driver's rendered
+conversations and compared the *user turn* against the evaluation questions — but a user turn
+is `instruction(item)`, the question wrapped in a schema and a directive, so the equality could
+never hold. A clean sample was being reported by a comparison that had no way to come out any
+other way.
+
+That is the same failure as `_CONTAMINATING`, committed inside the tool written to expose it,
+and it is recorded in that function's docstring rather than quietly fixed.
+
+### Three decisions in the filter
+
+**By question, not by provenance.** The aggregate does not record which upstream corpus each
+row came from, so "drop the WikiSQL-derived rows" is not an operation the data supports.
+Matching on the question is — and it is the stronger rule, because it catches an item that
+reaches the mixture by any route, including a source not yet added.
+
+**Against the whole test split, not the sampled items.** The banned set is every question in
+Gretel's and WikiSQL's complete `test` splits: 21 729 rows, 21 681 distinct keys. Keyed on one
+run's `--limit` and seed instead, the filter would be undone by changing either, with nothing
+reporting that it had been. This is also why Gretel and WikiSQL lose rows below despite being
+clean against the 400 *sampled* items — the 400 are a sample of 21 729.
+
+**Before admission, not after.** A contaminated row must not consume a quota slot or be counted
+as kept. Filtering afterwards trains on N−1 while reporting N, and the shortfall reads as an
+admission rate.
+
+The fold itself is case, punctuation and whitespace and nothing more. Deliberately not stemming
+or similarity matching: this decides whether a training row is an evaluation item, and a looser
+rule deletes legitimate training data for *resembling* the test set — a cost paid silently
+against a benefit nobody can measure.
+
+### What it removed
+
+Re-running the dry run with the filter in place:
+
+```
+decontaminated: dropped 5 gretel rows that ask a question the evaluation asks
+decontaminated: dropped 21 wikisql rows that ask a question the evaluation asks
+decontaminated: dropped 3990 create-context rows that ask a question the evaluation asks
+```
+
+Roughly one create-context row in five of those read. The quotas were still met —
+16 667 / 16 667 / 16 666, 49 905 conversations kept after masking, unchanged — so the
+decontamination cost this run nothing but the rows it was supposed to cost.
+
+### Both checks are now in the census, and it says what each is worth
+
+```json
+"sources_overlapping_an_eval_task": [],
+"contamination_markers": ["gsm8k", "humaneval", "mbpp"],
+"decontaminated": {"gretel": 5, "wikisql": 21, "create-context": 3990}
+```
+
+The empty list is kept, and the marker list is written beside it, because an empty result is
+only as strong as the thing that produced it and a later reader cannot see the marker list from
+the result. `decontaminated` is the check that can fire, reported per source rather than as a
+boolean — a mixture that stops needing the filter and a filter that stops running produce the
+same `{}` otherwise, and on this mixture the expected number is four thousand, so zero has to
+be readable as suspicious.
+
+The count is returned from `load_rows` beside the rows rather than stashed on the module: a
+census reporting a stale number from a previous call would be worse than one reporting none.
+
+---
+
+## 12. Status
 
 Done: the mixture, the admission rule, the metric, the screen, both splits measured, the DML leak
 closed, the task reachable from the CLI, the reasoning-trace and shots defects fixed, and signal
@@ -560,13 +683,19 @@ against the real config -- 8.46% / 91.54%, closing to the parameter, with matche
 now a number this campaign computed from the checkpoint's own module tree, not a width someone
 typed into a recipe.
 
-Not done, in order: headroom re-measured with the fixes, at a budget generous enough that the
-closure distribution comes out uncensored and the arms' budget can be *read* rather than guessed
-(§8's 256 was censored -- closures were still arriving at the cap); `load_linearized` exercised on
-the GPU, because the 22-banks-to-zero assertion is the one part of the driver that CPU tests cannot
-reach; the fine-tune, with the expert mass measured; then the six arms at matched bytes -- GPTQ and
-AWQ through the linearized structure verified bit-exact in §10, all three widths weighed rather
-than requested; then the paired comparison over stored per-item hits.
+Also done since: headroom re-measured at 1024 tokens -- **57.75%**, uncensored enough to read a
+decode budget off (§8) -- `load_linearized` exercised on the real checkpoint, and the training
+mixture decontaminated against its own benchmark (§11), which removed 4016 rows the fine-tune
+would otherwise have been trained on and scored against.
+
+Not done, in order: the fine-tune, with the expert mass measured; then the six arms at matched
+bytes -- GPTQ and AWQ through the linearized structure verified bit-exact in §10, all three widths
+weighed rather than requested; then the paired comparison over stored per-item hits.
+
+One number in this report is now conditional on §11 rather than absolute. The fine-tuned model's
+accuracy is a claim about text-to-SQL only because the filter ran; before it, 38 of the 200 WikiSQL
+items were in the mixture at this seed and 189 of 200 were in the pool any seed draws from. The
+paired comparison between arms never depended on that and still does not.
 
 §10 was written expecting linearization to be the largest remaining unknown in the phase. It is
 not: llmcompressor already ships it, it detects all 22 banks here, and the swap is bit-identical.
