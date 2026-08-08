@@ -80,9 +80,12 @@ FP16_BYTES_PER_PARAM = 2
 def compact(count: int) -> str:
     """A parameter count at a width a reader can compare across rows.
 
-    Fixed G units printed the 2-bit row of a real allocation as ``0.00G`` -- a width the
-    allocator did assign, rendered as though it had assigned nothing. The scale spans four
-    orders of magnitude within one histogram, so the unit has to follow the number.
+    Used for the breached-floor mass, which is the one place here that counts parameters
+    and where they span four orders of magnitude between roles -- fixed G units printed a
+    real million-parameter role as ``0.00G``, a mass the budget did take, rendered as
+    though it had taken nothing. The width histogram counts *modules* and is printed as an
+    integer; the two are not interchangeable and reading one as the other is what this
+    formatter was originally, wrongly, applied to.
     """
     if count >= 1_000_000_000:
         return f"{count / 1e9:.2f}G"
@@ -366,12 +369,19 @@ def print_allocation(built: list[dict[str, Any]]) -> None:
         report = row["allocation"]
         if not report:
             continue
+        # Modules, not parameters. The saved map's histogram counts tensors -- checked
+        # against a real one rather than assumed -- and this line said "params" and ran the
+        # counts through a billions-scale formatter, so a 187-module width printed as
+        # `0K`: the allocator's whole answer, rendered as though it had assigned nothing.
+        # The parameter mass is not in the map, but it is in `violations`, which is where
+        # the question that needs it is actually asked.
         widths = "  ".join(
-            f"{width}b {compact(int(params))}"
-            for width, params in sorted(report["histogram"].items(), key=lambda kv: int(kv[0]))
+            f"{width}b {int(modules)}"
+            for width, modules in sorted(report["histogram"].items(), key=lambda kv: int(kv[0]))
         )
+        total = sum(int(modules) for modules in report["histogram"].values())
         print(f"{row['label']}: {report['average_bits']:.4f} avg bits over the quantized set")
-        print(f"  widths: {widths}")
+        print(f"  widths, modules at each: {widths}   ({total} quantized)")
         breaches = report["violations"]
         if not breaches:
             print("  floors: none breached -- the budget was not binding on any role")

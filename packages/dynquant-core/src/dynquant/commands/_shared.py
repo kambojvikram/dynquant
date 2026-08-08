@@ -433,7 +433,10 @@ def _map_payload(bit_map: BitMap, group_size: int) -> dict[str, Any]:
         "average_bits": bit_map.average_bits,
         "nbytes": bit_map.nbytes,
         "group_size": group_size,
-        "histogram": {str(width): params for width, params in sorted(bit_map.histogram().items())},
+        # Modules per width, not parameters per width -- see ``BitMap.histogram``.
+        "histogram": {
+            str(width): modules for width, modules in sorted(bit_map.histogram().items())
+        },
         "violations": [
             {
                 "name": v.name,

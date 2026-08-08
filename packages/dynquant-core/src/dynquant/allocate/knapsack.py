@@ -123,7 +123,14 @@ class BitMap:
         return int(self.allocated_bits // 8)
 
     def histogram(self) -> dict[int, int]:
-        """Parameters at each width -- the fastest sanity check on a bit map."""
+        """*Modules* at each width -- the fastest sanity check on a bit map.
+
+        Modules and not parameters, which is worth saying because the two differ by six
+        orders of magnitude here and a reader who assumes the other one gets a plausible
+        answer rather than an error. ``summary()`` has always labelled it correctly;
+        this docstring did not, and a table downstream printed module counts through a
+        billions-scale formatter and rendered every width as ``0K``.
+        """
         out: dict[int, int] = {}
         for width in self.bits.values():
             out[width] = out.get(width, 0) + 1

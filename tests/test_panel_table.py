@@ -133,6 +133,52 @@ def _record(
     }
 
 
+def _write_map(path: Path, width: int, nbytes: int, *, breach: bool) -> None:
+    """One allocation file, written by the writer the allocator uses.
+
+    Not a hand-built dict. The field this fixture originally guessed wrong was
+    ``histogram``, which counts *modules* -- a dict typed here with parameter-scale values
+    agreed with the reader's wrong reading of it and both stayed green. Going through
+    ``write_bit_maps`` means the fixture cannot hold a shape the allocator does not produce,
+    and the numbers below are chosen so ``BitMap`` derives the ones the table prints.
+    """
+    from dynquant.allocate.knapsack import BitMap, FloorViolation
+    from dynquant.commands._shared import write_bit_maps
+    from dynquant.graph.roles import ModuleRole
+
+    bits = dict.fromkeys(("m.head", "m.embed", "m.norm", "m.conv", "m.router"), 8)
+    bits["m.tiny"] = 2
+    bits |= {f"m.layers.{index}.proj": 4 for index in range(181)}
+    average = 4.1563 if width == 4 else 3.1488
+    denominator = round(nbytes * 8 / average)
+    violations = tuple(
+        FloorViolation(
+            name=f"model.layers.{index}.feed_forward.experts.gate_up_proj",
+            role=ModuleRole.MOE_EXPERT_GATE_UP,
+            floor_bits=4,
+            assigned_bits=3,
+            num_params=150_000_000,
+        )
+        for index in range(22 if breach else 0)
+    )
+    bit_map = BitMap(
+        bits=bits,
+        violations=violations,
+        budget_bits=float(nbytes * 8),
+        allocated_bits=float(nbytes * 8),
+        denominator=denominator,
+        target_label=f"{nbytes}B",
+    )
+    write_bit_maps(
+        path,
+        {str(ANCHORS[width]): bit_map},
+        model="/runs/s4/merged",
+        stats="/runs/s4/stats.json",
+        allocator="greedy",
+        group_size=128,
+    )
+
+
 def _write_panel(
     out: Path,
     *,
@@ -180,46 +226,7 @@ def _write_panel(
                 path = maps / f"{label}.json"
                 entry["nbytes"] = ANCHORS[width] + (drift if width == 4 else 0)
                 entry["map"] = str(path)
-                violations = (
-                    [
-                        {
-                            "name": f"model.layers.{n}.feed_forward.experts.gate_up_proj",
-                            "role": "moe_expert_gate",
-                            "floor_bits": 4,
-                            "assigned_bits": 3,
-                            "num_params": 150_000_000,
-                        }
-                        for n in range(22)
-                    ]
-                    if width == 3 and breach_at_3b
-                    else []
-                )
-                path.write_text(
-                    json.dumps(
-                        {
-                            "schema": "dynquant/allocation/1",
-                            "model": "/runs/s4/merged",
-                            "group_size": 128,
-                            "maps": {
-                                str(ANCHORS[width]): {
-                                    "target_label": f"{ANCHORS[width]}B",
-                                    "average_bits": 4.1563 if width == 4 else 3.1488,
-                                    "nbytes": entry["nbytes"],
-                                    "group_size": 128,
-                                    "histogram": {
-                                        "2": 1_000_000,
-                                        "4": 7_000_000_000,
-                                        "8": 300_000_000,
-                                    },
-                                    "violations": violations,
-                                    "bits": {},
-                                }
-                            },
-                        },
-                        indent=2,
-                    ),
-                    encoding="utf-8",
-                )
+                _write_map(path, width, entry["nbytes"], breach=width == 3 and breach_at_3b)
             arms.append(entry)
 
     for arm in arms:
@@ -427,10 +434,13 @@ def test_the_allocation_reports_which_floors_the_budget_could_not_afford(
     assert "floors: none breached -- the budget was not binding on any role" in printed
     assert "dq_3b: 3.1488 avg bits" in printed
     assert "floors: 22 breached" in printed
-    assert "moe_expert_gate" in printed, "the breached role is named, not just counted"
-    assert "3.30G params" in printed
-    # The 2-bit row holds a million parameters, not zero. Fixed G units printed 0.00G.
-    assert "2b 1M" in printed
+    # `moe.expert.gate_up`, the role's own value -- the hand-written fixture this replaced
+    # asserted an invented `moe_expert_gate`, which no allocation has ever emitted.
+    assert "moe.expert.gate_up" in printed, "the breached role is named, not just counted"
+    assert "3.30G params" in printed, "the breached mass is a parameter count, at its scale"
+    # The histogram counts modules. Printed through the parameter formatter, all three
+    # widths rendered as `0K` -- the allocator's whole answer, shown as nothing assigned.
+    assert "widths, modules at each: 2b 1  4b 181  8b 5   (187 quantized)" in printed
 
     clean = _write_panel(tmp_path / "clean", breach_at_3b=False)
     assert "floors: 22 breached" not in _run(table, clean)

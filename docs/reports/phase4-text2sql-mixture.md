@@ -973,10 +973,27 @@ through the driver's own writer rather than a hand-copy of its keys, so the two 
 Two smaller things the table also does. It prints the allocation next to the accuracy -- average
 bits, the width histogram, and the *names* of any roles whose floors the budget could not afford
 -- because the §12 prediction is that 4 bits breaches nothing and 3 bits must breach the expert
-`gate_up` banks, and neither fact is recoverable from the accuracy afterwards. And the histogram
-counts carry their own unit: a fixed `G` scale rendered a real 2-bit assignment of a million
-parameters as `0.00G`, a width the allocator did choose, printed as though it had chosen nothing.
-The scale spans four orders of magnitude inside a single histogram, so the unit follows the number.
+`gate_up` banks, and neither fact is recoverable from the accuracy afterwards.
+
+The histogram is where checking the reader against a real artefact paid, rather than against the
+fixture written alongside it. `BitMap.histogram()` counts **modules** at each width, not
+parameters -- its docstring said parameters, `_map_payload` named the field `params`, and the
+table duly printed the counts through a billions-scale formatter. On a real map that is
+`{"2": 5, "3": 4, "4": 21, "8": 5}` for a 38 M model; on the panel it will be a width holding 181
+tensors, and it would have rendered as `0K`. The allocator's entire answer, printed as though it
+had assigned nothing -- and printed, not raised, which is the only failure mode that matters for
+a formatter. Fixed in three places at once, because a unit that is wrong in the docstring is
+wrong wherever anyone read the docstring. The parameter mass is genuinely not in the saved map;
+it is in `violations[].num_params`, which is where the question that needs it -- how much of the
+model did a breached floor cost -- is actually asked, and that is the one place the table still
+formats at billions scale.
+
+That the fixture had agreed with the wrong unit is the second half of the lesson. It was
+hand-written, so it asserted whatever the reader already believed. Rebuilding it through
+`write_bit_maps` with a real `BitMap` and real `FloorViolation`s immediately produced a second
+disagreement: the fixture's role string `moe_expert_gate`, which no allocation has ever emitted,
+against the enum's actual `moe.expert.gate_up`. Neither defect needed the panel to run, and
+neither would have been found by a test that only compared the writer to a copy of itself.
 
 ---
 
@@ -1001,10 +1018,12 @@ decode budget off (§8) -- `load_linearized` exercised on the real checkpoint, a
 mixture decontaminated against its own benchmark (§11), which removed 4016 rows the fine-tune
 would otherwise have been trained on and scored against.
 
-Also done since: the table the panel lands in, written before the panel runs -- nine tests and
-eight mutations against a synthetic seven-arm run, sizes read from the manifest rather than from
+Also done since: the table the panel lands in, written before the panel runs -- ten tests and
+eleven mutations against a synthetic seven-arm run, sizes read from the manifest rather than from
 the fp16-resident scored model, drift refused in both directions, and twelve comparisons Holm-
-corrected in two blocks with the verdict following the adjusted p.
+corrected in two blocks with the verdict following the adjusted p. Checking that reader against a
+real saved map, rather than against its own fixture, is what caught the width histogram being
+counted in modules and printed in parameters.
 
 Not done, in order: the fine-tune, with the expert mass measured; then the six arms at matched
 bytes -- GPTQ and AWQ through the linearized structure verified bit-exact in §10, all three widths
