@@ -339,7 +339,70 @@ both noted in the test file.
 
 ---
 
-## 10. Status
+## 10. The baselines cannot see this architecture either
+
+The same blindness that held signal collection to 11.6% (§9) applies to GPTQ and AWQ, and it
+does more damage there, because their failure mode produces a checkpoint rather than a warning.
+
+Measured by instantiating the model on the `meta` device — no weights, no GPU, so this is a
+structural fact and cost nothing to establish:
+
+| What | Parameters | Share |
+|---|---|---|
+| Total | 8 467 856 128 | 100% |
+| Reachable as `nn.Linear` | 716 570 624 | **8.5%** |
+| Held in batched expert banks | 7 751 073 792 | **91.5%** |
+
+`llmcompressor`'s GPTQ and AWQ modifiers walk `nn.Linear` modules. On this model that is 8.5% of
+the weights. Pointed at it unmodified, a "GPTQ 4-bit" run would quantize 8.5% of the checkpoint,
+leave the other 91.5% in bfloat16, and **succeed** — emitting a directory labelled 4-bit that
+weighs about 15.5 GB against bf16's 16.9 GB.
+
+That number is the whole problem. It is not a wrong accuracy, it is a wrong *denominator*, and it
+biases the comparison in DynQuant's favour: a DynQuant 4-bit arm at ~4.5 GB would appear to beat a
+"GPTQ 4-bit" arm three times its size, and the natural reading of that table is that DynQuant won.
+What actually happened is that GPTQ never ran on 91.5% of the model.
+
+This is the third time this campaign has produced a baseline whose bytes were quietly wrong, and
+the second with the same signature: `ignore=["lm_head"]` on a tied-embedding model made a "4-bit"
+GPTQ checkpoint measure 7.36 bits. Both were caught by measuring bytes on disk rather than reading
+the label on the config. The rule that catches this class is: **an arm's size is a measurement,
+never a setting** — if a comparison quotes a bit width that was requested rather than weighed, it
+is not yet a comparison.
+
+### What a fair baseline requires
+
+Each bank is one `Lfm2MoeExperts` module holding `gate_up_proj [32, 3584, 2048]` and
+`down_proj [32, 2048, 1792]`. 22 of the 24 layers carry one. Giving GPTQ and AWQ the whole model
+means materialising each bank as 32 `nn.Linear` pairs — 1408 modules — quantizing, and folding the
+result back.
+
+Two consequences worth stating before it is built, because both are properties of MoE rather than
+of this implementation:
+
+- **Each expert sees a fraction of the calibration set.** Routing is 4-of-32, so an expert
+  receives roughly an eighth of the tokens. GPTQ's Hessian and AWQ's activation scales are
+  estimated per module, so both baselines get an eighth of the statistics per expert that they
+  would get on a dense model of the same width. That is a real handicap and it is *theirs*, not
+  something this harness introduces — but it must be reported alongside the numbers, or a DynQuant
+  win reads as a method advantage when part of it is a calibration-sparsity artefact.
+- **DynQuant is not exposed to it.** Its signal comes from a fine-tune-time hook, which sees every
+  token that routes to an expert across the whole run rather than a 512-sequence calibration
+  sample. This is a genuine architectural advantage of collecting signals during training, and it
+  is the first point in this campaign where the fine-tune-time premise pays a dividend that a
+  post-hoc method cannot match by trying harder. It should be claimed as exactly that, and not
+  confused with the allocator being better.
+
+`config.hidden_act` is also absent on this architecture — the field several quantization paths read
+to decide how to fuse a gated MLP. That is a one-line addition at load time, noted here so it is
+not rediscovered.
+
+Not built yet. It is the gate on the six arms, and it is now the largest remaining unknown in the
+phase — larger than the fine-tune, which is a known quantity.
+
+---
+
+## 11. Status
 
 Done: the mixture, the admission rule, the metric, the screen, both splits measured, the DML leak
 closed, the task reachable from the CLI, the reasoning-trace and shots defects fixed, and signal
@@ -349,6 +412,17 @@ The 5.50% headroom figure in §8 is **withdrawn** — it measured the extractor,
 is kept in this report because the diagnosis is the finding, and deleting the number would delete
 the evidence that a campaign can be configured off one.
 
-Not done, and next: headroom re-measured with the fixes and a decode budget sized for a model
-that reasons before it answers; then the fine-tune with the signal hook and `measure_expert_banks`
-on; then the six variants at matched bytes; then the paired comparison over stored per-item hits.
+Not done, in order: headroom re-measured with the fixes, at a budget generous enough that the
+closure distribution comes out uncensored and the arms' budget can be *read* rather than guessed
+(§8's 256 was censored -- closures were still arriving at the cap); the fine-tune, with the expert
+mass measured; expert-bank linearization so GPTQ and AWQ are given the whole model (§10, the real
+blocker); the six arms at matched bytes; then the paired comparison over stored per-item hits.
+
+One thing already fixed on the strength of §10 and §9 together: the S2 driver could not turn expert
+measurement on, and its default is off. It is now a tri-state flag whose *unset* value is an error
+-- but only on a model that has banks, so the four dense panel models keep their existing commands.
+Defaulting either way was wrong. Off writes a stats file with 88.4% of the checkpoint UNMEASURED
+and allocated on role floors, which is a run that finishes and produces numbers; on silently
+commits a gradient buffer for the whole expert mass, ~15.5 GB in bfloat16 here. A campaign whose
+claim is that the signal decides the allocation cannot have the answer to "was the signal
+collected?" depend on a default nobody typed.
