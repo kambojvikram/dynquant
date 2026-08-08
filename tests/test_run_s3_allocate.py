@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -509,7 +510,9 @@ def test_the_anchor_command_asks_for_every_anchor_width(s3, tmp_path) -> None:
     """
     from dynquant.cli import build_parser
 
-    args = argparse.Namespace(model="/some/merge", group_size=128, trust_remote_code=False)
+    args = argparse.Namespace(
+        model="/some/merge", group_size=128, trust_remote_code=False, anchors=list(s3.ANCHORS)
+    )
     cmd = s3.anchor_cmd(args, tmp_path / "map.rtn.json")
 
     assert cmd[1:4] == ["-m", "dynquant", "inspect"], cmd
@@ -525,3 +528,103 @@ def test_the_anchor_widths_are_widths_the_cli_will_accept(s3) -> None:
     from dynquant.constants import BIT_OPTIONS
 
     assert set(s3.ANCHORS) <= set(BIT_OPTIONS)
+
+
+def test_anchors_replaces_the_default_pair_rather_than_narrowing_it(
+    s3, tmp_path, monkeypatch
+) -> None:
+    """``--anchors`` has to reach the allocation, not only the loop that spends it.
+
+    It reached one of the three places that read it. The arm loop used ``args.anchors``;
+    the uniform allocation and the lookup that sizes every other arm used the module
+    constant. So the flag could subset ``(3, 4)`` -- where the extra anchor is wasted work
+    and nothing looks wrong -- and could not replace it: a width outside the pair was
+    allocated for 3 and 4, then looked up as 8, and the run died on a ``KeyError`` rather
+    than on the driver's own "missing anchor" message.
+
+    Turns red when: any of the three reverts to :data:`ANCHORS`, which is now only the
+    argparse default.
+    """
+    from dynquant.cli import build_parser
+
+    args = argparse.Namespace(
+        model="/some/merge", group_size=128, trust_remote_code=False, anchors=[8]
+    )
+
+    parsed = build_parser().parse_args(s3.anchor_cmd(args, tmp_path / "map.rtn.json")[3:])
+    assert parsed.uniform == [8], "the anchor allocation still asked for the default pair"
+
+    # And the lookup reads the same list. Driven through `allocate_anchors` against a
+    # payload holding only the requested width, so a lookup still keyed on `ANCHORS` hits
+    # the driver's missing-anchor error instead of returning.
+    work = tmp_path / "maps"
+    work.mkdir()
+    (work / "map.rtn.json").write_text(
+        json.dumps(
+            {"maps": {"uniform-8": {"nbytes": 1_000, "average_bits": 8.1, "violations": []}}}
+        ),
+        encoding="utf-8",
+    )
+    args.reuse_maps = False
+    monkeypatch.setattr(s3, "_run", lambda cmd, *, what: None)
+
+    # The third reader is the resume guard's key list, which decides whether a map already
+    # on disk is the one this run asked for. Keyed on the default pair, `--reuse-maps
+    # --anchors 8` would accept a map holding `uniform-3` and `uniform-4` as complete and
+    # then fail to find `uniform-8` in it -- a reuse that passes its own check and hands
+    # back the wrong widths. Recorded rather than exercised through `_reusable`, because
+    # what is wired here is which keys get asked for.
+    asked: list[list[str]] = []
+    real_reusable = s3._reusable
+
+    def recording(save_map, args, *, keys, stats, allocator):
+        asked.append(keys)
+        return real_reusable(save_map, args, keys=keys, stats=stats, allocator=allocator)
+
+    monkeypatch.setattr(s3, "_reusable", recording)
+
+    anchors = s3.allocate_anchors(args, work)
+
+    assert asked == [["uniform-8"]]
+    assert list(anchors) == [8]
+    assert anchors[8].nbytes == 1_000
+
+
+def test_the_arm_loop_spends_the_anchors_it_was_given(s3, tmp_path, monkeypatch) -> None:
+    """The fourth reader of ``args.anchors``, and the one that was never broken.
+
+    It lived inside ``main`` -- the whole campaign, model loads and all -- so nothing could
+    reach it, and a revert to :data:`ANCHORS` here would have produced 3-bit and 4-bit arms
+    against 8-bit anchors and raised a ``KeyError`` only at runtime on the box. Lifting it
+    into :func:`build_arms` is what makes this assertable at all.
+
+    The second half is the grouping rule: the uniform arm is a *member* of its own byte
+    group, not a separate thing alongside it, so ``--arms`` without ``rtn`` must drop it
+    from the output while :func:`check_matched` is still handed it as the reference.
+
+    Turns red when: the loop reverts to :data:`ANCHORS`; the uniform arm survives its own
+    exclusion from ``--arms``; or the groups stop being checked against their anchor.
+    """
+    anchors = {width: _arm(s3, "rtn", 1_000_000) for width in (3, 4, 8)}
+    checked: list[tuple[list[str], str]] = []
+    monkeypatch.setattr(
+        s3,
+        "allocate_arm",
+        lambda args, work, *, kind, anchor, variants: _arm(s3, kind, anchor.nbytes),
+    )
+    monkeypatch.setattr(
+        s3,
+        "check_matched",
+        lambda group, anchor: checked.append(([arm.kind for arm in group], anchor.kind)),
+    )
+    args = argparse.Namespace(anchors=[8], arms=["rtn", "dq"])
+
+    built = s3.build_arms(args, tmp_path, anchors, variants={})
+
+    assert [arm.kind for arm in built] == ["rtn", "dq"]
+    assert checked == [(["rtn", "dq"], "rtn")]
+
+    args.arms = ["dq"]
+    checked.clear()
+    assert [arm.kind for arm in s3.build_arms(args, tmp_path, anchors, variants={})] == ["dq"]
+    assert checked == [(["dq"], "rtn")], "the uniform arm is still the reference it is matched to"

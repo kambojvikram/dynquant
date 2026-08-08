@@ -73,9 +73,14 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-#: The widths whose uniform arms anchor the byte budgets. 3 and 4 because those are
-#: the two regimes phase 2 separated: at 4 bits the role floors are affordable and
-#: allocation has little to do, at 3 bits they are not and it decides the model.
+# The one package import at module scope. `--help` has to work on a box with no torch,
+# and `dynquant.constants` is a plain constants module that imports none of it.
+from dynquant.constants import BIT_OPTIONS
+
+#: The *default* widths whose uniform arms anchor the byte budgets -- ``--anchors``
+#: replaces them. 3 and 4 because those are the two regimes phase 2 separated: at
+#: 4 bits the role floors are affordable and allocation has little to do, at 3 bits
+#: they are not and it decides the model.
 ANCHORS = (3, 4)
 
 #: Which signal file each arm allocates from, and whether it gets measured
@@ -376,8 +381,14 @@ def anchor_cmd(args: argparse.Namespace, save_map: Path) -> list[str]:
     and only the last anchor is written. Nothing announces that: the run proceeds, the
     4-bit anchor is there, and the 3-bit arm goes missing several minutes later when
     something asks for it.
+
+    The widths come from ``args.anchors`` rather than from :data:`ANCHORS`. They were
+    the module constant until phase 4 asked for a width outside ``(3, 4)`` and got a
+    ``KeyError``: the flag was honoured by the loop that *builds* arms and ignored by
+    the two places that allocate and look up the anchors those arms are sized against,
+    so ``--anchors`` could narrow the default pair and never replace it.
     """
-    return [*_inspect_cmd(args, save_map), "--uniform", *[str(w) for w in ANCHORS]]
+    return [*_inspect_cmd(args, save_map), "--uniform", *[str(w) for w in args.anchors]]
 
 
 def _inputs_mtime(args: argparse.Namespace) -> float:
@@ -468,7 +479,7 @@ def allocate_anchors(args: argparse.Namespace, work: Path) -> dict[int, Arm]:
     payload = _reusable(
         save_map,
         args,
-        keys=[f"uniform-{width}" for width in ANCHORS],
+        keys=[f"uniform-{width}" for width in args.anchors],
         stats=None,
         allocator="rank_product",
     )
@@ -476,7 +487,7 @@ def allocate_anchors(args: argparse.Namespace, work: Path) -> dict[int, Arm]:
         _run(anchor_cmd(args, save_map), what="allocating the uniform anchors")
         payload = json.loads(save_map.read_text(encoding="utf-8"))
     anchors: dict[int, Arm] = {}
-    for width in ANCHORS:
+    for width in args.anchors:
         key = f"uniform-{width}"
         if key not in payload["maps"]:
             raise SystemExit(
@@ -631,6 +642,36 @@ def evaluate(args: argparse.Namespace, arms: list[Arm], out: Path) -> None:
         _run(cmd, what="evaluating the arms")
 
 
+def build_arms(
+    args: argparse.Namespace,
+    work: Path,
+    anchors: dict[int, Arm],
+    variants: dict[str, Any],
+) -> list[Arm]:
+    """One group of byte-matched arms per anchor width, flattened in anchor order.
+
+    The uniform arm is a member of its own group rather than a separate thing: it is what
+    the others are sized against, so dropping ``rtn`` from ``--arms`` has to drop it from
+    the output too, and :func:`check_matched` still has to be given it as the reference.
+
+    Lifted out of :func:`main` when ``--anchors`` was fixed. It was the one reader of
+    ``args.anchors`` that had always been right, which is exactly why it was worth moving:
+    the other three were reachable from a test and this one was not, so a revert here was
+    the only one of the four that nothing would have caught.
+    """
+    built: list[Arm] = []
+    for width in args.anchors:
+        anchor = anchors[width]
+        at_anchor = [anchor] if "rtn" in args.arms else []
+        for kind in args.arms:
+            if kind == "rtn":
+                continue
+            at_anchor.append(allocate_arm(args, work, kind=kind, anchor=anchor, variants=variants))
+        check_matched(at_anchor, anchor)
+        built.extend(at_anchor)
+    return built
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True, help="the merged fine-tune S2 produced")
@@ -645,7 +686,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--seed", type=int, default=0, help="the shuffled control's permutation seed"
     )
-    parser.add_argument("--anchors", type=int, nargs="*", default=list(ANCHORS))
+    parser.add_argument(
+        "--anchors",
+        type=int,
+        nargs="*",
+        default=list(ANCHORS),
+        choices=sorted(BIT_OPTIONS),
+        help=(
+            "the widths whose uniform arms set the byte budgets. Constrained to the "
+            "packing grid here rather than downstream, because `dynquant inspect "
+            "--uniform` has the same choices and rejecting a width there costs a model "
+            "load first"
+        ),
+    )
     parser.add_argument("--arms", nargs="*", default=list(ARMS), choices=list(ARMS))
     parser.add_argument("--limit", type=int, help="passed through to the evaluator")
     parser.add_argument("--trust-remote-code", action="store_true")
@@ -695,17 +748,7 @@ def main(argv: list[str] | None = None) -> int:
         flush=True,
     )
 
-    anchors = allocate_anchors(args, work)
-    built: list[Arm] = []
-    for width in args.anchors:
-        anchor = anchors[width]
-        at_anchor = [anchor] if "rtn" in args.arms else []
-        for kind in args.arms:
-            if kind == "rtn":
-                continue
-            at_anchor.append(allocate_arm(args, work, kind=kind, anchor=anchor, variants=variants))
-        check_matched(at_anchor, anchor)
-        built.extend(at_anchor)
+    built = build_arms(args, work, allocate_anchors(args, work), variants)
 
     if not args.allocate_only:
         built = [quantize_arm(args, arm) for arm in built]
