@@ -446,6 +446,18 @@ def _add_eval(subparsers: _SubParsers) -> None:
     _add_compute_device(parser)
     _add_map_input(parser)
     parser.add_argument(
+        "--map-apply",
+        default="pack",
+        choices=("pack", "encode"),
+        help=(
+            "how --map reaches the weights: `pack` swaps modules onto the packed "
+            "runtime, so VRAM is the packed size; `encode` writes the same encoder's "
+            "output back in the compute dtype, which scores the same and holds fp16. "
+            "`encode` is the only one that reaches a batched MoE expert bank "
+            "(default: pack)"
+        ),
+    )
+    parser.add_argument(
         "--group-size",
         type=int,
         default=DEFAULT_GROUP_SIZE,

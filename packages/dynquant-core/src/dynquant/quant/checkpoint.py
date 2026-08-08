@@ -262,6 +262,15 @@ def _resolve(model: nn.Module, name: str) -> nn.Linear | nn.Embedding:
     try:
         module = model.get_submodule(name)
     except AttributeError as exc:
+        from dynquant.quant.quantizer import resolves_to_weight
+
+        if resolves_to_weight(model, name):
+            raise DynQuantError(
+                f"{name!r} is a tensor, not a module -- a batched expert bank. The packed "
+                f"format stores one entry per module and there is no module here, so this "
+                f"map cannot be exported yet. `dynquant quantize --map` writes the same "
+                f"widths as encoded values in a loadable checkpoint."
+            ) from exc
         raise DynQuantError(
             f"the bit map names {name!r}, which is not a module of this model. A map built "
             f"for a different checkpoint does not transfer."

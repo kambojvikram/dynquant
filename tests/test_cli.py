@@ -400,6 +400,158 @@ def test_the_guard_accepts_every_name_the_quantizer_behind_it_would_encode() -> 
         _shared.check_map_covers(model, {"experts.absent_proj": 4})
 
 
+def test_a_bank_the_packed_runtime_cannot_hold_is_told_apart_from_a_wrong_map() -> None:
+    """Two failures, one message, and the message named the wrong one.
+
+    ``get_submodule`` raises ``AttributeError`` both for a name this model does not have
+    and for a name that addresses a *tensor* -- and a batched expert bank is the second.
+    The packed runtime reported both as "not a module of this model", which sends someone
+    to re-check a map that is correct: the allocator priced that bank, the encoder can
+    encode it, and the only thing that cannot hold it is packing, because there is no
+    module there to replace.
+
+    Asserted as a *distinction*: both halves in one test, because a single message that
+    happens to match one of them is exactly the state this replaced.
+
+    Turns red when: the two branches collapse back into one, or the bank case stops
+    naming the mode that does work.
+    """
+    import torch
+    from torch import nn
+
+    from dynquant.runtime.linear import pack_model
+
+    class _Bank(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.gate_up_proj = nn.Parameter(torch.randn(4, 256, 128))
+
+    class _Tiny(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.experts = _Bank()
+            self.o_proj = nn.Linear(128, 128, bias=False)
+
+    with pytest.raises(DynQuantError, match="encode") as bank:
+        pack_model(_Tiny(), {"experts.gate_up_proj": 4}, group_size=128, compute_device=None)
+    assert "not a module of this model" not in str(bank.value)
+
+    with pytest.raises(DynQuantError, match="not a module of this model"):
+        pack_model(_Tiny(), {"experts.absent_proj": 4}, group_size=128, compute_device=None)
+
+
+def test_encoding_a_map_reaches_the_weights_packing_cannot() -> None:
+    """The mode the MoE panel runs in, asserted against the mode it replaced.
+
+    ``--map-apply encode`` exists because ``pack`` cannot represent a batched expert bank,
+    and the claim that justifies substituting it is that the two run the same encoder at
+    the same widths. So this pins both halves: encode changes the weights of a bank that
+    packing refuses, and on a plain ``Linear`` -- where both modes work -- the values they
+    produce are identical rather than merely similar.
+
+    In bf16, which is the dtype the panel serves and the one the two modes agree in. They
+    part company on an fp32 model, where packing keeps fp32 scales (so the packed module
+    emits fp32 into an fp32 graph) and encoding falls back to the search's own default --
+    a last-bit difference, no served model, and not what this pins.
+
+    Turns red when: encode stops covering the banks, or the two modes drift onto different
+    encoders and the panel's substitution stops being neutral.
+    """
+    import torch
+    from torch import nn
+
+    from dynquant.quant.quantizer import quantize_model
+    from dynquant.runtime.linear import pack_model
+
+    class _Bank(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.gate_up_proj = nn.Parameter(torch.randn(4, 256, 128, dtype=torch.bfloat16))
+
+    class _Tiny(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.experts = _Bank()
+            self.o_proj = nn.Linear(128, 128, bias=False, dtype=torch.bfloat16)
+
+    torch.manual_seed(0)
+    model = _Tiny()
+    before = model.experts.gate_up_proj.detach().clone()
+    linear_before = model.o_proj.weight.detach().clone()
+
+    quantize_model(
+        model,
+        {"experts.gate_up_proj": 4, "o_proj": 4},
+        group_size=128,
+        compute_device=None,
+    )
+    assert not torch.equal(model.experts.gate_up_proj, before), "the bank was left alone"
+
+    packed = _Tiny()
+    packed.o_proj.weight.data.copy_(linear_before)
+    pack_model(packed, {"o_proj": 4}, group_size=128, compute_device=None)
+    assert torch.equal(
+        packed.o_proj.weight_qt.dequantize().to(model.o_proj.weight.dtype), model.o_proj.weight
+    ), "pack and encode disagree on a module both can do"
+
+
+def test_the_chosen_apply_mode_is_the_one_that_runs_and_the_one_recorded(
+    tmp_path: Path,
+) -> None:
+    """A silent fallback here is a panel that dies four hours in, or one that lies.
+
+    ``--map-apply`` has two failure shapes and neither is loud. If the dispatch ignored
+    the flag, the MoE arms would take the packed path they were moved off and refuse
+    mid-run. If the record omitted which mode ran, two arms scored under different
+    applications would pair cleanly and their difference would be read as quantization.
+    So the flag has to reach ``quantize_model`` *and* reach the record.
+
+    The parser's ``choices`` is pinned in the same test because without it a typo is not
+    an error -- ``--map-apply pak`` parses, misses the equality, and quietly packs.
+
+    Turns red when: the dispatch stops reading the flag, the record stops carrying it, or
+    an unknown mode is accepted instead of refused.
+    """
+    import argparse
+    import json
+
+    import torch
+    from torch import nn
+
+    from dynquant.commands.evaluate import _apply_map
+
+    class _Bank(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.gate_up_proj = nn.Parameter(torch.randn(4, 256, 128, dtype=torch.bfloat16))
+
+    class _Tiny(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.experts = _Bank()
+
+    path = tmp_path / "maps.json"
+    path.write_text(
+        json.dumps({"maps": {"k": {"bits": {"experts.gate_up_proj": 4}, "group_size": 128}}}),
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        map=str(path), map_key="k", group_size=128, quiet=True, compute_device=None
+    )
+
+    model = _Tiny()
+    before = model.experts.gate_up_proj.detach().clone()
+    recorded = _apply_map(model, argparse.Namespace(**vars(args), map_apply="encode"))
+    assert recorded["apply"] == "encode"
+    assert not torch.equal(model.experts.gate_up_proj, before), "the flag did not reach the weights"
+
+    with pytest.raises(DynQuantError, match="encode"):
+        _apply_map(_Tiny(), argparse.Namespace(**vars(args), map_apply="pack"))
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["eval", "m", "--task", "gsm8k", "--map-apply", "pak"])
+
+
 # --------------------------------------------------------------------------
 # Allocation seam
 # --------------------------------------------------------------------------

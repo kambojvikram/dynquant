@@ -809,6 +809,69 @@ in the run, it is the finding -- `unfinished_reasoning` is already in the record
 report it. Refusing that arm would delete the result. Refusing a censored *ceiling* preserves the
 panel, and it costs one arm's rerun at an hour rather than the whole panel's at seven.
 
+### What a 38 M-parameter rehearsal found in four minutes
+
+The guards above are about arms disagreeing with each other. This one is about the panel not
+running at all, and it was found by refusing to let the real model be the first thing that tried
+the DynQuant path.
+
+Before spending seven GPU-hours, the arm was rehearsed on a model built to be structurally
+identical and numerically worthless: `lfm2_moe` from the real `config.json` with every dimension
+shrunk to the smallest group-aligned value that keeps the tree -- 6 layers, 8 experts, 38 552 064
+parameters, and the same 14 three-dimensional tensors. Weights random, task nonsense, four
+problems, 32 new tokens, on the CPU. What it exercises is not the accuracy, it is the *plumbing*:
+`inspect --save-map` then `eval --map`, the two commands the panel issues for a DynQuant arm and
+the only two nothing else in the campaign had run against this architecture.
+
+Allocation was healthy -- 20 046 144 B realised against a 20 054 016 B anchor, −0.039% drift, all
+ten bank tensors priced, roles resolving to `moe.expert.gate_up`, `moe.expert.down` and `ssm.in`.
+Then the eval refused the map that the inspect one command earlier had written:
+
+```
+error: the bit map names 10 module(s) this model does not have
+       (model.layers.1.feed_forward.experts.down_proj, ...). Was it built for a different
+       checkpoint?
+```
+
+It was not. The map was correct and the message was wrong, in the same way twice over.
+
+**First: `named_modules` misses raw parameters, for the third time.** A batched expert bank keeps
+its experts as bare 3-D `nn.Parameter`s, so `model.get_submodule("...experts.gate_up_proj")`
+raises. The tracker learned that (it writes those names), the graph learned it (it classifies
+them), the allocator learned it (it prices them), and `quantize_model` learned it (`_target_tensor`
+resolves them). The pre-flight guard in front of all three -- `check_map_covers`, which also fronts
+`quantize` and `export` -- still asked `get_submodule` and refused. On this checkpoint that is
+91.5% of the parameters, phrased as a stale map. The fix is not a second branch in the guard: it
+now asks the quantizer's own resolver (`resolves_to_weight`), so the two cannot answer differently
+again. A guard whose whole job is to predict what the next stage will do should be *calling* the
+next stage's resolver, not reimplementing it.
+
+**Second, and larger: the packed runtime genuinely cannot hold these weights.** With the guard
+fixed, the command got one step further and failed inside `pack_model`, because packing replaces
+`Linear` and `Embedding` *modules* and there is no module here to replace. That is not a bug to
+patch out; the grouped packed path is P8 and it does not exist yet. It does mean the default way
+of scoring a DynQuant arm reaches 8.5% of this model.
+
+So `dynquant eval` gained `--map-apply {pack,encode}`. `pack` is unchanged and stays the default:
+it swaps modules onto the packed runtime and the memory figure is real. `encode` runs the identical
+encoder at the identical widths and writes the reconstruction back in the compute dtype -- same
+accuracy, fp16 residency -- which is the only mode that reaches a weight held as a parameter. The
+two are pinned as bit-identical on a bf16 `Linear` where both apply, so substituting one for the
+other is neutral to the number being measured. The MoE arms run `encode`; the record says so; and
+every byte figure in this campaign still comes from the map the allocator priced and the anchor
+check verified, never from what the model happens to be holding while it is scored.
+
+The two failures also used to arrive with one message. `get_submodule` raises `AttributeError`
+both for a name the model does not have and for a name that addresses a tensor, and the packed
+runtime reported both as "not a module of this model" -- which sends someone to re-check a map
+that is right. Those are separate messages now, and the tensor one names the mode that works.
+
+The rehearsal cost four minutes of CPU. Both defects sit on the DynQuant arms, which `plan_arms`
+schedules fourth and seventh, so in the real panel the first one would have arrived roughly four
+hours in, after the ceiling and both GPTQ arms had been paid for, phrased as though the bit map
+were stale. The general form: a cheap structural double of the model exercises every command the
+expensive run will issue, and the only thing it cannot check is the answer.
+
 ---
 
 ## 13. Status

@@ -423,9 +423,31 @@ def _quantizable_modules(model: nn.Module) -> list[tuple[str, nn.Linear | nn.Emb
 
 
 def _resolve_module(model: nn.Module, name: str) -> nn.Linear | nn.Embedding:
+    """The module the packed runtime will replace, or a refusal that says which kind.
+
+    Two different failures used to arrive with one message. A name this model does not
+    have and a name that addresses a *tensor* rather than a module both raise
+    ``AttributeError`` out of ``get_submodule``, and both were reported as "not a module
+    of this model" -- which reads as a map built for another checkpoint. It is not: a
+    batched MoE expert bank keeps its experts as bare 3-D parameters, so the allocator
+    priced it, the encoder can encode it, and only the *packed* runtime cannot hold it.
+    Sending someone to check their map when the map is right costs more than the missing
+    branch saved.
+    """
     try:
         module = model.get_submodule(name)
     except AttributeError as exc:
+        from dynquant.quant.quantizer import resolves_to_weight
+
+        if resolves_to_weight(model, name):
+            raise DynQuantError(
+                f"{name!r} is a tensor, not a module -- a batched expert bank, which the "
+                f"packed runtime cannot hold: packing replaces Linear and Embedding "
+                f"modules, and there is no module here to replace. The encoder handles it, "
+                f"so score this map with `dynquant eval --map-apply encode` or write it "
+                f"with `dynquant quantize --map`; both give the same accuracy. The grouped "
+                f"packed path is not built yet."
+            ) from exc
         raise DynQuantError(f"bit map names {name!r}, which is not a module of this model") from exc
     if not isinstance(module, nn.Linear | nn.Embedding):
         raise DynQuantError(

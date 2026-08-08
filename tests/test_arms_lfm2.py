@@ -722,6 +722,34 @@ def test_a_quantized_arm_that_ran_out_of_budget_is_recorded_not_refused(
 # carry it, with the arms before it already spent.
 
 
+def test_the_dynquant_arms_apply_their_map_the_only_way_this_model_allows(
+    arms: Any, tmp_path: Path
+) -> None:
+    """Packing has nothing to replace for 91.5% of this checkpoint.
+
+    The expert banks are bare 3-D parameters, and the packed runtime swaps ``Linear`` and
+    ``Embedding`` *modules*, so ``--map-apply pack`` -- the default, and right for every
+    dense model -- reaches 8.5% of the parameters here and refuses on the rest. Encoding
+    runs the same encoder at the same widths and writes the reconstruction back, which is
+    what the accuracy panel is measuring; the byte figure comes from the map either way.
+
+    Asserted on the DynQuant arms only. If the flag ever became a panel-wide default it
+    would silently change what every future dense campaign measures in VRAM, and this test
+    is the record that it was chosen for this architecture.
+
+    Turns red when: an arm reverts to the packed default and would die four hours in, or
+    the flag is spelled somewhere the eval parser does not accept -- the parse test below
+    catches that half.
+    """
+    for label, width in (("dq_4b", 4), ("dq_3b", 3)):
+        arm = arms.Arm(label=label, kind="dq", anchor=width, target_bytes=ANCHORS[width])
+        cmd = arms.dq_eval_cmd(_args(arms), arm, tmp_path / "maps.json", tmp_path / f"{label}.json")
+        assert cmd[cmd.index("--map-apply") + 1] == "encode"
+
+    ceiling = arms.Arm(label="bf16", kind="ceiling", anchor=None, target_bytes=None)
+    assert "--map-apply" not in arms.ceiling_cmd(_args(arms), ceiling, tmp_path / "bf16.json")
+
+
 def test_every_command_the_panel_issues_is_accepted_by_the_program_it_runs(
     arms: Any, tmp_path: Path
 ) -> None:

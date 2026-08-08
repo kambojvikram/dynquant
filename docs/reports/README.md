@@ -658,6 +658,26 @@ damaged arm. The panel now states 1024 on every command, refuses a *ceiling* tha
 deliberating at the cap, and pairs after each arm rather than after all seven. A censored
 quantized arm is left alone: that one is the finding, not a defect in the run.
 
+Then the DynQuant arm was rehearsed on a 38 M-parameter `lfm2_moe` built from the real
+`config.json` with every dimension shrunk — same module tree, same fourteen 3-D tensors, random
+weights, four problems, CPU, four minutes. Allocation was healthy (−0.039% off its anchor, all ten
+bank tensors priced) and then `eval --map` refused the map `inspect --save-map` had just written,
+as "10 module(s) this model does not have". Two defects, both on the arms scheduled fourth and
+seventh, both of which would have surfaced roughly four hours into the real seven-hour panel. The
+first is **"named_modules misses raw parameters"** in its third location: the
+pre-flight guard `check_map_covers` — which also fronts `quantize` and `export` — resolved names
+with `get_submodule` while the quantizer behind it resolved them correctly, so it refused maps the
+next stage would have applied, for 91.5% of this checkpoint. It now calls the quantizer's own
+resolver, because a guard that predicts what the next stage will do should call that stage's
+resolver rather than reimplement it. The second is not a bug: the **packed runtime cannot hold a
+weight that is not a module**, and the grouped path is P8. So `dynquant eval` gained
+`--map-apply {pack,encode}` — `pack` unchanged and still the default, `encode` running the identical
+encoder and writing the reconstruction back in the compute dtype, pinned bit-identical to `pack` on
+a bf16 `Linear` where both apply. The MoE arms encode, the record says which mode ran, and the byte
+figures still come from the allocator's priced map rather than from what the scored model holds.
+The general lesson is the rehearsal, not either fix: a structural double costs minutes and issues
+every command the expensive run will, and the only thing it cannot check is the answer.
+
 ## Conventions that apply to every campaign
 
 **Paired tests on stored per-item hits.** Every arm stores which items it got right, so every

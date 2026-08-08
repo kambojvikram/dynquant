@@ -225,8 +225,17 @@ def dq_eval_cmd(args: argparse.Namespace, arm: Arm, save_map: Path, out: Path) -
     """Score a DynQuant arm through its map rather than through a written checkpoint.
 
     ``dynquant quantize`` would write a bf16-decoded copy -- same numerics, 16.9 GB of disk
-    per arm, and a folder whose size does not mean what its name says. ``eval --map`` packs
-    and decodes at load, which is the same arithmetic without the copy.
+    per arm, and a folder whose size does not mean what its name says. ``eval --map`` applies
+    the same arithmetic in memory without the copy.
+
+    ``--map-apply encode`` and not the default ``pack``, because of what this model is. The
+    packed runtime replaces ``Linear`` and ``Embedding`` *modules*, and 91.5% of this
+    checkpoint's parameters are batched expert banks -- bare 3-D parameters with no module to
+    replace. Encoding runs the identical encoder at the identical widths and writes the
+    reconstruction back in bf16, so the accuracy is the one being measured; what it does not
+    do is hold the packed size, and the panel never claims it does. Every byte figure here
+    comes from the map, which was priced by the allocator and is checked against the
+    baselines' anchor before a single problem is scored.
     """
     cmd = [
         sys.executable,
@@ -240,6 +249,8 @@ def dq_eval_cmd(args: argparse.Namespace, arm: Arm, save_map: Path, out: Path) -
         str(save_map),
         "--map-key",
         str(arm.target_bytes),
+        "--map-apply",
+        "encode",
         "--group-size",
         str(args.group_size),
         "--out",

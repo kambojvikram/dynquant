@@ -21,12 +21,14 @@ every arm on the GPU.
 destroyed model returns to 20% rather than to zero, and a table without the floor
 makes a collapsed arm look like a mildly damaged one.
 
-``--map`` swaps the model onto the packed runtime before scoring, so the weights
-stay quantized in VRAM. That is the configuration whose memory figure is real; a
-directory written by ``dynquant quantize`` holds quantized *values* in the compute
-dtype, which gives the right accuracy and the wrong size. So ``--map`` takes the
-*unquantized* model plus a bit map, and the two paths agree on accuracy because
-they run the same encoder over the same widths.
+``--map`` takes the *unquantized* model plus a bit map and applies the widths in
+memory, so no arm needs a checkpoint written for it. ``--map-apply pack`` (the
+default) swaps the named modules onto the packed runtime, so the weights stay
+quantized in VRAM and the memory figure is real. ``--map-apply encode`` writes the
+same encoder's reconstruction back in the compute dtype: identical accuracy, fp16
+size, and the only mode that reaches a weight held as a bare parameter rather than
+a module -- which on a batched-expert MoE is most of the model. A directory written
+by ``dynquant quantize`` is the same thing as ``encode``, spelled on disk.
 """
 
 from __future__ import annotations
@@ -496,7 +498,7 @@ def _load_runtime(args: argparse.Namespace, config: Any) -> tuple[Any, dict[str,
             trust_remote_code=args.trust_remote_code,
         )
         model.config.use_cache = True
-        return model, (_pack(model, args) if args.map is not None else None)
+        return model, (_apply_map(model, args) if args.map is not None else None)
 
     if args.map is not None:
         raise DynQuantError(
@@ -613,6 +615,56 @@ def _pick_shots(spec: _TaskSpec, count: int, *, seed: int, split: str | None) ->
     return [pool[i] for i in chosen]
 
 
+def _apply_map(model: Any, args: argparse.Namespace) -> dict[str, Any]:
+    """Put the map's widths into the weights, one of the two ways there are.
+
+    Both run the same encoder over the same widths and score the same; they differ in
+    what the model then holds. Packing keeps the values packed in VRAM, which is the
+    configuration whose memory figure is real and the default for that reason.
+    Encoding writes the reconstruction back in the compute dtype -- right accuracy,
+    fp16 size -- and is the only one that reaches a weight that is not a module.
+
+    That last clause is why the choice exists rather than being decided here. On a
+    batched-expert MoE the packed runtime has nothing to replace for 91.5% of the
+    parameters, and a command that quietly encoded them instead would report a size it
+    was not holding. So the caller says which, and the record says which was done.
+    """
+    if getattr(args, "map_apply", "pack") == "encode":
+        return _encode(model, args)
+    return _pack(model, args)
+
+
+def _encode(model: Any, args: argparse.Namespace) -> dict[str, Any]:
+    """Write the encoder's output back into the weights, in the compute dtype."""
+    from dynquant.quant.quantizer import quantize_model
+
+    bits, metadata = _shared.read_bit_map(args.map, key=args.map_key)
+    _shared.check_map_covers(model, bits)
+    group_size = int(metadata.get("group_size", args.group_size))
+
+    report = quantize_model(
+        model,
+        bits,
+        group_size=group_size,
+        compute_device=getattr(args, "compute_device", "auto"),
+        progress=None if args.quiet else _shared.progress_printer("encode"),
+    )
+    print("\n" + report.summary(), flush=True)
+    errors = sorted(layer.relative_error for layer in report.layers.values())
+    return {
+        "map": args.map,
+        "apply": "encode",
+        "group_size": group_size,
+        "modules": len(report.layers),
+        # Named for what it is, not left out. The map's own `nbytes` is the size claim
+        # for an encoded arm, and it is in the map file -- what is *not* true is that
+        # this model now occupies it, so no key here says so.
+        "holds": "compute-dtype values; the size claim is the map's, not this model's",
+        "relative_error_median": errors[len(errors) // 2] if errors else None,
+        "relative_error_max": errors[-1] if errors else None,
+    }
+
+
 def _pack(model: Any, args: argparse.Namespace) -> dict[str, Any]:
     """Swap the named modules onto the packed runtime, in place."""
     import torch
@@ -658,6 +710,7 @@ def _pack(model: Any, args: argparse.Namespace) -> dict[str, Any]:
 
     return {
         "map": args.map,
+        "apply": "pack",
         "group_size": group_size,
         "backend": backend,
         "modules": len(report.modules),
