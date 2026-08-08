@@ -370,35 +370,66 @@ the label on the config. The rule that catches this class is: **an arm's size is
 never a setting** — if a comparison quotes a bit width that was requested rather than weighed, it
 is not yet a comparison.
 
-### What a fair baseline requires
+### What a fair baseline requires, and why it turned out to be one line
 
 Each bank is one `Lfm2MoeExperts` module holding `gate_up_proj [32, 3584, 2048]` and
-`down_proj [32, 2048, 1792]`. 22 of the 24 layers carry one. Giving GPTQ and AWQ the whole model
-means materialising each bank as 32 `nn.Linear` pairs — 1408 modules — quantizing, and folding the
-result back.
+`down_proj [32, 2048, 1792]`; 22 of the 24 layers carry one (`num_dense_layers: 2`). Giving GPTQ
+and AWQ the whole model means materialising each bank as per-expert `nn.Linear` modules.
 
-Two consequences worth stating before it is built, because both are properties of MoE rather than
-of this implementation:
+`llmcompressor` already does this — `modeling.moe.linearize.linearize_moe`, with
+`load_quantizable_moe` as the loading context manager. It has registered *load* mappings for only
+`deepseek_v4` and `qwen2_moe`, so `lfm2_moe` misses the memory-efficient path, but it documents a
+fallback for exactly that case: load the 3-D checkpoint normally, then convert in place. Verified,
+not assumed — `get_non_linearized_moes` finds **all 22** banks on this model, and the conversion
+produces 96 `nn.Linear` per bank (32 experts × gate/up/down), 2112 in total.
 
-- **Each expert sees a fraction of the calibration set.** Routing is 4-of-32, so an expert
-  receives roughly an eighth of the tokens. GPTQ's Hessian and AWQ's activation scales are
-  estimated per module, so both baselines get an eighth of the statistics per expert that they
-  would get on a dense model of the same width. That is a real handicap and it is *theirs*, not
-  something this harness introduces — but it must be reported alongside the numbers, or a DynQuant
-  win reads as a method advantage when part of it is a calibration-sparsity artefact.
+One thing blocked it, and it is the second half of §9's story. `MoEConfig.from_config` reads the
+activation from `config.hidden_act`, `hidden_activation`, or `mlp_hidden_act`; `lfm2_moe` carries
+none of the three and the load dies with `AttributeError`. The fix is `config.hidden_act = "silu"`,
+and that is **not** a guess: `Lfm2MoeExperts.__init__` hard-codes `self.act_fn = F.silu`. The value
+is read off the model's own source rather than inferred from the family.
+
+### The swap is bit-exact, and that had to be checked rather than argued
+
+The GPTQ and AWQ arms can only be quantized through the linearized structure, so every number they
+produce is measured on a module layout the DynQuant arms never use. If the swap perturbed the
+arithmetic, the comparison would acquire a second variable and the bf16 ceiling would stop being a
+shared reference point.
+
+It does not. The reference forward already loops per expert and calls
+`F.linear(current_state, self.gate_up_proj[expert_idx])` — indexing the first dimension of a
+contiguous tensor yields contiguous memory, so replacing that slice with a `Linear`'s weight is the
+same op on the same layout. Measured on a full-size bank with all 32 experts exercised:
+
+| dtype | bit-identical | max abs delta |
+|---|---|---|
+| `float32` | yes | 0.0 |
+| `bfloat16` | yes | 0.0 |
+
+Bit-identical, not `allclose`. The weaker assertion would have passed over a changed reduction
+order, and a reduction order that changes under one arm and not the others is exactly the kind of
+difference that shows up later as an unexplained delta with no owner.
+
+### Two consequences of MoE that survive the fix
+
+Both are properties of the architecture rather than of this harness, and both have to be reported
+next to the numbers:
+
+- **Each expert sees a fraction of the calibration set.** Routing is 4-of-32, so an expert receives
+  roughly an eighth of the tokens. GPTQ's Hessian and AWQ's activation scales are estimated per
+  module, so both get an eighth of the statistics per expert that they would get on a dense model
+  of the same width. That handicap is theirs, not something introduced here — but a DynQuant win
+  that is partly a calibration-sparsity artefact must not be reported as a method advantage.
 - **DynQuant is not exposed to it.** Its signal comes from a fine-tune-time hook, which sees every
-  token that routes to an expert across the whole run rather than a 512-sequence calibration
-  sample. This is a genuine architectural advantage of collecting signals during training, and it
-  is the first point in this campaign where the fine-tune-time premise pays a dividend that a
-  post-hoc method cannot match by trying harder. It should be claimed as exactly that, and not
-  confused with the allocator being better.
+  token routed to an expert across the whole run rather than a 512-sequence sample. This is the
+  first point in the campaign where the fine-tune-time premise pays a dividend a post-hoc method
+  cannot match by trying harder, and it should be claimed as exactly that — not as the allocator
+  being better.
 
-`config.hidden_act` is also absent on this architecture — the field several quantization paths read
-to decide how to fuse a gated MLP. That is a one-line addition at load time, noted here so it is
-not rediscovered.
-
-Not built yet. It is the gate on the six arms, and it is now the largest remaining unknown in the
-phase — larger than the fine-tune, which is a known quantity.
+One more trap is already visible in the config: `tie_word_embeddings: true`. On a tied model,
+`ignore=["lm_head"]` is what made a previous "4-bit" GPTQ checkpoint measure 7.36 effective bits,
+because the shared tensor gets counted once and quantized never. The six arms must weigh their
+bytes on disk, and none of them may ignore the head.
 
 ---
 
@@ -415,8 +446,14 @@ the evidence that a campaign can be configured off one.
 Not done, in order: headroom re-measured with the fixes, at a budget generous enough that the
 closure distribution comes out uncensored and the arms' budget can be *read* rather than guessed
 (§8's 256 was censored -- closures were still arriving at the cap); the fine-tune, with the expert
-mass measured; expert-bank linearization so GPTQ and AWQ are given the whole model (§10, the real
-blocker); the six arms at matched bytes; then the paired comparison over stored per-item hits.
+mass measured; then the six arms at matched bytes -- GPTQ and AWQ through the linearized structure
+verified bit-exact in §10, all three widths weighed on disk rather than requested; then the paired
+comparison over stored per-item hits.
+
+§10 was written expecting linearization to be the largest remaining unknown in the phase. It is
+not: llmcompressor already ships it, it detects all 22 banks here, and the swap is bit-identical.
+What the section is worth keeping for is the 8.5% measurement -- had the arms been run without it,
+they would have succeeded.
 
 One thing already fixed on the strength of §10 and §9 together: the S2 driver could not turn expert
 measurement on, and its default is off. It is now a tri-state flag whose *unset* value is an error
