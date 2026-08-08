@@ -1020,12 +1020,16 @@ rewrites the stats file periodically -- so the structural question could be answ
 before the fine-tune lands, when a bad answer would still leave time to restart. **44 bank
 tensors, 0 missing.**
 
-The gate did not run as written. It imported `canonical_name` from
-`dynquant.integration.peft_utils`; the function lives in `dynquant.graph.naming`, so the script
-would have raised `ImportError` at the moment it was needed -- the fine-tune finished, the gate
-invoked, and nothing checked. This is the same shape as the stop-sequence defect earlier in this
-campaign: a check that measures zero because it never executed is indistinguishable, in the log,
-from a check that passed. It cost nothing here only because it was run early and deliberately.
+One thing that looked like a second finding was not one, and the way it dissolved is worth a
+line. Checking that the gate could even import its dependencies, `grep -c 'def canonical_name'`
+against `dynquant/integration/peft_utils.py` returned 0, and the obvious reading was that the gate
+would raise at the moment it was needed -- the fine-tune finished, the gate invoked, nothing
+checked. The obvious reading was wrong: `peft_utils` re-exports the name from
+`dynquant.graph.naming`, so the import resolves. Grepping for a *definition* does not test
+importability, and the one-line check that settles it is to run the import. Recorded because the
+mistake is the one this section is otherwise about, pointed the other way: a verification that
+does not execute the thing it claims to verify can produce a false alarm as easily as a false
+pass.
 
 Auditing the whole file rather than just the banks then produced an apparent contradiction worth
 recording, because it is the tied-embedding trap running in the harmless direction. The stats file
