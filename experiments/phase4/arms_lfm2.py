@@ -429,6 +429,46 @@ def check_pairable(arms: list[Arm]) -> None:
             )
 
 
+def write_manifest(
+    out: Path, args: argparse.Namespace, budgets: dict[int, int], arms: list[Arm]
+) -> Path:
+    """The panel's manifest: the anchors, and every arm at its realised size.
+
+    The single source of the shape ``panel_table.py`` reads. It is a function rather than a
+    literal inside the run loop so a test can build its fixture through the writer instead of
+    hand-copying the keys -- a fixture that agrees with a copy of the shape proves nothing
+    about the shape.
+    """
+    manifest = out / "arms.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "model": args.model,
+                "stats": args.stats,
+                "moments": args.moments,
+                "group_size": args.group_size,
+                "tolerance": MATCH_TOLERANCE,
+                "anchors": {str(width): budget for width, budget in budgets.items()},
+                "arms": [
+                    {
+                        "label": arm.label,
+                        "kind": arm.kind,
+                        "anchor": arm.anchor,
+                        "target_bytes": arm.target_bytes,
+                        "nbytes": arm.nbytes,
+                        "record": arm.record,
+                        **arm.extra,
+                    }
+                    for arm in arms
+                ],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return manifest
+
+
 def do_run(args: argparse.Namespace) -> int:
     require_one_stack()
     out = Path(args.out)
@@ -475,35 +515,15 @@ def do_run(args: argparse.Namespace) -> int:
         # Against everything scored so far rather than once at the end: a reused record
         # from another run is caught after the arm that exposed it, not after six more.
         check_pairable([one for one in arms if one.record])
+        # Rewritten after every arm rather than once at the end. An arm that dies takes the
+        # driver with it, and a manifest written only on success would leave a seven-hour
+        # panel that got as far as the fifth arm with no manifest at all -- so no table over
+        # the four that did run, and nothing to read while the sixth is re-run. Arms not yet
+        # scored carry `"record": null`, which the table already prints as a missing row
+        # rather than as a missing comparison.
+        write_manifest(out, args, budgets, arms)
 
-    manifest = out / "arms.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "model": args.model,
-                "stats": args.stats,
-                "moments": args.moments,
-                "group_size": args.group_size,
-                "tolerance": MATCH_TOLERANCE,
-                "anchors": {str(width): budget for width, budget in budgets.items()},
-                "arms": [
-                    {
-                        "label": arm.label,
-                        "kind": arm.kind,
-                        "anchor": arm.anchor,
-                        "target_bytes": arm.target_bytes,
-                        "nbytes": arm.nbytes,
-                        "record": arm.record,
-                        **arm.extra,
-                    }
-                    for arm in arms
-                ],
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    print(f"\n-> wrote {manifest}", flush=True)
+    print(f"\n-> wrote {out / 'arms.json'}", flush=True)
     return 0
 
 

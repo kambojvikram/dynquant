@@ -532,9 +532,12 @@ def test_the_run_itself_refuses_a_panel_it_cannot_pair(
     """The check has to be wired into the run, not merely available to it.
 
     Same fixture as the pricing test with one record moved to a 200-item limit, because a
-    guard nothing calls is the failure mode a unit test on the guard cannot see. The run
-    stops before the manifest: a manifest listing seven unpairable arms is worse than none,
-    since it is the artefact the comparison reads.
+    guard nothing calls is the failure mode a unit test on the guard cannot see.
+
+    The manifest is written after every arm, so the refusal does not leave the panel
+    unreadable -- but the arm that caused it must not be in the copy on disk. Its record
+    file is still sitting in the directory, and an entry naming it is all the table needs to
+    read it back into the comparison the guard just refused.
 
     Turns red when: the call is dropped from ``do_run``, or moved after the manifest write.
     """
@@ -546,7 +549,11 @@ def test_the_run_itself_refuses_a_panel_it_cannot_pair(
         arms.do_run(_args(arms, [*RUN[:-1], str(out), "--resume"]))
 
     assert spent == [], "nothing should re-run"
-    assert not (out / "arms.json").exists()
+    written = json.loads((out / "arms.json").read_text(encoding="utf-8"))
+    named = {one["label"]: one["record"] for one in written["arms"]}
+    assert named["dq_3b"] is None, "the unpairable arm must not be named in the manifest"
+    assert (out / "dq_3b.json").is_file(), "its record is on disk; only the entry is withheld"
+    assert all(named[one] is not None for one in PANEL if one != "dq_3b")
 
 
 def test_a_resumed_dynquant_arm_whose_allocation_is_gone_is_refused(

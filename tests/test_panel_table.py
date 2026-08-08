@@ -21,6 +21,7 @@ patterns are laid out by hand, so every count in the output is a count this file
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import sys
@@ -33,6 +34,17 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "experiments" / "phase4" / "panel_table.py"
+DRIVER = REPO_ROOT / "experiments" / "phase4" / "arms_lfm2.py"
+
+
+def _load(name: str, path: Path) -> Any:
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
 
 #: The two anchors the baselines' accounting produces on this checkpoint, and a parameter
 #: count in the model's range. Real numbers rather than round ones: the size column's job
@@ -59,12 +71,7 @@ TOTAL = 400
 
 @pytest.fixture(scope="module")
 def table() -> Any:
-    spec = importlib.util.spec_from_file_location("_dq_panel_table", SCRIPT)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["_dq_panel_table"] = module
-    spec.loader.exec_module(module)
-    return module
+    return _load("_dq_panel_table", SCRIPT)
 
 
 def _trio(counts: dict[str, int]) -> dict[int, list[bool]]:
@@ -134,7 +141,13 @@ def _write_panel(
     omit: tuple[str, ...] = (),
     ceiling_correct: int = 320,
 ) -> Path:
-    """A full seven-arm panel on disk, in the shape ``arms_lfm2 run`` writes."""
+    """A full seven-arm panel on disk, in the shape ``arms_lfm2 run`` writes.
+
+    The manifest goes out through the driver's own ``write_manifest`` rather than through a
+    copy of its keys here. A reader tested against a hand-written copy of the writer's shape
+    is tested against this file's belief about the writer, which is exactly the belief a
+    rename in the driver would leave untouched and green.
+    """
     out.mkdir(parents=True, exist_ok=True)
     maps = out / "maps"
     maps.mkdir(exist_ok=True)
@@ -223,18 +236,28 @@ def _write_panel(
                 encoding="utf-8",
             )
 
-    (out / "arms.json").write_text(
-        json.dumps(
-            {
-                "model": "/runs/s4/merged",
-                "group_size": 128,
-                "tolerance": 0.001,
-                "anchors": {str(width): value for width, value in ANCHORS.items()},
-                "arms": arms,
-            },
-            indent=2,
+    driver = _load("_dq_arms_lfm2", DRIVER)
+    driver.write_manifest(
+        out,
+        argparse.Namespace(
+            model="/runs/s4/merged",
+            stats="/runs/s4/stats.json",
+            moments=None,
+            group_size=128,
         ),
-        encoding="utf-8",
+        ANCHORS,
+        [
+            driver.Arm(
+                label=arm["label"],
+                kind=arm["kind"],
+                anchor=arm["anchor"],
+                target_bytes=arm["target_bytes"],
+                nbytes=arm["nbytes"],
+                record=arm.get("record"),
+                extra={"map": arm["map"]} if "map" in arm else {},
+            )
+            for arm in arms
+        ],
     )
     return out
 
@@ -433,6 +456,31 @@ def test_an_arm_that_did_not_run_is_a_missing_row_and_not_a_missing_comparison(
     assert "3/7 arms scored" not in printed and "6/7 arms scored" in printed
     assert "Holm-adjusted over the 4 comparisons" in printed, "the head family shrinks with it"
     assert "Holm-adjusted over the 5 comparisons" in printed, "and so does the ceiling family"
+
+
+def test_a_manifest_read_from_another_directory_still_finds_its_records(
+    table: Any, tmp_path: Path
+) -> None:
+    """The record paths a run stores are only meaningful from the directory it ran in.
+
+    ``do_run`` stores ``str(out / f"{label}.json")``, so ``--out runs/s4/arms`` writes seven
+    relative paths. Read from any other cwd -- the repo root, a laptop the directory was
+    copied to -- every one of them misses. Nothing raises: each arm is simply not scored, and
+    the table prints ``0/7`` for a panel that finished, with the anchors and the allocation
+    still correct above it, which is the shape of an answer rather than of a failure.
+
+    Turns red when: the fallback beside the manifest is dropped.
+    """
+    out = _write_panel(tmp_path / "arms")
+    manifest = out / "arms.json"
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    for arm in payload["arms"]:
+        arm["record"] = f"runs/s4/arms/{arm['label']}.json"
+    manifest.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    printed = _run(table, out)
+    assert "panel: 7/7 arms scored" in printed
+    assert "4b  DynQuant vs GPTQ" in printed
 
 
 def test_the_json_carries_the_verdict_the_table_printed(table: Any, tmp_path: Path) -> None:

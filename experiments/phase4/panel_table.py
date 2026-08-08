@@ -126,10 +126,32 @@ def load_panel(out: Path) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     records: dict[str, dict[str, Any]] = {}
     for arm in manifest["arms"]:
-        path = arm.get("record")
-        if path and Path(path).is_file():
-            records[arm["label"]] = json.loads(Path(path).read_text(encoding="utf-8"))
+        found = resolve_record(out, arm.get("record"))
+        if found is not None:
+            records[arm["label"]] = json.loads(found.read_text(encoding="utf-8"))
     return manifest, records
+
+
+def resolve_record(out: Path, stored: str | None) -> Path | None:
+    """The record a manifest entry names, found from beside the manifest if need be.
+
+    The driver writes ``str(out / f"{label}.json")``, so a run launched with a relative
+    ``--out`` stores relative paths -- which resolve against whatever directory the *table*
+    is later run from, not the one the panel ran in. Read literally, a manifest moved off
+    the box, or simply read from a different cwd, is a panel in which no arm was scored:
+    seven arms, seven silent misses, and a table that prints ``0/7`` for a run that finished.
+
+    So a stored path that is not a file is retried beside the manifest. That cannot pick up
+    a foreign record, because the writer's own invariant is that the file is named for the
+    arm and sits in ``out`` -- the same two facts the retry uses.
+    """
+    if not stored:
+        return None
+    direct = Path(stored)
+    if direct.is_file():
+        return direct
+    beside = out / direct.name
+    return beside if beside.is_file() else None
 
 
 def check_pairable(records: dict[str, dict[str, Any]]) -> str | None:
