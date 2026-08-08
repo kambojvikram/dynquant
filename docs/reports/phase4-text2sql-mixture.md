@@ -1087,6 +1087,178 @@ it, and the earlier all-identical result was a fixture without resolution rather
 doing its job. A tripwire that cannot fire is the thing this campaign keeps re-learning; here it
 cost one extra command instead of a run.
 
+### Seven arms, one checkpoint -- and the six the panel does not write
+
+The disk question was worth settling before the panel rather than during it, because its failure
+mode is losing six hours at the fifth arm. The arithmetic that raised it -- seven quantized copies
+of a 17 GB checkpoint against 102 G free -- was projecting a cost the panel does not pay.
+`save_pretrained` appears in exactly one place in `baselines_lfm2.py`, inside `do_save`, and the
+arms driver invokes `run`, which quantizes into the live model and scores it in the same process.
+No baseline checkpoint is written at all. The panel's footprint is the merged fine-tuned checkpoint
+and seven small JSON records.
+
+What that settles for the panel it opens for the campaign's other half. The stated goal is to
+publish all six quantized variants; the panel produces a publishable checkpoint for none of them,
+and the three reasons are different. GPTQ 4-bit and AWQ 4-bit *could* be saved and simply are not
+-- `do_save` exists and works. GPTQ 3-bit and AWQ 3-bit cannot be saved through this path at all:
+`save` refuses 3 bits on purpose, because `compressed-tensors` packs 4 and 8 only, so a 3-bit
+`save_pretrained` would write a dequantized bf16 folder the size of the original and label it
+3-bit -- wrong in the one direction nobody checks, since it loads and generates perfectly well. And
+the two DynQuant arms run `--map-apply encode`, which writes the reconstruction back into fp16
+weights rather than packing them, because 91.5% of this model's parameters are batched expert banks
+and the packed path in `runtime/linear.py` replaces `nn.Linear` modules, which a bank is not. So the
+Hub push is separate work with a real hole in it -- P8, the grouped packed path for batched banks --
+rather than a byproduct of the panel. Recorded now so it is a scheduled task and not a discovery
+made at upload time.
+
+### Both anchors allocated four hours before the checkpoint existed
+
+The tracker rewrites the stats file periodically, so the allocation could be run against the real
+signal on CPU while the GPU was still training -- the same property that let the bank-coverage gate
+run at 41% instead of at the end. The pre-registration above made two predictions about what the
+allocator would do at the two anchors. Both are now tested against the real signal rather than
+against arithmetic.
+
+| | 4-bit anchor | 3-bit anchor |
+|---|---|---|
+| budget | 4 399 629 312 B | 3 332 904 576 B |
+| allocated | 4 397 666 304 B | 3 331 526 656 B |
+| drift | -0.045% | -0.041% |
+| average bits | 4.1547 | 3.1475 |
+| floor breaches | **0** | **15**, over 3.55 G params |
+| 8-bit tier | 63 modules, 444 M params | 35 modules, 18 M params |
+| 4-bit tier | 52 modules, 5.91 G params | 61 modules, 2.56 G params |
+| 3-bit tier | 14 modules, 1.64 G params | 11 modules, 2.36 G params |
+| 2-bit tier | 4 modules, 470 M params | 26 modules, 3.52 G params |
+
+Both land under budget and neither by enough to matter. That is the accounting claim closing:
+`stored_bits` now charges what `accounted_bytes` charges the baselines, and two independent
+allocations agreeing with it to within 0.05% is a stronger statement than either number alone.
+The floors alone cost **3.5075 average bits** on this model, which is why the two anchors are in
+different regimes rather than at two points on one curve: 4.15 has room above the floor map and
+3.15 cannot be reached without breaking it.
+
+The 4-bit prediction was that nothing breaches, and nothing does. On its own that is the weaker of
+the two claims -- an allocation with no breach is also what an allocator that never moved would
+produce, which is exactly the supplement's headline defect. What separates them here is that the
+4-bit map is not the floor map. It puts four expert `down_proj` banks at 2 bits and fourteen at 3,
+against a `moe.expert.down` floor of 2, and spends the 2.11 G parameters that buys on lifting 63
+small modules to 8. Those are legal widths, not breaches, and they are the allocator choosing.
+
+The 3-bit prediction was that the expert `gate_up` banks must breach. Fourteen of the twenty-two
+do: four dropped from a floor of 4 to 2 bits (939.5 M params) and ten to 3 (2.35 G). That is the
+pre-registered fact and it held.
+
+The fifteenth breach was not pre-registered and is the more interesting one. `model.embed_tokens`
+lands at 4 bits against a floor of 8 -- 262.1 M parameters. Its *role* floor is 4; the 8 comes from
+`tie_word_embeddings` being `True`, which `classify` says out loud in the log -- *tied weights share
+one bit-width: model.embed_tokens == lm_head (one tensor, one decision)*. So the 3-bit DynQuant arm
+ships a 4-bit output head. An earlier campaign recorded the tied-embedding trap running the other
+way, where `ignore=["lm_head"]` let a nominally 4-bit baseline measure 7.36 bits; this is the same
+structure with the sign flipped. The budget is tight enough that the allocator pays for the expert
+mass out of the head, and because the tensor is used twice the byte saving is counted once while the
+accuracy cost lands twice -- in the input representation and in the logits. Whether that trade is
+right is what the panel measures. The reason to write it down now is that it is a prediction the
+pre-registration *missed*: found in the results afterwards it would have been indistinguishable from
+a story assembled after seeing the accuracy.
+
+### The concordance reads 1.000, over 8.5% of the model
+
+`dynquant inspect` exists because the supplement's allocator produced a complete, plausible bit map
+while never reading the importance scores -- inverting every score changed 0 of 282 modules -- and
+nothing in its output said so. Within-role concordance is the guard: over every pair of modules in
+the same role that got different widths, how often is the wider one the higher-scoring one. At the
+4-bit anchor it reports **138 of 138 pairs agreeing, 1.000**.
+
+Read the per-role breakdown and the number says less than it appears to. The 138 pairs come from
+`attn.o` (119), `ssm.in` (17), `mlp.gate` (1) and `mlp.up` (1). Not one pair is drawn from an expert
+bank. The guard against "the signal never reached the allocator" is computed entirely inside the
+8.46% of parameters the signal could measure, and it is silent about the other 91.54% -- including
+every module whose floor the 3-bit anchor breaches. The concordance is true, and it is not evidence
+about the mass of this model.
+
+That is not a defect in the diagnostic; it is the diagnostic correctly declining to answer. Expert
+banks are unmeasurable **by construction**, and the tracker documents why: a bank's forward spans two
+matmuls and a non-linearity, so no module boundary yields the `dY = dW x` pairing the Kronecker form
+needs. A Gram matrix built at the bank boundary would pair the bank's input with the bank's output
+gradient and produce, in the tracker's own words, "a well-formed number for a factorisation that
+does not exist." Confirmed against the real moments file: 178 tensors, exactly 89 modules x
+{`input_sq`, `output_grad_sq`}, and zero bank keys. Banks are still scored -- they carry saliency and
+exact parameter-gradient plasticity, `_collect_bank_grads` measuring each tensor from the side it
+owns. They are scored by the rank-product proxy rather than by measured Gauss-Newton sensitivity,
+and the two prices sit at different floors.
+
+`_apply_fallback_scale` is what makes them comparable: it rescales the proxy onto the sensitivity
+scale by a ratio of medians over rung-normalised prices -- each module's next-step value divided by
+its width span -- because calibrating on raw step values would apply the width factor twice. On this
+model the split is **89 modules measured (716 570 624 params, 8.46%) against 44 proxied
+(7 751 073 792 params, 91.54%)**, and the multiplier is **1.807e-17**. It is the same number at both
+anchors, which is the expected result and worth checking anyway: the rescale is a property of the
+two price populations, not of the budget, so a multiplier that moved with the target would mean it
+was being fitted to the answer.
+
+That one constant decides where 91.5% of the parameters sit in a heap ordered against the other
+8.5%, and the map shows how completely. At the 4-bit anchor **every module above 4 bits is a
+measured one** -- all 63 in the 8-bit tier -- and **every module below 4 bits is a proxied one** --
+all 4 at 2 bits, all 14 at 3. The 4-bit tier is where the two populations meet, 52 modules of which
+26 were measured. At the 3-bit anchor the same boundary holds with the mass pushed down: the 35
+modules at 8 bits are all measured, the 26 at 2 bits are all proxied. The allocator's decision
+boundary runs almost exactly along the line between its two prices, which is either the correct
+answer -- the expert mass genuinely is the cheapest place to buy bytes -- or an artifact of where
+`1.807e-17` happened to land the proxy population. Nothing in this campaign yet distinguishes those,
+and the panel does not distinguish them either; it measures the consequence.
+
+Until this week that multiplier was not written anywhere. Not in the saved bit map, not in the panel
+record, not in the manifest. It was a `logger.debug` line, in a run whose driver captures stdout at
+WARNING.
+
+Worse than absent, two reporting paths in `inspect` actively misdescribed it. The per-width score
+statistics were computed over all members of a width group with unmeasured modules padded to zero,
+so a group containing nothing but expert banks printed `score_min = score_median = score_max = 0.0`.
+That is indistinguishable from a group the signal measured and found worthless -- and on this
+architecture the 2- and 3-bit groups were the first kind while reading as the second, at both
+anchors, which is 2.11 G parameters at 4 bits and 5.89 G at 3. The `narrowest` list had the same
+error in a different shape: `ordering.get(name, 0.0)`, so the widest tensors in the model appeared
+at the bottom of a ranked list carrying a score of zero, reading as "the allocator put 91.5% of the
+model at the bottom" rather than "these were priced another way."
+
+The fix is not to force a factorisation that does not exist. It is to make the split visible
+wherever the widths are. `BitMap` now carries a `Pricing` record -- modules and parameters on each
+side, and the multiplier -- which `_map_payload` writes into the saved map, `inspect` reports in both
+JSON and rendered form, and `panel_table` prints beside the width histogram. The 4-bit dry run now
+renders as:
+
+```
+   2b  n=  4     469.8M params  measured dL(2b)-dL(8b) per parameter: none of them measured
+   3b  n= 14    1644.2M params  measured dL(2b)-dL(8b) per parameter: none of them measured
+   4b  n= 52    5909.8M params  measured dL(2b)-dL(8b) per parameter min 3.853e-18  median 7.049e-18  max 1.19e-17 (over 26 measured)
+   8b  n= 63     443.9M params  measured dL(2b)-dL(8b) per parameter min 5.068e-18  median 2.467e-16  max 5.984e-16
+  priced: 89 measured, 44 from the score proxy (91.5% of parameters, rescaled by 1.807e-17)
+```
+
+Statistics over a width group are taken over the members the quantity actually covers, with a
+`measured` count beside the module count and `None` rather than `0.0` where nothing was measured;
+a group with no measured member says so. The allocation itself is unchanged -- both re-runs
+reproduce 4.154741179776939 / 4 397 666 304 B and 3.1474946101794448 / 3 331 526 656 B exactly --
+which is the point: this was an observability defect, not an allocation defect, and a change that
+moved the numbers would have been the wrong change.
+
+One distinction in that record was worth getting right rather than convenient. `scale` is `1.0` when
+no rescaling was needed -- every module measured, or none of them -- because in both cases one
+formula priced the whole heap and the order it produced means something. It is `None` only for the
+case where the order does not: a mix of the two prices with no positive overlap to calibrate on,
+which `_apply_fallback_scale` already warns about and then proceeds through. A first attempt marked
+the no-moments run `None` as well, which would have filed the most trustworthy ordering the
+allocator can produce under the same marker as the least trustworthy one. The run that hits the
+uncalibrated path is precisely the run whose bit map should not be trusted, and in the artifacts it
+looked identical to every other run.
+
+Four new mutations against the table -- pricing line dropped from the allocation block, pricing not
+carried out of the map, the proxied share reported as a module count, an uncalibrated scale rendered
+as `1.000e+00` -- all caught, 17 of 17 overall. The module count is the mutation worth naming: 44 of
+133 reads like an edge case and is 91.5% of the checkpoint, so the parameter share goes first in the
+line and the count second.
+
 ---
 
 ## 13. Status
@@ -1121,6 +1293,27 @@ the fp16-resident scored model, drift refused in both directions, and twelve com
 corrected in two blocks with the verdict following the adjusted p. Checking that reader against a
 real saved map, rather than against its own fixture, is what caught the width histogram being
 counted in modules and printed in parameters.
+
+Also done since: the disk question settled by reading the driver rather than projecting from
+checkpoint sizes -- the baselines score in-process and write nothing, so the panel costs one
+merged checkpoint and seven JSON records -- and the same read established that the Hub push is
+separate work with a hole in it, since two of the six variants cannot be saved through
+`compressed-tensors` at all and the two DynQuant arms encode rather than pack.
+
+Also done since: both anchors allocated against the real signal file while the fine-tune was still
+running -- **0 floor breaches at 4 bits and 15 at 3**, both within 0.05% of their budget, the
+pre-registered `gate_up` breach confirmed at fourteen of twenty-two banks, and one breach the
+pre-registration missed: the tied `embed_tokens` at 4 bits against a floor of 8, which is a 4-bit
+LM head at the 3-bit anchor.
+
+Also done since: which of the two prices chose those widths, recorded in the map rather than in a
+debug log. **89 modules measured, 44 priced by the rescaled rank-product proxy -- 8.46% of
+parameters against 91.54%** -- because a batched expert bank has no boundary at which the
+Gauss-Newton form exists. The within-role concordance that guards against the supplement's headline
+defect reads 1.000 at 4 bits and is computed entirely inside the measured 8.46%. Two `inspect`
+paths that had been reporting the unmeasured mass as measured-and-worthless are fixed, four
+mutations added, 17 of 17 caught, and the allocation is bit-identical before and after -- which is
+what an observability fix should be.
 
 Not done, in order: the fine-tune, with the expert mass measured; then the six arms at matched
 bytes -- GPTQ and AWQ through the linearized structure verified bit-exact in §10, all three widths

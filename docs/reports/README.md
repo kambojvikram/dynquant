@@ -4,9 +4,10 @@ Every experiment run on DynQuant since the package was built, what it measured, 
 full record lives. Nothing here is taken from the paper; everything is measured on this
 repository's own code, all of it on a single NVIDIA A100 80GB PCIe.
 
-There are fourteen campaigns. They answer fifteen questions, in this order — phase 4
-answers two of them, because whether a benchmark can read damage and whether the model has
-already seen its answers are separate failures:
+There are fourteen campaigns. They answer seventeen questions, in this order — phase 4
+answers four of them, because whether a benchmark can read damage, whether the model has
+already seen its answers, whose bytes “matched bytes” means, and which of two prices chose
+the widths are four separate failures:
 
 | # | question | verdict | full record |
 |---|---|---|---|
@@ -26,6 +27,7 @@ already seen its answers are separate failures:
 | 14 | Can the phase-4 text-to-SQL benchmark tell a correct answer from a broken one? | **Only after four defects were removed** — two SQLite-semantics bugs discarding a third of one corpus, a DML block teaching an unscoreable answer format, and a registered task argparse refused | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) |
 | 15 | Does the training mixture contain the questions the arms are scored on? | **Yes — 189 of the 200 WikiSQL evaluation items are questions in `b-mc2/sql-create-context`**, and the guard that reported the mixture clean could not have fired | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §11 |
 | 16 | “At matched bytes” — whose bytes? | **The baselines’** — DynQuant’s own format costs 4.25 bits/param at 4 bits against `compressed-tensors`’ 4.15625, so anchoring on its uniform arm would hand it **2.3% more bytes inside the arm whose accuracy is the claim** | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
+| 17 | Which of DynQuant’s two prices chose the widths, and on how much of the model? | **44 of 133 modules — 91.54% of parameters — by the rank-product proxy rescaled by 1.807e-17**, because a batched expert bank has no boundary where the Gauss–Newton form exists; the concordance guard reads 1.000 over the other 8.46% | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
 
 The method itself — signals, sensitivity estimator, allocator, encoder, format, packed
 runtime, kernels — is documented end to end in the
@@ -692,6 +694,45 @@ comparisons are significant raw (0.0309, 0.0243) and neither survives (0.0972), 
 the correction exists for. Writing it first is the cheap half of the same lesson as the rehearsal:
 the formatting decisions get made against a panel that can be re-run in seconds, not against the one
 that cost seven hours.
+
+## 17. Phase 4 — the concordance reads 1.000, over 8.5% of the model
+
+[`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 · measured 2026-08-08
+
+The allocator prices a module two ways. Where the fine-tune left channel moments it uses measured
+Gauss–Newton sensitivity; where it did not, the rank-product proxy, rescaled onto the sensitivity
+scale by a ratio of medians. On LFM2.5-8B-A1B that split is **89 modules measured against 44
+proxied — 8.46% of parameters against 91.54%**, because a batched expert bank's forward spans two
+matmuls and a non-linearity, so no module boundary yields the `dY = dW x` pairing the Kronecker
+form needs. The banks are not unmeasured by omission; they are unmeasurable by construction, and
+178 moment tensors covering exactly 89 modules with zero bank keys is the confirmation.
+
+That makes the rescale multiplier — **1.807e-17** here, identical at both anchors, as a property of
+the two price populations rather than of the budget — the constant that decides where 91.5% of the
+parameters sit in a heap ordered against the other 8.5%. The maps show how completely: at the
+4-bit anchor every module above 4 bits is a measured one and every module below 4 bits is a
+proxied one. Until this campaign that number appeared in no artifact — not the saved map, not the
+panel record, not the manifest. It was a `logger.debug` line in a run whose driver captures stdout
+at WARNING.
+
+The within-role concordance that exists to catch the supplement's headline defect — an allocator
+that produced a plausible bit map while never reading the scores — reports **138 of 138 pairs
+agreeing, 1.000** at the 4-bit anchor, and every one of those pairs comes from `attn.o`, `ssm.in`,
+`mlp.gate` or `mlp.up`. None comes from an expert bank. The guard is true and it is silent about
+the mass of the model, including every module whose floor the 3-bit anchor breaches.
+
+Two `inspect` paths were worse than silent. Per-width score statistics were computed over all
+members of a group with unmeasured modules padded to zero, so a group of nothing but expert banks
+printed `min = median = max = 0.0` — indistinguishable from a group the signal measured and found
+worthless, on 2.11 G parameters at the 4-bit anchor and 5.89 G at the 3-bit one. `narrowest` had
+the same error in a different shape, showing the widest tensors in the model at the bottom of a
+ranked list with a score of zero. `BitMap` now carries a `Pricing` record that `_map_payload`
+writes into the saved map and `panel_table` prints beside the width histogram; width statistics
+cover only the members the quantity covers; and the allocation is bit-identical before and after,
+which is what an observability fix should be. Four mutations added, 17 of 17 caught — including
+the one that reports the proxied share as a module count, since 44 of 133 reads like an edge case
+and is 91.5% of the checkpoint.
+
 
 ## Conventions that apply to every campaign
 
