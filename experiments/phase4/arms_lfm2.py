@@ -43,6 +43,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -289,8 +290,23 @@ def ceiling_cmd(args: argparse.Namespace, arm: Arm, out: Path) -> list[str]:
 
 
 def _run(cmd: list[str], *, what: str) -> None:
-    print(f"\n$ {' '.join(cmd)}", flush=True)
+    """Run one arm's subprocess, stamped, and say how long it took.
+
+    These two lines are the only record of where a panel's hours went. An eval record
+    carries its own ``seconds``, so the scoring half is self-timing; the quantization
+    half is not, and on a baseline arm that half is a 256-sample calibration pass over
+    8 B parameters whose cost this campaign has never measured. Without a stamp either
+    side of the subprocess the next panel guesses the same number again, and the guess
+    decides how many items it can afford.
+
+    The elapsed line is printed before the return code is checked, so the arm that
+    *failed* is the one whose duration is recorded -- which is when it is worth most.
+    """
+    started = time.time()
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started))
+    print(f"\n[{stamp}] $ {' '.join(cmd)}", flush=True)
     result = subprocess.run(cmd)
+    print(f"[{what}] exit {result.returncode} after {time.time() - started:.1f}s", flush=True)
     if result.returncode:
         raise SystemExit(f"{what} failed with exit code {result.returncode}")
 

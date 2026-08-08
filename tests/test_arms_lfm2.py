@@ -22,6 +22,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -852,3 +853,25 @@ def test_where_the_panel_loads_is_one_passthrough_and_it_reaches_every_arm(
             loading += 1
 
     assert (loading, allocating) == (7, 2)
+
+
+def test_a_failing_arm_still_reports_how_long_it_took(
+    arms: Any, capsys: Any, monkeypatch: Any
+) -> None:
+    """The duration is printed before the return code is checked, not after.
+
+    An eval record carries its own ``seconds``; a quantization pass carries nothing, so the
+    panel log is the only place a calibration's cost is written down. The arm most worth
+    timing is the one that died -- an arm that fell over 90 minutes into a GPTQ pass and an
+    arm that refused in 3 seconds want different fixes, and after the fact the log is all
+    there is to tell them apart.
+
+    Turns red when: the elapsed line moves below the ``raise``, or is dropped.
+    """
+    monkeypatch.setattr(arms.subprocess, "run", lambda cmd: SimpleNamespace(returncode=7))
+    with pytest.raises(SystemExit):
+        arms._run(["true"], what="gptq_3b quantization")
+
+    out = capsys.readouterr().out
+    assert "[gptq_3b quantization] exit 7 after " in out
+    assert out.rstrip().endswith("s")
