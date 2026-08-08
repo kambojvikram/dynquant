@@ -264,7 +264,28 @@ TASKS = {
 }
 
 
-def run(args: argparse.Namespace) -> int:
+def run(args: argparse.Namespace, *, model: Any = None) -> int:
+    """Score a model on a task and write the record.
+
+    ``model`` exists for drivers that build a runtime the CLI cannot name. A
+    post-training baseline is the case: ``llm-compressor`` returns a quantized model
+    object, and at 3 bits ``compressed-tensors`` has no packed format to save it in, so
+    the checkpoint a path would point at is a dequantized bf16 copy of the same weights
+    at four times the size. Passing the object scores the arm the CLI would have scored
+    without writing 17 GB first.
+
+    It is a parameter here rather than a second evaluator beside this one because
+    everything below this line is what makes two numbers comparable -- the prompt, the
+    shot prefix and its seed, the decode settings, the scorer, the per-item hit vector,
+    and ``_pairing``, which is what a later McNemar test checks before it agrees to pair
+    two records. ``experiments/four_point`` has its own ``run_eval``, and the cost of
+    that is exactly this: its records cannot be compared against a ``dynquant eval``
+    record without arguing that two implementations of the same settings agree.
+
+    A caller that passes ``model`` still owns ``args.model``: it is the record's
+    provenance field and the default label, so it has to describe where those weights
+    came from. Nothing here can check that, which is why it is said out loud.
+    """
     from dynquant._version import __version__
     from dynquant.errors import DynQuantError
     from dynquant.eval.harness import EvalConfig
@@ -293,7 +314,23 @@ def run(args: argparse.Namespace) -> int:
         limit=args.limit,
     )
 
-    model, packed = _load_runtime(args, config)
+    if model is None:
+        model, packed = _load_runtime(args, config)
+    elif args.map is not None:
+        # --map builds the packed runtime *from* an unquantized model, so honouring both
+        # would mean quantizing a model that is already quantized. Refused rather than
+        # resolved: either answer is a guess about which of the two the caller meant, and
+        # the wrong guess produces a plausible number under the other one's label.
+        raise DynQuantError(
+            "an in-memory model was passed and --map was also set. --map quantizes the "
+            "model it is given; a model that arrives already quantized cannot also be "
+            "the input to that. Pass one or the other."
+        )
+    else:
+        # No packing record, because nothing here packed anything. A caller with its own
+        # size accounting puts it in its own record beside this one -- writing it into
+        # `packed` would claim this command measured it.
+        packed = None
     tokenizer = _shared.load_tokenizer(
         args.tokenizer or args.model, trust_remote_code=args.trust_remote_code
     )
