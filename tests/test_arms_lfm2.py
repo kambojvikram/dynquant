@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -875,3 +876,84 @@ def test_a_failing_arm_still_reports_how_long_it_took(
     out = capsys.readouterr().out
     assert "[gptq_3b quantization] exit 7 after " in out
     assert out.rstrip().endswith("s")
+
+
+def _resume_args(arms: Any, model: Path, stats: Path, out: Path) -> argparse.Namespace:
+    return _args(
+        arms,
+        ["run", "--model", str(model), "--stats", str(stats), "--out", str(out), "--resume"],
+    )
+
+
+def test_resuming_into_another_panels_directory_refuses(arms: Any, tmp_path: Path) -> None:
+    """The manifest names the inputs; a resume that changes them is a different panel.
+
+    ``check_pairable`` reads ``_comparability``, and no field in it names the model. Seven
+    records scored on two merges at the same task, split, shots and limit pair perfectly and
+    table as a comparison between quantizers. Nothing downstream can notice, because by then
+    the only surviving evidence of which weights produced a number is the directory it sits
+    in -- and the directory is the thing being reused.
+
+    Turns red when: the manifest's model/stats/moments/group_size stop being compared against
+    the current run's, or the comparison stops raising.
+    """
+    out = tmp_path / "panel"
+    out.mkdir()
+    (out / "arms.json").write_text(
+        json.dumps(
+            {
+                "model": "/runs/s4/some-other-merge",
+                "stats": str(tmp_path / "dynquant_stats.json"),
+                "moments": None,
+                "group_size": 128,
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = _resume_args(arms, tmp_path / "merged", tmp_path / "dynquant_stats.json", out)
+
+    with pytest.raises(SystemExit) as caught:
+        arms.check_resumable(out, args, [])
+
+    message = str(caught.value)
+    assert "some-other-merge" in message
+    assert "model" in message
+
+
+def test_a_dynquant_record_older_than_the_signal_is_stale_and_a_baseline_is_not(
+    arms: Any, tmp_path: Path
+) -> None:
+    """Freshness is charged per arm, because only two of the seven read the signal file.
+
+    A record that exists is the whole of what ``--resume`` checks, and existing says nothing
+    about *when*. Regenerate the stats in place -- rerun the bank census, fix a key, extend
+    the moments -- and the two DynQuant records still sitting in the directory were allocated
+    from the file as it used to be. They pair, they table, and the arm carrying the claim is
+    the one scored against the superseded signal.
+
+    The four baselines never open that file, so charging it against them would price the
+    cheapest correct fix -- rerun two arms -- as a whole new panel, which is how a guard
+    teaches people to pass ``--resume`` less often rather than more carefully.
+
+    Turns red when: the mtime comparison goes, or the stats charge stops being scoped to
+    ``kind == "dq"``.
+    """
+    out = tmp_path / "panel"
+    out.mkdir()
+    stats = tmp_path / "dynquant_stats.json"
+    stats.write_text("{}", encoding="utf-8")
+    for label in ("dq_4b", "gptq_4b"):
+        record = out / f"{label}.json"
+        record.write_text("{}", encoding="utf-8")
+        os.utime(record, (0, 0))
+    # The model directory is never created, so `config.json` does not exist and the model
+    # charge stays out of the way -- this asserts about the stats charge alone.
+    args = _resume_args(arms, tmp_path / "merged", stats, out)
+    panel = [arms.Arm("dq_4b", "dq", 4, 1), arms.Arm("gptq_4b", "gptq", 4, 1)]
+
+    with pytest.raises(SystemExit) as caught:
+        arms.check_resumable(out, args, panel)
+
+    message = str(caught.value)
+    assert "dq_4b.json predates the stats file" in message
+    assert "gptq_4b" not in message

@@ -28,7 +28,7 @@ widths, and whether the driver that runs the arms runs at all are five separate 
 | 15 | Does the training mixture contain the questions the arms are scored on? | **Yes — 189 of the 200 WikiSQL evaluation items are questions in `b-mc2/sql-create-context`**, and the guard that reported the mixture clean could not have fired | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §11 |
 | 16 | “At matched bytes” — whose bytes? | **The baselines’** — DynQuant’s own format costs 4.25 bits/param at 4 bits against `compressed-tensors`’ 4.15625, so anchoring on its uniform arm would hand it **2.3% more bytes inside the arm whose accuracy is the claim** | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
 | 17 | Which of DynQuant’s two prices chose the widths, and on how much of the model? | **44 of 133 modules — 91.54% of parameters — by the rank-product proxy rescaled by 1.807e-17**, because a batched expert bank has no boundary where the Gauss–Newton form exists; the concordance guard reads 1.000 over the other 8.46% | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
-| 18 | Does the seven-arm panel driver run? | **Not until five defects were removed** — three of them fail *after* the calibration pass, one would have finished and entered the table as round-to-nearest wearing an AWQ label, and the fifth would have run all seven arms over the whole 21 729-item test split because `--limit` is forwarded only when set | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
+| 18 | Does the seven-arm panel driver run? | **Not until six defects were removed** — three of them fail *after* the calibration pass, one would have finished and entered the table as round-to-nearest wearing an AWQ label, the fifth would have run all seven arms over the whole 21 729-item test split because `--limit` is forwarded only when set, and the sixth would have let `--resume` staple in a record scored on another checkpoint | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
 
 The method itself — signals, sensitivity estimator, allocator, encoder, format, packed
 runtime, kernels — is documented end to end in the
@@ -735,7 +735,7 @@ the one that reports the proxied share as a module count, since 44 of 133 reads 
 and is 91.5% of the checkpoint.
 
 
-## 18. Phase 4 — seven arms on 38 M parameters, and the five they stopped
+## 18. Phase 4 — seven arms on 38 M parameters, and the six they stopped
 
 [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 · measured 2026-08-08
 
@@ -743,7 +743,7 @@ The panel is seven arms over one 8 B checkpoint: a bf16 ceiling, GPTQ and AWQ at
 and DynQuant at two anchors. Nothing had ever run the *driver* — arms in sequence, records into the
 manifest, manifest into the pairing guard and the table. Rehearsing it on a structurally identical
 38 M double (the same `lfm2_moe` config with every dimension shrunk, random weights, four problems,
-32 new tokens, CPU) costs about four minutes a pass. It failed four times, and reading the
+32 new tokens, CPU) costs about four minutes a pass. It failed four times, and reading the driver against the real split and the real resume path afterwards found two more the rehearsal could not reach. Reading the
 driver against the real split afterwards found a fifth the rehearsal could not have reached.
 
 **`run` could only load on the GPU.** `--device` existed on `linearize` alone; the one subcommand
@@ -800,6 +800,17 @@ passes on the command line to make itself cheap is exactly what it cannot test. 
 refuses `--go` without an item count, and a 128-item timed probe prices an arm before seven are
 spent — which also catches a merge that landed below the 57.75% the base model scored, from five
 minutes rather than from a finished bf16 ceiling.
+
+**And the sixth, which no rehearsal could reach, because it needs a second run.** The panel launches
+with `--resume`, and the whole of what resume checks is that the record file exists. `check_pairable`
+looks like the guard against a foreign one and is not: it compares records through the fields a
+paired test needs — task, backend, split, shots, shot seed, limit — every one of which describes the
+problem set, and none of which names the model or can be older than anything. Two records scored on
+two different merges at identical settings pair perfectly. `check_resumable` now refuses a directory
+whose manifest names different inputs, and any record older than the inputs it claims to have
+scored, charging the signal file against the two DynQuant arms and not the four baselines that never
+open it — because condemning all six would price the cheapest correct fix at a whole new panel,
+which is how a guard teaches people to pass `--resume` less carefully rather than more.
 
 ## Conventions that apply to every campaign
 

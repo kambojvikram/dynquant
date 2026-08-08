@@ -1472,6 +1472,41 @@ not a checkpoint to quantize six ways -- and finding that out from a five-minute
 from finding it out from a bf16 ceiling arm that has already run.
 
 
+### `--resume` can tell that a record exists; it cannot tell whose it is
+
+The panel launches with `--resume`, and resume is the right default: an arm that dies at the fifth
+of seven should not cost the four that finished. But the whole of what resume checks is
+`record.is_file()`, and a file's existence carries no claim about which model produced it or when.
+
+`check_pairable` looks like the guard against that and is not. It compares records through the eval
+command's own `_comparability`, which is the contract a paired test needs -- task, backend, split,
+shots, shot seed, limit. Every one of those fields describes the *problem set*. None of them names
+the *model*, and none of them can be older than anything. So two records scored on two different
+merges at identical settings pair perfectly, and a record allocated from the signal file as it was
+before a rewrite pairs perfectly with one allocated after. Both produce a table that reports a
+difference between quantizers and is measuring a difference in the checkpoint. This campaign has
+already met that failure once, in a different shape: a skip-if-output-exists guard cannot see that
+its output predates its input.
+
+So `check_resumable` asks the two questions `_comparability` structurally cannot. The manifest
+already records which model, signal file, moments file and group size the previous run was handed
+-- it is rewritten after every arm precisely so a dead panel leaves one -- and a resume that
+changes any of them is a new panel wearing the old one's directory, refused before the first arm.
+Then every surviving record is compared against the mtimes of the inputs it is supposed to have
+scored.
+
+The freshness charge is per arm, and that asymmetry is the part worth writing down. The signal file
+is charged only against the two DynQuant arms, because the four baselines never open it.
+Regenerating the signal without retraining -- rerunning the bank census, fixing a key, extending
+the moments -- invalidates two arms and leaves four standing, and a guard that condemned all six
+would price the cheapest correct fix at a whole new panel. That is how a guard teaches people to
+pass `--resume` less often instead of more carefully.
+
+It refuses rather than repairs. Deleting the directory is one command and always right; deciding
+which of seven records survived a change of inputs is neither. Two tests, three mutations, all
+caught -- including the one that makes the stats charge unconditional, which is the mutation that
+turns a correct guard into an annoying one.
+
 ---
 
 ## 13. Status
@@ -1537,6 +1572,12 @@ projection `out_proj`. Nineteen tests and sixteen mutations across those four, a
 fifth is not code and has no test: `--limit` is forwarded only when set, so the panel as staged
 would have scored the whole 21 729-item split on every one of seven arms. The launcher now refuses
 to launch without an item count, and `s4_probe.sh` measures what one costs before any are spent.
+The sixth came from reading the resume path against a failure this campaign has already had:
+`--resume` reuses any record whose file exists, and the pairing check that looks like it would
+catch a foreign one reads only fields that describe the problem set, never the model and never a
+date. `check_resumable` now refuses a directory whose manifest names different inputs, and any
+record older than the inputs it claims to have scored -- charging the signal file against the two
+arms that read it and not the four that do not. Two tests, three mutations, all caught.
 
 Not done, in order: the fine-tune, with the expert mass measured; then the six arms at matched
 bytes -- GPTQ and AWQ through the linearized structure verified bit-exact in §10, all three widths

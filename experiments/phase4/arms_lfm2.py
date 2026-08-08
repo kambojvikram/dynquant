@@ -452,6 +452,69 @@ def check_pairable(arms: list[Arm]) -> None:
             )
 
 
+def check_resumable(out: Path, args: argparse.Namespace, arms: list[Arm]) -> None:
+    """A reused record was scored by *some* run. Check that it was scored by this one.
+
+    :func:`check_pairable` compares records against each other through ``_comparability``,
+    which is the contract a paired test needs: task, backend, split, shots, shot seed, limit.
+    None of those fields name the *model*, and none of them can be older than anything. So
+    two records scored on two different merges at identical settings pair cleanly, and a
+    record scored before the signal file it should have read pairs cleanly with one scored
+    after it. Both produce a panel that reports a difference between methods and is measuring
+    a difference in the checkpoint.
+
+    Two questions, because they fail differently. The manifest records which model and which
+    signal file the previous run was handed, and a resume that changes either is a new panel
+    wearing the old one's directory. Then each surviving record is checked against the mtimes
+    of the inputs it claims to have been scored from -- a skip-if-output-exists guard cannot
+    see that its output predates its input unless it is told to look.
+
+    The stats file is charged only against the DynQuant arms, because the baselines never read
+    it. Regenerating the signal without retraining invalidates two arms, and refusing the four
+    that are still good would make the cheapest correct fix look as expensive as the panel.
+
+    Refuses rather than repairs. Deleting the directory is one command and always right;
+    deciding which of seven records survived a change of inputs is neither.
+    """
+    manifest = out / "arms.json"
+    if manifest.is_file():
+        previous = json.loads(manifest.read_text(encoding="utf-8"))
+        current = {
+            "model": args.model,
+            "stats": args.stats,
+            "moments": args.moments,
+            "group_size": args.group_size,
+        }
+        differed = {k: (previous.get(k), v) for k, v in current.items() if previous.get(k) != v}
+        if differed:
+            raise SystemExit(
+                f"{manifest} was written for {differed} as (previous, now). Resuming would "
+                f"reuse records scored against the previous inputs and table them beside arms "
+                f"scored against these. Delete {out} and run the panel whole."
+            )
+
+    stale = []
+    for arm in arms:
+        record = out / f"{arm.label}.json"
+        if not record.is_file():
+            continue
+        written = record.stat().st_mtime
+        sources = {"the model": Path(args.model) / "config.json"}
+        if arm.kind == "dq":
+            sources["the stats file"] = Path(args.stats)
+        for what, source in sources.items():
+            if source.exists() and written < source.stat().st_mtime:
+                stale.append(f"{record.name} predates {what}, {source}")
+    if stale:
+        raise SystemExit(
+            "\n".join(
+                ["these records were written before the inputs they should have scored:"]
+                + [f"  {line}" for line in stale]
+                + [f"Delete them, or delete {out} and run the panel whole."]
+            )
+        )
+
+
 def write_manifest(
     out: Path, args: argparse.Namespace, budgets: dict[int, int], arms: list[Arm]
 ) -> Path:
@@ -501,6 +564,8 @@ def do_run(args: argparse.Namespace) -> int:
 
     budgets = anchor_bytes(args.model, args.group_size)
     arms = plan_arms(budgets)
+    if args.resume:
+        check_resumable(out, args, arms)
     print(
         "anchors: " + ", ".join(f"{w}b -> {b} B ({b / 2**30:.3f} GiB)" for w, b in budgets.items()),
         flush=True,
