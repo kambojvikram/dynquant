@@ -459,3 +459,104 @@ def test_a_partial_table_still_hits_the_budget(graph) -> None:
     result = allocate_bits(graph, _flat_scores(graph), budget, sensitivity=table)
     assert result.average_bits <= 3.4 + 1e-9
     assert set(result.bits) == {i.name for i in graph.quantizable()}
+
+
+# --------------------------------------------------------------------------
+# Which price decided the widths
+# --------------------------------------------------------------------------
+
+
+def test_the_map_records_how_much_of_itself_the_proxy_priced(graph) -> None:
+    """The split has to survive onto the artifact, in parameters as well as modules.
+
+    It was reachable only as an INFO log line, and the campaign that needed it runs
+    the allocator as a subprocess at the default level and keeps the saved map. On a
+    batched-expert MoE the Gauss-Newton estimate is unavailable for every expert
+    bank by construction, which on the model this was written for is 44 of 133
+    modules and 91.5% of the quantizable parameters: a count that reads as a footnote
+    and a mass that is the whole result. So both are asserted, and the share is
+    asserted to be the larger of the two -- a map that reported only the count would
+    pass a test that only checked the count.
+    """
+    table = _sensitivity(graph, favourite="")
+    orphans = _hole(graph, table, ModuleRole.MLP_DOWN)
+    result = allocate_bits(
+        graph,
+        _flat_scores(graph),
+        Budget.from_target(graph, target_bits=3.4),
+        sensitivity=table,
+    )
+
+    pricing = result.pricing
+    assert pricing is not None
+    assert pricing.proxied_modules == len(orphans)
+    assert pricing.measured_modules == len(list(graph.quantizable())) - len(orphans)
+    assert pricing.proxied_params == sum(graph[name].num_params for name in orphans)
+    assert pricing.scale is not None and pricing.scale > 0.0
+    modules_share = pricing.proxied_modules / (pricing.proxied_modules + pricing.measured_modules)
+    assert pricing.proxied_share > modules_share, "MLP down is the mass, not the count"
+
+
+def test_a_fully_measured_map_says_so_rather_than_saying_nothing(graph) -> None:
+    """Absence of a pricing record must not be how "all measured" is expressed.
+
+    ``None`` already means "this path never priced anything" -- a hard-floor map, or
+    one written before the field existed. If a fully measured run also produced
+    ``None`` the reader could not tell a complete table from a missing one, and the
+    complete case is the one worth being able to prove.
+    """
+    result = allocate_bits(
+        graph,
+        _flat_scores(graph),
+        Budget.from_target(graph, target_bits=3.4),
+        sensitivity=_sensitivity(graph, favourite=""),
+    )
+    pricing = result.pricing
+    assert pricing is not None
+    assert pricing.proxied_modules == 0
+    assert pricing.proxied_share == 0.0
+    assert pricing.scale == 1.0
+    assert "measured" in pricing.summary()
+
+
+def test_no_common_scale_is_recorded_as_none_not_as_one(graph) -> None:
+    """The case where the proxy-priced modules' order is arbitrary must be legible.
+
+    When no positive proxy price exists there is nothing to calibrate against and
+    the multiplier stays 1.0 internally -- an arbitrary number that happens to look
+    deliberate. Writing ``scale: 1.0`` onto the artifact would launder that into a
+    calibration that never happened, so the field carries ``None`` and the summary
+    says the order is arbitrary.
+    """
+    table = _sensitivity(graph, favourite="")
+    orphans = _hole(graph, table, ModuleRole.MLP_DOWN)
+    scores = _flat_scores(graph)
+    for name in orphans:
+        scores[name] = 0.0
+
+    result = allocate_bits(
+        graph, scores, Budget.from_target(graph, target_bits=3.4), sensitivity=table
+    )
+    pricing = result.pricing
+    assert pricing is not None
+    assert pricing.proxied_modules == len(orphans)
+    assert pricing.scale is None
+    assert "arbitrary" in pricing.summary()
+
+
+def test_a_run_with_no_moments_at_all_is_recorded_as_such(graph) -> None:
+    """ "Nothing was measured" is a finding, not an absence, and it is not "uncalibrated".
+
+    With no table every module takes the same proxy formula, so the heap is internally
+    consistent and the order it produces means something -- which is why the scale is
+    1.0 here and not ``None``. ``None`` is reserved for the mixed case that could not
+    be reconciled. Collapsing the two would put the most-trustworthy ordering and the
+    least-trustworthy one under the same marker on the artifact.
+    """
+    result = allocate_bits(graph, _flat_scores(graph), Budget.from_target(graph, target_bits=3.4))
+    pricing = result.pricing
+    assert pricing is not None
+    assert pricing.measured_modules == 0
+    assert pricing.proxied_share == 1.0
+    assert pricing.scale == 1.0
+    assert "arbitrary" not in pricing.summary()

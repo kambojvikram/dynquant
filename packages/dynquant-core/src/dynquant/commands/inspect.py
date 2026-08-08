@@ -146,16 +146,22 @@ def inspect_allocation(
         if role_agree + role_disagree:
             per_role[role] = {"agree": role_agree, "total": role_agree + role_disagree}
 
-    widths: dict[str, dict[str, float]] = {}
+    widths: dict[str, dict[str, float | None]] = {}
     for width in sorted(by_width):
-        ranked = sorted(ordering.get(name, 0.0) for name in by_width[width])
-        params = sum(graph[name].num_params for name in by_width[width])
+        members = by_width[width]
+        # Over the members the quantity covers, not over all of them padded with
+        # zero. A width group that is entirely unmeasured reported min = median =
+        # max = 0, which is indistinguishable from a group the signal measured and
+        # found worthless -- and on this architecture the 2- and 3-bit groups were
+        # the first kind while reading as the second.
+        ranked = sorted(ordering[name] for name in members if name in ordering)
         widths[str(width)] = {
-            "modules": len(ranked),
-            "params": params,
-            "score_min": ranked[0],
-            "score_median": ranked[len(ranked) // 2],
-            "score_max": ranked[-1],
+            "modules": len(members),
+            "measured": len(ranked),
+            "params": sum(graph[name].num_params for name in members),
+            "score_min": ranked[0] if ranked else None,
+            "score_median": ranked[len(ranked) // 2] if ranked else None,
+            "score_max": ranked[-1] if ranked else None,
         }
 
     ordered = sorted(bit_map.bits.items(), key=lambda kv: (kv[1], ordering.get(kv[0], 0.0)))
@@ -164,7 +170,21 @@ def inspect_allocation(
         "average_bits": bit_map.average_bits,
         "nbytes": bit_map.nbytes,
         "quantity": quantity,
+        "total_params": sum(graph[name].num_params for name in bit_map.bits),
         "unordered": fallback,
+        "unordered_params": sum(graph[name].num_params for name in fallback),
+        "pricing": (
+            {
+                "measured_modules": bit_map.pricing.measured_modules,
+                "proxied_modules": bit_map.pricing.proxied_modules,
+                "measured_params": bit_map.pricing.measured_params,
+                "proxied_params": bit_map.pricing.proxied_params,
+                "proxied_share": bit_map.pricing.proxied_share,
+                "scale": bit_map.pricing.scale,
+            }
+            if bit_map.pricing is not None
+            else None
+        ),
         "widths": widths,
         "concordance": {
             "agree": agree,
@@ -188,7 +208,14 @@ def inspect_allocation(
                 "bits": width,
                 "role": graph[name].role.value,
                 "num_params": graph[name].num_params,
-                "score": ordering.get(name, 0.0),
+                # None, not 0.0, for a module the driving quantity does not cover.
+                # Zero is a value on this scale -- it is what a module that gains
+                # nothing from more bits looks like -- so printing it for a module
+                # that was simply never measured says the signal ranked it last when
+                # the signal never saw it. On a batched-expert MoE that is the whole
+                # of the expert mass, and it read as "the allocator put 91.5% of the
+                # model at the bottom" rather than "these were priced another way".
+                "score": ordering.get(name),
             }
             for name, width in ordered[:narrowest]
         ],
@@ -207,10 +234,15 @@ def render(report: dict[str, Any]) -> str:
         f"{report['nbytes'] / 2**30:.3f} GiB stored",
     ]
     for width, stats in report["widths"].items():
+        head = f"  {width:>2}b  n={stats['modules']:3d}  {stats['params'] / 1e6:8.1f}M params  "
+        if stats.get("score_median") is None:
+            lines.append(f"{head}{quantity}: none of them measured")
+            continue
+        seen = stats.get("measured", stats["modules"])
+        of = "" if seen == stats["modules"] else f" (over {seen} measured)"
         lines.append(
-            f"  {width:>2}b  n={stats['modules']:3d}  {stats['params'] / 1e6:8.1f}M params  "
-            f"{quantity} min {stats['score_min']:.4g}  median {stats['score_median']:.4g}  "
-            f"max {stats['score_max']:.4g}"
+            f"{head}{quantity} min {stats['score_min']:.4g}  "
+            f"median {stats['score_median']:.4g}  max {stats['score_max']:.4g}{of}"
         )
 
     con = report["concordance"]
@@ -224,9 +256,32 @@ def render(report: dict[str, Any]) -> str:
             f"no ordering at all looks like)"
         )
     if report.get("unordered"):
+        # In parameters as well as in modules. The two tell opposite stories on a
+        # batched-expert MoE -- 44 of 133 modules is a footnote, and the same 44
+        # tensors are 91.5% of what gets quantized -- and the count alone was the
+        # one being read.
+        share = report.get("unordered_params", 0) / max(report.get("total_params", 0) or 0, 1)
+        mass = (
+            f", {report['unordered_params'] / 1e6:.1f}M params"
+            + (f" = {share * 100:.1f}% of the quantized set" if share else "")
+            if report.get("unordered_params")
+            else ""
+        )
         lines.append(
             f"  {len(report['unordered'])} module(s) left out of the concordance with no "
-            f"measured value: {', '.join(report['unordered'][:3])}"
+            f"measured value{mass}: {', '.join(report['unordered'][:3])}"
+        )
+    pricing = report.get("pricing")
+    if pricing and pricing["proxied_modules"] and pricing["measured_modules"]:
+        scale = (
+            f"rescaled by {pricing['scale']:.3e}"
+            if pricing["scale"] is not None
+            else "NO COMMON SCALE -- their relative order is arbitrary"
+        )
+        lines.append(
+            f"  priced: {pricing['measured_modules']} measured, "
+            f"{pricing['proxied_modules']} from the score proxy "
+            f"({pricing['proxied_share'] * 100:.1f}% of parameters, {scale})"
         )
 
     if report["violations"]:
@@ -242,8 +297,9 @@ def render(report: dict[str, Any]) -> str:
 
     lines.append(f"  narrowest modules, with the {quantity} that put them there:")
     for entry in report["narrowest"]:
+        shown = "unmeasured" if entry["score"] is None else f"{entry['score']:.4g}"
         lines.append(
-            f"    {entry['bits']}b  {entry['score']:10.4g}  "
+            f"    {entry['bits']}b  {shown:>10s}  "
             f"{entry['num_params'] / 1e6:6.1f}M  {entry['role']:16s} {entry['name']}"
         )
     return "\n".join(lines)

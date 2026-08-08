@@ -142,7 +142,7 @@ def _write_map(path: Path, width: int, nbytes: int, *, breach: bool) -> None:
     ``write_bit_maps`` means the fixture cannot hold a shape the allocator does not produce,
     and the numbers below are chosen so ``BitMap`` derives the ones the table prints.
     """
-    from dynquant.allocate.knapsack import BitMap, FloorViolation
+    from dynquant.allocate.knapsack import BitMap, FloorViolation, Pricing
     from dynquant.commands._shared import write_bit_maps
     from dynquant.graph.roles import ModuleRole
 
@@ -168,6 +168,16 @@ def _write_map(path: Path, width: int, nbytes: int, *, breach: bool) -> None:
         allocated_bits=float(nbytes * 8),
         denominator=denominator,
         target_label=f"{nbytes}B",
+        # The real panel's shape, not a tidy one: a minority of modules holding the
+        # large majority of the parameters is priced by the proxy, because on a
+        # batched-expert MoE the measured estimate does not exist for a bank.
+        pricing=Pricing(
+            measured_modules=143,
+            proxied_modules=44,
+            measured_params=round(denominator * 0.085),
+            proxied_params=round(denominator * 0.915),
+            scale=2.5e-13,
+        ),
     )
     write_bit_maps(
         path,
@@ -566,3 +576,48 @@ def test_the_per_source_columns_show_a_collapse_the_headline_hides(
     )
     row = next(line for line in lines[start:] if line.startswith("awq_3b "))
     assert "95.0% (200)" in row and "6.0% (200)" in row
+
+
+def test_the_allocation_block_says_which_price_chose_the_widths(tmp_path: Path, table) -> None:
+    """A DynQuant arm's widths are only evidence about the signal if the signal set them.
+
+    On this architecture most of the model is priced by the rank-product proxy rather
+    than by measured sensitivity, and nothing in the table said so: the arm printed its
+    average bits, its width histogram and its floor breaches, all of which are true and
+    none of which distinguish "the measurement decided this" from "the measurement was
+    unavailable for 91.5% of it". The share is asserted rather than the module count
+    because the count is the reassuring one.
+    """
+    out = _write_panel(tmp_path / "arms")
+    printed = _run(table, out)
+
+    assert "priced: 143 modules measured, 44 from the score proxy" in printed
+    assert "91.5% of parameters" in printed, "the count without the mass is the wrong story"
+    assert "rescaled by 2.500e-13" in printed
+
+
+def test_an_uncalibrated_price_is_called_out_not_left_blank(table) -> None:
+    """``scale: null`` is the run whose bit map should not be trusted.
+
+    It means a mix of two prices with no overlap to calibrate on, so the proxy-priced
+    modules sit at an arbitrary offset against the measured ones -- and it renders
+    identically to a healthy run unless the table says the word.
+    """
+    line = table.describe_pricing(
+        {
+            "measured_modules": 89,
+            "proxied_modules": 44,
+            "proxied_share": 0.915,
+            "scale": None,
+        }
+    )
+    assert "NO COMMON SCALE" in line
+    assert "arbitrary" in line
+
+
+def test_a_run_that_measured_nothing_does_not_read_as_a_measured_run(table) -> None:
+    """All-proxy is a legitimate allocation and an illegitimate claim about the signal."""
+    line = table.describe_pricing(
+        {"measured_modules": 0, "proxied_modules": 133, "proxied_share": 1.0, "scale": 1.0}
+    )
+    assert "nothing was measured" in line

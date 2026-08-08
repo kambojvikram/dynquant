@@ -242,6 +242,10 @@ def allocation_of(out: Path, arm: dict[str, Any]) -> dict[str, Any] | None:
         "nbytes": entry.get("nbytes"),
         "histogram": entry.get("histogram", {}),
         "violations": entry.get("violations", []),
+        # Carried through rather than summarised here, because "which price chose these
+        # widths" is the question the rest of this dict cannot answer. Absent on a map
+        # written before the field existed, which reads correctly as "unknown".
+        "pricing": entry.get("pricing"),
     }
 
 
@@ -378,6 +382,36 @@ def print_by_source(built: list[dict[str, Any]]) -> None:
         print(f"{row['label']:10s}{cells}")
 
 
+def describe_pricing(pricing: dict[str, Any]) -> str:
+    """One line saying how much of the map the measured signal actually decided.
+
+    In parameters first and modules second, because the two disagree by an order of
+    magnitude on a MoE and the count is the flattering one: 44 of 133 modules sounds
+    like an edge case and is 91.5% of the checkpoint. A missing scale is not a smaller
+    number -- it is the case where the proxy-priced modules have no calibrated
+    relationship to the measured ones at all, so their order among themselves is
+    whatever the score said and their order against the rest is arbitrary. That
+    deserves the word, not a blank.
+    """
+    proxied = int(pricing.get("proxied_modules", 0))
+    measured = int(pricing.get("measured_modules", 0))
+    if not proxied:
+        return f"all {measured} modules from measured sensitivity"
+    share = float(pricing.get("proxied_share", 0.0)) * 100
+    if not measured:
+        return f"all {proxied} modules from the score proxy -- nothing was measured"
+    scale = pricing.get("scale")
+    how = (
+        f"rescaled by {scale:.3e}"
+        if scale is not None
+        else "NO COMMON SCALE, their order is arbitrary"
+    )
+    return (
+        f"{measured} modules measured, {proxied} from the score proxy "
+        f"= {share:.1f}% of parameters ({how})"
+    )
+
+
 def print_allocation(built: list[dict[str, Any]]) -> None:
     """What the allocator did, for the arms that had one.
 
@@ -404,6 +438,15 @@ def print_allocation(built: list[dict[str, Any]]) -> None:
         total = sum(int(modules) for modules in report["histogram"].values())
         print(f"{row['label']}: {report['average_bits']:.4f} avg bits over the quantized set")
         print(f"  widths, modules at each: {widths}   ({total} quantized)")
+        # Which of the two prices chose those widths, before the widths are discussed.
+        # On this architecture the Gauss-Newton estimate does not exist for a batched
+        # expert bank -- the bank's forward spans two matmuls and a non-linearity, so
+        # no module boundary gives the pairing the Kronecker form needs -- and the
+        # banks are 91.5% of the parameters. Reading the DynQuant arms as "measured
+        # sensitivity decided this" without that line is reading them wrong.
+        pricing = report.get("pricing")
+        if pricing:
+            print(f"  priced: {describe_pricing(pricing)}")
         breaches = report["violations"]
         if not breaches:
             print("  floors: none breached -- the budget was not binding on any role")

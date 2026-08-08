@@ -54,7 +54,7 @@ Spearman where the rank product manages +0.231.
 from __future__ import annotations
 
 import heapq
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from statistics import median
 from typing import TYPE_CHECKING
 
@@ -71,7 +71,7 @@ if TYPE_CHECKING:
     from dynquant.graph.classify import ModelGraph
     from dynquant.score.sensitivity import SensitivityTable
 
-__all__ = ["BitMap", "FloorViolation", "InfeasibleTargetError", "allocate_bits"]
+__all__ = ["BitMap", "FloorViolation", "InfeasibleTargetError", "Pricing", "allocate_bits"]
 
 _log = get_logger(__name__)
 
@@ -102,6 +102,54 @@ class FloorViolation:
     num_params: int
 
 
+@dataclass(frozen=True, slots=True)
+class Pricing:
+    """Which of the two prices the allocator used, and on how much of the model.
+
+    Recorded because the split is not visible anywhere else and it can be nearly the
+    whole model. On a batched-expert MoE the Gauss-Newton estimate is unavailable *by
+    construction* -- a bank's forward spans two matmuls and a non-linearity, so no
+    module boundary yields the ``dY = dW x`` pairing the Kronecker form needs -- and
+    on LFM2.5-8B-A1B that is 44 tensors carrying 91.5% of the quantizable parameters.
+    Forty-four of a hundred and thirty-three reads like a footnote; the same fact in
+    parameters is the headline. Both are here so a reader cannot get the first without
+    the second.
+
+    ``scale`` is the multiplier :func:`_apply_fallback_scale` derived. It is ``1.0``
+    when no rescaling was needed -- every module measured, or none of them, both being
+    cases where one formula priced the whole heap and its order means something. It is
+    ``None`` only for the case where the order does not: a mix of the two prices with
+    no positive overlap to calibrate on. That distinction is the reason this is a field
+    rather than a log line, since the run that hits it is the run whose bit map should
+    not be trusted, and it looked identical to every other run in the artifacts.
+    """
+
+    measured_modules: int = 0
+    proxied_modules: int = 0
+    measured_params: int = 0
+    proxied_params: int = 0
+    scale: float | None = None
+
+    @property
+    def proxied_share(self) -> float:
+        """Fraction of quantizable parameters priced by the proxy, not by measurement."""
+        total = self.measured_params + self.proxied_params
+        return self.proxied_params / total if total else 0.0
+
+    def summary(self) -> str:
+        if not self.proxied_modules:
+            return f"all {self.measured_modules} modules priced from measured sensitivity"
+        if not self.measured_modules:
+            return f"all {self.proxied_modules} modules priced from the score proxy"
+        scale = "no common scale -- their order is arbitrary"
+        if self.scale is not None:
+            scale = f"rescaled by {self.scale:.3e}"
+        return (
+            f"{self.measured_modules} modules measured, {self.proxied_modules} proxied "
+            f"({self.proxied_share * 100:.1f}% of parameters, {scale})"
+        )
+
+
 @dataclass(slots=True)
 class BitMap:
     """The allocation, plus everything needed to judge whether to trust it."""
@@ -112,6 +160,9 @@ class BitMap:
     allocated_bits: float = 0.0
     denominator: int = 0
     target_label: str = ""
+    pricing: Pricing | None = None
+    """How the modules were priced -- see :class:`Pricing`. ``None`` on maps built
+    before the field existed, and on the hard-floor paths that never price anything."""
 
     @property
     def average_bits(self) -> float:
@@ -171,7 +222,7 @@ class _Candidate:
     """Multiplier putting the proxy price on the sensitivity table's scale.
 
     Only used when :attr:`sens` is ``None`` while other modules have one. See
-    :func:`_fallback_scale`."""
+    :func:`_apply_fallback_scale`."""
 
     def move_value(self, lower: int, upper: int) -> float:
         """What the width difference ``lower -> upper`` is worth, in loss units.
@@ -246,7 +297,7 @@ def allocate_bits(
                 sens=sensitivity.values.get(info.name) if sensitivity is not None else None,
             )
         )
-    _apply_fallback_scale(candidates)
+    pricing = _apply_fallback_scale(candidates)
 
     spent = budget.fixed_bits + sum(c.cost_at[c.bits] for c in candidates)
     if spent > budget.total_bits:
@@ -277,12 +328,13 @@ def allocate_bits(
         allocated_bits=spent,
         denominator=budget.denominator,
         target_label=budget.label,
+        pricing=pricing,
     )
     _log.info("%s", result.summary())
     return result
 
 
-def _apply_fallback_scale(candidates: list[_Candidate]) -> None:
+def _apply_fallback_scale(candidates: list[_Candidate]) -> Pricing:
     """Put proxy-priced modules on the same scale as measured ones, or say why not.
 
     A heap that mixes ``sens[3] - sens[4]``, which is in loss units and typically
@@ -308,14 +360,29 @@ def _apply_fallback_scale(candidates: list[_Candidate]) -> None:
     thing the downgrade pass cut, on no evidence at all.
 
     This makes the two comparable in aggregate. It does not make an individual
-    proxy-priced module accurate, and the log line names how many there are so that
-    a run where the fallback is doing most of the work is visible rather than
-    inferred. Nothing happens when every module is measured, or none is.
+    proxy-priced module accurate, so a run where the fallback is doing most of the work
+    has to be visible rather than inferred -- which is why the split comes back as a
+    :class:`Pricing` and is written into the saved map, not only logged. A log line is
+    not an artifact: the panel captures stdout, runs at the default WARNING level, and
+    would have carried a bit map whose dominant pricing decision appeared nowhere in it.
+    Nothing is rescaled when every module is measured, or none is; the census is
+    returned either way, because "all measured" is also a fact worth being able to read.
     """
     measured = [c for c in candidates if c.sens is not None]
     proxied = [c for c in candidates if c.sens is None]
+    census = Pricing(
+        measured_modules=len(measured),
+        proxied_modules=len(proxied),
+        measured_params=sum(c.num_params for c in measured),
+        proxied_params=sum(c.num_params for c in proxied),
+        # 1.0 means "no rescaling was needed", which is true both when every module
+        # was measured and when none was: one formula priced the whole heap either
+        # way, so the order it produced is meaningful. None is reserved for the
+        # single case where it is not -- a mix that could not be calibrated.
+        scale=1.0 if not proxied or not measured else None,
+    )
     if not measured or not proxied:
-        return
+        return census
 
     def next_step(c: _Candidate) -> tuple[int, int] | None:
         above = [b for b in c.cost_at if b > c.bits]
@@ -353,7 +420,7 @@ def _apply_fallback_scale(candidates: list[_Candidate]) -> None:
             len(proxied),
             len(candidates),
         )
-        return
+        return census
 
     scale = reference / proxy
     for c in proxied:
@@ -366,6 +433,7 @@ def _apply_fallback_scale(candidates: list[_Candidate]) -> None:
         len(proxied),
         scale,
     )
+    return replace(census, scale=scale)
 
 
 def _upgrade(

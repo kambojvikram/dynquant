@@ -25,6 +25,7 @@ import os
 import re
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -269,6 +270,58 @@ def test_a_written_map_reads_back_identically(tmp_path: Path, bit_map: BitMap) -
     assert metadata["allocator"] == "sensitivity"
     assert metadata["group_size"] == 128
     assert metadata["map_key"] == "3.00"
+
+
+def test_the_saved_map_carries_which_price_chose_its_widths(
+    tmp_path: Path, graph, bit_map: BitMap
+) -> None:
+    """The pricing split has to be on the file, because the file is what survives.
+
+    The panel runs `dynquant inspect` as a subprocess at the default log level and
+    keeps `maps/<arm>.json`. Everything the allocator decided about *how* it priced
+    91.5% of this model existed only in an INFO record that nothing captured, so the
+    artifact and a map where every module was measured were byte-identical in every
+    field a reader could check.
+    """
+    from dynquant.allocate.knapsack import Pricing
+
+    priced = replace(
+        bit_map,
+        pricing=Pricing(
+            measured_modules=89,
+            proxied_modules=44,
+            measured_params=720_000_000,
+            proxied_params=8_000_000_000,
+            scale=2.5e-13,
+        ),
+    )
+    written = _shared.write_bit_maps(
+        tmp_path,
+        {"3.00": priced},
+        model="m",
+        stats=None,
+        allocator="sensitivity",
+        group_size=128,
+    )
+    payload = json.loads(written.read_text(encoding="utf-8"))["maps"]["3.00"]["pricing"]
+    assert payload["proxied_modules"] == 44
+    assert payload["proxied_params"] == 8_000_000_000
+    assert payload["scale"] == 2.5e-13
+    assert payload["proxied_share"] > 0.9, "the share is the number the count hides"
+
+
+def test_a_map_that_priced_nothing_writes_no_pricing_key(tmp_path: Path, graph) -> None:
+    """Absent, not a row of nulls -- a uniform map made no pricing decision at all,
+    and nulls would read as an allocator that tried to price and measured nothing."""
+    written = _shared.write_bit_maps(
+        tmp_path,
+        {"8": _shared.uniform_map(graph, 8)},
+        model="m",
+        stats=None,
+        allocator="uniform",
+        group_size=128,
+    )
+    assert "pricing" not in json.loads(written.read_text(encoding="utf-8"))["maps"]["8"]
 
 
 def test_a_directory_is_accepted_on_both_sides(tmp_path: Path, bit_map: BitMap) -> None:
@@ -774,6 +827,40 @@ def test_a_module_with_no_measured_sensitivity_is_left_out_not_scored_zero(
     report = inspect.inspect_allocation(graph, {}, bit_map, sensitivity=table)
     assert report["unordered"] == [dropped]
     assert dropped in inspect.render(report)
+
+    # And nowhere in the rendered text does it appear as a number. `narrowest`
+    # printed `ordering.get(name, 0.0)`, so an unmeasured module was shown with a
+    # score of 0 next to peers whose scores were real -- which is the same claim
+    # the returned ordering is careful not to make, made two lines later in prose.
+    assert report["unordered_params"] == graph[dropped].num_params
+    entries = {e["name"]: e["score"] for e in report["narrowest"]}
+    assert entries.get(dropped, "absent") in (None, "absent")
+    if dropped in entries:
+        assert "unmeasured" in inspect.render(report)
+
+
+def test_a_width_group_nothing_measured_is_not_reported_as_scoring_zero(
+    graph, bit_map: BitMap
+) -> None:
+    """min = median = max = 0 read as "measured and worthless", not as "not measured".
+
+    The two are opposite conclusions about the same width group and the panel's
+    3-bit arm hits the second one: on a batched-expert MoE every module at the
+    narrow widths can be an expert bank, and every expert bank is unmeasurable by
+    construction. Padding the group with zeros made the signal look like it had
+    ranked them last.
+    """
+    table = _sensitivity(graph, {name: float(w) for name, w in bit_map.bits.items()})
+    two_bit = [name for name, width in bit_map.bits.items() if width == 2]
+    assert two_bit
+    for name in two_bit:
+        del table.values[name]
+
+    report = inspect.inspect_allocation(graph, {}, bit_map, sensitivity=table)
+    assert report["widths"]["2"]["score_median"] is None
+    assert report["widths"]["2"]["measured"] == 0
+    assert report["widths"]["2"]["modules"] == len(two_bit)
+    assert "none of them measured" in inspect.render(report)
 
 
 def test_without_moments_the_ordering_is_the_score_unchanged(graph, bit_map: BitMap) -> None:

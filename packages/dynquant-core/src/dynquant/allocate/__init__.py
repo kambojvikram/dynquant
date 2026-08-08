@@ -12,7 +12,13 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .budget import Budget, module_stored_bits, parse_size
-    from .knapsack import BitMap, FloorViolation, InfeasibleTargetError, allocate_bits
+    from .knapsack import (
+        BitMap,
+        FloorViolation,
+        InfeasibleTargetError,
+        Pricing,
+        allocate_bits,
+    )
     from .policy import STRUCTURAL_ROLES, AllocationPolicy
 
 __all__ = [
@@ -22,6 +28,7 @@ __all__ = [
     "Budget",
     "FloorViolation",
     "InfeasibleTargetError",
+    "Pricing",
     "allocate_bits",
     "module_stored_bits",
     "parse_size",
@@ -35,6 +42,7 @@ _LAZY = {
     "STRUCTURAL_ROLES": "policy",
     "BitMap": "knapsack",
     "FloorViolation": "knapsack",
+    "Pricing": "knapsack",
     "InfeasibleTargetError": "knapsack",
     "allocate_bits": "knapsack",
 }

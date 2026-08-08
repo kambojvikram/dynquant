@@ -433,6 +433,23 @@ def _map_payload(bit_map: BitMap, group_size: int) -> dict[str, Any]:
         "average_bits": bit_map.average_bits,
         "nbytes": bit_map.nbytes,
         "group_size": group_size,
+        # Which price decided these widths, and on how much of the model. Omitted
+        # rather than written as nulls on the paths that never price anything, so a
+        # reader can tell "not applicable" from "measured nothing".
+        **(
+            {
+                "pricing": {
+                    "measured_modules": bit_map.pricing.measured_modules,
+                    "proxied_modules": bit_map.pricing.proxied_modules,
+                    "measured_params": bit_map.pricing.measured_params,
+                    "proxied_params": bit_map.pricing.proxied_params,
+                    "proxied_share": bit_map.pricing.proxied_share,
+                    "scale": bit_map.pricing.scale,
+                }
+            }
+            if bit_map.pricing is not None
+            else {}
+        ),
         # Modules per width, not parameters per width -- see ``BitMap.histogram``.
         "histogram": {
             str(width): modules for width, modules in sorted(bit_map.histogram().items())
