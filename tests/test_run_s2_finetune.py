@@ -19,6 +19,7 @@ pure function of a tokenizer and a list of turns.
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import sys
 import types
@@ -1273,3 +1274,58 @@ def test_an_explicit_answer_is_never_second_guessed(s2) -> None:
 
     assert s2.resolve_bank_measurement(banked, True) is True
     assert s2.resolve_bank_measurement(banked, False) is False
+
+
+# --- where the weights come from -------------------------------------------------------
+#
+# The LFM2.5-8B-A1B fine-tune spent twenty-two minutes re-fetching a 16.9 GB checkpoint
+# that was already complete on the same disk, then stalled with the download silent for
+# seventeen of them. The driver had no way to be told about the local copy; these cover the
+# flag that gives it one.
+
+
+def test_the_default_source_is_the_registry_repo(s2) -> None:
+    """No flag, no change: the Hub id is still what gets loaded.
+
+    Turns red when: the resolver starts reading a path, a cache directory or an environment
+    variable when it was not asked to.
+    """
+    args = argparse.Namespace(model_path=None)
+    assert s2.resolve_model_source(args, {"repo": "LiquidAI/LFM2.5-8B-A1B"}) == (
+        "LiquidAI/LFM2.5-8B-A1B"
+    )
+
+
+def test_a_model_path_without_a_config_is_refused(s2, tmp_path) -> None:
+    """The plausible wrong path, which is the only kind anyone actually passes.
+
+    A run directory, its parent, a merge not yet written: each exists, and each would send
+    `from_pretrained` either a hundred lines deep into a stack trace or -- worse -- back to
+    the Hub for the name it was given, which is the fetch this flag exists to prevent.
+
+    Turns red when: the check degrades to `is_dir()`, or to nothing at all.
+    """
+    empty = tmp_path / "not-a-checkpoint"
+    empty.mkdir()
+    args = argparse.Namespace(model_path=str(empty))
+
+    with pytest.raises(SystemExit, match=r"no config.json"):
+        s2.resolve_model_source(args, {"repo": "LiquidAI/LFM2.5-8B-A1B"})
+
+
+def test_a_model_path_replaces_the_repo_and_is_absolute(s2, tmp_path, monkeypatch) -> None:
+    """Resolved, not passed through -- the run is launched from a directory that changes.
+
+    Turns red when: the path is handed on relative, or appended to the repo id rather than
+    replacing it.
+    """
+    checkpoint = tmp_path / "models" / "LFM2.5-8B-A1B"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text("{}", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    args = argparse.Namespace(model_path="models/LFM2.5-8B-A1B")
+
+    resolved = s2.resolve_model_source(args, {"repo": "LiquidAI/LFM2.5-8B-A1B"})
+
+    assert Path(resolved) == checkpoint.resolve()
+    assert Path(resolved).is_absolute()

@@ -811,6 +811,14 @@ def resolve_bank_measurement(model: Any, requested: bool | None) -> bool:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True, choices=sorted(MODELS))
+    parser.add_argument(
+        "--model-path",
+        default=None,
+        help=(
+            "load the weights from this directory instead of the Hub. The registry entry "
+            "still names the run; this only says where its bytes are"
+        ),
+    )
     parser.add_argument("--dataset", default="tulu3", choices=sorted(DATASETS))
     parser.add_argument("--out", default="runs/s2", help="parent of the per-cell run directory")
     parser.add_argument("--repo", default=".", help="the dynquant checkout, for the commit stamp")
@@ -897,13 +905,40 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def resolve_model_source(args: argparse.Namespace, entry: dict[str, Any]) -> str:
+    """Where the weights come from: ``--model-path`` if given, otherwise the Hub repo.
+
+    The whole point is to stop a second copy being fetched over a checkout that is already
+    on disk -- 16.9 GB for LFM2.5-8B-A1B, at a rate that stalled outright, while the
+    complete file sat in ``/workspace/models``. A local path is also why the gate check is
+    skipped here: a gated model already downloaded needs no token to read.
+
+    Checked for ``config.json`` rather than merely for existence, because the failure this
+    guards against is a *plausible* wrong path -- a run directory, a parent, a merge that
+    has not been written yet -- and ``from_pretrained`` on one of those either raises a
+    hundred lines later or silently reaches the Hub for the name it was given.
+    """
+    if args.model_path is None:
+        return str(entry["repo"])
+    path = Path(args.model_path).resolve()
+    if not (path / "config.json").is_file():
+        raise SystemExit(
+            f"--model-path {path} has no config.json, so it is not a checkpoint directory. "
+            f"Omit the flag to fetch {entry['repo']} from the Hub."
+        )
+    print(f"weights: {path} (registry entry {entry['repo']} not fetched)", flush=True)
+    return str(path)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     entry = MODELS[args.model]
-    repo_id = str(entry["repo"])
-    if entry["gated"] and not (
-        os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    repo_id = resolve_model_source(args, entry)
+    if (
+        args.model_path is None
+        and entry["gated"]
+        and not (os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"))
     ):
         print(
             f"{args.model} ({repo_id}) is gated=manual on the Hub and no HF_TOKEN is set. "
@@ -980,7 +1015,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{tokens} tokens, {supervised} supervised ({share})", flush=True)
 
     census = {
-        "model": repo_id,
+        # The registry identity, not `repo_id`: with `--model-path` those differ, and a
+        # census that recorded only the resolved path could not be compared against a run
+        # that fetched the same model from the Hub.
+        "model": str(entry["repo"]),
+        "model_path": None if args.model_path is None else str(Path(args.model_path).resolve()),
         # The config too, where there is one: "HuggingFaceTB/smoltalk" alone does not say
         # which of fourteen subsets trained the model, and a census that cannot answer that
         # cannot be compared against a later run.
