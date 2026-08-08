@@ -1480,6 +1480,40 @@ not a checkpoint to quantize six ways -- and finding that out from a five-minute
 from finding it out from a bf16 ceiling arm that has already run.
 
 
+### The measured 8.46% is not an implementation gap -- it is the trained set
+
+Two numbers in this report have been described as separate facts, and they are the same fact.
+
+The allocator prices **89 modules by the Gauss-Newton form (716 570 624 params, 8.46%) and 44
+expert banks by the rescaled rank-product proxy (7 751 073 792 params, 91.54%)**, and the reason
+given has been structural: a batched expert bank has no module boundary at which the measured form
+exists. True, and incomplete.
+
+The fine-tune is LoRA with `target_modules="all-linear"`, and the trainer reports **0.13% of 8.48 B
+trainable** -- about 11 M adapter parameters. That number settles what "all-linear" reached without
+needing to inspect the module tree. The checkpoint stores experts per expert, 2134 tensors across
+22 MoE layers, but at runtime they are batched parameters rather than `nn.Linear` children; if LoRA
+had wrapped those 2112 expert matrices, the adapter alone would cost roughly 130 M parameters at
+rank 16, an order of magnitude more than was trained. It did not wrap them. The expert banks were
+**frozen for the entire fine-tune**.
+
+So the measured set and the adapted set are the same set, and the boundary that stops the
+Gauss-Newton pricing is the same boundary that stopped the gradient. That is coherent rather than
+embarrassing: the plasticity half of the DynQuant signal is gradient-derived, and there is no
+gradient on a frozen parameter to derive it from. The proxy is not standing in for a measurement
+that was skipped; it is standing in for one that does not exist for those tensors under this
+training recipe. `--measure-expert-banks` still reaches them because the saliency half is
+activation-derived and needs no gradient at all -- which is exactly why the coverage claim in §9
+and the pricing split here can both be true at once.
+
+Two consequences to carry into the results. First, whatever the panel shows, this run does not
+test DynQuant's signal on 91.5% of the model's parameters; it tests the allocator's structural
+priors there, with saliency as the only live input. Second, the obvious next experiment is now
+well-posed and cheap to state: a recipe that unfreezes the banks -- full fine-tune, or LoRA after
+`linearize_moe` -- would move that mass from the proxy to the measured form, and the campaign
+already knows from Ministral-8B that the signal's share of the margin grows as the allocator's
+structural advantage shrinks.
+
 ### The calibration cost is worth measuring and not worth probing
 
 The projection above prices the *eval* half. The four baseline arms also pay a 256-sample
