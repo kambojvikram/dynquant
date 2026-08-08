@@ -25,6 +25,7 @@ already seen its answers are separate failures:
 | 13 | At matched bytes, what are the allocator and the signal each worth? | **+4.31 over uniform at 3.25 bits, split 1.91 allocator / 2.41 signal — and nothing at 4.25, where the maps diverge just as far and buy nothing** | [`phase3-s3-allocation.md`](phase3-s3-allocation.md) |
 | 14 | Can the phase-4 text-to-SQL benchmark tell a correct answer from a broken one? | **Only after four defects were removed** — two SQLite-semantics bugs discarding a third of one corpus, a DML block teaching an unscoreable answer format, and a registered task argparse refused | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) |
 | 15 | Does the training mixture contain the questions the arms are scored on? | **Yes — 189 of the 200 WikiSQL evaluation items are questions in `b-mc2/sql-create-context`**, and the guard that reported the mixture clean could not have fired | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §11 |
+| 16 | “At matched bytes” — whose bytes? | **The baselines’** — DynQuant’s own format costs 4.25 bits/param at 4 bits against `compressed-tensors`’ 4.15625, so anchoring on its uniform arm would hand it **2.3% more bytes inside the arm whose accuracy is the claim** | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
 
 The method itself — signals, sensitivity estimator, allocator, encoder, format, packed
 runtime, kernels — is documented end to end in the
@@ -605,6 +606,36 @@ Both checks are now in the census, and it says what each is worth: the empty
 `sources_overlapping_an_eval_task` is kept, the marker list is written beside it, and
 `decontaminated` reports per source rather than as a boolean — because on this mixture the
 expected number is four thousand, so zero has to be readable as suspicious rather than as clean.
+
+## 16. Phase 4 — the matched-byte anchor has a direction, and it is worth 2.3%
+
+[`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 · decided 2026-08-08
+
+GPTQ and AWQ take a width and the bytes fall out of the format; DynQuant takes a size. So "at
+matched bytes" has a direction, and the two formats do not cost the same: `compressed-tensors`
+writes an fp16 scale plus a zero point at the weight's own width, `16 + bits` per group of 128,
+while DynQuant writes an fp16 scale **and** an fp16 offset, a flat 32. At 4 bits that is 4.25
+bits per parameter against **4.15625**; at 3 bits, 3.25 against **3.1484**.
+
+Anchoring the panel on DynQuant's uniform arm would therefore have given it **2.3% more bytes at
+4 bits and 3.2% more at 3, inside the arm whose accuracy is the claim** — and nothing would have
+reported it, because each accounting is correct about the format it describes and both would have
+printed a matched line.
+
+DynQuant is pinned to the baselines' counts: **4 399 629 312 B** and **3 332 904 576 B**. The
+overhead comes out of its own payload, which is the point rather than a concession — a format that
+stores more metadata has fewer bits left for weights at the same footprint, and that is a real
+cost. Charging both sides by one set of rules would be wrong in either direction: by DynQuant's,
+the baselines are billed for an offset they never write; by the baselines', DynQuant writes
+metadata it never paid for.
+
+Two smaller decisions fall out of it. Each DynQuant arm's realised size is read back from the map
+the allocator wrote rather than taken from the request, because `--target-size` is a *ceiling* and
+the drift that actually happens is downward — so the tolerance check is on the absolute value,
+where a signed one would wave through the only failure that occurs. And every arm is a subprocess
+of one interpreter, refusing to start if llm-compressor is not importable from it: per-arm
+environments would score the baselines and the DynQuant arms under two transformers versions,
+which is a difference in the measuring instrument reported as a difference between methods.
 
 ## Conventions that apply to every campaign
 

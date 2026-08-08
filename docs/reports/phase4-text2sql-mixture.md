@@ -667,7 +667,58 @@ census reporting a stale number from a previous call would be worse than one rep
 
 ---
 
-## 12. Status
+## 12. Who sets the byte budget, and why it is not DynQuant
+
+The panel's claim is "at matched bytes". Two of the three methods cannot take a size, so the
+matching has a direction, and the direction is worth 2.3%.
+
+GPTQ and AWQ take a *width*. The bytes fall out of what `compressed-tensors` writes: the payload
+at `bits`, an fp16 scale per group, and a zero point packed at the weight's own width. DynQuant
+takes a *size*, and its format writes an fp16 scale **and** an fp16 offset -- 32 bits per group
+rather than `16 + bits`. Per parameter at a group of 128:
+
+| | payload | per group | bits/param @4 | bits/param @3 |
+|---|---|---|---|---|
+| `compressed-tensors` (GPTQ, AWQ) | `bits` | `16 + bits` | 4.15625 | 3.1484 |
+| DynQuant (`quant/pack.py:stored_bits`) | `bits`, word-aligned | 32 | 4.25 | 3.25 |
+| | | | **+2.26%** | **+3.23%** |
+
+Whole-model, through `baselines_lfm2.accounted_bytes`, that is **4,399,629,312 B** at 4 bits and
+**3,332,904,576 B** at 3 -- the numbers in §10, and now the anchors.
+
+Anchoring on DynQuant's uniform arm instead would have handed DynQuant 2.3% more bytes at 4 bits
+and 3.2% more at 3 **inside the arm whose accuracy is the claim**. Nothing in the run would have
+reported it: each accounting is correct about the format it describes, both would have printed a
+tidy "matched" line, and the extra bytes would have arrived as accuracy.
+
+So DynQuant is pinned to the baselines' byte count. `--target-size` accepts a bare integer, so the
+pin is exact rather than rounded through a unit, and `dynquant inspect` keys the saved map on the
+literal string it was passed -- which is why the allocation and the eval must format that number
+the same way, and why a test asserts they do.
+
+The overhead comes out of DynQuant's own payload, and that is the point rather than a concession:
+a method that stores more metadata has fewer bits left for weights at the same footprint. That is
+a real cost of the format and it should be paid in the comparison, not accounted around.
+
+Charging both by one set of rules would be worse in either direction. By DynQuant's, the baselines
+are billed for an offset `compressed-tensors` never writes; by the baselines', DynQuant writes
+metadata it never paid for.
+
+The orchestrator is `experiments/phase4/arms_lfm2.py`. It plans the ceiling first -- the only arm
+that can fail for a reason unrelated to quantization -- then both widths of each method, reads each
+DynQuant arm's realised size back out of the map the allocator wrote rather than from the request,
+and refuses any arm more than 0.1% off its anchor. `--target-size` is a ceiling, so the drift that
+actually happens is *downward*, which is why the check is on the absolute value: a signed one would
+wave through the only failure that occurs.
+
+Every arm is a subprocess of `sys.executable`, and the run refuses to start if llm-compressor is
+not importable from it. The box has two environments and only one has it; per-arm interpreters
+would score the baselines and the DynQuant arms under two transformers versions, which is a
+difference in the measuring instrument reported as a difference between methods.
+
+---
+
+## 13. Status
 
 Done: the mixture, the admission rule, the metric, the screen, both splits measured, the DML leak
 closed, the task reachable from the CLI, the reasoning-trace and shots defects fixed, and signal
