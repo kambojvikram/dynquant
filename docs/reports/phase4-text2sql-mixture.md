@@ -733,13 +733,21 @@ a resumed arm whose map has been deleted is refused rather than reported at its 
 The second is coarser. `eval_flags` makes the seven *commands* identical, which says nothing about
 a record this run did not write; an arm kept from a 200-item smoke run resumes into a 400-item
 panel as a valid file with a complete `hits` vector, and the McNemar that pairs them compares two
-different problem sets. `check_pairable` now reads all seven records at the end of the run and
-compares them through `dynquant.commands.evaluate._comparability` -- the eval command's own
+different problem sets. `check_pairable` now reads every record scored so far, after each arm rather
+than once at the end -- a reused record from another run is then caught after the arm that exposed
+it instead of after six more -- and compares them through
+`dynquant.commands.evaluate._comparability` -- the eval command's own
 flattener, private and imported anyway, because a second copy of the contract here would go blind
 to exactly the field someone later adds to `PAIRING_FIELDS`. Delegating also keeps the check quiet
 about everything that legitimately differs per arm: accuracy, runtime, packed size, the batch size
 that fit in VRAM. The run stops before the manifest is written, since a manifest listing seven
 unpairable arms is worse than no manifest at all -- it is the artefact the comparison reads.
+
+That is as far as this got before the panel was staged, and it is not far enough. `_comparability`
+is the right contract for the question *"do these two records describe the same problem set?"* and
+it is the whole of what was guarding reuse. Every field in it -- task, backend, split, shots, shot
+seed, limit -- answers that question and only that question. None of them names the model, and none
+of them can be older than anything. The second half of this section returns to it.
 
 ### The one setting two identical commands can still disagree about
 
