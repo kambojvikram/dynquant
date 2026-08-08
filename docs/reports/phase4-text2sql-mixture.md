@@ -1472,6 +1472,35 @@ not a checkpoint to quantize six ways -- and finding that out from a five-minute
 from finding it out from a bf16 ceiling arm that has already run.
 
 
+### The calibration cost is worth measuring and not worth probing
+
+The projection above prices the *eval* half. The four baseline arms also pay a 256-sample
+calibration pass over 8 B parameters, which this campaign has never timed, and on this architecture
+there is reason to think it is not small: GPTQ's cost is per module, not per parameter, and
+linearizing the MoE turns 22 layers into 2112 expert matrices before the attention and conv blocks
+are counted. AWQ resolves 704 expert sets. A dense 8 B model is a poor guide to either.
+
+The obvious move is to probe it -- one GPTQ pass at 16 samples and one at 64 separates the fixed
+per-module term from the per-sample term and extrapolates to 256. It is the wrong move, and the
+reason is worth keeping. The calibration cost is **additive and independent of `--limit`**: it is
+the same number whether the panel scores 8000 items or 21 729. Lowering the item count cannot buy
+any of it back, and the item count is already floored at 8000 by the power calculation. So a
+measurement taken before the launch cannot change the launch -- there is no value of the number
+that selects a different limit, and dropping a baseline arm is not available because the six
+variants are the deliverable. It would be information with no decision attached to it, bought with
+two model loads and forty minutes.
+
+What it can change is the *next* panel, and that is precisely what the timing added to `_run`
+records for free while this one runs. The rule this leaves behind: probe a cost before committing
+only when some value of it would change what you commit to. Otherwise instrument it and read it
+afterwards.
+
+The one number the phase 3 records do supply is the per-invocation overhead, and it supplies it
+thirty-six times. Subtracting each record's own `seconds` from the gap to the previous record's
+mtime gives 45-64 s across every arm and every task on Ministral-8B -- model load and task setup,
+flat, with no arm paying more than another. Seven arms of that is six minutes, which is why it does
+not appear in the projection.
+
 ### `--resume` can tell that a record exists; it cannot tell whose it is
 
 The panel launches with `--resume`, and resume is the right default: an arm that dies at the fifth
