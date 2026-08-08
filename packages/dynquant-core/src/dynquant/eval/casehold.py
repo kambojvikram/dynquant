@@ -51,7 +51,7 @@ from typing import TYPE_CHECKING, Any
 
 from dynquant._logging import get_logger
 
-from .harness import EvalConfig, generate_batched
+from .harness import EvalConfig, generate_batched, strip_reasoning
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -192,7 +192,13 @@ def extract_answer(text: str) -> str | None:
     chosen; scoring that as a failure would attribute a formatting wobble to
     quantization damage. Returns ``None`` only when there is no candidate digit at
     all, which is the genuinely different outcome the format has broken down.
+
+    A reasoning trace is cut first (:func:`~dynquant.eval.harness.strip_reasoning`), a
+    no-op for a model that does not emit one. It matters here because this extractor
+    falls back to scanning the whole text: inside a trace the candidate it would find is
+    one the model may still have been arguing with.
     """
+    text = strip_reasoning(text)
     leading = _LEADING_CHOICE.match(text.strip())
     if leading:
         return leading.group(1)

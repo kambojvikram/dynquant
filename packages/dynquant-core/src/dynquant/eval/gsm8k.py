@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING, Any
 
 from dynquant._logging import get_logger
 
-from .harness import EvalConfig, generate_batched
+from .harness import EvalConfig, generate_batched, strip_reasoning
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -177,7 +177,13 @@ def extract_answer(text: str) -> str | None:
     marker has still solved the problem, and scoring that as a failure would
     overstate the damage from quantization -- format compliance degrades before
     arithmetic does.
+
+    A reasoning trace is cut first (:func:`~dynquant.eval.harness.strip_reasoning`), a
+    no-op for a model that does not emit one. It matters here because this extractor
+    falls back to scanning the whole text: inside a trace the candidate it would find is
+    one the model may still have been arguing with.
     """
+    text = strip_reasoning(text)
     marked = _GOLD.search(text)
     if marked:
         candidates = _NUMBER.findall(marked.group(1))

@@ -70,7 +70,7 @@ from typing import TYPE_CHECKING, Any
 
 from dynquant._logging import get_logger
 
-from .harness import EvalConfig, generate_batched
+from .harness import EvalConfig, generate_batched, strip_reasoning
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -338,7 +338,13 @@ def extract_answer(text: str) -> str | None:
     ``"intent 41"`` has chosen and scoring that as a failure would charge a
     formatting wobble to quantization. Out-of-range integers are skipped rather
     than accepted, so ``"81"`` is unparseable and not merely wrong.
+
+    A reasoning trace is cut first (:func:`~dynquant.eval.harness.strip_reasoning`), a
+    no-op for a model that does not emit one. It matters here because this extractor
+    falls back to scanning the whole text: inside a trace the candidate it would find is
+    one the model may still have been arguing with.
     """
+    text = strip_reasoning(text)
     leading = _LEADING_INDEX.match(text.strip())
     if leading and int(leading.group(1)) < N_INTENTS:
         return leading.group(1)

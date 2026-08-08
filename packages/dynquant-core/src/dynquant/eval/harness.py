@@ -44,6 +44,7 @@ expressible here, because there is only one implementation of each.
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeAlias
@@ -67,6 +68,7 @@ __all__ = [
     "generate_batched",
     "greedy_generation_config",
     "render_chat",
+    "strip_reasoning",
 ]
 
 _log = get_logger(__name__)
@@ -569,6 +571,42 @@ def _stopping_criteria(tokenizer: Any, config: EvalConfig) -> Any | None:
         )
         return None
     return StoppingCriteriaList([criterion])
+
+
+_REASONING_OPEN = re.compile(r"<think\s*>", re.IGNORECASE)
+_REASONING_CLOSE = re.compile(r"</think\s*>", re.IGNORECASE)
+
+
+def strip_reasoning(text: str) -> str:
+    """Return the answer region of a generation, dropping any reasoning trace.
+
+    A reasoning model answers in two parts and only the second is an answer. Handing an
+    extractor the whole thing does not merely add noise: a trace is where the model
+    argues *against* candidates, so the first plausible-looking answer in it is
+    frequently one it went on to reject. Measured on ``LFM2.5-8B-A1B`` over the
+    text-to-SQL mixture, cutting the trace moved 32 items from 6.2% to 40.6% -- the
+    extractor had been reading queries out of the deliberation, one of them immediately
+    followed by "But note that column name is ...".
+
+    Three cases, and the third is the one that carries the honesty of the metric:
+
+    - **No trace at all** -- returned unchanged. This is every non-reasoning model, so
+      wiring this into an extractor cannot move a number that has already been
+      collected, which is why all of them use it rather than only the one that needed it.
+    - **A closed trace** -- everything after the last close tag. Last, not first, to
+      match what the model's own chat template does when it strips a previous turn
+      (``content.split("</think>")[-1]``); the convention is the model's, not this
+      package's.
+    - **An open trace that never closed** -- ``""``. The model spent its whole token
+      budget thinking and never answered, so there is no answer region, and the caller
+      counts it unparseable. Returning the trace instead would score the model on a
+      query it had not finished reasoning about and report a truncated budget as a wrong
+      answer -- which reads as quantization damage rather than as a decode setting.
+    """
+    closed = list(_REASONING_CLOSE.finditer(text))
+    if closed:
+        return text[closed[-1].end() :]
+    return "" if _REASONING_OPEN.search(text) else text
 
 
 def _truncate(text: str, stops: Sequence[str]) -> str:
