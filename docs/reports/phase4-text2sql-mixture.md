@@ -431,6 +431,61 @@ One more trap is already visible in the config: `tie_word_embeddings: true`. On 
 because the shared tensor gets counted once and quantized never. The six arms must weigh their
 bytes on disk, and none of them may ignore the head.
 
+### The driver, and the one seam it needed
+
+`experiments/phase4/baselines_lfm2.py` runs the arms. Four decisions in it are the §10 findings
+turned into code, and each one is a refusal rather than a default:
+
+- **It will not run without linearizing.** `get_non_linearized_moes` is called before and after
+  `linearize_moe`, and a surviving bank aborts the run. The failure this guards is not a crash: a
+  run where linearization silently did nothing is the 8.5% run, and it succeeds.
+- **`ignore` is empty.** Not "we did not set it" -- a named module-level constant with the
+  tied-embedding reason attached, because `["lm_head"]` is the convention and the convention is
+  what produced 7.36 bits last time.
+- **The expert mass is charged explicitly.** The accounting walks a `meta`-device reference and
+  charges `nn.Linear` weights *and* the 3-D banks by name, rather than inferring the banks from a
+  module walk. The walk necessarily runs before linearization; a walk that ran after would need a
+  GPU to produce a number this has to give for free. Both contracted dimensions -- 2048 and 1792 --
+  are multiples of 128, so groups divide evenly, and a group size that does not divide is a hard
+  error rather than an accounting that silently omits padding it does not model.
+- **A 3-bit arm cannot be saved.** `compressed-tensors` packs 4 and 8 bits; at any other width
+  `save_pretrained(save_compressed=True)` writes dequantized bf16. The directory then reports ~16
+  bits per weight for an arm whose arithmetic is 3-bit, which is the wrong-denominator error of this
+  section one level further out -- so 3-bit arms are scored in memory and never written.
+
+Run against the real config, the accounting closes exactly, which is the property worth having:
+716 570 624 + 7 751 073 792 = 8 467 644 416 quantized, leaving 211 712 parameters -- the norms --
+at fp16, 0.01% of the bits. The matched-byte targets every arm is held to:
+
+| Width | Accounted bits | Bytes | vs bf16 |
+|---|---|---|---|
+| bf16 ceiling | 16 | 16 936 006 912 | — |
+| 4-bit g128 | 4.157 | 4 399 629 312 | 3.85× |
+| 3-bit g128 | 3.149 | 3 332 904 576 | 5.08× |
+
+Scoring those arms needed one change outside the experiment. `dynquant eval` takes a path, and a
+3-bit arm has none for the reason just given. `evaluate.run` now takes an optional in-memory model.
+It is a parameter on the command rather than a second evaluator beside it because everything below
+that line is what makes two numbers comparable -- the prompt, the shot prefix and its seed, the
+decode settings, the scorer, the per-item hit vector, and the `PAIRING_FIELDS` guard a McNemar test
+checks before it agrees to pair two records. `experiments/four_point` has its own `run_eval`, and
+the cost of that is exactly this: its records cannot be paired against a `dynquant eval` record
+without arguing that two implementations of the same settings agree. Passing a model *and* `--map`
+is refused, because `--map` quantizes the model it is given and either behaviour on an
+already-quantized one reports a doubly-quantized model under one method's name.
+
+One llmcompressor fact is now in `experiments/_llmc.py` rather than copied per experiment, because
+it is the kind of finding a drifting copy un-finds: `oneshot` fits scales and leaves the weight
+tensor alone for every recipe except GPTQ. An in-process arm that skips the materialization step
+scores bf16 weights with unused scales bolted on. That was found once by RTN returning
+byte-identical predictions to bf16 -- and the dangerous case is AWQ, whose transform *does* rewrite
+weights, so an unrounded AWQ arm produces plausibly-different numbers rather than suspiciously
+identical ones.
+
+The decode budget has no default in this driver. It is read off the ceiling run's own closure
+distribution, and a default here would be a second guess at the number that measurement exists to
+replace -- which is how §8's 5.50% happened.
+
 ---
 
 ## 11. Status
@@ -443,12 +498,19 @@ The 5.50% headroom figure in §8 is **withdrawn** — it measured the extractor,
 is kept in this report because the diagnosis is the finding, and deleting the number would delete
 the evidence that a campaign can be configured off one.
 
+Also done since: the six-arm driver, the in-process eval seam it needed, and the accounting run
+against the real config -- 8.46% / 91.54%, closing to the parameter, with matched-byte targets of
+4 399 629 312 B at 4 bits and 3 332 904 576 B at 3 bits. What that buys is that every arm's size is
+now a number this campaign computed from the checkpoint's own module tree, not a width someone
+typed into a recipe.
+
 Not done, in order: headroom re-measured with the fixes, at a budget generous enough that the
 closure distribution comes out uncensored and the arms' budget can be *read* rather than guessed
-(§8's 256 was censored -- closures were still arriving at the cap); the fine-tune, with the expert
-mass measured; then the six arms at matched bytes -- GPTQ and AWQ through the linearized structure
-verified bit-exact in §10, all three widths weighed on disk rather than requested; then the paired
-comparison over stored per-item hits.
+(§8's 256 was censored -- closures were still arriving at the cap); `load_linearized` exercised on
+the GPU, because the 22-banks-to-zero assertion is the one part of the driver that CPU tests cannot
+reach; the fine-tune, with the expert mass measured; then the six arms at matched bytes -- GPTQ and
+AWQ through the linearized structure verified bit-exact in §10, all three widths weighed rather
+than requested; then the paired comparison over stored per-item hits.
 
 §10 was written expecting linearization to be the largest remaining unknown in the phase. It is
 not: llmcompressor already ships it, it detects all 22 banks here, and the swap is bit-identical.
