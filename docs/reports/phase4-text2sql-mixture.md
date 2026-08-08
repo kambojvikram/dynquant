@@ -410,6 +410,23 @@ Bit-identical, not `allclose`. The weaker assertion would have passed over a cha
 order, and a reduction order that changes under one arm and not the others is exactly the kind of
 difference that shows up later as an unexplained delta with no owner.
 
+### Measured on the real checkpoint: 8.5% → 100.0%
+
+Run against `/workspace/models/LFM2.5-8B-A1B`, on CPU, so it did not have to queue behind the GPU:
+
+| | before | after |
+|---|---|---|
+| Batched banks detected | 22 | **0** |
+| `nn.Linear` modules | 89 | 2201 |
+| Parameters reachable as `nn.Linear` | 716 570 624 | **8 467 644 416** |
+| Share of the checkpoint | 8.46% | **100.00%** |
+
+The parameter row is the one that matters. A module count says conversion happened; it is equally
+consistent with a mapping that reached most banks and skipped the widest one. And 8 467 644 416 is
+the same figure the `meta`-device accounting reached from the other direction -- an `nn.Linear` walk
+over the *unconverted* tree plus an explicit charge for the 3-D banks. Two independent paths, one
+number, so neither is resting on the other.
+
 ### Two consequences of MoE that survive the fix
 
 Both are properties of the architecture rather than of this harness, and both have to be reported

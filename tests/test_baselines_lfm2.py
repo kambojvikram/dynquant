@@ -18,8 +18,10 @@ guard and the save refusal are all reachable from CPU CI.
 from __future__ import annotations
 
 import argparse
+import builtins
 import contextlib
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -313,9 +315,15 @@ def _fake_stack(model: Any, *, surviving: int, seen: dict[str, Any]) -> Any:
     }
     saved = {name: sys.modules.get(name) for name in modules}
     sys.modules.update(modules)  # type: ignore[arg-type]
+    printed: list[str] = []
+    real_print = builtins.print
+    builtins.print = lambda *a, **k: printed.append(str(a[0]))  # type: ignore[assignment]
     try:
         yield
     finally:
+        builtins.print = real_print
+        if printed:
+            seen["printed"] = printed[-1]
         for name, module in saved.items():
             if module is None:
                 del sys.modules[name]
@@ -363,3 +371,34 @@ def test_the_gate_runs_on_the_device_it_was_asked_for(driver: Any) -> None:
 
     assert seen["device_map"] == "cpu"
     assert seen["linearized"] is True
+
+
+def test_the_gate_reports_the_parameter_share_not_just_a_module_count(driver: Any) -> None:
+    """A module count says conversion happened; only the parameter share says it mattered.
+
+    The claim this driver rests on is that linearization takes the recipe from 8.5% of the
+    checkpoint to all of it. 2201 converted modules is consistent with that and also
+    consistent with a mapping that reached most banks and skipped the widest one -- so the
+    number that has to come out of the gate is the fraction of *parameters* now reachable as
+    ``nn.Linear``, computed the same way ``visibility`` computes the 8.5%.
+
+    Turns red when: the share is dropped back to a count, or is computed over the modules'
+    parameter total rather than the model's -- which is 1.0 by construction and tells nobody
+    anything.
+    """
+    import torch
+
+    class _Partly(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reached = torch.nn.Linear(10, 10, bias=False)
+            self.missed = torch.nn.Parameter(torch.zeros(30, 10))
+
+    seen: dict[str, Any] = {}
+    with _fake_stack(_Partly(), surviving=0, seen=seen):
+        driver.load_linearized("/unused", device="cpu")
+    report = json.loads(seen["printed"])
+
+    assert report["linear_params"] == 100
+    assert report["params"] == 400
+    assert report["linear_share"] == 0.25

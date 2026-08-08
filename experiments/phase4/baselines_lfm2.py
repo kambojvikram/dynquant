@@ -265,11 +265,21 @@ def load_linearized(
             "is 8.5% of the weights, and the run would succeed anyway"
         )
 
-    linears = sum(1 for m in model.modules() if isinstance(m, torch.nn.Linear))
+    # Modules and parameters, because only the second one answers the question. A module
+    # count says conversion happened; the share of the checkpoint now reachable as
+    # ``nn.Linear`` is what the recipe will actually quantize, and it is the number the 8.5%
+    # measurement has to be compared against. ``visibility`` computes the same quantity on
+    # the unconverted tree, so the two are the before and after of one claim.
+    linears = [m for m in model.modules() if isinstance(m, torch.nn.Linear)]
+    linear_params = sum(m.weight.numel() for m in linears)
+    total = sum(p.numel() for p in model.parameters())
     report = {
         "banks_before": before,
         "banks_after": after,
-        "linear_modules": linears,
+        "linear_modules": len(linears),
+        "linear_params": linear_params,
+        "params": total,
+        "linear_share": round(linear_params / total, 4),
         "device": device,
     }
     print(json.dumps(report), flush=True)
