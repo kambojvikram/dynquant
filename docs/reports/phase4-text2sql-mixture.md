@@ -716,6 +716,31 @@ not importable from it. The box has two environments and only one has it; per-ar
 would score the baselines and the DynQuant arms under two transformers versions, which is a
 difference in the measuring instrument reported as a difference between methods.
 
+### `--resume` is where a panel stops being one panel
+
+Seven arms is seven hours, so a crash in arm six must not re-spend arms one through five. But
+`--resume` is also the only path by which a record enters the manifest without this run having
+produced it, and a leftover record's entire claim to provenance is its filename. Two failures
+follow, both of which reach the table rather than the console.
+
+The first: the original reuse branch restored `record` and skipped everything else, so a resumed
+arm's `nbytes` stayed `None`. The manifest row then read as an arm that never claimed a size
+rather than one whose size stopped being checked -- and because `check_matched` was skipped with
+it, a map that had drifted since would pass. Arms are now **weighed on both paths and run on one**:
+the DynQuant arms are still read back out of their maps and still checked against the anchor, and
+a resumed arm whose map has been deleted is refused rather than reported at its request.
+
+The second is coarser. `eval_flags` makes the seven *commands* identical, which says nothing about
+a record this run did not write; an arm kept from a 200-item smoke run resumes into a 400-item
+panel as a valid file with a complete `hits` vector, and the McNemar that pairs them compares two
+different problem sets. `check_pairable` now reads all seven records at the end of the run and
+compares them through `dynquant.commands.evaluate._comparability` -- the eval command's own
+flattener, private and imported anyway, because a second copy of the contract here would go blind
+to exactly the field someone later adds to `PAIRING_FIELDS`. Delegating also keeps the check quiet
+about everything that legitimately differs per arm: accuracy, runtime, packed size, the batch size
+that fit in VRAM. The run stops before the manifest is written, since a manifest listing seven
+unpairable arms is worse than no manifest at all -- it is the artefact the comparison reads.
+
 ---
 
 ## 13. Status

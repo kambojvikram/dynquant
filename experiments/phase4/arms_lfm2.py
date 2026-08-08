@@ -280,6 +280,12 @@ def map_nbytes(save_map: Path, key: str) -> int:
     and this is what was allocated, and :func:`check_matched` exists precisely because
     those two are not the same number.
     """
+    if not save_map.is_file():
+        raise SystemExit(
+            f"{save_map} does not exist. Under --resume this means the record was kept and "
+            f"the allocation that produced it was not, so the arm's realised size cannot be "
+            f"checked against its anchor. Delete the record and let the arm run again."
+        )
     payload = json.loads(save_map.read_text(encoding="utf-8"))
     maps = payload["maps"]
     if key not in maps:
@@ -343,6 +349,44 @@ def require_one_stack() -> None:
         )
 
 
+def check_pairable(arms: list[Arm]) -> None:
+    """Every record in the panel agrees on the settings a paired test refuses to cross.
+
+    :func:`eval_flags` makes the seven *commands* identical. This makes the seven *records*
+    identical, and those stop being the same statement the moment a record was not written
+    by this run -- which is what ``--resume`` is for. A leftover record's only claim to
+    provenance is its filename, so one scored at a different ``--limit``, or against the
+    pre-decontamination split, staples in silently and is found at compare time if at all.
+
+    Read through the eval command's own ``_comparability``. It is private and imported
+    anyway, because the alternative is a second copy of the contract living here -- and a
+    field added to ``PAIRING_FIELDS`` and not to the copy would leave this guard blind to
+    exactly the setting it was added to catch.
+
+    The ceiling is the reference rather than an arbitrary member: every difference in the
+    table is measured against it, so a divergence is reported as the other arm's, which is
+    the direction a reader can act on.
+    """
+    from dynquant.commands.evaluate import _comparability
+
+    records = {
+        arm.label: json.loads(Path(arm.record).read_text(encoding="utf-8"))
+        for arm in arms
+        if arm.record
+    }
+    reference = arms[0].label
+    expected = _comparability(records[reference])
+    for label, record in records.items():
+        found = _comparability(record)
+        if found != expected:
+            differed = {k: (expected[k], found[k]) for k in expected if expected[k] != found[k]}
+            raise SystemExit(
+                f"{label} was not scored under the same settings as {reference}: {differed} "
+                f"as (reference, {label}). Their hit vectors describe different problem sets "
+                f"and cannot be paired. A reused record is the usual cause."
+            )
+
+
 def do_run(args: argparse.Namespace) -> int:
     require_one_stack()
     out = Path(args.out)
@@ -359,25 +403,34 @@ def do_run(args: argparse.Namespace) -> int:
 
     for arm in arms:
         record = out / f"{arm.label}.json"
-        if args.resume and record.is_file():
+        save_map = maps / f"{arm.label}.json"
+        # Weighed on both paths, run on one. A reused arm still has to appear in the
+        # manifest at its realised size: a resume that skipped the weighing would write
+        # `"nbytes": null` where the matched-byte evidence goes, and the panel would
+        # read as one that never claimed a size rather than one that stopped checking.
+        reused = args.resume and record.is_file()
+        if reused:
             print(f"\n{arm.label}: reusing {record}", flush=True)
-            arm.record = str(record)
-            continue
         if arm.kind == "ceiling":
-            _run(ceiling_cmd(args, arm, record), what=arm.label)
+            if not reused:
+                _run(ceiling_cmd(args, arm, record), what=arm.label)
         elif arm.kind == "dq":
-            save_map = maps / f"{arm.label}.json"
-            _run(dq_inspect_cmd(args, arm, save_map), what=f"{arm.label} allocation")
+            if not reused:
+                _run(dq_inspect_cmd(args, arm, save_map), what=f"{arm.label} allocation")
             arm.nbytes = map_nbytes(save_map, str(arm.target_bytes))
             check_matched(arm)
-            _run(dq_eval_cmd(args, arm, save_map, record), what=arm.label)
             arm.extra["map"] = str(save_map)
+            if not reused:
+                _run(dq_eval_cmd(args, arm, save_map, record), what=arm.label)
         else:
             # The baselines' size is fixed by their format, so it *is* the anchor -- there
             # is nothing for `check_matched` to catch and nothing to read back.
             arm.nbytes = arm.target_bytes
-            _run(baseline_cmd(args, arm, record), what=arm.label)
+            if not reused:
+                _run(baseline_cmd(args, arm, record), what=arm.label)
         arm.record = str(record)
+
+    check_pairable(arms)
 
     manifest = out / "arms.json"
     manifest.write_text(

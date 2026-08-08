@@ -335,3 +335,186 @@ def test_every_subprocess_is_this_interpreter(arms: Any) -> None:
     for command in commands:
         assert command[0] == sys.executable
     assert commands[1][1].endswith("baselines_lfm2.py")
+
+
+# --- resume ----------------------------------------------------------------------------
+#
+# `--resume` exists because the panel is seven hours and a crash in arm six should not
+# re-spend arms one through five. It is also the only path where a record enters the
+# manifest without this run having produced it, so both failures below are its alone.
+
+
+def _record(**overrides: Any) -> dict[str, Any]:
+    """A record shaped like the one `dynquant eval` writes, in the fields that pair."""
+    record = {
+        "task": "text2sql",
+        "backend": "torch",
+        "split": "test",
+        "shots": 2,
+        "shot_seed": 0,
+        "limit": 400,
+        "decode": {"max_new_tokens": 384, "batch_size": 8},
+        "accuracy": 0.5,
+        "hits": [1, 0],
+    }
+    record.update(overrides)
+    return record
+
+
+def _panel(arms: Any, tmp_path: Path, records: dict[str, dict[str, Any]]) -> list[Any]:
+    """Arms carrying written records, as `do_run` leaves them before the manifest."""
+    built = []
+    for label, payload in records.items():
+        path = tmp_path / f"{label}.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        arm = arms.Arm(label, "ceiling" if label == "bf16" else "dq", None, None)
+        arm.record = str(path)
+        built.append(arm)
+    return built
+
+
+def test_two_arms_scored_on_different_problem_sets_are_refused(arms: Any, tmp_path: Path) -> None:
+    """A reused record's only claim to provenance is its filename, so the records are read.
+
+    ``eval_flags`` makes the seven commands identical, which proves nothing about a record
+    this run did not write. The case below is the realistic one: an arm kept from a 200-item
+    smoke run resumed into a 400-item panel. Both files are valid, both carry ``hits``, and
+    the McNemar that pairs them would silently compare two different problem sets.
+
+    Refused at run time rather than at compare time because that is where the operator can
+    still act -- deleting one record costs one arm, discovering it later costs the panel.
+
+    Turns red when: the check stops reading the files, or only checks resumed arms.
+    """
+    panel = _panel(
+        arms,
+        tmp_path,
+        {"bf16": _record(), "dq_4b": _record(), "dq_3b": _record(limit=200)},
+    )
+
+    with pytest.raises(SystemExit, match="dq_3b was not scored under the same settings as bf16"):
+        arms.check_pairable(panel)
+
+
+def test_the_arms_may_differ_in_everything_the_pairing_does_not_read(
+    arms: Any, tmp_path: Path
+) -> None:
+    """Read through the eval's own ``_comparability``, not by diffing the records.
+
+    Every arm's record legitimately differs -- accuracy, runtime, the quantized size, the
+    batch size that fit in VRAM. A whole-record comparison would fire on all seven runs of
+    a correct panel, which is a guard nobody keeps. Delegating to the eval command's own
+    flattener is also what keeps this from being a second copy of the contract: a field
+    added to ``PAIRING_FIELDS`` reaches this check without anyone editing it.
+
+    Turns red when: the check compares records directly, or reimplements the field list.
+    """
+    panel = _panel(
+        arms,
+        tmp_path,
+        {
+            "bf16": _record(accuracy=0.61, decode={"max_new_tokens": 384, "batch_size": 8}),
+            "dq_4b": _record(accuracy=0.58, decode={"max_new_tokens": 384, "batch_size": 2}),
+        },
+    )
+
+    arms.check_pairable(panel)
+
+    assert "batch_size" not in PAIRING_FIELDS
+    assert "max_new_tokens" in DECODE_PAIRING_FIELDS
+
+
+def test_a_resumed_arm_is_weighed_even_though_it_is_not_run(
+    arms: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Skipping the work must not skip the evidence the work was at matched bytes.
+
+    The whole panel is an at-matched-bytes claim, and the manifest is where it is recorded.
+    A resume that only restored ``record`` left ``nbytes`` at ``None``, so a resumed row
+    read as an arm that never claimed a size rather than one whose size stopped being
+    checked -- and ``check_matched`` never ran, so a map that had drifted since would pass.
+
+    Turns red when: the resume branch short-circuits the arm before it is priced.
+    """
+    out = tmp_path / "arms"
+    (out / "maps").mkdir(parents=True)
+    anchors = {4: 4_399_629_312, 3: 3_332_904_576}
+    for label, anchor in (("dq_4b", 4), ("dq_3b", 3)):
+        (out / "maps" / f"{label}.json").write_text(
+            json.dumps({"maps": {str(anchors[anchor]): {"nbytes": anchors[anchor], "bits": {}}}}),
+            encoding="utf-8",
+        )
+    for label in ("bf16", "gptq_4b", "gptq_3b", "awq_4b", "awq_3b", "dq_4b", "dq_3b"):
+        (out / f"{label}.json").write_text(json.dumps(_record()), encoding="utf-8")
+
+    monkeypatch.setattr(arms, "require_one_stack", lambda: None)
+    monkeypatch.setattr(arms, "anchor_bytes", lambda model, group_size: anchors)
+    monkeypatch.setattr(
+        arms, "_run", lambda *a, **k: pytest.fail("a resumed arm must not be re-run")
+    )
+
+    argv = [*RUN[:-1], str(out), "--resume"]
+    assert arms.do_run(_args(arms, argv)) == 0
+
+    manifest = json.loads((out / "arms.json").read_text(encoding="utf-8"))
+    priced = {arm["label"]: arm["nbytes"] for arm in manifest["arms"]}
+    assert priced == {
+        "bf16": None,
+        "gptq_4b": 4_399_629_312,
+        "awq_4b": 4_399_629_312,
+        "dq_4b": 4_399_629_312,
+        "gptq_3b": 3_332_904_576,
+        "awq_3b": 3_332_904_576,
+        "dq_3b": 3_332_904_576,
+    }
+    assert all(arm["record"] for arm in manifest["arms"])
+
+
+def test_the_run_itself_refuses_a_panel_it_cannot_pair(
+    arms: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The check has to be wired into the run, not merely available to it.
+
+    Same fixture as the pricing test with one record moved to a 200-item limit, because a
+    guard nothing calls is the failure mode a unit test on the guard cannot see. The run
+    stops before the manifest: a manifest listing seven unpairable arms is worse than none,
+    since it is the artefact the comparison reads.
+
+    Turns red when: the call is dropped from ``do_run``, or moved after the manifest write.
+    """
+    out = tmp_path / "arms"
+    (out / "maps").mkdir(parents=True)
+    anchors = {4: 4_399_629_312, 3: 3_332_904_576}
+    for label, anchor in (("dq_4b", 4), ("dq_3b", 3)):
+        (out / "maps" / f"{label}.json").write_text(
+            json.dumps({"maps": {str(anchors[anchor]): {"nbytes": anchors[anchor], "bits": {}}}}),
+            encoding="utf-8",
+        )
+    for label in ("bf16", "gptq_4b", "gptq_3b", "awq_4b", "awq_3b", "dq_4b"):
+        (out / f"{label}.json").write_text(json.dumps(_record()), encoding="utf-8")
+    (out / "dq_3b.json").write_text(json.dumps(_record(limit=200)), encoding="utf-8")
+
+    monkeypatch.setattr(arms, "require_one_stack", lambda: None)
+    monkeypatch.setattr(arms, "anchor_bytes", lambda model, group_size: anchors)
+    monkeypatch.setattr(arms, "_run", lambda *a, **k: pytest.fail("nothing should re-run"))
+
+    with pytest.raises(SystemExit, match="cannot be paired"):
+        arms.do_run(_args(arms, [*RUN[:-1], str(out), "--resume"]))
+
+    assert not (out / "arms.json").exists()
+
+
+def test_a_resumed_dynquant_arm_whose_allocation_is_gone_is_refused(
+    arms: Any, tmp_path: Path
+) -> None:
+    """The record says what it scored; only the map says what it cost.
+
+    Resuming into a directory whose ``maps/`` was cleared is the ordinary way to reach this
+    -- the records are the expensive artefacts and the maps look like scratch. Without the
+    map there is no realised size, so the arm cannot be shown to be byte-matched and the
+    honest outcome is a refusal, not a row with the request copied into the size column.
+
+    Turns red when: a missing map falls through to a traceback, or to the request.
+    """
+    with pytest.raises(SystemExit, match="does not exist"):
+        arms.map_nbytes(tmp_path / "dq_4b.json", "4399629312")
