@@ -809,3 +809,46 @@ def test_every_command_the_panel_issues_is_accepted_by_the_program_it_runs(
     assert issued == 9, (
         "one ceiling, four baselines, and two DynQuant arms that allocate before they score"
     )
+
+
+def test_where_the_panel_loads_is_one_passthrough_and_it_reaches_every_arm(
+    arms: Any, tmp_path: Path
+) -> None:
+    """Seven arms on one device, chosen once, and the allocator deliberately not on it.
+
+    The default is `cuda` because that is where the panel runs. The flag exists because the
+    box it runs on holds the GPU for hours at a time under the fine-tune that produces the
+    signal, and a driver that can only be exercised on the hardware the real run needs is a
+    driver first exercised during the real run. `CUDA_VISIBLE_DEVICES=` would hide the GPU
+    from the arms that read it from the environment and change nothing for the one that
+    passes `device_map="cuda"` regardless, which was `baselines_lfm2 run` until this flag.
+
+    `dq_inspect_cmd` is excluded on purpose rather than by omission. Allocation reads a
+    stats file and a config; it never loads weights, `inspect` already defaults to cpu, and
+    routing it to the panel's device would put the one CPU-only step of the panel on the
+    GPU the passthrough exists to keep clear.
+
+    Turns red when: an arm kind stops taking the flag, one of them hardcodes a device, or
+    the allocation starts loading onto the panel's device.
+    """
+    assert _args(arms).device == "cuda"
+
+    args = _args(arms, [*RUN, "--device", "cpu"])
+    loading, allocating = 0, 0
+    for arm in arms.plan_arms(ANCHORS):
+        record, save_map = tmp_path / f"{arm.label}.json", tmp_path / f"{arm.label}.map.json"
+        if arm.kind == "ceiling":
+            built = [arms.ceiling_cmd(args, arm, record)]
+        elif arm.kind == "dq":
+            built = [arms.dq_eval_cmd(args, arm, save_map, record)]
+            allocation = arms.dq_inspect_cmd(args, arm, save_map)
+            assert "--device" not in allocation
+            allocating += 1
+        else:
+            built = [arms.baseline_cmd(args, arm, record)]
+        for cmd in built:
+            assert cmd[cmd.index("--device") + 1] == "cpu"
+            assert cmd.count("--device") == 1
+            loading += 1
+
+    assert (loading, allocating) == (7, 2)

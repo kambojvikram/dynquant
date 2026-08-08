@@ -138,6 +138,13 @@ def eval_flags(args: argparse.Namespace, label: str) -> list[str]:
     flags = [
         "--label",
         label,
+        # On every arm, including the baselines, because a panel where one arm was loaded
+        # somewhere else is not a panel either. It is a passthrough rather than a constant
+        # so the whole driver can be rehearsed end to end on a machine whose GPU is busy --
+        # which is the machine this panel is scheduled on, and the seven-arm rehearsal is
+        # the only check that reaches the manifest, the pairing guard and the table.
+        "--device",
+        args.device,
         "--split",
         args.split,
         "--shots",
@@ -542,6 +549,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--moments", default=None, help="channel moments, for measured sensitivity")
     run.add_argument("--out", required=True)
     run.add_argument("--group-size", type=int, default=128)
+    run.add_argument("--device", default="cuda", help="where every arm loads (default: cuda)")
     run.add_argument("--trust-remote-code", action="store_true")
     run.add_argument("--resume", action="store_true", help="skip arms whose record exists")
     run.add_argument("--calib-samples", type=int, default=256)

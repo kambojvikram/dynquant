@@ -328,7 +328,7 @@ def quantize(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
     from llmcompressor import oneshot
     from transformers import AutoTokenizer
 
-    model, linearization = load_linearized(args.model, dtype=args.dtype)
+    model, linearization = load_linearized(args.model, dtype=args.dtype, device=args.device)
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     if tokenizer.pad_token is None:
@@ -501,6 +501,12 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--pipeline", default="sequential")
         p.add_argument("--seed", type=int, default=0)
         p.add_argument("--dtype", default="bfloat16")
+        # Where the model loads for the recipe. `cuda` because that is where a calibration
+        # pass belongs; exposed because otherwise `run` -- the only subcommand the panel
+        # uses -- cannot be exercised at all on a box whose GPU is busy, and a driver that
+        # can only be rehearsed on the hardware the real run needs is a driver that gets
+        # rehearsed for the first time during the real run.
+        p.add_argument("--device", default="cuda")
 
     def eval_flags(p: argparse.ArgumentParser) -> None:
         p.add_argument("--label", required=True)

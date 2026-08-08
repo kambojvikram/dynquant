@@ -280,6 +280,17 @@ def test_a_three_bit_arm_refuses_to_be_saved(driver: Any) -> None:
 # --- the linearization gate -------------------------------------------------------------
 
 
+class _PastTheLoadError(Exception):
+    """Raised by the fake stack the moment a caller gets past the part being asserted."""
+
+
+def _past_the_load(what: str) -> Any:
+    def stop(*_a: Any, **_k: Any) -> Any:
+        raise _PastTheLoadError(what)
+
+    return stop
+
+
 @contextlib.contextmanager
 def _fake_stack(model: Any, *, surviving: int, seen: dict[str, Any]) -> Any:
     """Stand in for llm-compressor's detector and transformers' loader.
@@ -296,8 +307,14 @@ def _fake_stack(model: Any, *, surviving: int, seen: dict[str, Any]) -> Any:
         calls["n"] += 1
         return [object()] * (22 if calls["n"] == 1 else surviving)
 
+    # `oneshot` and `AutoTokenizer` are here only so a caller that goes *through* the load
+    # -- `quantize` does -- reaches them and stops, loudly. Nothing past the load is faked,
+    # because nothing past it is what these tests assert.
+    llmc = types.ModuleType("llmcompressor")
+    llmc.oneshot = _past_the_load("oneshot")  # type: ignore[attr-defined]
+
     modules = {
-        "llmcompressor": types.ModuleType("llmcompressor"),
+        "llmcompressor": llmc,
         "llmcompressor.modeling": types.ModuleType("llmcompressor.modeling"),
         "llmcompressor.modeling.moe": types.ModuleType("llmcompressor.modeling.moe"),
         "llmcompressor.modeling.moe.linearize": types.SimpleNamespace(
@@ -311,6 +328,7 @@ def _fake_stack(model: Any, *, surviving: int, seen: dict[str, Any]) -> Any:
             AutoModelForCausalLM=types.SimpleNamespace(
                 from_pretrained=lambda _s, **kw: (seen.update(kw), model)[1]
             ),
+            AutoTokenizer=types.SimpleNamespace(from_pretrained=_past_the_load("tokenizer")),
         ),
     }
     saved = {name: sys.modules.get(name) for name in modules}
@@ -371,6 +389,47 @@ def test_the_gate_runs_on_the_device_it_was_asked_for(driver: Any) -> None:
 
     assert seen["device_map"] == "cpu"
     assert seen["linearized"] is True
+
+
+def test_the_recipe_loads_on_the_device_the_panel_chose(driver: Any) -> None:
+    """The flag the linearize gate already had, on the subcommand the panel actually runs.
+
+    ``run`` is the only subcommand ``arms_lfm2`` invokes, and until now it was the one path
+    in the panel that loaded onto ``cuda`` no matter what it was told -- ``--device`` existed
+    on ``linearize`` alone. That made the seven-arm rehearsal impossible on the box the panel
+    is scheduled on, whose GPU is held for hours by the fine-tune that produces the signal
+    the panel scores.
+
+    Turns red when: ``--device`` stops reaching ``load_linearized`` from ``quantize``, which
+    leaves it parsed and ignored -- the failure mode where the rehearsal OOMs against a
+    fine-tune rather than running beside it.
+    """
+    import torch
+
+    seen: dict[str, Any] = {}
+    with _fake_stack(torch.nn.Linear(4, 4), surviving=0, seen=seen):
+        args = _args(
+            driver,
+            [
+                "run",
+                "--model",
+                "/unused",
+                "--label",
+                "gptq_4b",
+                "--method",
+                "gptq",
+                "--bits",
+                "4",
+                "--max-new-tokens",
+                "1024",
+                "--device",
+                "cpu",
+            ],
+        )
+        with pytest.raises(_PastTheLoadError):
+            driver.do_run(args)
+
+    assert seen["device_map"] == "cpu"
 
 
 def test_the_gate_reports_the_parameter_share_not_just_a_module_count(driver: Any) -> None:
