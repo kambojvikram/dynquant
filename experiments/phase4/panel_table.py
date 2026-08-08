@@ -129,32 +129,51 @@ def load_panel(out: Path) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     records: dict[str, dict[str, Any]] = {}
     for arm in manifest["arms"]:
-        found = resolve_record(out, arm.get("record"))
+        found = resolve_stored(out, arm.get("record"))
         if found is not None:
             records[arm["label"]] = json.loads(found.read_text(encoding="utf-8"))
     return manifest, records
 
 
-def resolve_record(out: Path, stored: str | None) -> Path | None:
-    """The record a manifest entry names, found from beside the manifest if need be.
+def resolve_stored(out: Path, stored: str | None) -> Path | None:
+    """A path the manifest names, found from beside the manifest if need be.
 
-    The driver writes ``str(out / f"{label}.json")``, so a run launched with a relative
-    ``--out`` stores relative paths -- which resolve against whatever directory the *table*
-    is later run from, not the one the panel ran in. Read literally, a manifest moved off
-    the box, or simply read from a different cwd, is a panel in which no arm was scored:
-    seven arms, seven silent misses, and a table that prints ``0/7`` for a run that finished.
+    The driver writes ``str(out / ...)``, so a run launched with a relative ``--out`` stores
+    relative paths -- which resolve against whatever directory the *table* is later run from,
+    not the one the panel ran in. Read literally, a manifest moved off the box, or simply read
+    from a different cwd, is a panel in which no arm was scored: seven arms, seven silent
+    misses, and a table that prints ``0/7`` for a run that finished.
 
-    So a stored path that is not a file is retried beside the manifest. That cannot pick up
-    a foreign record, because the writer's own invariant is that the file is named for the
-    arm and sits in ``out`` -- the same two facts the retry uses.
+    So a stored path that is not a file is retried beside the manifest. That cannot pick up a
+    foreign file, because the writer's own invariant is that these artifacts sit in ``out`` --
+    the same fact the retry uses.
+
+    Every stored path goes through here, and the manifest names three kinds: the record, the
+    saved bit map, and the ``.quant.json`` side file derived from the record's name. Fixing
+    only the record is the version of this bug that is worse than not fixing it at all -- the
+    arms score, so the table looks whole, while the fp16 ceiling silently loses its parameter
+    count and every DynQuant arm silently loses its allocation. Both of those print as absence,
+    and absence of a floor breach is exactly what §12 pre-registered 4 bits to show.
+
+    The retry is the *longest* tail of the stored path that exists under ``out``, not the bare
+    filename, and the difference is not academic: records are written to ``out/<label>.json``
+    and maps to ``out/maps/<label>.json``, so a map retried by filename alone lands on the
+    record of the same arm. That file parses, carries no ``maps`` key, and yields no
+    allocation -- a wrong file read successfully, reported as a missing allocation. Longest
+    tail first means the more specific location always wins, so ``maps/dq_4b.json`` can only
+    resolve to a map.
     """
     if not stored:
         return None
     direct = Path(stored)
     if direct.is_file():
         return direct
-    beside = out / direct.name
-    return beside if beside.is_file() else None
+    parts = direct.parts
+    for start in range(len(parts)):
+        candidate = out.joinpath(*parts[start:])
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def check_pairable(records: dict[str, dict[str, Any]]) -> str | None:
@@ -182,7 +201,7 @@ def check_pairable(records: dict[str, dict[str, Any]]) -> str | None:
     return None
 
 
-def infer_params(manifest: dict[str, Any]) -> int | None:
+def infer_params(out: Path, manifest: dict[str, Any]) -> int | None:
     """The parameter count the baselines sized themselves against.
 
     Read from a ``.quant.json`` side file rather than counted here, so the fp16 row and
@@ -192,10 +211,10 @@ def infer_params(manifest: dict[str, Any]) -> int | None:
     for arm in manifest["arms"]:
         if arm.get("kind") not in ("gptq", "awq"):
             continue
-        record = arm.get("record")
-        if not record:
+        record = resolve_stored(out, arm.get("record"))
+        if record is None:
             continue
-        side = Path(str(record)).with_suffix(".quant.json")
+        side = record.with_suffix(".quant.json")
         if side.is_file():
             payload = json.loads(side.read_text(encoding="utf-8"))
             if payload.get("params"):
@@ -203,7 +222,7 @@ def infer_params(manifest: dict[str, Any]) -> int | None:
     return None
 
 
-def allocation_of(arm: dict[str, Any]) -> dict[str, Any] | None:
+def allocation_of(out: Path, arm: dict[str, Any]) -> dict[str, Any] | None:
     """The allocator's own account of a DynQuant arm: widths and breached floors.
 
     The floor violations are the part that cannot be recovered later. Two arms can land on
@@ -211,10 +230,10 @@ def allocation_of(arm: dict[str, Any]) -> dict[str, Any] | None:
     a knapsack result -- so an allocation that reports zero breaches at 4 bits and a
     breached ``gate_up`` at 3 is the pre-registered prediction being confirmed or not.
     """
-    path, key = arm.get("map"), str(arm.get("target_bytes"))
-    if not path or not Path(path).is_file():
+    path, key = resolve_stored(out, arm.get("map")), str(arm.get("target_bytes"))
+    if path is None:
         return None
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    payload = json.loads(path.read_text(encoding="utf-8"))
     entry = payload.get("maps", {}).get(key)
     if entry is None:
         return None
@@ -227,7 +246,10 @@ def allocation_of(arm: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def rows(
-    manifest: dict[str, Any], records: dict[str, dict[str, Any]], params: int | None
+    out: Path,
+    manifest: dict[str, Any],
+    records: dict[str, dict[str, Any]],
+    params: int | None,
 ) -> list[dict[str, Any]]:
     """One row per planned arm, in the order the panel planned them."""
     built = []
@@ -257,7 +279,7 @@ def rows(
                 "unfinished": detail.get("unfinished_reasoning"),
                 "by_source": detail.get("by_source") or {},
                 "apply": ((record or {}).get("packed") or {}).get("apply"),
-                "allocation": allocation_of(arm),
+                "allocation": allocation_of(out, arm),
                 "seconds": (record or {}).get("seconds"),
             }
         )
@@ -462,9 +484,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="emit the assembled table as json")
     args = parser.parse_args(argv)
 
-    manifest, records = load_panel(Path(args.arms))
-    params = infer_params(manifest)
-    built = rows(manifest, records, params)
+    out = Path(args.arms)
+    manifest, records = load_panel(out)
+    params = infer_params(out, manifest)
+    built = rows(out, manifest, records, params)
     pairable = check_pairable(records)
     tolerance = float(manifest.get("tolerance", 0.001))
 

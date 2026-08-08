@@ -479,18 +479,34 @@ def test_a_manifest_read_from_another_directory_still_finds_its_records(
     the table prints ``0/7`` for a panel that finished, with the anchors and the allocation
     still correct above it, which is the shape of an answer rather than of a failure.
 
-    Turns red when: the fallback beside the manifest is dropped.
+    The manifest names three kinds of path and they must all survive the move, which is why
+    this rewrites the map as well as the record. Records resolve, and the panel looks whole --
+    while the fp16 ceiling loses the parameter count it reads from the baseline's
+    ``.quant.json`` side file, and every DynQuant arm loses the allocation the §12 prediction
+    is about. Both print as absence rather than as an error.
+
+    The map is the case that cannot be fixed by filename alone: it lives in ``out/maps/`` and
+    the record of the same arm lives in ``out/``, so a bare-name retry reads the record, finds
+    no ``maps`` key, and reports no allocation -- the wrong file, read successfully.
+
+    Turns red when: the fallback beside the manifest is dropped, applied to only one of the
+    three path kinds, or made to prefer the shortest tail over the longest.
     """
     out = _write_panel(tmp_path / "arms")
     manifest = out / "arms.json"
     payload = json.loads(manifest.read_text(encoding="utf-8"))
     for arm in payload["arms"]:
         arm["record"] = f"runs/s4/arms/{arm['label']}.json"
+        if arm.get("map"):
+            arm["map"] = f"runs/s4/arms/maps/{arm['label']}.json"
     manifest.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     printed = _run(table, out)
     assert "panel: 7/7 arms scored" in printed
     assert "4b  DynQuant vs GPTQ" in printed
+    assert f"denominated in {PARAMS:,} parameters" in printed, "the fp16 row lost its count"
+    assert "dq_3b: 3.1488 avg bits" in printed, "the allocation was read from the wrong file"
+    assert "moe.expert.gate_up" in printed, "the floor breach vanished with the map"
 
 
 def test_the_json_carries_the_verdict_the_table_printed(table: Any, tmp_path: Path) -> None:

@@ -970,6 +970,21 @@ for its arm and lives in `out`. Read literally, a manifest copied off the box wo
 `0/7 arms scored` for a panel that finished -- an answer, not an error. The fixture is now built
 through the driver's own writer rather than a hand-copy of its keys, so the two cannot drift.
 
+Fixing that in one place turned out to be the more dangerous half-fix. The manifest names three
+kinds of path -- the record, the saved bit map, and the `.quant.json` side file the parameter
+count comes from -- and only the record went through the new resolver. The arms would then all
+score, so the panel reads as whole, while the fp16 ceiling loses the parameter count that
+denominates every bits-per-param figure and each DynQuant arm loses its allocation block. Both
+print as absence, and absence of a floor breach is precisely what §12 pre-registered 4 bits to
+show: the prediction would have been "confirmed" by the reader failing to find the evidence. The
+map is also the case a filename-only retry gets actively wrong rather than merely misses, because
+maps live in `out/maps/<label>.json` and the record of the same arm lives in `out/<label>.json` --
+so the retry reads the record, parses it, finds no `maps` key, and reports no allocation. The rule
+is now the longest tail of the stored path that exists under `out`, so the more specific location
+always wins. The test that was supposed to cover this rewrote only the record and asserted only
+the arm count; it passed before the fix and after it. It now rewrites the map too and asserts the
+parameter line and the breached role by name.
+
 Two smaller things the table also does. It prints the allocation next to the accuracy -- average
 bits, the width histogram, and the *names* of any roles whose floors the budget could not afford
 -- because the §12 prediction is that 4 bits breaches nothing and 3 bits must breach the expert
@@ -1019,7 +1034,7 @@ mixture decontaminated against its own benchmark (§11), which removed 4016 rows
 would otherwise have been trained on and scored against.
 
 Also done since: the table the panel lands in, written before the panel runs -- ten tests and
-eleven mutations against a synthetic seven-arm run, sizes read from the manifest rather than from
+thirteen mutations against a synthetic seven-arm run, sizes read from the manifest rather than from
 the fp16-resident scored model, drift refused in both directions, and twelve comparisons Holm-
 corrected in two blocks with the verdict following the adjusted p. Checking that reader against a
 real saved map, rather than against its own fixture, is what caught the width histogram being
