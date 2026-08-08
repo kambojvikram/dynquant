@@ -712,3 +712,65 @@ def test_a_quantized_arm_that_ran_out_of_budget_is_recorded_not_refused(
 
     assert arms.do_run(_args(arms, [*RUN[:-1], str(out), "--resume"])) == 0
     assert spent == []
+
+
+# --- the commands parse -------------------------------------------------------------------
+#
+# Everything above checks what the driver *decides*. This checks that the programs it drives
+# accept what it says, which is a different failure and a more expensive one: a renamed flag
+# is a clean argparse exit five hours into a seven-hour panel, on the arm that happens to
+# carry it, with the arms before it already spent.
+
+
+def test_every_command_the_panel_issues_is_accepted_by_the_program_it_runs(
+    arms: Any, tmp_path: Path
+) -> None:
+    """Parsed by the real parsers, not compared against a list of flag names written here.
+
+    The driver builds eleven command lines across four builders, and every one of them
+    crosses a package boundary: ``dynquant eval`` and ``dynquant inspect`` live in
+    `dynquant-core`, the baseline arms live in a sibling experiment script. Nothing makes
+    those move together -- `--map-key` could be renamed in a core refactor that no test in
+    core notices, because core's own tests do not know this panel exists.
+
+    Handing the argv to the actual `build_parser` of the actual target is the only version
+    of this check that cannot go stale. A hand-written list of expected flags would be a
+    third copy of the contract, and it would agree with the driver right up until the
+    parser changed underneath both.
+
+    Turns red when: a flag is renamed or dropped on either side of the boundary, or a
+    required argument is added to a subcommand the panel calls.
+    """
+    from dynquant.cli import build_parser as core_parser
+
+    spec = importlib.util.spec_from_file_location(
+        "_dq_baselines_for_arms", DRIVER.parent / "baselines_lfm2.py"
+    )
+    assert spec and spec.loader
+    baselines = importlib.util.module_from_spec(spec)
+    sys.modules["_dq_baselines_for_arms"] = baselines
+    spec.loader.exec_module(baselines)
+
+    args = _args(arms)
+    issued = 0
+    for arm in arms.plan_arms(ANCHORS):
+        record, save_map = tmp_path / f"{arm.label}.json", tmp_path / f"{arm.label}.map.json"
+        if arm.kind == "ceiling":
+            built = [(core_parser(), arms.ceiling_cmd(args, arm, record))]
+        elif arm.kind == "dq":
+            built = [
+                (core_parser(), arms.dq_inspect_cmd(args, arm, save_map)),
+                (core_parser(), arms.dq_eval_cmd(args, arm, save_map, record)),
+            ]
+        else:
+            built = [(baselines.build_parser(), arms.baseline_cmd(args, arm, record))]
+        for parser, cmd in built:
+            # Past `sys.executable` and past `-m dynquant` or the script path -- argv as the
+            # target sees it, which is where a wrong flag would actually be rejected.
+            argv = cmd[3:] if cmd[1] == "-m" else cmd[2:]
+            parser.parse_args(argv)
+            issued += 1
+
+    assert issued == 9, (
+        "one ceiling, four baselines, and two DynQuant arms that allocate before they score"
+    )
