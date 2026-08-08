@@ -286,6 +286,211 @@ def load_linearized(
     return model, report
 
 
+def _layer_alternation(indices: list[int]) -> str:
+    """Layer indices as a regex alternation, widest first.
+
+    ``re`` backtracks, so ``(2|21)`` matches ``layers.21.`` either way. Ordering by width
+    means the expression is right by construction rather than by that.
+    """
+    return "|".join(str(i) for i in sorted(indices, reverse=True))
+
+
+def awq_mappings(config: Any) -> list[tuple[Any, int]]:
+    """LFM2's activation-aware smoothing pairs, each with the number of sets it must resolve.
+
+    AWQ divides a linear's input channels by a per-channel scale and folds the inverse into
+    whatever produced that input. Which module that is comes from a per-architecture table,
+    and ``Lfm2MoeForCausalLM`` is in neither of llm-compressor's two: not the static
+    ``AWQ_MAPPING_REGISTRY``, and not the dynamic one, whose hybrid-stack builder is exactly
+    the right shape but requires ``linear_attention`` in ``layer_types`` while this model
+    says ``conv``. So the Llama defaults apply, and on this architecture they are wrong in
+    both halves of every block: the pre-mixer norm is ``operator_norm``, not
+    ``input_layernorm``, and the pre-FF norm is ``ffn_norm``, not
+    ``post_attention_layernorm``. ``q/k/v_proj`` match, their smooth partner never does, and
+    ``match_modules_set`` raises on the incomplete set -- after the calibration pass, which
+    on the real model is 256 sequences through 8 B parameters.
+
+    The count beside each mapping is the other half of the fix, and the half that is easy to
+    leave out. A mapping that matches *nothing* does not raise: ``_set_resolved_mappings``
+    logs it and moves on, so the arm runs to completion as round-to-nearest wearing an AWQ
+    label and enters the table as a baseline that was never smoothed. That is the same
+    failure ``materialize_quantization`` exists to prevent, in a different disguise, and it
+    wants the same treatment -- predict the number from the config, check it against the
+    tree, and fail before the calibration pass rather than after it.
+    """
+    from llmcompressor.modifiers.transform.awq import AWQMapping
+
+    try:
+        types = list(config.layer_types)
+        experts = int(config.num_experts)
+        dense = int(config.num_dense_layers)
+        heads = int(config.num_attention_heads)
+        kv_heads = int(config.num_key_value_heads)
+    except AttributeError as exc:
+        raise SystemExit(
+            f"{type(config).__name__} does not describe an LFM2 MoE stack ({exc}). These "
+            "mappings name operator_norm, ffn_norm and conv.in_proj; against another "
+            "architecture they would match nothing and smooth nothing"
+        ) from None
+
+    attention = [i for i, kind in enumerate(types) if kind == "full_attention"]
+    convolution = [i for i, kind in enumerate(types) if kind != "full_attention"]
+    # The first ``num_dense_layers`` blocks hold an Lfm2MoeMLP -- w1/w3/w2, this model's
+    # spelling of gate/up/down -- and every block after them holds a router and experts.
+    dense_ff = list(range(dense))
+    moe_ff = list(range(dense, len(types)))
+
+    pairs: list[tuple[Any, int]] = []
+    if attention:
+        pairs += [
+            (
+                AWQMapping(
+                    rf"re:.*layers\.({_layer_alternation(attention)})\.operator_norm$",
+                    [
+                        "re:.*self_attn.q_proj$",
+                        "re:.*self_attn.k_proj$",
+                        "re:.*self_attn.v_proj$",
+                    ],
+                ),
+                len(attention),
+            ),
+        ]
+    if attention and kv_heads == heads:
+        # ``out_proj`` is this model's ``o_proj``, and this pair is conditional for the
+        # reason upstream AWQ made it conditional: with grouped-query attention ``v_proj``
+        # emits ``kv_heads * head_dim`` rows and ``out_proj`` consumes ``heads * head_dim``,
+        # so there is no per-channel scale that divides one and multiplies the other.
+        # llm-compressor drops the pair itself -- but its check reads
+        # ``balance_name.endswith(".o_proj")``, which is never true here, so on this model
+        # the guard is inert and ``_smooth`` reaches ``weight[-scales.size(0):]`` with 256
+        # scales for 128 rows. The condition belongs in the mapping rather than in a
+        # try/except, because ``kv_heads != heads`` is knowable from the config and the
+        # consequence -- ``out_proj`` quantized unsmoothed -- is worth stating rather than
+        # rescuing.
+        pairs.append(
+            (
+                AWQMapping("re:.*self_attn.v_proj$", ["re:.*self_attn.out_proj$"]),
+                len(attention),
+            )
+        )
+    if convolution:
+        # ``conv.in_proj`` only. The short convolution and the ``conv.out_proj`` that reads
+        # it have no linear producer to fold an inverse scale into, so they are quantized
+        # unsmoothed -- counted by the resolver below rather than left to be assumed.
+        pairs.append(
+            (
+                AWQMapping(
+                    rf"re:.*layers\.({_layer_alternation(convolution)})\.operator_norm$",
+                    ["re:.*conv.in_proj$"],
+                ),
+                len(convolution),
+            )
+        )
+    if dense_ff:
+        pairs += [
+            (
+                AWQMapping(
+                    rf"re:.*layers\.({_layer_alternation(dense_ff)})\.ffn_norm$",
+                    ["re:.*feed_forward.w1$", "re:.*feed_forward.w3$"],
+                ),
+                len(dense_ff),
+            ),
+            (AWQMapping("re:.*feed_forward.w3$", ["re:.*feed_forward.w2$"]), len(dense_ff)),
+        ]
+    if moe_ff:
+        pairs += [
+            (
+                AWQMapping(
+                    rf"re:.*layers\.({_layer_alternation(moe_ff)})\.ffn_norm$",
+                    [
+                        # The router reads the same normalized hidden state its experts do,
+                        # so it balances with them. Left out, it would be the one Linear in
+                        # the block whose input no longer matches the weights that read it,
+                        # and it is the module that decides which experts run at all.
+                        "re:.*feed_forward.gate$",
+                        "re:.*experts.*.gate_proj$",
+                        "re:.*experts.*.up_proj$",
+                    ],
+                ),
+                len(moe_ff),
+            ),
+            # One set per expert rather than per layer: ``match_modules_set`` yields when
+            # the lowest common ancestor of the matched set changes, and for a pair that
+            # sits inside one expert, that is the expert.
+            (
+                AWQMapping("re:.*experts.*.up_proj$", ["re:.*experts.*.down_proj$"]),
+                len(moe_ff) * experts,
+            ),
+        ]
+    return pairs
+
+
+def resolve_awq_mappings(model: Any) -> tuple[list[Any], dict[str, Any]]:
+    """Resolve the mappings against the real tree before anything expensive happens.
+
+    Runs llm-compressor's own matcher, so what is checked here is what the modifier will
+    do -- a hand-rolled name scan could agree with the regexes and disagree with
+    ``match_modules_set``, and the disagreement is the whole defect.
+
+    Returns the mappings and a record of what they cover. The unsmoothed suffixes are in
+    the record on purpose: ``conv.out_proj`` and ``lm_head`` are quantized without an AWQ
+    scale, that is a property of the architecture rather than a miss, and a number nobody
+    writes down is a number that becomes a surprise the first time it changes.
+    """
+    import torch
+    from compressed_tensors.utils import match_modules_set
+
+    smoothed: set[int] = set()
+    resolved, wrong = [], []
+    for mapping, expected in awq_mappings(model.config):
+        targets = (mapping.smooth_layer, *mapping.balance_layers)
+        try:
+            sets = list(match_modules_set(model, targets))
+        except ValueError as exc:
+            raise SystemExit(
+                f"AWQ mapping {mapping.smooth_layer} matched part of its target set and not "
+                f"the rest, which means these names do not describe this model: {exc}"
+            ) from None
+        if len(sets) != expected:
+            wrong.append(
+                f"{mapping.smooth_layer} resolved {len(sets)} sets, config predicts {expected}"
+            )
+        resolved.append(mapping)
+        for matched in sets:
+            for balance in matched[1:]:
+                smoothed.update(id(module) for module in balance)
+
+    if wrong:
+        raise SystemExit(
+            "AWQ mappings do not resolve as this model's config predicts, and a mapping "
+            "that matches too little is silently skipped rather than raised -- the arm "
+            "would score as AWQ having smoothed less than its label claims:\n  "
+            + "\n  ".join(wrong)
+        )
+
+    linears = [(n, m) for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+    unsmoothed: dict[str, int] = {}
+    for name, module in linears:
+        if id(module) not in smoothed:
+            suffix = ".".join(name.split(".")[-2:])
+            unsmoothed[suffix] = unsmoothed.get(suffix, 0) + 1
+    covered = len(linears) - sum(unsmoothed.values())
+    if not covered:
+        raise SystemExit(
+            f"every AWQ mapping resolved and not one of {len(linears)} Linear modules is "
+            "balanced by any of them; the arm would be round-to-nearest under an AWQ label"
+        )
+
+    report = {
+        "mappings": len(resolved),
+        "linear_modules": len(linears),
+        "smoothed_linears": covered,
+        "unsmoothed_linears": dict(sorted(unsmoothed.items())),
+    }
+    print(json.dumps(report), flush=True)
+    return resolved, report
+
+
 def calibration_rows(tokenizer: Any, samples: int, seq_len: int, *, seed: int) -> Any:
     """Tokenized rows from the task's own training mixture, in the fine-tune's format.
 
@@ -330,6 +535,14 @@ def quantize(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
 
     model, linearization = load_linearized(args.model, dtype=args.dtype, device=args.device)
 
+    # Before the tokenizer, the calibration rows and the forward passes, because a mapping
+    # that does not fit this architecture is a fact about the model that is knowable from
+    # the module tree alone -- and discovering it after the calibration pass costs 256
+    # sequences through 8 B parameters to learn something the names already said.
+    mappings, smoothing = (None, None)
+    if args.method == "awq":
+        mappings, smoothing = resolve_awq_mappings(model)
+
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -343,7 +556,9 @@ def quantize(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
         model=model,
         tokenizer=tokenizer,
         dataset=dataset,
-        recipe=build_recipe(args.method, args.bits, args.group_size, ignore=IGNORE),
+        recipe=build_recipe(
+            args.method, args.bits, args.group_size, ignore=IGNORE, mappings=mappings
+        ),
         num_calibration_samples=len(dataset),
         max_seq_length=args.seq_len,
         pipeline=args.pipeline,
@@ -360,6 +575,7 @@ def quantize(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
         "source": str(args.model),
         "quantize_seconds": round(time.time() - started, 1),
         "linearization": linearization,
+        **({"awq_smoothing": smoothing} if smoothing is not None else {}),
         **applied,
         **accounted_bytes(args.model, args.bits, args.group_size),
     }

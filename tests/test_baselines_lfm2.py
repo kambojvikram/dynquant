@@ -480,3 +480,437 @@ def test_the_gate_reports_the_parameter_share_not_just_a_module_count(driver: An
     assert report["linear_params"] == 100
     assert report["params"] == 400
     assert report["linear_share"] == 0.25
+
+
+# --- AWQ smoothing mappings -------------------------------------------------------------
+#
+# llm-compressor has no entry for this architecture in either of its mapping registries, so
+# without these the AWQ arms take the Llama defaults and either die on a half-matched target
+# set or -- worse -- smooth nothing and score as AWQ anyway.
+
+LFM25_8B = {
+    # Attention at 2, 6, 10, 14, 18, 21; every other block is a short convolution.
+    "layer_types": ["conv"] * 24,
+    "num_dense_layers": 2,
+    "num_experts": 32,
+    "num_attention_heads": 32,
+    "num_key_value_heads": 8,
+}
+for _i in (2, 6, 10, 14, 18, 21):
+    LFM25_8B["layer_types"][_i] = "full_attention"  # type: ignore[index]
+
+
+def _config(**overrides: Any) -> Any:
+    import types
+
+    return types.SimpleNamespace(**{**LFM25_8B, **overrides})
+
+
+def _module_names(config: Any) -> list[str]:
+    """LFM2.5's module tree, as observed on the real checkpoint after ``linearize_moe``.
+
+    Written out rather than derived from the mappings, because the mappings being consistent
+    with themselves is not the question. Every name here was read off
+    ``model.named_modules()`` on the box: the pre-mixer norm is ``operator_norm`` and the
+    pre-FF norm is ``ffn_norm`` (neither is ``input_layernorm``), attention's output is
+    ``out_proj`` (not ``o_proj``), and the dense blocks spell gate/up/down as w1/w3/w2.
+    """
+    names = ["model.embed_tokens", "model.norm", "lm_head"]
+    for i, kind in enumerate(config.layer_types):
+        layer = f"model.layers.{i}"
+        if kind == "full_attention":
+            names += [
+                f"{layer}.self_attn.{p}"
+                for p in ("q_proj", "k_proj", "v_proj", "out_proj", "q_layernorm", "k_layernorm")
+            ]
+        else:
+            names += [f"{layer}.conv.{p}" for p in ("conv", "in_proj", "out_proj")]
+        if i < config.num_dense_layers:
+            names += [f"{layer}.feed_forward.{p}" for p in ("w1", "w3", "w2")]
+        else:
+            names.append(f"{layer}.feed_forward.gate")
+            for e in range(config.num_experts):
+                expert = f"{layer}.feed_forward.experts.{e}"
+                names += [f"{expert}.{p}" for p in ("up_proj", "gate_proj", "down_proj")]
+        names += [f"{layer}.operator_norm", f"{layer}.ffn_norm"]
+    return names
+
+
+def _selects(pattern: str, names: list[str]) -> list[str]:
+    """``compressed_tensors._match_name``: ``re.match`` on the target minus its ``re:``."""
+    import re
+
+    return [n for n in names if re.match(pattern.removeprefix("re:"), n) is not None]
+
+
+@pytest.fixture
+def awq_mapping_class() -> Any:
+    """A stand-in for ``AWQMapping``: two fields, which is all the driver reads.
+
+    llm-compressor is not installed in CPU CI. What is under test here is which names the
+    driver pairs with which, and that is decided before the dataclass is constructed.
+    """
+    import sys
+    import types
+
+    module = types.ModuleType("llmcompressor.modifiers.transform.awq")
+
+    class AWQMapping:  # mirrors llm-compressor's own dataclass
+        def __init__(self, smooth_layer: str, balance_layers: list[str]) -> None:
+            self.smooth_layer = smooth_layer
+            self.balance_layers = balance_layers
+
+    module.AWQMapping = AWQMapping  # type: ignore[attr-defined]
+    saved = {
+        name: sys.modules.get(name)
+        for name in (
+            "llmcompressor",
+            "llmcompressor.modifiers",
+            "llmcompressor.modifiers.transform",
+            "llmcompressor.modifiers.transform.awq",
+        )
+    }
+    for name in saved:
+        sys.modules.setdefault(name, types.ModuleType(name))
+    sys.modules["llmcompressor.modifiers.transform.awq"] = module
+    try:
+        yield AWQMapping
+    finally:
+        for name, previous in saved.items():
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
+
+
+def test_every_awq_mapping_selects_the_modules_this_architecture_actually_has(
+    driver: Any, awq_mapping_class: Any
+) -> None:
+    """The defect the rehearsal found, stated as a property of the names.
+
+    Each mapping's target set is all-or-nothing: ``match_modules_set`` accumulates matches
+    per target and raises if it reaches the end of the tree holding a set that is missing
+    one. So it is not enough that the balance layers exist -- the smooth layer has to exist
+    in *exactly the blocks* the balance layers do. The Llama defaults fail precisely here:
+    ``q/k/v_proj`` resolve, ``input_layernorm`` does not exist anywhere in this model, and
+    the run dies on the residue after the calibration pass.
+
+    Turns red when: a mapping names a norm this architecture does not have, or scopes one to
+    a block kind whose balance layers live somewhere else -- an attention mapping that leaves
+    the layer alternation off its ``operator_norm`` selects all 24 blocks while ``q_proj``
+    selects 6, and that is the same raising case arrived at from the other side.
+    """
+    config = _config()
+    names = _module_names(config)
+    pairs = driver.awq_mappings(config)
+    assert pairs, "no mappings at all is the silent-skip failure with an empty list"
+
+    def blocks(target: str) -> set[str]:
+        selected = _selects(target, names)
+        assert selected, f"{target} selects nothing in this model"
+        return {".".join(n.split(".")[:3]) for n in selected}
+
+    for mapping, _ in pairs:
+        governed = blocks(mapping.smooth_layer)
+        for balance in mapping.balance_layers:
+            # Set *equality*, in both directions, because the matcher's residue rule fails
+            # both ways. A balance layer outside the smooth layer's blocks is an orphan; a
+            # smooth layer covering blocks with no balance layer is the incomplete set that
+            # raises -- and that is the one an unscoped `re:.*operator_norm$` produces,
+            # matching all 24 blocks against six attention projections.
+            assert blocks(balance) == governed, (
+                f"{balance} and {mapping.smooth_layer} do not cover the same blocks"
+            )
+
+
+def test_the_predicted_set_count_is_read_off_the_config_not_assumed(
+    driver: Any, awq_mapping_class: Any
+) -> None:
+    """The count is the guard against the *quiet* failure, so it has to be derived.
+
+    A mapping that matches nothing is skipped with a debug line, not raised, and the arm
+    finishes as round-to-nearest under an AWQ label. Predicting the number of resolved sets
+    from ``layer_types``/``num_dense_layers``/``num_experts`` is what turns that into an
+    abort -- and only if the prediction tracks the config rather than the model it was
+    written against.
+
+    Turns red when: a count is hardcoded, or the dense/MoE boundary is read from the wrong
+    field -- flip ``num_dense_layers`` and a stale expectation keeps the old numbers.
+    """
+    counts = {m.smooth_layer: n for m, n in driver.awq_mappings(_config())}
+    assert sorted(counts.values()) == [2, 2, 6, 18, 22, 704]
+    # 704 is 22 MoE blocks x 32 experts: the expert pair yields per expert, not per block.
+    assert max(counts.values()) == 22 * 32
+
+    smaller = {m.smooth_layer: n for m, n in driver.awq_mappings(_config(num_experts=8))}
+    assert max(smaller.values()) == 22 * 8
+    shallow = driver.awq_mappings(_config(num_dense_layers=4))
+    assert sorted(n for _, n in shallow) == [4, 4, 6, 18, 20, 20 * 32]
+
+
+def test_grouped_query_attention_drops_the_pair_that_cannot_be_scaled(
+    driver: Any, awq_mapping_class: Any
+) -> None:
+    """``v_proj -> out_proj`` only exists when the two ends have the same width.
+
+    Under GQA ``v_proj`` emits ``kv_heads * head_dim`` rows and ``out_proj`` consumes
+    ``heads * head_dim``; no per-channel scale divides one and multiplies the other. AWQ
+    drops the pair for that reason, but its check is spelled ``balance_name.endswith
+    (".o_proj")`` and this model calls the module ``out_proj`` -- so upstream's guard never
+    fires here and ``_smooth`` reaches ``weight[-scales.size(0):]`` with four times as many
+    scales as rows. LFM2.5-8B-A1B is 32 query heads over 8 key/value heads.
+
+    Turns red when: the pair becomes unconditional -- which is a crash rather than a bad
+    number, but a crash 256 calibration sequences into an 8 B model -- or when the condition
+    is inverted and a model that *could* smooth ``out_proj`` silently stops.
+    """
+    grouped = [m.smooth_layer for m, _ in driver.awq_mappings(_config())]
+    assert "re:.*self_attn.v_proj$" not in grouped
+
+    even = [m.smooth_layer for m, _ in driver.awq_mappings(_config(num_key_value_heads=32))]
+    assert "re:.*self_attn.v_proj$" in even
+    assert len(even) == len(grouped) + 1
+
+
+def test_a_config_from_another_architecture_is_refused_rather_than_matched(
+    driver: Any, awq_mapping_class: Any
+) -> None:
+    """These names are LFM2's. Applied elsewhere they would match nothing, quietly.
+
+    Turns red when: the config fields are read with ``getattr(..., default)``, which turns a
+    Llama config into a mapping list scoped to zero layers instead of an abort.
+    """
+    import types
+
+    with pytest.raises(SystemExit, match="LFM2 MoE stack"):
+        driver.awq_mappings(types.SimpleNamespace(num_hidden_layers=32))
+
+
+def _resolver_stack(sets_for: Any, seen: dict[str, Any]) -> Any:
+    """Fake only ``match_modules_set``; the driver's reaction to it is what is asserted."""
+    import contextlib
+    import sys
+    import types
+
+    @contextlib.contextmanager
+    def swap() -> Any:
+        module = types.ModuleType("compressed_tensors.utils")
+        module.match_modules_set = sets_for  # type: ignore[attr-defined]
+        saved = {
+            name: sys.modules.get(name)
+            for name in ("compressed_tensors", "compressed_tensors.utils")
+        }
+        sys.modules.setdefault("compressed_tensors", types.ModuleType("compressed_tensors"))
+        sys.modules["compressed_tensors.utils"] = module
+        printed: list[str] = []
+        real_print = builtins.print
+        builtins.print = lambda *a, **k: printed.append(str(a[0]))  # type: ignore[assignment]
+        try:
+            yield
+        finally:
+            builtins.print = real_print
+            if printed:
+                seen["printed"] = printed[-1]
+            for name, previous in saved.items():
+                if previous is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = previous
+
+    return swap()
+
+
+# What is not an ``nn.Linear`` on the real checkpoint, and so is not the recipe's business
+# nor AWQ's: the embedding, the four RMSNorms per block, and the depthwise short convolution.
+NOT_LINEAR = ("embed_tokens", "norm", "q_layernorm", "k_layernorm", "conv.conv")
+
+
+def _tiny_model(config: Any) -> Any:
+    """A module tree with LFM2's names, ``nn.Linear`` exactly where the real one has one."""
+    import torch
+
+    root = torch.nn.Module()
+    root.config = config
+    holders: dict[str, torch.nn.Module] = {"": root}
+
+    def holder(path: str) -> torch.nn.Module:
+        if path not in holders:
+            parent, _, leaf = path.rpartition(".")
+            made = torch.nn.Module()
+            holder(parent).add_module(leaf, made)
+            holders[path] = made
+        return holders[path]
+
+    for name in _module_names(config):
+        parent, _, leaf = name.rpartition(".")
+        leafy = leaf.endswith("norm") or leaf in NOT_LINEAR or name.endswith(NOT_LINEAR)
+        holder(parent).add_module(leaf, torch.nn.Module() if leafy else torch.nn.Linear(2, 2))
+    return root
+
+
+def test_a_mapping_that_resolves_fewer_sets_than_the_config_predicts_aborts(
+    driver: Any, awq_mapping_class: Any
+) -> None:
+    """Half a resolution is the failure that still produces an accuracy number.
+
+    Turns red when: the resolved-set count is collected and not compared, or compared with
+    ``>=`` -- both leave a mapping that reached one block out of twenty-two looking fine.
+    """
+    import types
+
+    config = _config(num_experts=2)
+    model = types.SimpleNamespace(config=config, named_modules=lambda: [], modules=lambda: [])
+
+    def one_set_each(_model: Any, targets: Any) -> Any:
+        yield [[object()] for _ in targets]
+
+    with (
+        _resolver_stack(one_set_each, {}),
+        pytest.raises(SystemExit, match=r"resolved 1 sets, config predicts"),
+    ):
+        driver.resolve_awq_mappings(model)
+
+
+def test_a_partly_matched_target_set_names_the_mapping_that_did_not_fit(
+    driver: Any, awq_mapping_class: Any
+) -> None:
+    """llm-compressor's own error says which keys matched; it does not say whose mapping.
+
+    Turns red when: the ``ValueError`` is left to propagate -- the run still fails, with a
+    message that lists three regexes and no way back to the mapping that produced them.
+    """
+    import types
+
+    model = types.SimpleNamespace(config=_config(), named_modules=lambda: [], modules=lambda: [])
+
+    def raising(_model: Any, _targets: Any) -> Any:
+        raise ValueError("Found a final incomplete set with matches found for keys: ...")
+        yield  # pragma: no cover
+
+    with (
+        _resolver_stack(raising, {}),
+        pytest.raises(SystemExit, match=r"operator_norm.*do not describe this model"),
+    ):
+        driver.resolve_awq_mappings(model)
+
+
+def test_resolving_every_mapping_and_smoothing_nothing_is_still_a_failure(
+    driver: Any, awq_mapping_class: Any
+) -> None:
+    """The end state the whole guard exists for, reached the other way.
+
+    Every mapping can resolve its predicted number of sets and still balance no module, if
+    the matcher hands back empty match lists. That arm is round-to-nearest and its record
+    says AWQ.
+
+    Turns red when: coverage is inferred from the mapping count rather than from the modules
+    the matcher actually returned.
+    """
+    import types
+
+    import torch
+
+    config = _config(num_experts=2)
+    counts = [n for _, n in driver.awq_mappings(config)]
+    model = types.SimpleNamespace(
+        config=config,
+        named_modules=lambda: [("lm_head", torch.nn.Linear(2, 2))],
+    )
+    remaining = iter(counts)
+
+    def empty_sets(_model: Any, targets: Any) -> Any:
+        for _ in range(next(remaining)):
+            yield [[] for _ in targets]
+
+    with (
+        _resolver_stack(empty_sets, {}),
+        pytest.raises(SystemExit, match="round-to-nearest under an AWQ label"),
+    ):
+        driver.resolve_awq_mappings(model)
+
+
+def test_the_record_says_which_linears_go_through_unsmoothed(
+    driver: Any, awq_mapping_class: Any
+) -> None:
+    """``conv.out_proj`` and ``lm_head`` have no linear producer, and that has to be visible.
+
+    Every other Linear in the model is balanced by some mapping. These two are quantized
+    without an activation-aware scale because there is nothing to fold the inverse into --
+    a property of the architecture, not a miss. It goes in the arm's record so that the day
+    it changes, it changes in a number somebody can see.
+
+    ``self_attn.out_proj`` is here for a different reason -- grouped-query attention makes
+    the ``v_proj`` pair unscalable -- and the two reasons reading the same in the record is
+    the point: what the arm did not smooth is one number regardless of why.
+
+    Turns red when: a mapping stops covering a family it used to cover. Drop the conv
+    mapping and ``conv.in_proj`` joins this dict, which is 18 more unsmoothed projections
+    than the record claims.
+    """
+    config = _config(num_experts=2)
+    names = _module_names(config)
+    model = _tiny_model(config)
+    by_name = dict(model.named_modules())
+
+    def real_enough(_model: Any, targets: Any) -> Any:
+        """Group by block -- or by expert, for the one pair that lives inside one.
+
+        This is what the real matcher's lowest-common-ancestor rule comes to on this tree,
+        and it is a stand-in only for the grouping. That the grouping is *this* is checked
+        against llm-compressor itself on the box, where the counts land at 6/6/18/2/2/22/704.
+        """
+        joined = "".join(targets)
+        by_expert = "experts" in joined and "norm" not in joined
+        buckets: dict[str, list[list[Any]]] = {}
+        for column, target in enumerate(targets):
+            for name in _selects(target, names):
+                key = name.rsplit(".", 1)[0] if by_expert else ".".join(name.split(".")[:3])
+                buckets.setdefault(key, [[] for _ in targets])[column].append(by_name[name])
+        for _, bucket in sorted(buckets.items()):
+            if all(bucket):
+                yield bucket
+
+    seen: dict[str, Any] = {}
+    with _resolver_stack(real_enough, seen):
+        mappings, report = driver.resolve_awq_mappings(model)
+
+    assert len(mappings) == len(driver.awq_mappings(config))
+    assert report["unsmoothed_linears"] == {
+        "conv.out_proj": 18,
+        "lm_head": 1,
+        "self_attn.out_proj": 6,
+    }
+    assert report["smoothed_linears"] == report["linear_modules"] - 25
+    assert json.loads(seen["printed"])["unsmoothed_linears"] == report["unsmoothed_linears"]
+
+
+def test_the_mappings_reach_the_modifier_and_only_on_the_awq_arm(driver: Any) -> None:
+    """A resolved mapping list that never reaches ``AWQModifier`` changes nothing at all.
+
+    ``build_recipe`` is shared with two other experiments whose models llm-compressor
+    already knows, so ``None`` has to keep meaning "use your own table" rather than "use an
+    empty one" -- an empty list would disable smoothing everywhere in one keystroke.
+
+    Turns red when: the parameter is accepted and dropped, or is passed to GPTQ/RTN, or
+    ``None`` is forwarded into ``AWQModifier(mappings=None)`` -- which llm-compressor reads
+    as an explicit empty override on some versions rather than as absence.
+    """
+    import inspect
+
+    sys.path.insert(0, str(REPO_ROOT / "experiments"))
+    try:
+        import _llmc
+    finally:
+        sys.path.pop(0)
+
+    signature = inspect.signature(_llmc.build_recipe)
+    assert signature.parameters["mappings"].default is None
+    source = inspect.getsource(_llmc.build_recipe)
+    assert "AWQModifier(mappings=mappings) if mappings is not None else AWQModifier()" in source
+    assert "mappings" not in source.split('if method == "awq"')[0].split("scheme = ")[1]
+
+    quantize = inspect.getsource(driver.quantize)
+    assert (
+        'if args.method == "awq":\n        mappings, smoothing = resolve_awq_mappings' in quantize
+    )
+    assert "mappings=mappings" in quantize

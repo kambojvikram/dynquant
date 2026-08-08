@@ -59,8 +59,22 @@ def quant_args(bits: int, group_size: int, *, symmetric: bool) -> Any:
     )
 
 
-def build_recipe(method: str, bits: int, group_size: int, *, ignore: list[str]) -> Any:
-    """One modifier list per method, identical in every respect except the method."""
+def build_recipe(
+    method: str,
+    bits: int,
+    group_size: int,
+    *,
+    ignore: list[str],
+    mappings: Any = None,
+) -> Any:
+    """One modifier list per method, identical in every respect except the method.
+
+    ``mappings`` is AWQ's only architecture-dependent input: which module produces the
+    input of which other module, so a scale taken out of one can be folded into the other.
+    ``None`` means llm-compressor's own table, which is right for every architecture in it.
+    It is a parameter and not a constant here for the same reason ``ignore`` is -- this
+    file is the one that knows nothing about the model.
+    """
     from compressed_tensors.quantization import QuantizationScheme
     from llmcompressor.modifiers.quantization import GPTQModifier, QuantizationModifier
     from llmcompressor.modifiers.transform.awq import AWQModifier
@@ -83,7 +97,8 @@ def build_recipe(method: str, bits: int, group_size: int, *, ignore: list[str]) 
         # scaling transform, and the quantization itself is a separate step. The single
         # combined AWQModifier still importable from llmcompressor.modifiers.awq is a
         # deprecation shim.
-        return [AWQModifier(), QuantizationModifier(config_groups=groups, ignore=ignore)]
+        awq = AWQModifier(mappings=mappings) if mappings is not None else AWQModifier()
+        return [awq, QuantizationModifier(config_groups=groups, ignore=ignore)]
     if method == "rtn":
         # Round-to-nearest: the same grouping and the same ignore list, with no
         # calibration-driven correction at all. It is the floor the other two have to beat
