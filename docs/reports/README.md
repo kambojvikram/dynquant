@@ -678,6 +678,21 @@ figures still come from the allocator's priced map rather than from what the sco
 The general lesson is the rehearsal, not either fix: a structural double costs minutes and issues
 every command the expensive run will, and the only thing it cannot check is the answer.
 
+The step after the panel is a table, so the table was written before the panel — nine tests and an
+eight-mutation harness against a synthetic seven-arm run, no GPU and no model load. Its size column
+reads the manifest rather than the scored model, because the DynQuant arms are resident at fp16
+under `--map-apply encode` and a measured column would print 16 bits for the arm whose compression
+is the claim. It re-checks every arm's drift from its anchor **in both directions** and, past 0.1%,
+refuses to print the comparisons at all rather than footnote them — a panel that is not byte-matched
+cannot support a table, and the signed version of that test was the one mutation that initially
+survived, because under-budget is the failure that actually happens. And its twelve comparisons are
+Holm-corrected inside two blocks — six head-to-head at matched bytes, six against the ceiling — with
+the block sizes printed and the verdict following the adjusted p: in the fixture, two 4-bit
+comparisons are significant raw (0.0309, 0.0243) and neither survives (0.0972), which is the case
+the correction exists for. Writing it first is the cheap half of the same lesson as the rehearsal:
+the formatting decisions get made against a panel that can be re-run in seconds, not against the one
+that cost seven hours.
+
 ## Conventions that apply to every campaign
 
 **Paired tests on stored per-item hits.** Every arm stores which items it got right, so every

@@ -912,6 +912,57 @@ hours in, after the ceiling and both GPTQ arms had been paid for, phrased as tho
 were stale. The general form: a cheap structural double of the model exercises every command the
 expensive run will issue, and the only thing it cannot check is the answer.
 
+### The table the panel lands in, written before it runs
+
+The panel is seven arms and about seven hours, and the step after it is a table. Writing that
+table afterwards means writing it under time pressure, against real numbers, with every
+formatting decision made by whichever number happened to be in front of it. So it was written
+first, against a synthetic panel: `experiments/phase4/panel_table.py`, nine tests, no GPU and no
+model load. Three of its decisions are load-bearing enough to record here.
+
+**The size column comes from `arms.json`, not from the model that was scored.** Four of the six
+quantized arms are evaluated on a checkpoint `compressed-tensors` wrote, and the other two --
+the DynQuant arms -- are evaluated by encoding the allocator's widths back into bf16 weights and
+writing the reconstruction in place, because 91.5% of this model's parameters live in batched
+expert banks that the module-swapping path cannot reach (`--map-apply encode`, §12). A DynQuant
+arm is therefore *resident* at fp16 while *costing* the allocator's bytes, and a size column
+filled by measuring the loaded model would print 16 bits for the arm whose compression is the
+entire claim. The honest source is the manifest: each baseline's own format accounting at its
+width, and for a DynQuant arm the byte count the allocator realised -- the same number
+`check_matched` already held against the anchor. The fp16 row is the one derived figure,
+`params * 2` with `params` read from a baseline's `.quant.json` side file. No literal parameter
+count appears in the script; one written for this model would be silently wrong for the next.
+
+**Drift is checked in both directions, and a panel that fails it prints no comparisons at all.**
+The whole point of the anchors is that the accuracy differences are not confounded with size, so
+an arm off its budget does not deserve a footnote -- it invalidates every row below it. The table
+recomputes each arm's distance from its anchor, marks any arm past the 0.1% tolerance, and then
+refuses. The sign matters more than it looks: `--target-size` is a *ceiling*, so the failure that
+actually happens in a real run is an arm landing **under** budget, not over. An absolute-value
+test catches that; a `> tolerance` test silently passes it. That exact mutation was the one that
+initially survived the mutation harness, because the fixture only exercised positive drift. It is
+now tested in both directions and the harness catches all eight.
+
+**Twelve comparisons, two Holm-corrected families, and the verdict follows the adjusted p.**
+Twelve tests at alpha=0.05 expect half a false positive, and the headline of this panel is one of
+the twelve. The comparisons split into two blocks that answer different questions -- six head-to-
+head at matched bytes (DynQuant vs GPTQ vs AWQ at each width) and six against the bf16 ceiling --
+and each is Holm-corrected within its own block, with the block size printed so a reader who
+rejects the split can multiply by twelve instead. Holm rather than Bonferroni because it controls
+the same family-wise rate and is uniformly more powerful; discarding real findings buys no rigour.
+The synthetic panel is built so this is not decorative: two of its 4-bit comparisons are
+significant raw (p = 0.0309 and 0.0243) and **neither survives correction** (0.0972), while the
+3-bit result does. A test pins that the printed verdict and the JSON field both follow the
+adjusted number, so a future edit that quietly reads the raw one turns red.
+
+Two smaller things the table also does. It prints the allocation next to the accuracy -- average
+bits, the width histogram, and the *names* of any roles whose floors the budget could not afford
+-- because the §12 prediction is that 4 bits breaches nothing and 3 bits must breach the expert
+`gate_up` banks, and neither fact is recoverable from the accuracy afterwards. And the histogram
+counts carry their own unit: a fixed `G` scale rendered a real 2-bit assignment of a million
+parameters as `0.00G`, a width the allocator did choose, printed as though it had chosen nothing.
+The scale spans four orders of magnitude inside a single histogram, so the unit follows the number.
+
 ---
 
 ## 13. Status
@@ -934,6 +985,11 @@ Also done since: headroom re-measured at 1024 tokens -- **57.75%**, uncensored e
 decode budget off (§8) -- `load_linearized` exercised on the real checkpoint, and the training
 mixture decontaminated against its own benchmark (§11), which removed 4016 rows the fine-tune
 would otherwise have been trained on and scored against.
+
+Also done since: the table the panel lands in, written before the panel runs -- nine tests and
+eight mutations against a synthetic seven-arm run, sizes read from the manifest rather than from
+the fp16-resident scored model, drift refused in both directions, and twelve comparisons Holm-
+corrected in two blocks with the verdict following the adjusted p.
 
 Not done, in order: the fine-tune, with the expert mass measured; then the six arms at matched
 bytes -- GPTQ and AWQ through the linearized structure verified bit-exact in §10, all three widths
