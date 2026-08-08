@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -1329,3 +1330,125 @@ def test_a_model_path_replaces_the_repo_and_is_absolute(s2, tmp_path, monkeypatc
 
     assert Path(resolved) == checkpoint.resolve()
     assert Path(resolved).is_absolute()
+
+
+# --- the expert banks actually reaching the stats file ---------------------------------
+#
+# `stats_modules == tracked` proves the file holds what the tracker saw. On an MoE that is
+# not the same question as whether the *mass* was measured: LFM2.5-8B-A1B keeps 91.5% of
+# its parameters in 22 batched banks, so a run that hooked none of them still writes every
+# attention and dense entry, still matches its own tracker exactly, and still leaves the
+# allocator to set widths for nine tenths of the checkpoint from role floors alone.
+#
+# Six hours of fine-tune stand between the flag and the answer, so the gate has to be able
+# to say the mass is missing without being told which names to expect.
+
+
+class _Banked(torch.nn.Module):
+    """:class:`_Sparse` with a dense module beside the bank, so "all" and "the banks" differ."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.experts = _Experts()
+        self.attn = torch.nn.Linear(8, 8)
+
+
+def _stats(tmp_path, layers: dict[str, dict]) -> Path:
+    path = tmp_path / "dynquant_stats.json"
+    path.write_text(json.dumps({"version": 2, "layers": layers}), encoding="utf-8")
+    return path
+
+
+def test_a_bank_absent_from_the_stats_file_is_named(s2, tmp_path) -> None:
+    """The failure the module-count check cannot see, and the exact tensors that are gone.
+
+    Named rather than counted because the two readings send a person to different places: a
+    whole bank missing is a flag that did not take effect, one tensor of one bank missing is
+    a hook that raised on a shape. The count is identical in both.
+
+    Turns red when: the gate starts comparing totals, or reports a boolean.
+    """
+    model = _Banked()
+    complete = _stats(
+        tmp_path,
+        {"experts.gate_up_proj": {}, "experts.down_proj": {}, "attn": {}},
+    )
+    assert s2.banked_entries_missing(model, complete) == []
+
+    partial = tmp_path / "partial.json"
+    partial.write_text(
+        json.dumps({"version": 2, "layers": {"experts.gate_up_proj": {}, "attn": {}}}),
+        encoding="utf-8",
+    )
+    assert s2.banked_entries_missing(model, partial) == ["experts.down_proj"]
+
+
+def test_the_expected_keys_are_the_ones_the_allocator_looks_up(s2, tmp_path) -> None:
+    """Rebuilt from the model through `canonical_name`, not spelled out a second time.
+
+    A gate that invents its own naming passes for the wrong reason -- it checks a key nobody
+    writes and nobody reads. This asserts the keys it demands are the ones
+    ``classify_model`` produces for the same tensors, so the two cannot drift apart while
+    both look right.
+
+    The PEFT prefix is the case that would actually break it: under LoRA the modules are
+    named ``base_model.model.model...``, and a gate keyed on the raw module name would call
+    every bank missing on exactly the runs this campaign does.
+
+    Turns red when: the gate stops canonicalising, or joins the parameter with anything but
+    a dot.
+    """
+    from dynquant.graph.classify import classify_model
+
+    model = _Banked()
+    # A config, because the graph needs one to decide which axis of a bank is the input
+    # and refuses the tensor when it cannot -- the gate needs no such thing, which is why
+    # the two have to be checked against each other rather than assumed equal.
+    config = types.SimpleNamespace(hidden_size=8, moe_intermediate_size=16)
+    graph = classify_model(model, config=config)
+    through_the_graph = {name for name in graph.modules if name.startswith("experts.")}
+    assert through_the_graph == {"experts.gate_up_proj", "experts.down_proj"}
+
+    empty = _stats(tmp_path, {})
+    assert set(s2.banked_entries_missing(model, empty)) == through_the_graph
+
+    # And under the wrapper the campaign actually trains through. PEFT names the same bank
+    # `base_model.model.model...`; the stats file does not, because the tracker canonicalises
+    # before writing. A gate keyed on the raw name would report every bank missing on every
+    # LoRA run -- which is all of them.
+    wrapped = torch.nn.Module()
+    wrapped.base_model = torch.nn.Module()
+    wrapped.base_model.model = torch.nn.Module()
+    wrapped.base_model.model.model = model
+    assert s2.banked_entries_missing(wrapped, empty) == [
+        "model.experts.gate_up_proj",
+        "model.experts.down_proj",
+    ]
+
+
+def test_an_unreadable_stats_file_is_a_failure_not_a_pass(s2, tmp_path) -> None:
+    """No file, no JSON, no ``layers`` key -- none of those mean the banks are present.
+
+    An exception swallowed into an empty list here would report a clean gate on a run whose
+    deliverable does not exist, which is the one outcome worse than the gate firing.
+
+    Turns red when: the reader returns ``[]`` on a missing or malformed file.
+    """
+    assert s2.banked_entries_missing(_Banked(), tmp_path / "absent.json") != []
+
+    broken = tmp_path / "broken.json"
+    broken.write_text("{not json", encoding="utf-8")
+    assert s2.banked_entries_missing(_Banked(), broken) != []
+
+    no_layers = tmp_path / "no_layers.json"
+    no_layers.write_text(json.dumps({"version": 2}), encoding="utf-8")
+    assert s2.banked_entries_missing(_Banked(), no_layers) != []
+
+
+def test_a_dense_model_has_nothing_to_miss(s2, tmp_path) -> None:
+    """The four dense panel models run this gate too, and it must never fire for them.
+
+    Turns red when: the gate starts demanding an entry for every module rather than for
+    every batched expert tensor.
+    """
+    assert s2.banked_entries_missing(torch.nn.Linear(8, 8), _stats(tmp_path, {})) == []

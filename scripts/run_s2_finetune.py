@@ -1233,6 +1233,19 @@ def _train(
             flush=True,
         )
         return 5
+    if measure_banks:
+        # Only when they were asked for. Under --no-measure-expert-banks their absence is
+        # the requested outcome, and a gate that fired anyway would make the flag unusable
+        # on the card it exists for.
+        missing = banked_entries_missing(model, stats_file)
+        if missing:
+            print(
+                f"EXPERT BANKS REQUESTED BUT NOT IN THE SIGNAL MAP: {len(missing)} tensors "
+                f"absent, first few {missing[:4]}. The allocator would score this mass "
+                f"neutrally and set its widths from role floors.",
+                flush=True,
+            )
+            return 6
     print(f"-> signal map: {tracked} modules at {stats_file}", flush=True)
     return 0
 
@@ -1265,6 +1278,44 @@ def save_outputs(model: Any, tokenizer: Any, destination: Path, *, regime: str) 
     saved.save_pretrained(str(merged))
     tokenizer.save_pretrained(str(merged))
     return merged
+
+
+def banked_entries_missing(model: Any, stats_file: Path) -> list[str]:
+    """Expert-bank tensors the stats file does not carry, by the name S3 will look up.
+
+    ``stats_modules == tracked`` already checks that the file holds what the tracker saw.
+    It cannot check *this*: the banks are 91.5% of LFM2.5-8B-A1B and 22 of its modules, so
+    a run that hooked none of them still writes hundreds of attention and dense entries and
+    still matches its own tracker exactly. The count agrees and the mass is gone.
+
+    The keys are rebuilt from the model rather than read from a list, using the same
+    ``canonical_name(module) + "." + parameter`` the tracker writes and
+    :func:`classify_model` looks up. Anything else would be a second spelling of the
+    contract, and a gate that checks a name nobody uses passes for the wrong reason -- the
+    failure this whole flag exists to prevent, one level up.
+
+    Returns the missing names rather than a boolean so the message can say which, because
+    "some banks are absent" and "layer 7's ``w1`` is absent" send a reader to different
+    places.
+    """
+    from dynquant.graph.experts import batched_expert_params
+    from dynquant.integration.peft_utils import canonical_name
+
+    try:
+        payload = json.loads(stats_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ["<stats file unreadable>"]
+    layers = payload.get("layers")
+    if not isinstance(layers, dict):
+        return ["<stats file has no layers map>"]
+
+    missing = []
+    for name, module in model.named_modules():
+        for param_name, _ in batched_expert_params(module):
+            key = f"{canonical_name(name)}.{param_name}"
+            if key not in layers:
+                missing.append(key)
+    return missing
 
 
 def _modules_in(stats_file: Path) -> int:
