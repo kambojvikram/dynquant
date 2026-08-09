@@ -505,6 +505,52 @@ use. Both phase-4 drivers state the flag on every scoring command rather than in
 the reason `eval_flags` already states the decode budget: a default that moves under a driver is a
 difference between arms that the records still describe as shared.
 
+**And the clock says the same thing, on a different pair.** This section's title claims the
+dispatch is not free and every measurement under it is about accuracy. The panel's own timings
+supply the other half, and they were already paid for:
+
+```
+arm       dispatch      weights at run time            eval seconds   s/item   vs bf16
+bf16      grouped_mm    bf16                              10,307.6     0.859     1.00x
+dq_4b     grouped_mm    encoded back to compute dtype     10,011.2     0.834     0.97x
+gptq_4b   the loop      compressed-tensors, 4-bit         19,805.0     1.650     1.92x
+awq_4b    the loop      compressed-tensors, 4-bit         23,350.9     1.946     2.27x
+```
+
+Same 12,000 items, same batch size, same decode budget, same GPU, one arm after another. The two
+that kept their banks scored in under three hours each; the two linearised into 2,201 `Linear`s took
+five and a half. **The confound is that those are the same two arms.** Linearisation and on-the-fly
+dequantization arrive together and no arm in this panel has one without the other. What bounds it is
+the 18% between `gptq_4b` and `awq_4b` — kernel choice alone, at identical dispatch and identical
+shapes: differences of that order exist and they are an order below the gap. `dq_4b` cannot help,
+because `apply: encode` writes the reconstruction back in the compute dtype, so it runs plain bf16
+matmuls and pays no dequantization at all. So the linearised arms cost 1.9—2.3x the banked ones,
+most of it plausibly the 22 grouped matmuls becoming 22 × 32 = 704 module calls per forward, and
+*plausibly* is the honest word.
+
+**And this is the loop against `grouped_mm`, which is not the pair the rest of §8 is about.** The
+accuracy number above is `eager` against `grouped_mm`. The clock here is the loop against
+`grouped_mm`. Three names, three pairs, and this report has already been caught once carrying a
+number across one of those boundaries. The missing clock is `eager` against `grouped_mm` — and
+the re-score produces it for nothing, because `bf16`, `dq_4b` and `dq_3b` will each have been scored
+twice over the same 12,000 items with the dispatch as the only difference. Whatever that costs is
+the number a grouped kernel registered into `ALL_EXPERTS_FUNCTIONS` would be recovering, which is
+the first time this campaign will have priced that work instead of asserting it is worth doing.
+
+It also re-prices the re-score. Budgeting three arms at 2.8 hours each assumes `eager` is as cheap
+as `grouped_mm`, and the premise of this whole section is that it is not: `eager` indexes one expert
+at a time, like the loop. It should sit below the loop, since it indexes inside one batched tensor
+rather than across 2,201 separate modules, so the bracket is **8.5 to 17 hours** and the low end is
+the one with no argument behind it.
+
+**Three bits is slower again, and that is a third thing.** `gptq_3b` is scoring at roughly 3.8
+s/item against `gptq_4b`'s 1.65 — another 2.3x, at the same dispatch, the same runtime, the same
+decode budget and the same batch size. Either `compressed-tensors` unpacks 3-bit more expensively
+than 4-bit, or the 3-bit model has degraded into longer generations against the 1,024-token cap. The
+record separates them when it lands: accuracy and `detail.errored` speak to the second, and if it is
+the second then the cost of evaluating a baseline is partly a function of how badly that baseline
+was hurt, which is a thing to know before budgeting a panel by arm count.
+
 **The general form.** A measurement whose conclusion holds at one scale and fails at another is not
 a wrong measurement, and calling it one hides the actual failure. `1.79e-07` was true of a one-layer
 model. What made it load-bearing was carrying it into a docstring, a remedy string, two reports and
