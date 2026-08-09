@@ -223,10 +223,15 @@ def accounted_bytes(source: str, bits: int, group_size: int) -> dict[str, Any]:
     """What this checkpoint costs, counted the way stage 5 counts DynQuant's.
 
     Needed because on-disk size is only available for arms that can actually be packed,
-    and the 3-bit arms cannot be: compressed-tensors packs 4- and 8-bit, so a 3-bit
-    result is held as dequantized bf16 and a file listing would report 16 bits per
-    weight for a checkpoint whose arithmetic is 3-bit. That is the same situation stage
-    5 is in -- it writes dequantized values back in place too -- and ``RESULTS`` handles
+    and the 3-bit arms cannot be -- though not for the reason written here originally,
+    which was that compressed-tensors packs only 4- and 8-bit and would hold a 3-bit
+    result as dequantized bf16. Measured later: it packs 1 to 8 bits and round-trips
+    3-bit fine, but at ``32 // 3 == 10`` values per word, so the file stores 3.2 bits per
+    weight rather than 3, and vLLM reads that tensor as ``Fraction(32, 3)`` and finds the
+    wrong number of words. A 3-bit directory is therefore oversized against its label and
+    unreadable by the runtime, which leaves on-disk size just as unusable a denominator as
+    bf16 would have -- for a different reason, and by 6.7% rather than by 5x. That is the
+    same situation stage 5 is in -- it writes dequantized values back in place too -- and ``RESULTS`` handles
     it the same way, by computing the size the packed checkpoint would occupy from the
     format's own accounting. Doing anything else here would compare a measured number
     against a computed one and call the difference a result.
@@ -429,10 +434,13 @@ def do_quantize(args: argparse.Namespace) -> None:
 def do_run(args: argparse.Namespace) -> None:
     """Quantize and score in one process, without writing a checkpoint.
 
-    This is the default path for the comparison, and the reason is disk rather than
-    elegance. compressed-tensors packs 4- and 8-bit; a 3-bit result therefore has to be
-    saved as dequantized bf16, and a 7 B bf16 checkpoint is 14.5 GB against ~23 GB free
-    on this box with the fine-tune already occupying 14 GB of it. Holding the model in
+    This is the default path for the comparison, and the reason given at the time was disk:
+    a 3-bit result was believed to save as dequantized bf16, and a 7 B bf16 checkpoint is
+    14.5 GB against ~23 GB free on this box with the fine-tune already occupying 14 GB of
+    it. That belief was wrong -- a 3-bit save is packed, at about 2.9 GB -- so disk was
+    never the binding constraint and the real one is that the directory would be 6.7% over
+    its label and unreadable by vLLM. The path is unchanged because the second reason below
+    was always the sufficient one. Holding the model in
     memory and scoring it there costs nothing that the table needs -- the size column
     comes from :func:`accounted_bytes`, not from the filesystem, for every arm including
     the packable ones, so the arms remain comparable to each other and to stage 5.

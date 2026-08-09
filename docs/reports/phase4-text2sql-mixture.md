@@ -1749,16 +1749,26 @@ route was calibrated against the other; they were computed from different files.
 **AWQ's calibration costs 1.46x GPTQ's, and the record says where it goes.** `awq_4b` reports
 **2 812.2 s -- 46.9 minutes -- against GPTQ's 32.1**, on the same 256 samples at 1024 tokens over
 the same checkpoint. The difference is not the forward pass, which both pay once: it is the
-smoothing search. AWQ resolves 6 mappings and rewrites **2 176 of 2 201 linears** before
-quantizing any of them, and its record carries the evidence as `weights_moved: 2201` with a
-`max_weight_delta` of **2.89**, where GPTQ reports `0` and `0.0` for both. That pair measures the
-pre-quantization *transform* and not the rounding -- GPTQ simply has no transform -- so it is not
-a rounding check and must not be read as one. The rounding check is separate, is
-`probe_unique_values_per_row`, and both arms pass it independently: **59-210 distinct values per
-row for AWQ and 5-195 for GPTQ**, against the 256 a 4-bit group-of-128 quantizer can produce over
-sixteen groups and the 2 048 an unrounded row would show. That probe exists because
-`llm-compressor`'s `oneshot` fits scales without rounding weights unless the modifier does it,
-and an arm that skipped rounding would otherwise score the original checkpoint and look excellent.
+smoothing search: AWQ resolves 6 mappings and rewrites **2 176 of 2 201 linears** before
+quantizing any of them, which is what `awq_smoothing` in its record counts.
+
+The other pair of numbers in that record is easy to read backwards, and worth stating in the
+direction it actually points. `weights_moved` is **2 201 for AWQ and 0 for GPTQ**, with
+`max_weight_delta` **2.89 against 0.0** -- and the zero is the *good* reading. It counts the
+modules whose weights were not already on their own quantization grid when the materialization
+step ran, so GPTQ's zero says its modifier rounded as it went and materialization had nothing left
+to do, while AWQ's 2 201 is exactly the gap that step exists to close: as of 0.12 the AWQ path
+fits scales and applies the smoothing transform but leaves the weights unrounded, and an arm that
+shipped them that way would score the original checkpoint and look excellent. The 2.89 is the
+largest single correction, large because smoothing has already scaled those weights up. Both arms
+match the shape their labels imply, which is the point of recording the counts at all.
+
+What proves the rounding *stuck* is a different test, run after the write and re-reading the
+parameter rather than the value just computed: quantizing an already-quantized weight must be a
+no-op, and any probed module that fails that fixed-point check aborts the arm. Alongside it,
+`probe_unique_values_per_row` reports **59-210 distinct values per row for AWQ and 5-195 for
+GPTQ**, against the 256 a 4-bit group-of-128 quantizer can produce over sixteen groups and the
+2 048 an unrounded row would show.
 
 **The rehearsal predicted the smoothing coverage gap exactly.** Four months of this campaign's
 rehearsals have predicted numbers that then arrived different; this one arrived identical. The
@@ -1853,6 +1863,59 @@ set. Cutting `--limit` mid-panel to recover the difference was considered and re
 destroyed.
 
 ---
+
+### Which of the six variants can actually be published, and the claim that was wrong twice
+
+The campaign's deliverable is six quantized variants on the Hub, so at some point the question
+stops being "what scores well" and becomes "what can be written down and read back". Both halves
+of that had an answer in this repository already, and both answers were wrong.
+
+The baseline half was refused in code. `do_save` declined any width other than 4 or 8 with the
+reason *"compressed-tensors packs 4 and 8 bits; 3 would be saved as dequantized bf16, so the
+directory's size would not be this arm's size"*. Read at the source, `pack_to_int32` accepts
+`1 <= num_bits <= 8` and, tested directly on this box's `compressed-tensors` 0.17.1, round-trips
+3-bit weights exactly. So a 3-bit save would have been packed, not bf16, and the sentence was
+false in both of its clauses.
+
+**The refusal was still right, for two reasons neither clause mentions.** Packing uses
+`pack_factor = 32 // num_bits`, which at 3 bits is 10 values per word with the top 2 bits left
+zero -- **3.2 stored bits per weight against a label of 3**, 6.7% over, and about 200 MiB on this
+model, which is 67x the panel's 0.1% match tolerance. And vLLM sizes the very same tensor as
+`Fraction(32, num_bits)`, AutoGPTQ's exact layout of 32 values in 3 words. Measured on a 2048-wide
+row: compressed-tensors writes **205 words** and vLLM expects **192**. A published 3-bit baseline
+would be writable, internally consistent, oversized against its own name, and unreadable by the
+runtime it was published for. Widths that divide 32 have no gap between the two conventions, which
+is why 4-bit and 8-bit are fine and why the guard now tests `32 % bits` rather than consulting a
+list -- the criterion is the property, so 2-bit is admitted on its merits instead of by omission.
+
+This is the fourth time in this campaign that a component refused, blamed the format, and was
+believed. The first three were DynQuant's own duplicate resolver, twice, and the vLLM plugin. This
+one was believed hard enough to be **pinned by a test** asserting the wrong reason and repeated in
+two other drivers, where it had also been used to argue a disk-pressure constraint that does not
+exist: a 3-bit 7 B save is about 2.9 GB, not the 14.5 GB the comment feared. The decisions all
+survive the correction. Only the reasons changed, and a reason that is wrong is a reason that will
+mislead the next decision it is applied to.
+
+**The DynQuant half is the mirror image.** Its format packs 3 bits at exactly 3.0 -- 32 values in
+3 words, the convention vLLM already expects -- so DynQuant can write a 3-bit directory that
+compressed-tensors cannot match on size and that is laid out the way a runtime would want to read
+it. What it cannot do yet is read its own directory back for *this* model, because 91.5% of
+LFM2.5-8B-A1B is batched expert banks, the packed runtime replaces modules, and a bank is not one.
+That is P8's grouped path, and it is now the single blocker on the DynQuant half of the release.
+
+So the honest state of the six, before any accuracy number is in:
+
+| variant | packed container | at its label | loadable today |
+|---|---|---|---|
+| `gptq_4b`, `awq_4b` | compressed-tensors | yes, 4.0 bits exactly | yes -- vLLM and transformers |
+| `gptq_3b`, `awq_3b` | writable but 3.2 bits | no, 6.7% over | no -- 205 words vs 192 |
+| `dq_4b`, `dq_3b` | DynQuant packed, byte-exact | yes, both widths | no -- needs the grouped path |
+
+Two of six are publishable and servable today; two are blocked on our own kernel work; two are
+blocked on an ecosystem gap that is not ours to close. The accuracy panel is unaffected by all of
+it -- it scores in memory, at one consistent accounting, and what a serialization library does with
+those numbers afterwards is a separate question -- but the release plan is not, and it is better to
+know this now than after six uploads.
 
 ## 13. Status
 

@@ -267,16 +267,19 @@ def test_the_expert_mass_is_charged_rather_than_left_at_fp16(driver: Any) -> Non
 # --- saving ---------------------------------------------------------------------------
 
 
-def test_a_three_bit_arm_refuses_to_be_saved(driver: Any) -> None:
-    """compressed-tensors has no 3-bit packed format, so the directory would lie.
+def test_a_width_that_does_not_divide_32_refuses_to_be_saved(driver: Any) -> None:
+    """A 3-bit directory would be packed, oversized and unreadable -- not bf16.
 
-    ``save_pretrained(save_compressed=True)`` writes dequantized bf16 at any width it cannot
-    pack. The file listing then reports ~16 bits per weight for an arm whose arithmetic is
-    3-bit -- and a reader taking that byte count for the arm's footprint makes exactly the
-    wrong-denominator error this driver was written to stop, one level further out.
+    This test used to assert the reason "compressed-tensors packs 4 and 8 bits", which is
+    false: ``pack_to_int32`` takes 1 to 8 bits and round-trips 3-bit correctly. Measured, it
+    packs ``32 // 3 == 10`` values per word for 3.2 stored bits per weight, and vLLM reads
+    the tensor as ``Fraction(32, 3)`` -- 192 words per 2048-wide row against the 205
+    written. So the refusal stands and its justification does not, and pinning the wrong
+    reason is how a false claim about a dependency survives in three files at once.
 
-    Turns red when: the width check is dropped or widened, which is tempting the first time
-    someone wants a 3-bit directory to upload.
+    Turns red when: the check goes back to a hardcoded width list (2-bit divides 32 and must
+    be allowed), or the message stops naming the layout disagreement that is the real
+    blocker.
     """
     args = _args(
         driver,
@@ -292,8 +295,12 @@ def test_a_three_bit_arm_refuses_to_be_saved(driver: Any) -> None:
             "3",
         ],
     )
-    with pytest.raises(SystemExit, match="packs 4 and 8 bits"):
+    with pytest.raises(SystemExit, match="does not divide 32") as caught:
         driver.do_save(args)
+    message = str(caught.value)
+    assert "3.2000 bits per weight" in message
+    assert "192 words where 205 were written" in message
+    assert "bf16" not in message
 
 
 # --- the linearization gate -------------------------------------------------------------

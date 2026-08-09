@@ -684,17 +684,40 @@ def do_run(args: argparse.Namespace) -> int:
 
 
 def do_save(args: argparse.Namespace) -> int:
-    """Write the checkpoint, for the arms whose width ``compressed-tensors`` can pack.
+    """Write the checkpoint, for the widths that survive the round trip to a runtime.
 
-    Refused at 3 bits rather than allowed to write a dequantized bf16 directory: that file
-    would be four times the size its label implies, and a later reader taking its byte count
-    for the arm's footprint is the same wrong-denominator error this driver exists to stop.
+    The criterion is that the width divides 32, and it is computed rather than listed
+    because the listed version was wrong. This refusal used to read "compressed-tensors
+    packs 4 and 8 bits; 3 would be saved as dequantized bf16", and both halves are false:
+    ``pack_to_int32`` accepts ``1 <= num_bits <= 8`` and round-trips 3-bit correctly. What
+    it does at 3 bits is pack ``32 // 3 == 10`` values per word and leave the top 2 bits
+    zero, so the directory stores 3.2 bits per weight -- 6.7% over its own label, about
+    200 MiB on this model and 67x the panel's match tolerance. A row whose width is not a
+    multiple of 10 pays slightly more again: 2048 values need 205 words, or 3.2031 bits.
+
+    The second half matters more. vLLM sizes the same tensor as ``Fraction(32, num_bits)``,
+    which is AutoGPTQ's exact layout of 32 values in 3 words, so for a 2048-wide row it
+    reads 192 words where compressed-tensors wrote 205. The checkpoint would be writable,
+    internally consistent, and unreadable by the runtime it was published for. Widths that
+    divide 32 have no gap between the two conventions and need no special case.
+
+    So the refusal was right and its reason was not, which is this project's recurring
+    failure mode: a guard refuses, blames the format, and the blame is believed. Here it was
+    believed hard enough to be pinned by a test and repeated in two other drivers.
     """
-    if args.bits not in (4, 8):
+    if 32 % args.bits:
+        per_word = 32 // args.bits
+        stored = 32 / per_word
         raise SystemExit(
-            f"compressed-tensors packs 4 and 8 bits; {args.bits} would be saved as "
-            "dequantized bf16, so the directory's size would not be this arm's size. Score "
-            "it in-process with `run` instead"
+            f"{args.bits} does not divide 32, so compressed-tensors packs {per_word} values "
+            f"per int32 and the directory stores {stored:.4f} bits per weight, "
+            f"{stored / args.bits - 1:.1%} over the label. vLLM sizes the same tensor as "
+            f"Fraction(32, {args.bits}) -- AutoGPTQ's exact layout -- so for a 2048-wide row "
+            f"it reads {2048 * args.bits // 32} words where {-(-2048 // per_word)} were "
+            f"written. "
+            "The directory would be writable, self-consistent and unreadable by the runtime "
+            "it is published for. Score it in-process with `run`, or write it with "
+            "`dynquant export`, which packs this width at exactly the label"
         )
     model, meta = quantize(args)
     out = Path(args.save_to)
