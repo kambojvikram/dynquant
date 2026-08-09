@@ -445,24 +445,60 @@ def check_pairable(arms: list[Arm]) -> None:
     The ceiling is the reference rather than an arbitrary member: every difference in the
     table is measured against it, so a divergence is reported as the other arm's, which is
     the direction a reader can act on.
+
+    One field is reported and not refused, and the reason is in the comment on
+    ``computation`` below. It is the only member of the contract that describes how an
+    answer was computed rather than which question was asked.
     """
-    from dynquant.commands.evaluate import _comparability
+    from dynquant.commands.evaluate import EXPERTS_PAIRING_FIELDS, _comparability
 
     # Every arm passed in has been scored -- the caller hands over the prefix of the panel
     # that has, not the whole panel. Filtering here instead would make the check silently
     # weaker the earlier it is called, which is the opposite of what calling it early is for.
     records = {arm.label: json.loads(Path(arm.record).read_text(encoding="utf-8")) for arm in arms}
     reference = arms[0].label
+    # Held out of the refusal, and out of it by name rather than by value, so a field added
+    # to `EXPERTS_PAIRING_FIELDS` is held out with it instead of turning fatal unannounced.
+    #
+    # Every other member of the contract names a question that was asked -- the task, the
+    # split, the shot seed, the decode budget. Two records that disagree on one of those
+    # were scored over different items, so their hit vectors do not line up element-wise
+    # and a paired test across them is arithmetic on unrelated vectors. `experts.ran` is
+    # not that. The items are the same items in the same order and the vectors pair; what a
+    # difference costs is the *reading* of the delta, and the reading is priced per
+    # comparison by `panel_table.print_comparisons`, against the 1.24% of teacher-forced
+    # tokens the two dispatches disagree on.
+    #
+    # So refusing it here would make a panel un-finishable by a fact the table renders.
+    # `--rescore bf16,dq_4b,dq_3b --experts-impl eager` is exactly that shape: three arms
+    # score again under a dispatch the four reused baselines predate, the disagreement is
+    # explained in full by the command that was typed, and a fatal check would stop the
+    # driver on the second arm -- after the ceiling re-score and before any DynQuant arm.
+    computation = {f"experts.{field}" for field in EXPERTS_PAIRING_FIELDS}
     expected = _comparability(records[reference])
+    reported = []
     for label, record in records.items():
         found = _comparability(record)
-        if found != expected:
-            differed = {k: (expected[k], found[k]) for k in expected if expected[k] != found[k]}
+        differed = {k: (expected[k], found[k]) for k in expected if expected[k] != found[k]}
+        problem = {k: v for k, v in differed.items() if k not in computation}
+        if problem:
             raise SystemExit(
-                f"{label} was not scored under the same settings as {reference}: {differed} "
+                f"{label} was not scored under the same settings as {reference}: {problem} "
                 f"as (reference, {label}). Their hit vectors describe different problem sets "
                 f"and cannot be paired. A reused record is the usual cause."
             )
+        if differed:
+            reported.append(label)
+    if reported:
+        # One line per arm boundary rather than one per mismatching arm, because this runs
+        # again over the growing prefix after every arm and the same four would otherwise
+        # accumulate down the log.
+        print(
+            f"  note: {len(reported)} arm(s) disagree with {reference} on the expert "
+            f"dispatch and pair anyway: {', '.join(reported)}. Same items, same order, "
+            f"different arithmetic -- panel_table marks the comparisons it reaches.",
+            flush=True,
+        )
 
 
 def rescored_labels(spec: str, arms: list[Arm]) -> frozenset[str]:

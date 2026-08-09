@@ -693,6 +693,37 @@ answer the question. `panel_table.print_dispatch` renders the split, and it rend
 believe it. The guard is unchanged and still refuses: recovery reads a sibling file, pairing reads
 the record, and a record is not certified by a neighbour that can speak for it.
 
+**And the same guard would have killed the re-score on its second arm.** Worth stating separately
+because it was found by asking a question the campaign had not asked — not "is this argument
+sound" but "will the command I intend to type actually run" — and the answer was no.
+`check_pairable` runs inside the arm loop, over every arm scored so far, and raises `SystemExit` on
+any `_comparability` difference. Under `--rescore bf16,dq_4b,dq_3b --experts-impl eager` the first
+arm is `bf16`, which scores again and writes `experts.ran = eager`; the second is `gptq_4b`, which
+is reused and predates the field. The driver stops there. The three-hour ceiling re-score is spent
+and not one of the DynQuant arms the re-score exists for is reached.
+
+The fix is a distinction the panel had already drawn one layer up and the driver had not. Every
+other member of the pairing contract names *a question that was asked* — task, split, shot seed,
+decode budget — and two records disagreeing on one of those were scored over different items, so
+their hit vectors do not line up element-wise and a McNemar across them is arithmetic on unrelated
+vectors. `experts.ran` names *how the answer was computed*. The items are the same items in the same
+order and the vectors pair; what a difference costs is the reading of the delta. That reading is
+already priced, per comparison, by the `!` mark `panel_table` puts on a row whose two arms did not
+demonstrably run the same arithmetic. So `check_pairable` now holds the experts block out of the
+refusal — by name, from `EXPERTS_PAIRING_FIELDS`, so a field added there is held out with it
+rather than turning fatal unannounced — and prints a note naming the straddling arms instead.
+Everything else still raises, including when a `limit` difference arrives behind a dispatch
+difference, and the message still leads with the `limit`: an operator reads it to decide which file
+to delete.
+
+Two things are worth not glossing. The first is that this weakens a guard, and the argument that it
+is safe is that a record differing *only* in expert dispatch is by construction over the same
+problem set — a stale record from another run would differ in `limit` or `split` or `shots` as
+well, and those still stop the driver. The second is the smaller lesson: a plan that is sound end to
+end can still be unrunnable, and the cost of finding that out is paid in whatever the run spends
+before it hits the wall. Reading `check_resumable` established the re-score would *start*. It took
+reading `check_pairable` to establish it would *finish*, and only the second question was load-bearing.
+
 **Which makes one absence worth printing.** `_comparability` reads `record.get("experts")` and
 treats a non-dict as absent. A `null` — a dense model, no dispatch, none possible — and a
 missing key — a record written before anyone asked — are the same value to it, and pair with

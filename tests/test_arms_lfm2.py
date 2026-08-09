@@ -463,6 +463,79 @@ def test_an_arm_asked_a_different_kind_of_question_is_refused(arms: Any, tmp_pat
         arms.check_pairable(panel)
 
 
+def test_a_rescored_dispatch_does_not_stop_the_panel(
+    arms: Any, tmp_path: Path, capsys: Any
+) -> None:
+    """The shape of `--rescore bf16,dq_4b,dq_3b --experts-impl eager`, checked before it runs.
+
+    Three arms score again under a dispatch the four reused baselines predate, so the
+    re-scored records carry `experts.ran` and the reused ones carry no `experts` key at
+    all. Every other field agrees, because it is the same driver, the same flags and the
+    same items. If that combination raised, the driver would stop on the second arm -- the
+    first *reused* one -- having already spent the ceiling re-score and reached none of the
+    DynQuant arms it was launched for.
+
+    It does not raise, because the disagreement is not about the problem set: the hits are
+    over the same items in the same order and they pair. It is about how the answers were
+    computed, which `panel_table` marks per comparison and prices against the 1.24% of
+    tokens the two dispatches disagree on. The note is asserted too -- a difference that
+    the driver neither refuses nor mentions is one the operator finds in the table.
+
+    Turns red when: the expert block goes back into the refusal, or the note stops naming
+    the arms and the log no longer says the panel is straddling two dispatches.
+    """
+    panel = _panel(
+        arms,
+        tmp_path,
+        {
+            "bf16": _record(experts={"found": "grouped_mm", "ran": "eager"}),
+            "gptq_4b": _record(),
+            "awq_4b": _record(),
+            "dq_4b": _record(experts={"found": "grouped_mm", "ran": "eager"}),
+        },
+    )
+
+    arms.check_pairable(panel)
+
+    note = capsys.readouterr().out
+    assert "2 arm(s) disagree with bf16 on the expert dispatch" in note
+    assert "gptq_4b, awq_4b" in note
+    assert "dq_4b" not in note, "an arm that agrees with the reference is not a straddle"
+
+
+def test_a_moved_problem_set_still_stops_it_when_the_dispatch_moved_too(
+    arms: Any, tmp_path: Path
+) -> None:
+    """Holding one field out of the refusal must not hold the record out of it.
+
+    The dangerous version of the change above is one that notices any expert difference
+    and stops looking. Then a record from a 200-item smoke run resumed into a 400-item
+    panel walks in behind a dispatch difference, and the guard that exists for exactly that
+    case waves it through.
+
+    The message is asserted as well as the raise. An operator reads it to decide which file
+    to delete, and one that led with `experts.ran` would send them to re-run an arm whose
+    real defect is its `limit`.
+
+    Turns red when: the held-out field short-circuits the whole comparison, or the reported
+    difference starts including the field the driver decided not to refuse.
+    """
+    panel = _panel(
+        arms,
+        tmp_path,
+        {
+            "bf16": _record(experts={"found": "grouped_mm", "ran": "eager"}),
+            "gptq_4b": _record(limit=200),
+        },
+    )
+
+    with pytest.raises(SystemExit, match="cannot be paired") as caught:
+        arms.check_pairable(panel)
+
+    assert "'limit'" in str(caught.value)
+    assert "experts.ran" not in str(caught.value)
+
+
 ANCHORS = {4: 4_399_629_312, 3: 3_332_904_576}
 PANEL = ("bf16", "gptq_4b", "awq_4b", "dq_4b", "gptq_3b", "awq_3b", "dq_3b")
 
