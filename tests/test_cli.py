@@ -457,22 +457,26 @@ def test_what_the_packed_runtime_cannot_hold_is_told_apart_from_a_wrong_map() ->
     """Four outcomes, four messages, and two of them once wore another's.
 
     ``get_submodule`` raises ``AttributeError`` both for a name this model does not have
-    and for a name that addresses a *tensor* -- and a batched expert bank is the second.
-    The packed runtime reported both as "not a module of this model", which sends someone
-    to re-check a map that is correct: the allocator priced that bank, the encoder can
-    encode it, and the only thing that cannot hold it is packing, because there is no
-    module there to replace.
+    and for a name that addresses a *tensor*, and both were reported as "not a module of
+    this model" -- which sends someone to re-check a map that is correct.
 
-    A router is the third, and it arrived after the first fix. It owns a weight and is not
-    a ``Linear``, so it fell to the whitelist branch and was told it was a batched expert
-    bank needing a grouped path -- wrong about what it is, and silent about
-    ``--map-apply encode``, which handles it today.
+    A batched expert bank was the case that exposed it, and the runtime now holds one
+    (:class:`~dynquant.runtime.linear.DynQuantExpertBank`), so that name resolves rather
+    than refusing. It is still asserted here, because "resolves" is the distinction the
+    other three are being told apart from: a tensor branch that fell back to the
+    wrong-map message would now be silently *packing nothing*.
 
-    Asserted as a *set of distinctions*: all four in one test, because a single message
-    that happens to match one of them is exactly the state this replaced.
+    What stays refused is the same shape one rank down. A bare 2-D parameter -- an MoE
+    router's -- has no index at which a module could stand, because its owner passes it
+    whole to ``F.linear``, so no grouped path fixes it and the message must not imply one
+    will. That is a different sentence from the router reached as a *module*, which is the
+    third branch, and from a container, which is the fourth.
 
-    Turns red when: any two branches collapse into one, or a case that the encoder can
-    still reach stops naming the mode that does work.
+    Asserted as a *set of distinctions*: all in one test, because a single message that
+    happens to match one of them is exactly the state this replaced.
+
+    Turns red when: any two branches collapse into one, a case the encoder can still reach
+    stops naming the mode that does work, or the bank stops resolving.
     """
     import torch
     from torch import nn
@@ -503,9 +507,17 @@ def test_what_the_packed_runtime_cannot_hold_is_told_apart_from_a_wrong_map() ->
             pack_model(_Tiny(), {name: 4}, group_size=128, compute_device=None)
         return str(caught.value)
 
-    bank = refuse("experts.gate_up_proj")
-    assert "encode" in bank
-    assert "not a module of this model" not in bank
+    from dynquant.runtime.linear import DynQuantExpertBank
+
+    held = _Tiny()
+    pack_model(held, {"experts.gate_up_proj": 4}, group_size=128, compute_device=None)
+    assert isinstance(held.experts.gate_up_proj, DynQuantExpertBank)
+
+    bare = refuse("gate.weight")
+    assert "2-D parameter" in bare
+    assert "F.linear" in bare
+    assert "encode" in bare
+    assert "not a module of this model" not in bare
 
     router = refuse("gate")
     assert "encode" in router
@@ -590,6 +602,11 @@ def test_the_chosen_apply_mode_is_the_one_that_runs_and_the_one_recorded(
     The parser's ``choices`` is pinned in the same test because without it a typo is not
     an error -- ``--map-apply pak`` parses, misses the equality, and quietly packs.
 
+    Since the packed runtime holds a bank, the two modes are told apart by *what they
+    leave behind* rather than by one of them failing: encode writes reconstructed values
+    back over the parameter, pack replaces it with a module. Same widths, different
+    artifacts, and only one of them is what an in-memory accuracy panel scores.
+
     Turns red when: the dispatch stops reading the flag, the record stops carrying it, or
     an unknown mode is accepted instead of refused.
     """
@@ -626,8 +643,12 @@ def test_the_chosen_apply_mode_is_the_one_that_runs_and_the_one_recorded(
     assert recorded["apply"] == "encode"
     assert not torch.equal(model.experts.gate_up_proj, before), "the flag did not reach the weights"
 
-    with pytest.raises(DynQuantError, match="encode"):
-        _apply_map(_Tiny(), argparse.Namespace(**vars(args), map_apply="pack"))
+    from dynquant.runtime.linear import DynQuantExpertBank
+
+    packed = _Tiny()
+    assert _apply_map(packed, argparse.Namespace(**vars(args), map_apply="pack"))["apply"] == "pack"
+    assert isinstance(packed.experts.gate_up_proj, DynQuantExpertBank)
+    assert "gate_up_proj" not in packed.experts._parameters
 
     with pytest.raises(SystemExit):
         build_parser().parse_args(["eval", "m", "--task", "gsm8k", "--map-apply", "pak"])

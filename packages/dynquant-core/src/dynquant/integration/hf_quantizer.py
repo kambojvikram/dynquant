@@ -83,8 +83,11 @@ from dynquant.integration.serving_common.schema import (
 from dynquant.quant.tensor import QuantTensor
 from dynquant.runtime.linear import (
     DynQuantEmbedding,
+    DynQuantExpertBank,
     DynQuantLinear,
+    ExpertBank,
     _PackedModule,
+    replace_module,
     resolve_target,
 )
 
@@ -174,6 +177,7 @@ def build_quantizer_class() -> type:
         def __init__(self, quantization_config: Any, **kwargs: Any) -> None:
             super().__init__(quantization_config, **kwargs)
             self._packed_names: tuple[str, ...] = ()
+            self._dense_keys: frozenset[str] = frozenset()
 
         def validate_environment(self, *args: Any, **kwargs: Any) -> None:
             # Nothing beyond torch. The reference decode path is pure torch and the
@@ -193,14 +197,21 @@ def build_quantizer_class() -> type:
             # `QuantizationConfigMixin`.
             schema: QuantizationConfigSchema = cast(Any, self.quantization_config).schema
             shells: dict[str, nn.Module] = {}
+            dense_keys: set[str] = set()
             for name, spec in sorted(schema.modules.items()):
-                module = resolve_target(model, name, source="quantization_config")
-                shells[name] = _shell(module, spec)
-                _replace(model, name, shells[name])
+                target = resolve_target(model, name, source="quantization_config")
+                shells[name] = _shell(target, spec)
+                # The key that used to hold this target's dense weight, which is the
+                # key the loader will now miss. A module contributed `name.weight`;
+                # a bank *is* the parameter, so it contributed `name`.
+                dense_keys.add(name if isinstance(target, ExpertBank) else f"{name}.weight")
+                replace_module(model, name, shells[name])
             packed = set(schema.modules)
             tied = _tie_output_embedding(model, packed)
             packed |= set(tied)
+            dense_keys |= {f"{name}.weight" for name in tied}
             self._packed_names = tuple(sorted(packed))
+            self._dense_keys = frozenset(dense_keys)
             _log.info(
                 "prepared %d packed modules for loading%s",
                 len(self._packed_names),
@@ -213,16 +224,16 @@ def build_quantizer_class() -> type:
         def update_missing_keys(
             self, model: Any, missing_keys: list[str], prefix: str
         ) -> list[str]:
-            """Drop the dense ``.weight`` of every module that is now packed.
+            """Drop the dense key of every target that is now packed.
 
             Without this the loader reports one missing key per quantized module, and
             that warning reads exactly like the silent-random-model failure this
             quantizer exists to prevent -- indistinguishable, to a reader, from
             nothing having worked at all.
             """
-            if not self._packed_names:
+            if not self._dense_keys:
                 return missing_keys
-            dense = {f"{name}.weight" for name in self._packed_names}
+            dense = self._dense_keys
             return [
                 key
                 for key in missing_keys
@@ -283,7 +294,7 @@ def _tie_output_embedding(model: Any, packed: set[str]) -> tuple[str, ...]:
     name = next((n for n, m in model.named_modules() if m is output), None)
     if name is None:  # pragma: no cover - an output embedding outside the tree
         return ()
-    _replace(model, name, DynQuantLinear(table.weight_qt, None, tied_to=table))
+    replace_module(model, name, DynQuantLinear(table.weight_qt, None, tied_to=table))
     _disable_retying(model)
     return (name,)
 
@@ -303,21 +314,27 @@ def _disable_retying(model: Any) -> None:
     model.tie_weights = _already_tied
 
 
-def _shell(module: nn.Linear | nn.Embedding, spec: ModuleQuantSpec) -> nn.Module:
+def _shell(target: nn.Linear | nn.Embedding | ExpertBank, spec: ModuleQuantSpec) -> nn.Module:
     """An empty packed module of the right shape, on the original's own device.
 
-    ``device=module.weight.device`` rather than a concrete device: under
+    ``device=target.weight.device`` rather than a concrete device: under
     ``low_cpu_mem_usage`` the skeleton sits on ``meta``, and allocating real storage
     here would materialise the model in RAM at precisely the moment the loader is
     trying not to.
+
+    The shape comes from the *model*, not from ``spec``. A checkpoint records
+    ``out_features`` as the packer's row count -- ``E * out`` for a bank -- which is
+    enough to check a shard against but not enough to rebuild rank 3 from, and the
+    skeleton transformers has already built from ``config.json`` knows the real one.
     """
-    weight = module.weight
-    out_features, in_features = int(weight.shape[0]), int(weight.shape[-1])
+    weight = target.weight
+    logical_shape = tuple(int(extent) for extent in weight.shape)
+    in_features = logical_shape[-1]
     empty = QuantTensor.empty(
         bits=spec.bits,
         group_size=spec.group_size,
         in_features=in_features,
-        logical_shape=(out_features, in_features),
+        logical_shape=logical_shape,
         # A `meta` skeleton still carries the dtype the model was built in, which is
         # the dtype the scales were written in -- the exporter stores metadata in the
         # weight's own dtype (`_storage_dtype`). Reading it from the module keeps the
@@ -327,15 +344,11 @@ def _shell(module: nn.Linear | nn.Embedding, spec: ModuleQuantSpec) -> nn.Module
         symmetric=spec.symmetric,
         has_offsets=not spec.symmetric,
     )
-    if isinstance(module, nn.Embedding):
-        return DynQuantEmbedding(empty, padding_idx=module.padding_idx)
-    return DynQuantLinear(empty, module.bias)
-
-
-def _replace(model: nn.Module, name: str, replacement: nn.Module) -> None:
-    parent_name, _, leaf = name.rpartition(".")
-    parent = model.get_submodule(parent_name) if parent_name else model
-    setattr(parent, leaf, replacement)
+    if isinstance(target, ExpertBank):
+        return DynQuantExpertBank(empty)
+    if isinstance(target, nn.Embedding):
+        return DynQuantEmbedding(empty, padding_idx=target.padding_idx)
+    return DynQuantLinear(empty, target.bias)
 
 
 # --------------------------------------------------------------------------

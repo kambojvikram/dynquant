@@ -568,15 +568,33 @@ def test_a_directory_without_banks_makes_no_claim_about_them(exported):
     assert manifest["expert_banks"] == []
 
 
-def test_the_packed_runtime_still_refuses_a_bank_and_now_names_the_writer(exported_bank):
-    """The export change must not read as "banks work everywhere now".
+def test_what_this_writer_wrote_is_now_what_the_runtime_holds(exported_bank):
+    """The export half and the runtime half have to agree, tensor for tensor.
 
-    ``pack_model`` swaps modules and a bank is not one, so it still refuses -- and
-    its message points at ``dynquant export`` for the size-honest artifact rather
-    than leaving someone to discover the writer that works by reading the source.
+    This once asserted that ``pack_model`` refused a bank -- true when the writer
+    landed and the reader had not, and the reason the ``ExportReport`` carries a
+    caveat at all. Now both exist, so the property worth pinning is that they meet:
+    the keys the exporter writes are the buffer names the packed module registers,
+    and the values decode to the same numbers.
+
+    Turns red when: either half changes its geometry or its key names without the
+    other, which would produce a directory that loads and is wrong rather than one
+    that refuses.
     """
-    from dynquant.runtime.linear import pack_model
+    from safetensors.torch import load_file
+
+    from dynquant.runtime.linear import DynQuantExpertBank, pack_model
+
+    _model, report = exported_bank
+    exported = load_file(report.output_dir / HF_WEIGHTS_FILENAME)
+    written = {key.rpartition(".")[2] for key in exported if key.startswith(f"{BANK}.")}
 
     model = tiny_model_with_a_bank()
-    with pytest.raises(DynQuantError, match="dynquant export"):
-        pack_model(model, {BANK: 4}, compute_device=None)
+    pack_model(model, {BANK: 4}, compute_device=None)
+    bank = model.get_submodule(BANK)
+    assert isinstance(bank, DynQuantExpertBank)
+    held = bank.state_dict()
+    assert set(held) == written
+
+    for suffix in sorted(written):
+        assert torch.equal(exported[f"{BANK}.{suffix}"], held[suffix]), suffix

@@ -28,6 +28,7 @@ from dynquant.quant.quantizer import quantize_model  # noqa: E402
 from dynquant.runtime.linear import (  # noqa: E402
     DynQuantEmbedding,
     DynQuantLinear,
+    ExpertBank,
     packed_bytes,
     resolve_target,
 )
@@ -329,9 +330,16 @@ def test_the_load_path_refuses_by_the_packing_rule_and_not_a_copy_of_it() -> Non
 
     Turns red when: a second resolver grows here, or any two branches collapse.
     """
-    bank = _refuse("experts.gate_up_proj")
-    assert "batched expert bank" in bank
-    assert "encode" in bank
+    # The tensor branch resolves rather than refusing, and resolves to the same thing
+    # the packing caller gets. A load path that re-derived this would be free to
+    # disagree, which is the whole failure mode above.
+    held = resolve_target(_Tiny(), "experts.gate_up_proj", source="quantization_config")
+    assert isinstance(held, ExpertBank)
+
+    bare = _refuse("gate.weight")
+    assert "2-D parameter" in bare
+    assert "encode" in bare
+    assert "not a module of this model" not in bare
 
     router = _refuse("gate")
     assert "encode" in router

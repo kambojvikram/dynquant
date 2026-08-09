@@ -425,6 +425,40 @@ class QuantTensor:
         out_dtype = dtype or self.compute_dtype
         return dense.reshape(self.logical_shape).to(out_dtype)
 
+    def rows(self, start: int, stop: int) -> QuantTensor:
+        """A contiguous band of rows, sharing this tensor's storage.
+
+        Rows are the flattened leading dimensions, so on a batched expert bank
+        ``[E, out, in]`` the band ``[e * out, (e + 1) * out)`` is expert ``e``, and
+        nothing is copied to get it: ``packed``, ``scales`` and ``offsets`` are all
+        row-major with the row as dimension 0, so each slice is a view. That is the
+        whole reason a packed bank is cheaper at runtime than a dequantized one --
+        one expert's worth of fp16 exists at a time instead of the bank's.
+
+        ``row_offset`` stays 0 rather than becoming ``start``. That field means where
+        a shard begins in *its module's output space*, which is a fused projection's
+        question. An expert's outputs are its own, numbered from zero, and recording
+        the bank position there would tell a serving planner that expert 3 of a
+        4096-row bank occupies output rows 12288..16383 of something.
+        """
+        rows = self.num_rows
+        if not 0 <= start < stop <= rows:
+            raise PackingError(
+                f"row band [{start}, {stop}) does not fall inside this tensor's {rows} rows"
+            )
+        return QuantTensor(
+            packed=self.packed[start:stop],
+            scales=self.scales[start:stop],
+            offsets=None if self.offsets is None else self.offsets[start:stop],
+            bits=self.bits,
+            group_size=self.group_size,
+            in_features=self.in_features,
+            logical_shape=(stop - start, self.in_features),
+            row_offset=0,
+            layout=self.layout,
+            symmetric=self.symmetric,
+        )
+
     def quantization_error(self, reference: torch.Tensor) -> dict[str, float]:
         """Relative Frobenius error and max absolute error against a dense tensor.
 

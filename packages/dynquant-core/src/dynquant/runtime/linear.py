@@ -33,6 +33,7 @@ the tied module registers no table at all and reads the owner's: see
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -52,10 +53,13 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DynQuantEmbedding",
+    "DynQuantExpertBank",
     "DynQuantLinear",
+    "ExpertBank",
     "PackReport",
     "pack_model",
     "packed_bytes",
+    "replace_module",
     "resolve_target",
 ]
 
@@ -77,8 +81,8 @@ class _PackedModule(nn.Module):
         ops.warm_dispatch()
         if weight.layout is not QuantLayout.LINEAR:
             raise NotImplementedError(f"layout {weight.layout.value} is not runnable yet")
-        if len(weight.logical_shape) != 2:
-            raise ValueError(f"expected a 2-D weight, got {weight.logical_shape}")
+        if len(weight.logical_shape) < 2:
+            raise ValueError(f"expected a matrix, or a stack of them, got {weight.logical_shape}")
 
         if tied_to is None:
             self.register_buffer(_PACKED, weight.packed)
@@ -116,7 +120,13 @@ class _PackedModule(nn.Module):
         self.bits = weight.bits
         self.group_size = weight.group_size
         self.in_features = weight.in_features
-        self.out_features = weight.num_rows
+        self.logical_shape = tuple(weight.logical_shape)
+        # Rows of *one* matrix. Identical to `num_rows` for a 2-D weight, which is
+        # every case this attribute had before a stack of them existed; on a bank
+        # `[E, out, in]` it is `out`, which is what the parent means by out_features
+        # and what one expert's dequantized slice has to be.
+        self.out_features = int(self.logical_shape[-2])
+        self.num_rows = weight.num_rows
         self.symmetric = weight.symmetric
         self.row_offset = weight.row_offset
 
@@ -137,7 +147,7 @@ class _PackedModule(nn.Module):
             bits=self.bits,
             group_size=self.group_size,
             in_features=self.in_features,
-            logical_shape=(self.out_features, self.in_features),
+            logical_shape=self.logical_shape,
             row_offset=self.row_offset,
             layout=QuantLayout.LINEAR,
             symmetric=self.symmetric,
@@ -261,6 +271,144 @@ class DynQuantEmbedding(_PackedModule):
         return ops.embedding_lookup(self.weight_qt, ids)
 
 
+class DynQuantExpertBank(_PackedModule):
+    """A batched MoE expert bank, packed, standing where the 3-D Parameter stood.
+
+    Why this is a module and not a forward
+    --------------------------------------
+    Every other packed type replaces a module's forward. A bank has none to replace:
+    ``Lfm2MoeExperts`` (and Qwen3-Next's, and GPT-OSS's) keeps its experts as one bare
+    ``nn.Parameter`` of shape ``[E, out, in]`` and calls ``F.linear`` on a *slice*
+    of one, inside its own loop over the experts a token actually hit. So the packed
+    thing has to be reachable exactly where the parameter was and answer exactly the
+    question the parent asks of it, which is ``bank[expert]``.
+
+    That is what this is. It is registered under the parameter's own name, so
+    ``self.gate_up_proj[expert_idx]`` in an untouched parent reaches
+    :meth:`__getitem__` and gets back a dense ``[out, in]`` matrix for that one
+    expert. No parent is edited, no architecture is enumerated, and a family whose
+    MoE block has not been written yet works if it indexes its bank -- which is the
+    only access pattern a per-expert loop has.
+
+    What it costs and what it saves
+    -------------------------------
+    One expert's worth of fp16 exists at a time, transiently, against the whole bank
+    resident for the whole run. On LFM2.5-8B-A1B a layer's ``gate_up_proj`` is
+    ``[32, 2688, 2048]`` -- 352 MiB in bf16 -- and one expert of it is 11 MiB. The
+    saving is the 44 banks that are 91.5% of that model; the cost is that a token
+    routed to 4 experts dequantizes 4 slices rather than reading 4 slices of packed
+    memory in a fused kernel. That fused kernel is the other half of P8 and lands
+    against this interface, not instead of it: ``weight_qt.rows()`` is already the
+    segment addressing a grouped GEMM needs.
+
+    What it deliberately does not support
+    -------------------------------------
+    A parent that treats the bank as one tensor -- ``torch.bmm(x, bank)``, or an
+    ``einsum`` over all experts -- will fail, because a module is not a tensor. It
+    fails loudly at the first forward rather than quietly, which is the right side
+    to be on, and :meth:`dequantize` is the escape hatch for anyone who genuinely
+    wants the whole bank dense and has the memory for it.
+    """
+
+    def __init__(self, weight: QuantTensor) -> None:
+        if len(weight.logical_shape) != 3:
+            raise ValueError(f"an expert bank is [experts, out, in]; got {weight.logical_shape}")
+        super().__init__(weight)
+        self.num_experts = int(self.logical_shape[0])
+
+    @classmethod
+    def from_parameter(
+        cls,
+        bank: torch.Tensor,
+        bits: int,
+        *,
+        group_size: int = DEFAULT_GROUP_SIZE,
+        symmetric: bool = False,
+        candidates: Sequence[float] = CLIP_CANDIDATES,
+        compute_device: str | torch.device | None = "auto",
+    ) -> DynQuantExpertBank:
+        quantized, _ = quantize_tensor(
+            bank.detach(),
+            bits=bits,
+            group_size=group_size,
+            symmetric=symmetric,
+            candidates=candidates,
+            compute_dtype=_storage_dtype(bank),
+            device=resolve_compute_device(compute_device),
+        )
+        return cls(quantized.to(bank.device))
+
+    def __getitem__(self, index: Any) -> torch.Tensor:
+        """Expert ``index``, dequantized. The only access pattern a bank needs.
+
+        ``index`` arrives as a 0-d tensor from a ``torch.where``/``nonzero`` loop as
+        often as it arrives as an ``int``, so it is taken through ``__index__``
+        rather than type-checked.
+        """
+        if isinstance(index, slice):
+            raise TypeError(
+                "a packed expert bank is indexed one expert at a time; slicing it "
+                "would dequantize a range, which is what holding it packed avoids. "
+                "Use `dequantize()` if the whole bank really is wanted."
+            )
+        expert = int(index)
+        if expert < 0:
+            expert += self.num_experts
+        if not 0 <= expert < self.num_experts:
+            raise IndexError(f"expert {int(index)} out of range for a bank of {self.num_experts}")
+        band = self.out_features
+        return self.weight_qt.rows(expert * band, (expert + 1) * band).dequantize()
+
+    def __len__(self) -> int:
+        return self.num_experts
+
+    def dequantize(self) -> torch.Tensor:
+        """The whole bank, dense. Defeats the point; exists for tests and parity checks."""
+        return self.weight_qt.dequantize()
+
+    # `nn.Module` has none of these, and a parent that asks a parameter for its shape
+    # or dtype before using it -- a dtype check, an `empty_like` -- is asking something
+    # this can answer truthfully without materialising anything.
+
+    @property
+    def shape(self) -> torch.Size:
+        return torch.Size(self.logical_shape)
+
+    @property
+    def ndim(self) -> int:
+        return len(self.logical_shape)
+
+    @property
+    def dtype(self) -> torch.dtype:
+        return self.holder.get_buffer(_SCALES).dtype
+
+    @property
+    def device(self) -> torch.device:
+        return self.holder.get_buffer(_PACKED).device
+
+    def extra_repr(self) -> str:
+        group = "per-row" if self.group_size < 0 else f"g{self.group_size}"
+        return (
+            f"experts={self.num_experts}, out_features={self.out_features}, "
+            f"in_features={self.in_features}, bits={self.bits}, {group}, "
+            f"{self.weight_qt.bits_per_weight:.2f} bits/weight"
+        )
+
+
+@dataclass(frozen=True)
+class ExpertBank:
+    """A bare 3-D parameter :func:`resolve_target` accepts, and where it lives.
+
+    Carries ``weight`` under that name so the three things a caller can be handed --
+    a ``Linear``, an ``Embedding`` and this -- all answer ``target.weight`` with the
+    dense tensor to encode. The packing loop then needs no branch at all until the
+    moment it builds the replacement.
+    """
+
+    name: str
+    weight: torch.Tensor
+
+
 # --------------------------------------------------------------------------
 # Model surgery
 # --------------------------------------------------------------------------
@@ -365,8 +513,8 @@ def pack_model(
     owner_by_ptr: dict[int, tuple[str, QuantTensor, _PackedModule]] = {}
 
     for index, (name, width) in enumerate(targets):
-        module = resolve_target(model, name)
-        weight = module.weight
+        target = resolve_target(model, name)
+        weight = target.weight
         ptr = weight.data_ptr()
         dense_bytes = weight.numel() * weight.element_size()
 
@@ -385,9 +533,9 @@ def pack_model(
             # different devices depending on which ones were quantized, and the
             # first forward pass would be where that is discovered.
             quantized = quantized.to(weight.device)
-        replacement = _wrap(module, quantized)
+        replacement = _wrap(target, quantized)
         owner_by_ptr[ptr] = (name, quantized, replacement)
-        _replace(model, name, replacement)
+        replace_module(model, name, replacement)
         report.modules[name] = (width, dense_bytes, quantized.nbytes)
 
         if progress is not None:
@@ -404,8 +552,14 @@ def pack_model(
         for name in names:
             if name in report.modules:
                 continue
-            module = resolve_target(model, name)
-            _replace(model, name, _wrap(module, quantized, tied_to=holder))
+            alias = resolve_target(model, name)
+            if isinstance(alias, ExpertBank):  # pragma: no cover - see `identity`
+                raise DynQuantError(
+                    f"{name!r} resolved to an expert bank in the alias pass, which walks "
+                    f"Linear and Embedding modules only. Two banks sharing storage is not "
+                    f"something the packer knows how to tie."
+                )
+            replace_module(model, name, _wrap(alias, quantized, tied_to=holder))
             report.tied[name] = owner_name
 
     for name, _module in _quantizable_modules(model):
@@ -439,8 +593,8 @@ replaces.
 
 def resolve_target(
     model: nn.Module, name: str, *, source: str = "bit map"
-) -> nn.Linear | nn.Embedding:
-    """The module the packed runtime will replace, or a refusal that says which kind.
+) -> nn.Linear | nn.Embedding | ExpertBank:
+    """What the packed runtime will replace, or a refusal that says which kind.
 
     Public, and shared with the ``from_pretrained`` load path, because that path asks
     exactly this question: which named targets can be swapped for a packed module. It
@@ -455,8 +609,12 @@ def resolve_target(
     A name this model does not have and a name addressing a *tensor* both raise
     ``AttributeError`` out of ``get_submodule``, and both were reported as "not a module of
     this model" -- which reads as a map built for another checkpoint. It is not: a batched
-    MoE expert bank keeps its experts as bare 3-D parameters, so the allocator priced it,
-    the encoder can encode it, and only the *packed* runtime cannot hold it.
+    MoE expert bank keeps its experts as bare 3-D parameters, so the allocator priced it
+    and the encoder encodes it. The runtime now holds one too, as
+    :class:`DynQuantExpertBank`, so that case returns rather than refusing -- but only at
+    rank 3. A bare *2-D* parameter is still refused, and for a reason that survives the
+    grouped path: its owner passes it whole to ``F.linear``, so there is no index at which
+    a module could stand in for it.
 
     The third is a module that owns a weight and is neither class. An
     ``Lfm2MoeTopKRouter`` -- and Qwen3-Next's router, and GPT-OSS's -- holds
@@ -469,16 +627,18 @@ def resolve_target(
     try:
         module = model.get_submodule(name)
     except AttributeError as exc:
-        from dynquant.quant.quantizer import resolves_to_weight
+        from dynquant.quant.quantizer import resolves_to_weight, target_tensor
 
         if resolves_to_weight(model, name):
+            tensor = target_tensor(model, name)
+            if tensor.ndim == 3:
+                return ExpertBank(name=name, weight=tensor)
             raise DynQuantError(
-                f"{name!r} is a tensor, not a module -- a batched expert bank, which the "
-                f"packed runtime cannot hold: packing replaces Linear and Embedding "
-                f"modules, and there is no module here to replace. {_ENCODER_REMEDY} That "
-                f"is a size-honest directory this runtime still cannot load back, which is "
-                f"why the export report lists its banks. The grouped packed path is not "
-                f"built yet."
+                f"{name!r} is a bare {tensor.ndim}-D parameter, not a module. The packed "
+                f"runtime holds a batched expert bank -- rank 3, indexed one expert at a "
+                f"time by its parent -- and this is not one: whatever owns it passes it "
+                f"whole to `F.linear`, so no module can stand where it stands. "
+                f"{_ENCODER_REMEDY}"
             ) from exc
         raise DynQuantError(
             f"{source} names {name!r}, which is not a module of this model"
@@ -502,19 +662,37 @@ def resolve_target(
 
 
 def _wrap(
-    module: nn.Linear | nn.Embedding,
+    target: nn.Linear | nn.Embedding | ExpertBank,
     quantized: QuantTensor,
     *,
     tied_to: _PackedModule | None = None,
 ) -> _PackedModule:
-    if isinstance(module, nn.Embedding):
-        return DynQuantEmbedding(quantized, padding_idx=module.padding_idx, tied_to=tied_to)
-    return DynQuantLinear(quantized, module.bias, tied_to=tied_to)
+    if isinstance(target, ExpertBank):
+        # No `tied_to`: aliasing is discovered by walking Linear and Embedding
+        # modules, and a bank is in no alias group -- two layers' experts are two
+        # tensors. If that ever stops being true the alias pass will find them.
+        return DynQuantExpertBank(quantized)
+    if isinstance(target, nn.Embedding):
+        return DynQuantEmbedding(quantized, padding_idx=target.padding_idx, tied_to=tied_to)
+    return DynQuantLinear(quantized, target.bias, tied_to=tied_to)
 
 
-def _replace(model: nn.Module, name: str, replacement: nn.Module) -> None:
+def replace_module(model: nn.Module, name: str, replacement: nn.Module) -> None:
+    """Install ``replacement`` where ``name`` points, module or bare parameter.
+
+    Public because the ``from_pretrained`` path does the same surgery and had its own
+    copy, which is how the resolver above came to exist in five versions.
+
+    The ``_parameters`` line is what makes a bank work. ``nn.Module.__setattr__``
+    checks the parameter registry first and raises ``TypeError: cannot assign ... as
+    parameter`` when a name registered there is handed anything but a ``Parameter`` --
+    so a bank cannot be replaced by a module while the parameter is still registered
+    under that name. For every other target the pop finds nothing, because a Linear
+    lives in ``_modules``.
+    """
     parent_name, _, leaf = name.rpartition(".")
     parent = model.get_submodule(parent_name) if parent_name else model
+    parent._parameters.pop(leaf, None)
     setattr(parent, leaf, replacement)
 
 
@@ -538,6 +716,16 @@ def packed_bytes(model: nn.Module) -> dict[str, Any]:
     missed shows up in ``dense_bytes`` instead of being quietly excluded from the
     total. A model that reports a small ``packed_bytes`` and a large
     ``dense_bytes`` is a model whose compression did not happen.
+
+    Three passes, because two of them cannot see everything. The module pass finds
+    packed modules and dense Linears and Embeddings. The third finds what
+    ``named_modules`` structurally cannot: a weight that is a bare
+    :class:`~torch.nn.Parameter` on a module of some other class -- an unpacked
+    expert bank, an MoE router holding ``[num_experts, hidden]`` and calling
+    ``F.linear`` on it. Those were previously in neither total, so on
+    LFM2.5-8B-A1B the denominator omitted 91.5% of the model and every ratio
+    computed from it was flattering. Rank < 2 is skipped: norms and biases are not
+    quantization targets and counting them would move the goalposts the other way.
     """
     packed = 0
     dense = 0
@@ -560,6 +748,13 @@ def packed_bytes(model: nn.Module) -> dict[str, Any]:
             seen.add(weight.data_ptr())
             dense += weight.numel() * weight.element_size()
             dense_names.append(name)
+
+    for name, param in model.named_parameters():
+        if param.ndim < 2 or param.data_ptr() in seen:
+            continue
+        seen.add(param.data_ptr())
+        dense += param.numel() * param.element_size()
+        dense_names.append(name)
 
     return {
         "packed_bytes": packed,
