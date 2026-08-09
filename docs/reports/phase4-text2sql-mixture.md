@@ -1141,6 +1141,40 @@ So the push is two variants that are ready, two that need P8 to be honest about 
 that need a 3-bit container that does not exist. That is a decision about what to publish, not a
 gap to be discovered at upload time.
 
+**Read against the format instead of against the error message, and it is four of six.** The
+paragraph above quotes `_resolve` accurately and draws the wrong conclusion from it. `QuantTensor`
+already carried `logical_shape` for precisely this case: an `[E, out, in]` bank flattens to
+`[E x out, in]` rows, packs, dequantizes back to rank three and accounts for its bytes like any
+other tensor. Nothing about the *format* ever excluded a bank. What excluded it was a **second copy
+of the resolver** -- the export path had built its own on `get_submodule` alone, which cannot reach
+a bare 3-D `nn.Parameter`, while `quantize_model` had been resolving both cases correctly all
+along through `_target_tensor`. A lookup's blind spot was reported as a limit of the container, and
+believed, and written into this report as a scheduled kernel task.
+
+Verified end to end before the claim was changed: a two-layer Llama with a `[8, 256, 128]` bank
+grafted onto its first MLP, exported at 4 bits, writes `.qweight (2048, 16)`, `.scales (2048, 1)`
+and `.offsets (2048, 1)` -- **139 264 bytes for 262 144 parameters, 4.25 bits per weight** -- keeps
+`logical_shape [8, 256, 128]` in the manifest, restores rank three on dequantize, and leaves the
+raw parameter key absent from the shards. Six tests now hold that, including the one that matters
+most and is easiest to omit: a bank belongs to no tie-alias group, because `_tied_aliases` walks
+modules and a bank is not one, so unless the export loop marks the bank's own state-dict key
+consumed the dense pass writes every value a second time at fp16 and the "quantized" directory
+comes out **larger than the checkpoint it compressed**. Removing that one line turns the test red;
+it was checked by removing it.
+
+What survives the correction is the half that was always true and had been fused to the other half.
+The packed *runtime* still cannot load a bank: `pack_model` swaps `Linear` and `Embedding` modules
+and there is no module here to swap. So a DynQuant directory is **size-honest today and loadable
+after P8**, which is two facts about one artifact rather than one fact about a missing kernel --
+and both now travel with the directory, as `ExportReport.banks` and as `expert_banks` in the
+manifest, because whoever uploads the folder next week will have the folder and not the report.
+
+Revised, the push is **four variants that publish and two that cannot**: GPTQ 4-bit, AWQ 4-bit and
+both DynQuant arms write packed at the bytes their manifests claim, with the DynQuant cards
+carrying the not-yet-loadable caveat; the two 3-bit baselines still have no container to be written
+into. The general lesson is the one this project keeps relearning in new places -- when a check
+refuses, read what it actually compares before believing what it says it means.
+
 ### The chat template is in a file, not the tokenizer config
 
 Every arm renders its prompts with `--prompt-style chat`, which asks the tokenizer to lay out a
