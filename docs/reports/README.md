@@ -29,6 +29,7 @@ widths, and whether the driver that runs the arms runs at all are five separate 
 | 16 | “At matched bytes” — whose bytes? | **The baselines’** — DynQuant’s own format costs 4.25 bits/param at 4 bits against `compressed-tensors`’ 4.15625, so anchoring on its uniform arm would hand it **2.3% more bytes inside the arm whose accuracy is the claim** | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
 | 17 | Which of DynQuant’s two prices chose the widths, and on how much of the model? | **44 of 133 modules — 91.54% of parameters — by the rank-product proxy rescaled by 1.807e-17**, because a batched expert bank has no boundary where the Gauss–Newton form exists; the concordance guard reads 1.000 over the other 8.46% | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
 | 18 | Does the seven-arm panel driver run? | **Not until six defects were removed** — three of them fail *after* the calibration pass, one would have finished and entered the table as round-to-nearest wearing an AWQ label, the fifth would have run all seven arms over the whole 16 143-item test split because `--limit` is forwarded only when set, and the sixth would have let `--resume` staple in a record scored on another checkpoint | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
+| 19 | How many of the six quantized variants can actually be published? | **Four, not two** — `dynquant export` refused a batched expert bank and said the packed *format* could not hold one; the format always could, and the refusal came from a second copy of the name resolver. Both DynQuant arms now write packed at their manifest bytes, size-honest and not yet loadable | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
 
 The method itself — signals, sensitivity estimator, allocator, encoder, format, packed
 runtime, kernels — is documented end to end in the
@@ -812,6 +813,40 @@ scored, charging the signal file against the two DynQuant arms and not the four 
 open it — because condemning all six would price the cheapest correct fix at a whole new panel,
 which is how a guard teaches people to pass `--resume` less carefully rather than more.
 
+## 19. Phase 4 — the refusal that blamed the format
+
+[`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 · fixed 2026-08-09
+
+Six variants were to be published and only two could be written. The two 3-bit baselines have no
+container — `compressed-tensors` has no 3-bit packed form, so the only thing `save_pretrained`
+could write is a full-size bf16 folder wearing a 3-bit label. The two DynQuant arms were blocked
+by something else: `dynquant export` raised on every batched MoE expert bank, saying the packed
+format could not represent one. That was written into the report as scheduled kernel work, and it
+was wrong.
+
+`QuantTensor` had carried `logical_shape` for exactly this case all along. An `[E, out, in]` bank
+flattens to `[E x out, in]` rows, packs, accounts for its bytes and restores rank three on
+dequantize. What refused it was a **second copy of the name resolver**: the export path had built
+its own on `get_submodule`, which cannot reach a bare 3-D `nn.Parameter`, while `quantize_model`
+had been resolving both cases correctly through `target_tensor`. The blind spot arrived wearing
+the costume of a capability limit, because whoever wrote the refusal was reasoning from the same
+wrong copy — the third instance of this shape in the package, after the eval task argparse
+refused and the test that asserted `style` against `executes_code`.
+
+Verified before the claim changed: a `[8, 256, 128]` bank exported at 4 bits writes
+`.qweight (2048, 16)`, `.scales (2048, 1)` and `.offsets (2048, 1)` — 139 264 bytes for
+262 144 parameters, **4.25 bits per weight** — with `logical_shape` preserved and the raw
+parameter key absent from the shards. The fix had its own trap, mutation-checked by removing the
+line that avoids it: a bank belongs to no tie-alias group, so unless the export loop marks the
+bank's own state-dict key consumed, the dense pass writes every value again at fp16 and the
+quantized directory comes out larger than the checkpoint it compressed.
+
+Half the original claim survives and is the half worth keeping separate. The packed *runtime*
+still cannot load a bank — it swaps `Linear` and `Embedding` modules and there is none to swap
+— so a DynQuant directory is **size-honest today and loadable after P8**. Two facts about one
+artifact, and both now travel with the directory as `ExportReport.banks` and as `expert_banks` in
+the manifest, because whoever uploads the folder will have the folder and not the report.
+
 ## Conventions that apply to every campaign
 
 **Paired tests on stored per-item hits.** Every arm stores which items it got right, so every
@@ -841,7 +876,7 @@ as the wins.
 | [`experiments/screen/`](../../experiments/screen/) | the base-model headroom screen that selects a task |
 | [`stats/`](../../stats/) | the signal maps collected by the fine-tune hooks |
 | [`experiments/phase3/`](../../experiments/phase3/) | the phase-3 campaign: the headroom screen, the S2 signal maps, and S3's allocation maps and 36 eval cells with per-item hits |
-| [`experiments/phase4/`](../../experiments/phase4/) | the phase-4 campaign: the text-to-SQL admission screen for both splits, per source, with the refusal broken down by cause |
+| [`experiments/phase4/`](../../experiments/phase4/) | the phase-4 campaign: the text-to-SQL admission screen for both splits, per source, with the refusal broken down by cause. Panel artifacts pulled off the non-volume box while it ran live in [`s4_panel/`](../../experiments/phase4/s4_panel/) (records with per-item hits, quant manifests, decode probes, leakage scans) and [`s4_runs/`](../../experiments/phase4/s4_runs/) (the signal file and the measured expert-bank moments). |
 | [`docs/format-spec.md`](../format-spec.md) | the checkpoint format contract these experiments write and read |
 | [`docs/legacy-audit.md`](../legacy-audit.md) | what was wrong with the supplementary code, defect by defect |
 | [`decode-neutrality.md`](decode-neutrality.md) | the checkpoint's own `generation_config` reaching a "greedy" decode: how the phase-3 G4 gate found it, which campaigns it does and does not touch, and why the fix took two attempts — the first was correct on transformers 4.x and inert on the 5.x the campaign runs. Ends with what the fixed gate measures: −0.83 points, and a ±1.00 bound GSM8K is too small to resolve |
