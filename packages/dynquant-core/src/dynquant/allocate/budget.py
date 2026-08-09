@@ -8,7 +8,16 @@ size of the folder it produced, so the number the allocator targets has to be th
 number the filesystem reports.
 
 Everything here is therefore counted in *stored* bits: packed payload, scales,
-offsets, and the tensors that stay at compute dtype.
+offsets, and the tensors that stay at compute dtype -- including the ones the graph
+refused, which stay at compute dtype without ever having been a decision. On
+LFM2.5-8B-A1B those are 205,056 bytes of norms and biases against 4.4 GB, and on a MoE
+whose expert banks are refused they are most of the model.
+
+One term is named and deliberately not priced: the safetensors container itself, 58,880
+bytes on that same model. Its size is a function of the tensor *names* and offsets, which
+do not exist until the allocation this budget is being computed for has been made. A
+target is therefore hit to within a header, and the header is the only thing between the
+number asked for and the number on disk.
 """
 
 from __future__ import annotations
@@ -93,8 +102,10 @@ class Budget:
     Attributes:
         total_bits: What the whole checkpoint may occupy, metadata included.
         fixed_bits: What is already spoken for -- tensors that stay at compute
-            dtype and cannot be traded. Subtracted before the allocator sees a
-            budget, so it never "spends" bits it was never able to move.
+            dtype and cannot be traded, whether they were floored there by their role
+            or refused by the graph before they got one. Subtracted before the
+            allocator sees a budget, so it never "spends" bits it was never able to
+            move.
         denominator: Params the reported average is divided by. This is *every*
             parameter, including the unquantized ones, because that is what a user
             means by "the model at 3 bits".
@@ -133,10 +144,14 @@ class Budget:
             )
 
         denominator = graph.total_params()
+        # Refused tensors are added as a count rather than through `module_stored_bits`,
+        # because there is no `ModuleInfo` to hand it: they never entered the graph. At
+        # `UNQUANTIZED_FLOOR` that function is `params * 16` anyway, so the two paths
+        # agree; what differs is only that one of them has an object to pass.
         fixed = sum(
             module_stored_bits(info, UNQUANTIZED_FLOOR, group_size=group_size)
             for info in graph.unquantized()
-        )
+        ) + float(UNQUANTIZED_FLOOR * graph.skipped_params())
 
         if target_bits is not None:
             total = float(denominator) * target_bits

@@ -270,17 +270,31 @@ def test_a_zero_score_is_cut_to_the_minimum_for_free(graph) -> None:
     connected: if the allocator is ever changed to treat a zero score as merely
     lowest-priority, the ranker's open interval stops being load-bearing and the
     comment explaining it becomes wrong.
+
+    The target is 4.0 because that is where the mechanism acts, and it is the target the
+    incident above happened at. Under a loose target the downgrade pass never runs, so
+    nothing is cut and a zero score shows up only as being upgraded last -- which is not
+    a stable observable. The upgrade pass accepts a zero-value move when no priced move
+    can afford the slack that is left, so whether the victim finishes below its peers
+    depends on the size of that remainder, and the remainder moves with any change to
+    budget accounting. Pricing the tensors the graph refuses moved it by 0.09% of the
+    budget and flipped this assertion while changing nothing about how a zero is
+    treated. At 4.0 the victim is cut through its own floor to the minimum and is the
+    only module in the model there, which is the fact worth pinning.
     """
     scores = _flat_scores(graph)
     victim = next(i for i in graph.quantizable() if i.role is ModuleRole.MLP_DOWN)
     scores[victim.name] = 0.0
 
-    result = allocate_bits(graph, scores, Budget.from_target(graph, target_bits=8.0))
+    result = allocate_bits(graph, scores, Budget.from_target(graph, target_bits=4.0))
     peers = [
         i.name
         for i in graph.quantizable()
         if i.role is ModuleRole.MLP_DOWN and i.name != victim.name
     ]
+    assert result.bits[victim.name] == 2, "a free cut should go all the way to the minimum"
+    assert result.bits[victim.name] < victim.floor_bits, "through its floor to get there"
+    assert result.histogram()[2] == 1, "and nothing else in the model should be down here"
     assert result.bits[victim.name] < min(result.bits[n] for n in peers)
 
 

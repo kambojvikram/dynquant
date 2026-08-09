@@ -247,6 +247,11 @@ def test_depthwise_conv1d_is_left_unquantized_but_still_budgeted(qwen_graph: obj
     :meth:`unquantized` (16 bits per parameter that the manifest's average has to
     account for). Dropping it from both is how a reported "3.0 average bits" ends
     up describing a file that is larger than that.
+
+    Three terms in the sum and not two. Refused tensors are the same failure one step
+    further out: they never became a module at all, so they were absent from both of the
+    other counts, and the average was reported over a denominator that did not include
+    them while the file did.
     """
     conv = qwen_graph["model.layers.0.linear_attn.conv1d"]
     assert conv.floor_bits == UNQUANTIZED_FLOOR
@@ -254,7 +259,7 @@ def test_depthwise_conv1d_is_left_unquantized_but_still_budgeted(qwen_graph: obj
     assert conv not in qwen_graph.quantizable()
     assert conv in qwen_graph.unquantized()
     assert qwen_graph.total_params() == (
-        qwen_graph.unique_params() + qwen_graph.unquantized_params()
+        qwen_graph.unique_params() + qwen_graph.unquantized_params() + qwen_graph.skipped_params()
     )
 
 
@@ -456,7 +461,7 @@ def test_norms_are_skipped_with_a_recorded_reason() -> None:
     graph = classify_model(Qwen3_5ForCausalLM())
     assert "model.norm" in graph.skipped
     assert "model.layers.0.input_layernorm" in graph.skipped
-    assert "1-D" in graph.skipped["model.norm"]
+    assert "1-D" in graph.skipped["model.norm"].reason
     assert not [n for n in graph.names if "layernorm" in n]
 
 

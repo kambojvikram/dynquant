@@ -348,6 +348,11 @@ def run(args: argparse.Namespace) -> int:
             "total": graph.total_params(),
             "unique": graph.unique_params(),
             "unquantized": graph.unquantized_params(),
+            # Beside `unquantized` and not inside it. Both are dense on disk and the
+            # budget adds them together, but one is a role's floor and the other is a
+            # tensor the graph declined to classify -- and on a MoE whose banks were
+            # refused, this number is most of the model and needs its own line to say so.
+            "skipped": graph.skipped_params(),
         },
         # Empty rather than absent when no ``--stats`` was given: a reader that keys
         # into this dict gets three empty lists, which is the truth -- no module is

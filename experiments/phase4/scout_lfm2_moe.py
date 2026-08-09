@@ -177,9 +177,13 @@ def main() -> None:
         elif tensor.ndim >= 2:  # norms and biases are never quantized by anyone
             missed[type(full.get_submodule(owner)).__name__] += tensor.numel()
 
-    print(f"  refused with a reason  : {len(full_graph.skipped)} tensors")
-    for skipped_name, why in list(full_graph.skipped.items())[:4]:
-        print(f"    {skipped_name}: {why[:110]}")
+    refused_params = full_graph.skipped_params()
+    print(
+        f"  refused with a reason  : {len(full_graph.skipped)} tensors, "
+        f"{refused_params / 1e6:.2f} M params priced dense"
+    )
+    for skipped_name, entry in list(full_graph.skipped.items())[:4]:
+        print(f"    {skipped_name}: {entry.reason[:110]}")
 
     print(f"{REPO} at full size: {total / 1e9:.2f} B parameters")
     print(f"  carried by the graph : {covered / 1e9:>6.2f} B  ({covered / total * 100:.1f} %)")

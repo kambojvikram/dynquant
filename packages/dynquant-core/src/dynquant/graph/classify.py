@@ -60,9 +60,34 @@ if TYPE_CHECKING:
 
     from torch import nn
 
-__all__ = ["ModelGraph", "ModuleInfo", "classify_model"]
+__all__ = ["ModelGraph", "ModuleInfo", "SkippedTensor", "classify_model"]
 
 _log = get_logger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class SkippedTensor:
+    """A weight the graph refused, and how much of the file it still occupies.
+
+    Refusing to quantize a tensor is a decision about *bits*, not about existence. Every
+    one of these is written to the checkpoint at compute dtype, so a budget that does not
+    know their size targets a number smaller than the folder it produces, and an
+    average-bits figure computed without their parameters is an average over a subset of
+    the file. That is a rounding error at one end of the range and not at the other:
+    LFM2.5-8B-A1B's norms and biases come to 205,056 bytes against 4.4 GB, while a batched
+    expert bank refused for orientation is 91.5% of the same model.
+
+    Carries a count rather than a shape, because the count is what a budget needs and the
+    shape is usually already in :attr:`reason`.
+    """
+
+    reason: str
+    num_params: int
+    tied_to: str | None = None
+    """Set when an earlier name owns the same tensor, so :meth:`ModelGraph.skipped_params`
+    counts it once. Two modules sharing one norm is unusual; counting a shared tensor twice
+    is the error that made a tied embedding 27% of a model twice over, and the guard is
+    four lines."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,10 +198,12 @@ class ModelGraph:
     model_type: str
     architectures: tuple[str, ...] = ()
     tied_groups: tuple[tuple[str, ...], ...] = ()
-    skipped: dict[str, str] = field(default_factory=dict)
-    """Modules deliberately not tracked, mapped to the reason. Norms and biases
-    land here. Recorded rather than dropped so ``dynquant inspect`` can show that
-    a tensor was considered and excluded, not overlooked."""
+    skipped: dict[str, SkippedTensor] = field(default_factory=dict)
+    """Weights deliberately not quantized, mapped to the reason and their size. Norms,
+    biases and refused expert banks land here. Recorded rather than dropped so
+    ``dynquant inspect`` can show that a tensor was considered and excluded, not
+    overlooked -- and priced, because being left out of the map does not leave it out of
+    the file."""
 
     def __len__(self) -> int:
         return len(self.modules)
@@ -215,8 +242,13 @@ class ModelGraph:
         :meth:`floor_cost_bits` and any allocation cost built the same way. Using
         :meth:`unique_params` instead would divide a numerator that includes the
         compute-dtype tensors by a denominator that excludes their parameters.
+
+        :meth:`skipped_params` is in here for the same reason, one step further out. A
+        norm is not a decision the allocator makes, and it is still a tensor a user
+        downloads; "the model at 3 bits" is a claim about the folder, not about the part
+        of the folder this graph happened to classify.
         """
-        return self.unique_params() + self.unquantized_params()
+        return self.unique_params() + self.unquantized_params() + self.skipped_params()
 
     def unquantized(self) -> tuple[ModuleInfo, ...]:
         """Weights that stay in the compute dtype: floor at :data:`UNQUANTIZED_FLOOR`.
@@ -231,6 +263,16 @@ class ModelGraph:
 
     def unquantized_params(self) -> int:
         return sum(m.num_params for m in self.unquantized())
+
+    def skipped_params(self) -> int:
+        """Parameters in tensors the graph refused, ties counted once.
+
+        Distinct from :meth:`unquantized_params`, which counts weights that entered the
+        graph and were floored at compute dtype. These never entered it: there is no
+        :class:`ModuleInfo`, no role and no decision. They are the same thing to a
+        filesystem, which is the only reader a budget answers to.
+        """
+        return sum(s.num_params for s in self.skipped.values() if s.tied_to is None)
 
     def unclassified(self) -> tuple[str, ...]:
         return tuple(n for n, m in self.modules.items() if m.role is ModuleRole.OTHER)
@@ -250,12 +292,15 @@ class ModelGraph:
         make. That is precisely the state the supplement's allocator was in at its
         own headline 3-bit setting, where it silently returned the floor map.
 
-        Counts the compute-dtype tensors at :data:`UNQUANTIZED_FLOOR` too. They are
-        not decisions, but they are bits on disk, and a budget that omits them
-        reports an average the file does not have.
+        Counts the compute-dtype tensors at :data:`UNQUANTIZED_FLOOR` too, and the
+        refused ones beside them. Neither is a decision, both are bits on disk, and a
+        budget that omits them reports an average the file does not have. The two are
+        summed together because nothing downstream can tell them apart: a tensor that was
+        floored and a tensor that was never classified cost the same 16 bits.
         """
         payload = sum(m.num_params * m.floor_bits for m in self.quantizable())
-        return payload + UNQUANTIZED_FLOOR * self.unquantized_params()
+        dense = self.unquantized_params() + self.skipped_params()
+        return payload + UNQUANTIZED_FLOOR * dense
 
     def report(self) -> str:
         """Human-readable summary, grouped by role and sorted by parameter count."""
@@ -270,7 +315,7 @@ class ModelGraph:
         total = self.total_params() or 1
         lines = [
             f"{self.model_type}: {len(self.quantizable())} quantizable modules, "
-            f"{total / 1e9:.3f}B unique params"
+            f"{total / 1e9:.3f}B params"
         ]
         for role, (count, params, floor) in sorted(by_role.items(), key=lambda kv: -kv[1][1]):
             base = DEFAULT_FLOOR_BITS.get(role, 4)
@@ -288,6 +333,15 @@ class ModelGraph:
             lines.append(
                 f"  compute dtype ({len(kept)}): {self.unquantized_params() / 1e6:.2f}M params "
                 f"at {UNQUANTIZED_FLOOR}b"
+            )
+        if refused := self.skipped_params():
+            # Beside the floored tensors rather than folded into them, because the sizes
+            # say different things. A few hundred KB of norms is the expected shape; a
+            # refused expert bank is most of the model sitting at fp16, and is the loudest
+            # available signal that the target will be missed for a reason nobody chose.
+            lines.append(
+                f"  refused ({len(self.skipped)}): {refused / 1e6:.2f}M params "
+                f"at {UNQUANTIZED_FLOOR}b ({100 * refused / total:.1f}%)"
             )
         lines.append(f"  floor cost: {self.floor_cost_bits() / total:.4f} avg bits")
         return "\n".join(lines)
@@ -333,8 +387,12 @@ def classify_model(
     overrides = overrides or {}
 
     modules: dict[str, ModuleInfo] = {}
-    skipped: dict[str, str] = {}
+    skipped: dict[str, SkippedTensor] = {}
     seen_weights: dict[int, str] = {}
+    seen_skipped: dict[int, str] = {}
+    """Ids of refused tensors, so two modules sharing one norm are priced once. Kept apart
+    from `seen_weights` because a tie among refused tensors has no representative to push a
+    role onto -- there is no `ModuleInfo` at either end."""
     tied: dict[str, list[str]] = {}
     claimed: set[int] = set()
     """Ids of every parameter some module accounted for, so the sweep below can
@@ -348,7 +406,7 @@ def classify_model(
             # is how ~91% of a 128-expert model used to become invisible.
             found, refused = _expert_bank(raw_name, module, inner, overrides)
             modules.update(found)
-            skipped.update(refused)
+            _record_skipped(refused, into=skipped, seen=seen_skipped)
             claimed.update(id(param) for _, param in batched_expert_params(module))
             continue
         claimed.add(id(weight))
@@ -359,7 +417,20 @@ def classify_model(
             # One dimension means a norm scale or a bias. Excluding by rank rather
             # than by class name covers every architecture's norm without an
             # enumeration that goes stale.
-            skipped[name] = f"{type(module).__name__} weight is {weight.ndim}-D"
+            _record_skipped(
+                [
+                    (
+                        name,
+                        SkippedTensor(
+                            reason=f"{type(module).__name__} weight is {weight.ndim}-D",
+                            num_params=weight.numel(),
+                        ),
+                        weight,
+                    )
+                ],
+                into=skipped,
+                seen=seen_skipped,
+            )
             continue
 
         ctx = ModuleContext(
@@ -393,7 +464,9 @@ def classify_model(
         )
 
     unowned, refused = _unowned_parameters(model, claimed=claimed, overrides=overrides)
-    skipped.update({n: r for n, r in refused.items() if n not in modules})
+    _record_skipped(
+        [entry for entry in refused if entry[0] not in modules], into=skipped, seen=seen_skipped
+    )
     for name, info, weight in unowned:
         if name in modules or name in skipped:
             continue
@@ -481,11 +554,13 @@ def _expert_bank(
     module: nn.Module,
     config: Any,
     overrides: Mapping[str, str | ModuleRole],
-) -> tuple[dict[str, ModuleInfo], dict[str, str]]:
+) -> tuple[dict[str, ModuleInfo], list[tuple[str, SkippedTensor, Any]]]:
     """Classify a batched MoE expert bank's 3-D parameters, or refuse them.
 
-    Returns ``({}, {})`` for anything that is not a bank, so the caller can treat
-    every ``.weight``-less module the same way.
+    Returns ``({}, [])`` for anything that is not a bank, so the caller can treat
+    every ``.weight``-less module the same way. A refusal here is the one that most
+    needs pricing: these tensors are the bulk of a MoE, and refusing them leaves that
+    bulk at compute dtype.
 
     Each tensor is named ``<bank>.<param>`` -- e.g.
     ``model.layers.0.mlp.experts.gate_up_proj`` -- which is the name the whole
@@ -512,7 +587,7 @@ def _expert_bank(
     """
     params = batched_expert_params(module)
     if not params:
-        return {}, {}
+        return {}, []
 
     bank = canonical_name(raw_name)
     orientation = bank_orientation(module, config)
@@ -526,15 +601,22 @@ def _expert_bank(
             if orientation == IN_OUT
             else "orientation could not be determined from the config"
         )
-        return {}, {
-            f"{bank}.{param_name}": (
-                f"batched expert tensor {tuple(param.shape)}: {detail}. The encoder "
-                f"groups along the last axis; quantizing this would share scales "
-                f"across the wrong channels. Pass an explicit layout when the format "
-                f"supports one."
+        return {}, [
+            (
+                f"{bank}.{param_name}",
+                SkippedTensor(
+                    reason=(
+                        f"batched expert tensor {tuple(param.shape)}: {detail}. The encoder "
+                        f"groups along the last axis; quantizing this would share scales "
+                        f"across the wrong channels. Pass an explicit layout when the format "
+                        f"supports one."
+                    ),
+                    num_params=param.numel(),
+                ),
+                param,
             )
             for param_name, param in params
-        }
+        ]
 
     found: dict[str, ModuleInfo] = {}
     for param_name, param in params:
@@ -550,7 +632,26 @@ def _expert_bank(
             num_params=param.numel(),
             source="override" if override is not None else "batched-expert",
         )
-    return found, {}
+    return found, []
+
+
+def _record_skipped(
+    entries: list[tuple[str, SkippedTensor, Any]],
+    *,
+    into: dict[str, SkippedTensor],
+    seen: dict[int, str],
+) -> None:
+    """File refused tensors under their names, pricing each distinct tensor once.
+
+    One function for all three refusal sites rather than the same four lines three times,
+    because the thing being got right is a total and a total is only as right as its least
+    careful contributor. First name wins the parameters; the rest record who has them.
+    """
+    for name, entry, tensor in entries:
+        if name in into:
+            continue
+        first = seen.setdefault(id(tensor), name)
+        into[name] = entry if first == name else replace(entry, tied_to=first)
 
 
 def _unowned_parameters(
@@ -558,7 +659,7 @@ def _unowned_parameters(
     *,
     claimed: set[int],
     overrides: Mapping[str, str | ModuleRole],
-) -> tuple[list[tuple[str, ModuleInfo, Any]], dict[str, str]]:
+) -> tuple[list[tuple[str, ModuleInfo, Any]], list[tuple[str, SkippedTensor, Any]]]:
     """Pick up weight tensors that no module exposes as ``.weight``.
 
     ``named_modules`` finds a tensor only if its owner spells it ``self.weight``.
@@ -581,12 +682,13 @@ def _unowned_parameters(
     handed; the fallback is the honest option rather than a degraded one.
 
     Returns:
-        ``(found, refused)`` -- found as ``(name, info, tensor)`` triples so the
-        caller can resolve ties by tensor identity, and refused as
-        ``{name: reason}``.
+        ``(found, refused)`` -- both as ``(name, info, tensor)`` triples so the caller can
+        resolve ties by tensor identity. ``named_parameters`` already deduplicates shared
+        tensors, so this sweep cannot produce a tie of its own; it can still name a tensor
+        the module walk refused under another name.
     """
     found: list[tuple[str, ModuleInfo, Any]] = []
-    refused: dict[str, str] = {}
+    refused: list[tuple[str, SkippedTensor, Any]] = []
 
     for raw_name, param in model.named_parameters():
         if id(param) in claimed:
@@ -601,7 +703,16 @@ def _unowned_parameters(
         # compression -- the same reasoning that keeps norms and biases out by
         # rank, applied to a shape that would otherwise slip past.
         if sum(1 for dim in param.shape if dim > 1) < 2:
-            refused[name] = f"{tuple(param.shape)} has fewer than two non-trivial dimensions"
+            refused.append(
+                (
+                    name,
+                    SkippedTensor(
+                        reason=(f"{tuple(param.shape)} has fewer than two non-trivial dimensions"),
+                        num_params=param.numel(),
+                    ),
+                    param,
+                )
+            )
             continue
 
         override = next(

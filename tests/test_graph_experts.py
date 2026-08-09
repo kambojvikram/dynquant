@@ -255,8 +255,13 @@ def test_a_reversed_bank_is_skipped_with_a_reason_not_quantized_wrongly() -> Non
     graph = classify_model(Model(GptOssExperts))
 
     assert "model.layers.0.mlp.experts.down_proj" not in graph.modules
-    reason = graph.skipped["model.layers.0.mlp.experts.down_proj"]
-    assert "input axis is not last" in reason
+    entry = graph.skipped["model.layers.0.mlp.experts.down_proj"]
+    assert "input axis is not last" in entry.reason
+    # The whole bank, priced dense. A refusal here is not a rounding error: on an
+    # LFM2-class MoE the expert banks are 91.5% of the quantizable parameters, so a
+    # refused bank that never reaches the denominator misprices most of the model.
+    assert entry.num_params == EXPERTS * INTER * HIDDEN
+    assert entry.num_params <= graph.skipped_params()
 
 
 # --------------------------------------------------------------------------

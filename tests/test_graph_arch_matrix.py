@@ -237,15 +237,19 @@ def test_floor_cost_counts_every_parameter(model_type: str) -> None:
     somewhere in the graph, it has to reach the denominator. Ties are counted once
     on both sides, which is what makes this an equality rather than a bound.
 
+    *Every* parameter, with no shape filter, which is the point. A norm the graph
+    refuses to classify is still sixteen bits per element on disk, so a denominator that
+    skips it describes a smaller file than the one that gets written. The filter that
+    used to stand here -- at least two non-unit dimensions -- excluded precisely the
+    tensors the budget was not pricing, which is how a test named for every parameter
+    came to agree with a count that left some out.
+
     Turns red when: a tensor is classified but excluded from the count, or a tie is
     double-counted.
     """
     graph, model = _graph(model_type)
 
-    seen: dict[int, int] = {}
-    for _, param in model.named_parameters():
-        if sum(1 for dim in param.shape if dim > 1) >= 2:
-            seen[id(param)] = param.numel()
+    seen = {id(param): param.numel() for _, param in model.named_parameters()}
 
     assert graph.total_params() == sum(seen.values())
 
