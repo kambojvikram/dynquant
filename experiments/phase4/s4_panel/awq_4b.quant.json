@@ -1,0 +1,50 @@
+{
+  "method": "awq",
+  "bits": 4,
+  "group_size": 128,
+  "ignore": [],
+  "calib_samples": 256,
+  "seq_len": 1024,
+  "source": "/workspace/runs/s4/lfm25-8b-a1b.text2sql/merged",
+  "quantize_seconds": 2812.2,
+  "linearization": {
+    "banks_before": 22,
+    "banks_after": 0,
+    "linear_modules": 2201,
+    "linear_params": 8467644416,
+    "params": 8467856128,
+    "linear_share": 1.0,
+    "device": "cuda"
+  },
+  "awq_smoothing": {
+    "mappings": 6,
+    "linear_modules": 2201,
+    "smoothed_linears": 2176,
+    "unsmoothed_linears": {
+      "conv.out_proj": 18,
+      "lm_head": 1,
+      "self_attn.out_proj": 6
+    }
+  },
+  "materialized_modules": 2201,
+  "weights_moved": 2201,
+  "max_weight_delta": 2.890625,
+  "probe_unique_values_per_row": [
+    59,
+    160,
+    158,
+    174,
+    194,
+    196,
+    210,
+    204
+  ],
+  "accounted_bits": 4.1565,
+  "accounted_bytes": 4399629312,
+  "accounted_gib": 4.0975,
+  "fp16_bits_share": 0.0001,
+  "quantized_params": 8467644416,
+  "quantized_share": 1.0,
+  "banked_params_quantized": 7751073792,
+  "params": 8467856128
+}
