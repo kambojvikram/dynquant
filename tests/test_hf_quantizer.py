@@ -280,6 +280,74 @@ def test_a_tied_model_decodes_correctly_and_not_merely_without_error(tmp_path) -
     assert to_dense > 20 * to_encoder, (to_dense, to_encoder)
 
 
+def test_no_tie_bookkeeping_survives_naming_a_parameter_the_packed_model_lacks(
+    tmp_path,
+) -> None:
+    """The tie is structural after the swap, so the parameter-level record must go.
+
+    ``tie_weights`` is not the only consumer of the tie, and treating it as though it
+    were is what broke: transformers v5 also keeps ``all_tied_weights_keys`` and hands
+    every name in it to ``get_parameter`` from ``mark_tied_weights_as_initialized`` --
+    at the *end* of a load that had otherwise fully succeeded. The three tests above
+    catch that on a v5 install and cannot catch it anywhere else, because
+    ``from_pretrained`` only calls what the installed version has. This one states the
+    invariant those three depend on, so it is checked wherever the suite runs: the
+    mapping may name only tensors the model actually owns.
+
+    The mapping is seeded rather than assumed, since transformers below v5 does not
+    build one -- the seeded value is exactly what v5 computes for a tied Llama, and on
+    v5 it overwrites that with itself.
+
+    Turns red when: the pruning is dropped, or widened to empty the mapping outright
+    (which would untie a model that ties something besides its head), or a future
+    packed head starts registering a ``weight`` again.
+    """
+    out, _base, _bits, _cfg = _exported(tmp_path, tied=True)
+
+    block = json.loads((out / "config.json").read_bytes().decode("utf-8"))
+    quantizer = hf_quantizer.build_quantizer_class()(
+        hf_quantizer.build_config_class()(**block["quantization_config"])
+    )
+    model = _fresh(_config(tied=True))
+    # Parameters, not buffers: ``mark_tied_weights_as_initialized`` reaches the kept
+    # entry through ``get_parameter``, which refuses a buffer. So a pair this prunes
+    # *to* has to be the thing transformers expects to find there.
+    for extra in ("pair_target", "pair_source", "orphan_source", "orphan_target"):
+        model.register_parameter(extra, nn.Parameter(torch.zeros(2)))
+    model.all_tied_weights_keys = {
+        # The real entry: after the swap neither name is a parameter of anything.
+        "lm_head.weight": "model.embed_tokens.weight",
+        # Both sides resolve, so "prune what is absent" is distinguishable from
+        # "empty the mapping" -- a model tying something besides its head keeps it.
+        "pair_target": "pair_source",
+        # One broken side each, because the crash is on the target and the re-tie is
+        # on the source, so an entry is unusable if *either* name has gone.
+        "gone_target": "orphan_source",
+        "orphan_target": "gone_source",
+    }
+
+    quantizer._process_model_before_weight_loading(model)
+
+    assert model.all_tied_weights_keys == {"pair_target": "pair_source"}
+    owned = {name for name, _ in model.named_parameters(remove_duplicate=False)}
+    owned |= {name for name, _ in model.named_buffers(remove_duplicate=False)}
+    assert not set(model.all_tied_weights_keys) - owned
+
+    # And the v5 call site itself, where it exists: the assertion above is the reason
+    # it no longer raises, not a proxy for it.
+    mark = getattr(model, "mark_tied_weights_as_initialized", None)
+    if mark is not None:
+        mark(_LoadingInfo())
+
+
+class _LoadingInfo:
+    """The fields ``mark_tied_weights_as_initialized`` may touch, and nothing else."""
+
+    def __init__(self) -> None:
+        self.missing_keys: set[str] = set()
+        self.unexpected_keys: set[str] = set()
+
+
 # --------------------------------------------------------------------------
 # What must refuse, and by whose rule
 # --------------------------------------------------------------------------

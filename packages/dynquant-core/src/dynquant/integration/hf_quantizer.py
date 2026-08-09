@@ -349,6 +349,41 @@ def _disable_retying(model: Any) -> None:
         return None
 
     model.tie_weights = _already_tied
+    _forget_tied_parameter_names(model)
+
+
+def _forget_tied_parameter_names(model: Any) -> None:
+    """Drop tie bookkeeping that names tensors this model no longer owns.
+
+    ``tie_weights`` was the only thing that acted on the tie when the line above it was
+    written. It is not any more. transformers v5 records the same fact a second way, in
+    an ``all_tied_weights_keys`` mapping built at ``post_init``, and
+    ``mark_tied_weights_as_initialized`` walks that mapping calling ``get_parameter`` on
+    every name -- ``AttributeError: DynQuantLinear has no attribute 'weight'``, raised
+    from ``_finalize_model_loading`` after the entire checkpoint has been read
+    correctly. Silencing one reader of a fact does not change the fact, and this is the
+    sixth time in this project that a second copy of one registry has agreed with the
+    first right up until it did not.
+
+    So the fact is corrected rather than another reader silenced. After the swap
+    ``lm_head.weight`` is not a parameter of anything: the head registers no tensors and
+    reads the embedding's buffers (see ``_PackedModule.__init__``). That is a tie the
+    module tree carries structurally and the parameter namespace cannot express, so the
+    honest entry for it is no entry. Pairs whose two sides both still resolve are kept,
+    so a model tying something other than its head keeps that bookkeeping.
+
+    ``remove_duplicate=False`` because a tie transformers has *already* established
+    hides one of its two names from the default iteration; dropping an entry for being
+    invisible rather than for being absent would silently untie a live pair.
+    """
+    tied = getattr(model, "all_tied_weights_keys", None)
+    if not tied:
+        return
+    present = {name for name, _ in model.named_parameters(remove_duplicate=False)}
+    present |= {name for name, _ in model.named_buffers(remove_duplicate=False)}
+    model.all_tied_weights_keys = {
+        target: source for target, source in tied.items() if target in present and source in present
+    }
 
 
 def _empty_like(weight: torch.Tensor, spec: ModuleQuantSpec) -> QuantTensor:
