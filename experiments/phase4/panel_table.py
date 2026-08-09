@@ -442,6 +442,33 @@ def dispatch_of(row: dict[str, Any]) -> tuple[str, str]:
     return "not recorded", "unknown"
 
 
+def arithmetic_of(row: dict[str, Any]) -> str | None:
+    """Which *class* of expert arithmetic this arm ran, or `None` if nothing says.
+
+    Coarser than `dispatch_of` on purpose. The panel's comparisons do not care whether a
+    bank was indexed by `eager` or by a `ModuleList` that `linearize_moe` produced -- both
+    take one expert at a time -- they care that neither is `grouped_mm`, which batches and
+    which disagrees with the indexed path on 1.24% of teacher-forced tokens on this model.
+    So `eager` and the linearised loop collapse to `indexed`.
+
+    That collapse rests on a measurement, and on a small one: same four-layer model, one
+    side on `eager` and one through `linearize_moe`, output bitwise identical. Bitwise is
+    a strong result at any scale -- there is no numeric difference for a top-k router to
+    turn discrete -- but it is a CPU fp32 model, and the whole reason this function exists
+    is that a tiny-scale agreement between dispatches did not survive to 8B once. Treat
+    `indexed` as one class and the 8B check as still owed.
+    """
+    _, state = dispatch_of(row)
+    if state == "dense":
+        return "dense"
+    if state == "recovered":
+        return "indexed"
+    if state == "recorded":
+        ran = (row["experts"] or {}).get("ran")
+        return {"eager": "indexed", "grouped_mm": "grouped"}.get(ran, ran)
+    return None
+
+
 def print_dispatch(built: list[dict[str, Any]]) -> None:
     """Which arithmetic each arm ran, per its own record.
 
@@ -603,6 +630,9 @@ def print_comparisons(
     family: tuple[tuple[str, str, str], ...],
     records: dict[str, dict[str, Any]],
     pairable: str | None,
+    arithmetic: dict[str, str | None],
+    *,
+    explain_arithmetic: bool = True,
 ) -> list[dict[str, Any]]:
     from dynquant.eval.compare import compare_paired
 
@@ -633,7 +663,19 @@ def print_comparisons(
             rows.append(f"{question:28s} (no per-item hits recorded)")
             continue
         paired = compare_paired(a["hits"], b["hits"], label_a=left, label_b=right)
-        entry = {"left": left, "right": right, "question": question, "paired": paired}
+        entry = {
+            "left": left,
+            "right": right,
+            "question": question,
+            "paired": paired,
+            # Flagged when the two arms did not demonstrably run the same class of expert
+            # arithmetic -- including when one of them simply does not say. An unknown is
+            # not a pass: the confound this guards against is 0.29x the effect being
+            # measured, so "probably the same" is not a basis for a verdict.
+            "same_arithmetic": (
+                arithmetic.get(left) is not None and arithmetic.get(left) == arithmetic.get(right)
+            ),
+        }
         computed.append(entry)
         rows.append(entry)
 
@@ -653,6 +695,43 @@ def print_comparisons(
             f"{f'{paired.a_only}/{paired.b_only}':>11s} "
             f"{paired.p_value:10.3g} {row['p_adjusted']:10.3g}  "
             f"{'separated' if row['separated'] else 'NOT separated'}"
+            f"{'' if row['same_arithmetic'] else '  !'}"
+        )
+    mixed = [entry for entry in computed if not entry["same_arithmetic"]]
+    if mixed and not explain_arithmetic:
+        # A per-source block re-partitions the hits the block above already tested, so its
+        # flagged set is the same set. The marker still has to appear on the row -- a
+        # reader scanning one block should not have to know that -- but the four lines of
+        # explanation would be the third copy on one screen.
+        print()
+        print(
+            f"  ! {len(mixed)} comparison(s) mix expert arithmetic, the same ones flagged "
+            f"in the block above."
+        )
+    elif mixed:
+        print()
+        print(
+            f"  ! {len(mixed)} comparison(s) pair arms that are not known to have run the "
+            f"same expert arithmetic:"
+        )
+        for entry in mixed:
+            left, right = entry["left"], entry["right"]
+            print(
+                f"      {entry['question'].strip():26s} "
+                f"{left} = {arithmetic.get(left) or 'unrecorded'}, "
+                f"{right} = {arithmetic.get(right) or 'unrecorded'}"
+            )
+        print(
+            "    On this model the grouped and indexed dispatches disagree on 1.24% of "
+            "teacher-forced tokens,"
+        )
+        print(
+            "    0.29x what quantizing to 4 bits moves, so a flagged delta carries a term "
+            "that is not the"
+        )
+        print(
+            "    method. The verdict is what the hits say; it is not yet a statement about "
+            "quantization."
         )
     if computed:
         # Say when the family is short. Holm's multiplier is the number of comparisons it
@@ -735,6 +814,7 @@ def print_source_blocks(
     why_not: str | None,
     records: dict[str, dict[str, Any]],
     pairable: str | None,
+    arithmetic: dict[str, str | None],
 ) -> dict[str, list[dict[str, Any]]]:
     if labels is None:
         if why_not:
@@ -749,6 +829,8 @@ def print_source_blocks(
             HEAD_TO_HEAD,
             restrict(records, labels, name),
             pairable,
+            arithmetic,
+            explain_arithmetic=False,
         )
         print()
     print(
@@ -812,11 +894,18 @@ def main(argv: list[str] | None = None) -> int:
     if pairable is not None:
         print(f"NOT PAIRED: {pairable}")
         print()
-    head = print_comparisons("head to head, at matched bytes", HEAD_TO_HEAD, records, pairable)
+    # One map for every block, built from the same rows the dispatch census printed, so
+    # the flag and the census cannot disagree about what an arm ran.
+    arithmetic = {row["label"]: arithmetic_of(row) for row in built}
+    head = print_comparisons(
+        "head to head, at matched bytes", HEAD_TO_HEAD, records, pairable, arithmetic
+    )
     print()
     labels, why_not = load_sources(out, args.sources, records)
-    blocks = print_source_blocks(labels, why_not, records, pairable)
-    ceiling = print_comparisons("what each method cost", AGAINST_CEILING, records, pairable)
+    blocks = print_source_blocks(labels, why_not, records, pairable, arithmetic)
+    ceiling = print_comparisons(
+        "what each method cost", AGAINST_CEILING, records, pairable, arithmetic
+    )
     print()
     for line in (
         "delta = left minus right, percentage points, on the same problems in the same order.",

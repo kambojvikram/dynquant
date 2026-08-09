@@ -316,6 +316,21 @@ def test_holm_is_step_down_and_monotone(table: Any) -> None:
     assert all(0.0 <= value <= 1.0 for value in table.holm([0.4, 0.5, 0.9]))
 
 
+def _verdict(line: str) -> str:
+    """The verdict, with the expert-arithmetic mark stripped off the end.
+
+    The mark is a separate claim -- "these two arms are not known to have run the same
+    arithmetic" -- and a test about which p the verdict followed should not have to know
+    whether it is there.
+    """
+    return line.rstrip().removesuffix("!").rstrip()
+
+
+def _question(line: str) -> str:
+    """The comparison's name, read off the fixed-width field the printer writes it into."""
+    return line[:28].strip()
+
+
 def test_the_verdict_follows_the_corrected_p_and_not_the_raw_one(
     table: Any, tmp_path: Path
 ) -> None:
@@ -335,12 +350,13 @@ def test_the_verdict_follows_the_corrected_p_and_not_the_raw_one(
     )
     assert "0.0309" in four_bit, "the raw p is still printed"
     assert "0.0972" in four_bit, "and so is the adjusted one"
-    assert four_bit.endswith("NOT separated"), "the verdict is the corrected one"
+    assert _verdict(four_bit).endswith("NOT separated"), "the verdict is the corrected one"
 
     three_bit = next(
         line for line in printed.splitlines() if line.startswith("3b  DynQuant vs GPTQ")
     )
-    assert three_bit.endswith("separated") and not three_bit.endswith("NOT separated")
+    assert _verdict(three_bit).endswith("separated")
+    assert not _verdict(three_bit).endswith("NOT separated")
     assert "Holm-adjusted over 6 of 6 comparisons in this block" in printed
 
 
@@ -792,3 +808,90 @@ def test_a_linearization_that_left_banks_behind_recovers_nothing(
     assert "linearised to zero banks" not in block, "three banks is not zero banks"
     unknown = block.split("no linearization report: ")[1].split(".")[0]
     assert "gptq_4b" in unknown
+
+
+def _all_indexed(out: Path) -> None:
+    """Put every arm on the indexed path: recovered for the baselines, recorded for the rest."""
+    for label in ("gptq_4b", "awq_4b", "gptq_3b", "awq_3b"):
+        _set_linearization(out, label, {"banks_before": 22, "banks_after": 0})
+    for label in ("bf16", "dq_4b", "dq_3b"):
+        _set_experts(out, label, {"found": "grouped_mm", "ran": "eager"})
+
+
+def test_a_verdict_on_two_dispatches_is_marked_and_the_reason_is_priced(
+    table: Any, tmp_path: Path
+) -> None:
+    """The panel's headline line, with the confound that sits inside it.
+
+    `4b DynQuant vs GPTQ` is the sentence this campaign exists to write. On the landed
+    panel the DynQuant arm kept its batched bank and the GPTQ arm was linearised to none,
+    so the delta contains a dispatch difference worth 1.24% of teacher-forced tokens --
+    0.29x the quantization effect -- on top of the method. A reader who takes `separated`
+    from that row without the dispatch census two blocks up has been misled by this
+    script, so the row carries the mark and the block prices it.
+
+    The unflagged row is as much of the test as the flagged ones: `GPTQ vs AWQ` pairs two
+    recovered arms and must stay clean, or the mark means "this table has a caveat" rather
+    than "this comparison has one".
+
+    Turns red when: the flag stops reaching the row, an unknown starts counting as a
+    match, or the footnote drops the magnitude and leaves the mark unexplained.
+    """
+    out = _write_panel(tmp_path / "arms")
+    for label in ("gptq_4b", "awq_4b", "gptq_3b", "awq_3b"):
+        _set_linearization(out, label, {"banks_before": 22, "banks_after": 0})
+
+    block = _run(table, out).split("head to head, at matched bytes")[1].split("head to head, on")[0]
+    rows = {
+        _question(line): line
+        for line in block.splitlines()
+        if line.startswith("4b ") or line.startswith("3b ")
+    }
+    assert rows["4b  DynQuant vs GPTQ"].rstrip().endswith("!")
+    assert rows["4b  DynQuant vs AWQ"].rstrip().endswith("!")
+    assert not rows["4b  GPTQ vs AWQ"].rstrip().endswith("!"), (
+        "two recovered arms ran the same arithmetic and a mark on them makes the mark noise"
+    )
+    assert "dq_4b = unrecorded, gptq_4b = indexed" in block
+    assert "1.24%" in block and "0.29x" in block, (
+        "a mark whose size the reader cannot see is a mark they will learn to skip"
+    )
+
+
+def test_the_mark_clears_when_every_arm_is_on_the_indexed_path(table: Any, tmp_path: Path) -> None:
+    """What the re-score is for, stated as the condition that clears the flag.
+
+    `eager` and the linearised loop are one class: both take a single expert at a time,
+    and on a four-layer model their outputs are bitwise identical. So once the three arms
+    that kept their banks are re-scored on `eager`, every comparison pairs `indexed` with
+    `indexed` and the caveat is gone -- while `_comparability` still refuses the four
+    field-less records, which is the distinction the census block draws.
+
+    Turns red when: `eager` and a recovered loop stop collapsing to one class, which would
+    make the re-score unable to clear the flag it was run to clear.
+    """
+    out = _write_panel(tmp_path / "arms")
+    _all_indexed(out)
+
+    printed = _run(table, out)
+    assert "expert arithmetic" not in printed, "every arm is indexed; nothing to flag"
+    assert "NOT PAIRED" in printed, (
+        "the records still cannot pair -- recovery reads a sibling file and pairing reads "
+        "the record, and this is where those two come apart"
+    )
+
+
+def test_two_unrecorded_arms_do_not_count_as_agreeing(table: Any, tmp_path: Path) -> None:
+    """Absence twice over is not evidence of a match.
+
+    The pairing guard deliberately pairs absence with absence, because a dense model has
+    no dispatch and never will. That exemption is about bookkeeping. Applying the same
+    leniency to the arithmetic check would let the panel certify a comparison between two
+    arms that nothing says anything about, which is the exact reading this block exists to
+    prevent.
+
+    Turns red when: the check becomes an inequality test and two `None`s compare equal.
+    """
+    out = _write_panel(tmp_path / "arms")
+    block = _run(table, out).split("head to head, at matched bytes")[1].split("head to head, on")[0]
+    assert "dq_4b = unrecorded, gptq_4b = unrecorded" in block
