@@ -1175,6 +1175,55 @@ carrying the not-yet-loadable caveat; the two 3-bit baselines still have no cont
 into. The general lesson is the one this project keeps relearning in new places -- when a check
 refuses, read what it actually compares before believing what it says it means.
 
+**A copy narrows, and this one narrowed twice.** The paragraphs above were written against a
+two-layer Llama with a 3-D parameter grafted onto its first MLP. That reproduces the *property*
+that broke -- a target `get_submodule` cannot reach -- but not the architecture, so the fix was
+then run against the real thing: the 38 M LFM2.5 double, exported through its own allocator map,
+on CPU, from a clone isolated from the running panel. It refused on the first module it had not
+seen before, and not a bank:
+
+```
+DynQuantError: 'model.layers.1.feed_forward.gate' is a Lfm2MoeTopKRouter; the packed
+format covers Linear, Embedding and batched expert banks held as bare parameters.
+```
+
+Delegating the *no module found* branch had fixed the bank case and left the next narrowing one
+line below it: a `Linear | Embedding` whitelist that `target_tensor` has never had. An
+`Lfm2MoeTopKRouter` -- like Qwen3-Next's router and GPT-OSS's -- owns a plain
+`[num_experts, hidden]` weight and calls `F.linear` on it, so `get_submodule` reaches the module
+and the module is neither class. On this model that is five routers at 8 bits which the pre-flight
+`resolves_to_weight` guard accepts and `quantize_model` encodes without complaint, refused at
+export by name and by type. Two narrowings out of one duplicate is the argument for no duplicate:
+the whitelist is gone, resolving *which* tensor is one call to `target_tensor`, and the only
+question left here is which state-dict key it is filed under -- settled by identity against the
+module's own weight rather than by a parallel type test. The container case is unchanged and still
+refused, because `LlamaMLP` owns no tensor at all; the criterion is now the packer's own, which is
+that something exists to pack.
+
+**The real map then exports whole.** All 35 modules: five routers at 8 bits, ten batched banks
+including five `down_proj` at **2 bits** that no grafted-Llama test reaches, four `conv.in_proj`,
+a tied embedding written once. Measured **4.1576 average bits against the allocator's predicted
+4.1585**, 136.0 MiB of fp16 down to 19.1 MiB, `logical_shape [8, 256, 128]` preserved on every
+bank, and no raw bank or router key surviving in the shards. The directory is size-honest for the
+same reason it was before and still not loadable for the same reason: the packed *runtime* swaps
+modules, and a bank is not one.
+
+**Every byte is accounted for, and one class of them is not predicted.** The file is exactly
+`8 + header + payload`, so the 14 464 bytes by which it exceeds the report's own total are the
+safetensors header for 131 tensors and nothing else. Recomputing the allocator's `stored_bits`
+over the map gives **20 031 808 bytes against the manifest's 20 031 808** -- the packed prediction
+is exact to the byte, which is the property `--target-size` depends on. What the prediction leaves
+out is rank-1 tensors: the map's remaining 6 144 bytes are the four depthwise `conv.conv` weights,
+and the 22 norms and expert biases worth 7 328 bytes are priced at nothing, because they reach no
+`ModuleInfo` and `module_stored_bits` documents rank-1 as never quantizable. On the real
+LFM2.5-8B-A1B that omission is **205 056 bytes: 0.0047% of the 4-bit anchor, 21x inside the
+panel's own 0.1% match tolerance**, so it changes no arm and is not being touched while the panel
+runs. It cross-checks cleanly in the other direction too -- those norms plus the 18 depthwise conv
+weights are precisely the **211 712 parameters `llm-compressor` reports left in fp16**, the two
+quantizers differing only by the 1 408 parameters of MoE expert bias. Same family as the bank
+(a byte denominator that undercounts because the graph never saw the tensor), opposite sign,
+and four orders of magnitude smaller.
+
 ### The chat template is in a file, not the tokenizer config
 
 Every arm renders its prompts with `--prompt-style chat`, which asks the tokenizer to lay out a

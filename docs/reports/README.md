@@ -29,7 +29,7 @@ widths, and whether the driver that runs the arms runs at all are five separate 
 | 16 | “At matched bytes” — whose bytes? | **The baselines’** — DynQuant’s own format costs 4.25 bits/param at 4 bits against `compressed-tensors`’ 4.15625, so anchoring on its uniform arm would hand it **2.3% more bytes inside the arm whose accuracy is the claim** | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
 | 17 | Which of DynQuant’s two prices chose the widths, and on how much of the model? | **44 of 133 modules — 91.54% of parameters — by the rank-product proxy rescaled by 1.807e-17**, because a batched expert bank has no boundary where the Gauss–Newton form exists; the concordance guard reads 1.000 over the other 8.46% | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
 | 18 | Does the seven-arm panel driver run? | **Not until six defects were removed** — three of them fail *after* the calibration pass, one would have finished and entered the table as round-to-nearest wearing an AWQ label, the fifth would have run all seven arms over the whole 16 143-item test split because `--limit` is forwarded only when set, and the sixth would have let `--resume` staple in a record scored on another checkpoint | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
-| 19 | How many of the six quantized variants can actually be published? | **Four, not two** — `dynquant export` refused a batched expert bank and said the packed *format* could not hold one; the format always could, and the refusal came from a second copy of the name resolver. Both DynQuant arms now write packed at their manifest bytes, size-honest and not yet loadable | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
+| 19 | How many of the six quantized variants can actually be published? | **Four, not two** — `dynquant export` refused a batched expert bank and said the packed *format* could not hold one; the format always could, and the refusal came from a second copy of the name resolver -- which then refused a second time, on a router, because the copy had been narrowed twice. Both DynQuant arms now write packed at their manifest bytes, size-honest and not yet loadable | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
 
 The method itself — signals, sensitivity estimator, allocator, encoder, format, packed
 runtime, kernels — is documented end to end in the
@@ -846,6 +846,16 @@ still cannot load a bank — it swaps `Linear` and `Embedding` modules and there
 — so a DynQuant directory is **size-honest today and loadable after P8**. Two facts about one
 artifact, and both now travel with the directory as `ExportReport.banks` and as `expert_banks` in
 the manifest, because whoever uploads the folder will have the folder and not the report.
+
+Run against the real architecture rather than a grafted Llama, the same duplicate refused a second
+time one line lower: an `Lfm2MoeTopKRouter` owns a plain `[num_experts, hidden]` weight and is not
+a `Linear`, so a whitelist `target_tensor` never had rejected five routers the pre-flight guard
+accepted and the quantizer encodes. **A copy narrows, and this one narrowed twice** — so the
+duplicate is gone rather than widened again. The full 38 M map then exports whole at
+**4.1576 average bits against a predicted 4.1585**, and the packed prediction reconciles to the
+byte. Only rank-1 tensors go unpriced: 205 056 B on the real model, 0.0047% of the 4-bit
+anchor and 21x inside the panel's match tolerance, and the same set `llm-compressor` counts as its
+211 712 fp16 parameters.
 
 ## Conventions that apply to every campaign
 
