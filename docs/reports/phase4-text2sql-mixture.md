@@ -1538,6 +1538,29 @@ records are now removed before each batch runs, on the same principle that produ
 `check_resumable`: a missing row is a result, a stale row wearing this run's timestamp is not.
 
 
+**Measured, and the assumption was wrong in the other direction.** The first paired test this
+panel supports -- the bf16 ceiling against `gptq_4b`, over their stored 12 000-item hit vectors --
+puts `d` at **6.1%**: 731 items of 12 000 where the two arms disagree, against the 20% the table
+above is priced on. The standard error of a paired difference on this task and this model is
+therefore **0.225 points, not 0.408**, and the smallest difference Holm can call is about **0.59
+points rather than 1.08** -- roughly twice the resolution the panel was sized for.
+
+That is the second correction to the same number in this section, and the pair of them is the
+finding. It was written as 8% from memory, corrected up to 20% by reading phase 3's stored hit
+vectors, and lands at 6.1% when measured on the campaign it actually governs. **Discordance is
+task- and model-scoped and does not transfer between them.** Phase 3 measured IFEval and HumanEval
+on Ministral-8B, where two quantizations of one model reshuffle a fifth of the benchmark. Execution
+match on text-to-SQL is a far more concordant metric: most of these problems are one short `SELECT`
+that both arms get or neither does, and there is no partial credit in between for a perturbation to
+move around in.
+
+One caveat, before this is read as a licence to shrink the next panel. bf16 against a quantizer is
+the *most* concordant comparison the panel contains, because one of the two arms is undamaged, and
+the six tests that decide the campaign are quantizer against quantizer at a matched anchor -- which
+is exactly where phase 3 measured the higher rates, 11.6% at 4 bits and 25.7% at 3. So 6.1% is a
+floor for the block that matters and not a prediction of it. The defensible reading is that 12 000
+items bought more resolution than the plan promised, not that 6 000 would have sufficed.
+
 ### The measured 8.46% is a moments gap, not a gradient gap
 
 *This subsection replaces an earlier version that got the cause wrong. The reasoning is left
@@ -1625,6 +1648,13 @@ mtime gives 45-64 s across every arm and every task on Ministral-8B -- model loa
 flat, with no arm paying more than another. Seven arms of that is six minutes, which is why it does
 not appear in the projection.
 
+**Measured, afterwards, exactly as the rule prescribes.** `gptq_4b` took 21 782.2 s of wall clock
+against 19 805 s of scoring, so calibration, model load and task setup together cost **1 977 s --
+about 33 minutes**, of which the phase-3 overhead figure accounts for roughly 35 s. A 256-sample
+GPTQ pass over 2112 expert matrices plus the attention and conv blocks is therefore a little over
+half an hour on this card: a real cost, 9% of the arm, and one that could not have selected a
+different launch. It is also the first time this campaign has had the number at all.
+
 ### `--resume` can tell that a record exists; it cannot tell whose it is
 
 The panel launches with `--resume`, and resume is the right default: an arm that dies at the fifth
@@ -1659,6 +1689,52 @@ It refuses rather than repairs. Deleting the directory is one command and always
 which of seven records survived a change of inputs is neither. Two tests, three mutations, all
 caught -- including the one that makes the stats charge unconditional, which is the mutation that
 turns a correct guard into an annoying one.
+
+### The first two arms: a 2.19-point 4-bit cost, and a 1.92x decode penalty
+
+Two of the seven records are on disk. The ceiling and the first baseline, both at 12 000 items,
+batch 32, 1024 new tokens, two shots at seed 0:
+
+| arm | execution match | vs bf16 | Gretel | WikiSQL | exact string | SQL errors | s / item |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `bf16` | **84.26%** | -- | 71.63% | 88.59% | 69.73% | 96 | 0.859 |
+| `gptq_4b` | **82.07%** | **-2.19** | 70.26% | 86.11% | 67.86% | 187 | 1.650 |
+
+McNemar over the stored per-item hits: **497 items the ceiling gets and GPTQ loses against 234 the
+other way**, *p* = 1.1e-22. Four-bit GPTQ costs a real and comfortably resolvable 2.19 points on
+this model, which is the result the panel needs its ceiling arm to establish -- an ungapped ceiling
+would have meant the task cannot see quantization damage at all, and every comparison after it
+would have been a measurement of nothing.
+
+The damage does not land where the difficulty is. Gretel is the harder split by seventeen points
+and loses 1.37; WikiSQL is the easier one and loses 2.47. Part of that is simply that WikiSQL has
+more correct answers available to lose -- 7 917 against 2 194 -- but the loss is larger even after
+normalising for it, 2.8% of what was winnable against 1.9%. A Gretel item that a bf16 model already
+fails cannot be taken away by a quantizer.
+
+**The 1.92x decode penalty is kernel overhead, not damage, and the record says so without a second
+experiment.** `unfinished_reasoning` is **0 in both arms**, so no generation ran to the 1024-token
+cap without emitting a stop -- the obvious alternative explanation, that a damaged model rambles and
+pays for it in tokens, is excluded by a counter that was already being written. The SQL-error count
+rises 96 to 187, ninety-one items, far too few to move a 9 500-second gap. What is left is cost per
+token, which is what an unfused dequant path over the batched expert banks predicts:
+`compressed-tensors` has no grouped kernel for a 3-D `[E, out, in]` parameter, and those banks are
+91.5% of this model. The same 91.5% the allocator prices by proxy is the 91.5% that decodes slowly.
+That is P8 in the plan, and this is the first measurement that puts a number on what P8 is worth.
+
+**The probe underestimated by 21%, and the reason generalises.** It priced an item at 0.709 s; bf16
+ran at 0.859. The probe scored 128 items at batch 32, which is **four batches** -- and a batch costs
+the *maximum* of 32 heavy-tailed answer lengths, so four draws of a maximum will usually miss the
+tail a 375-batch arm meets repeatedly. The estimator is biased low by construction, and the bias
+shrinks with the number of batches, not the number of items. A straggler-dominated cost needs a
+probe measured in batches; 128 items looked like a reasonable sample and was four.
+
+Wall clock, then: 32 124.8 s for the two finished arms and five quantized arms left. The panel is
+tracking around **39 hours against the 16.5 the probe implied**, which is a schedule fact and not a
+threat to the comparison -- every arm meets the same card, the same decode budget and the same item
+set. Cutting `--limit` mid-panel to recover the difference was considered and rejected: `limit`
+*is* a pairing field, so it would discard both finished records and buy back less than it
+destroyed.
 
 ---
 
@@ -1732,7 +1808,16 @@ date. `check_resumable` now refuses a directory whose manifest names different i
 record older than the inputs it claims to have scored -- charging the signal file against the two
 arms that read it and not the four that do not. Two tests, three mutations, all caught.
 
-Not done, in order: the fine-tune, with the expert mass measured; then the six arms at matched
+Also done since: the fine-tune, and the first two of seven arms. The merge scores **84.26%**
+against the base model's 57.75% at the same decode budget, and `gptq_4b` at the verified 4-bit
+anchor scores **82.07%** -- a 2.19-point cost, 497 flips against 234, *p* = 1.1e-22. Three numbers
+this campaign had never had came out of those two records: 256-sample GPTQ calibration on this
+architecture costs about 33 minutes; quantized decode is **1.92x** slower than bf16 with zero
+unfinished generations in either arm, so it is unfused kernels over the batched banks and not
+damage; and the discordance rate the whole power calculation rests on is **6.1%** here rather than
+the 20% carried over from phase 3.
+
+Not done, in order: the five remaining arms at matched
 bytes -- GPTQ and AWQ through the linearized structure verified bit-exact in §10, all three widths
 weighed rather than requested; then the paired comparison over stored per-item hits.
 
