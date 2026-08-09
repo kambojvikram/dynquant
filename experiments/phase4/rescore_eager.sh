@@ -40,8 +40,25 @@ fi
 #    arms a second time on the same dispatch, burns eight to seventeen hours of a rented card,
 #    and produces the zero `dispatch_delta.py` exists to refuse.
 grep -q -- '--experts-impl' "$CLONE/experiments/phase4/arms_lfm2.py" \
-  || die "$CLONE predates --experts-impl. Sync arms_lfm2.py, panel_table.py, dispatch_delta.py
-          and dynquant/commands/evaluate.py into it first, then re-run this."
+  || die "$CLONE predates --experts-impl. Sync arms_lfm2.py, panel_table.py and
+          dynquant/commands/evaluate.py into it first, then re-run this."
+for needed in dispatch_delta.py probe_dispatch_agreement.py; do
+  [ -f "$CLONE/experiments/phase4/$needed" ] \
+    || die "$CLONE has no experiments/phase4/$needed. Sync the clone first."
+done
+
+# 4. Cheap, and it has to come first: it wants a free card, and the re-score takes the card
+#    for eight to seventeen hours. It also answers the question the re-scored table will
+#    rest on -- whether the linearised loop and eager are one class on a real 8B model,
+#    which four places in the package assert from a four-layer CPU fp32 run. It gates
+#    nothing. The re-score happens either way; what this changes is which caveat the
+#    finished table carries.
+say "three dispatches over 24 teacher-forced items, before the card is busy again"
+cd "$CLONE"
+"$PY" experiments/phase4/probe_dispatch_agreement.py \
+  --model "$RUN/lfm25-8b-a1b.text2sql/merged" --items 24 --shots 2 --shot-seed 0 \
+  --out "$RUN/dispatch_agreement.json" \
+  || say "the probe failed. Nothing below depends on it; the pair it measures does."
 
 say "copying the grouped_mm side aside: $PANEL -> $KEEP"
 cp -a "$PANEL" "$KEEP"
