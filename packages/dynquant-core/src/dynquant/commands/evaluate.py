@@ -111,8 +111,17 @@ DETAIL_PAIRING_FIELDS = ("prompt_style",)
 #: Optional, like ``prompt_style``, and for a reason worth stating rather than inheriting.
 #: A dense model has no such dispatch and never will, so absence has to pair with absence
 #: -- which means a record written before this field existed also pairs with a dense one,
-#: and with another record written before this field existed. Nothing recovers what those
-#: runs ran. What the field buys is that no run from here on is unable to say.
+#: and with another record written before this field existed. What the field buys is that
+#: no run from here on is unable to say.
+#:
+#: An older record is not always beyond recovery, and the guard is deliberately not the
+#: place that recovers it. A ``baselines_lfm2`` arm has a ``.quant.json`` beside it
+#: reporting ``banks_after: 0``, counted in the process that then scored that same object,
+#: and a model with no batched bank has no grouped kernel to take. That settles what the
+#: arithmetic was; it does not put the answer in this record, and pairing reads records.
+#: ``panel_table.print_dispatch`` is where the two are told apart, because a reader needs
+#: to know which ``NOT PAIRED`` lines are about computation and which are about
+#: bookkeeping.
 EXPERTS_PAIRING_FIELDS = ("ran",)
 
 #: Comparability keys whose absence from *this* run's record is legitimate.

@@ -487,8 +487,9 @@ downloader runs, so one re-run decontaminates the panel and validates the artifa
 the three arms that kept their banks — `bf16`, `dq_4b` and `dq_3b` — re-scored on
 `eager` at the same anchors, the same 12,000 items, the same seed, paired against the stored
 per-item hits so the comparison is a McNemar test and not two independent rates. The four
-linearised arms need nothing: they already computed eager — an inference from structure that
-§11 pins as still unmeasured, and separates from what their records are able to state.
+linearised arms need nothing: they already computed the loop, which their own `banks_after: 0`
+records and §11 separates from the distinct, weaker claim that the loop and `eager` agree
+numerically at this scale.
 
 **And the code fix, so the next panel cannot straddle it.** A re-run repairs one campaign; what
 allowed the campaign to be built this way was that no record said which computation produced its
@@ -662,10 +663,35 @@ expert at a time, and at small scale that is bit-identical arithmetic."
 predates the `experts` field, so they carry no key at all. After the re-run the three DynQuant-side
 arms will carry `{grouped_mm, eager}` and `_comparability` will refuse them against the four:
 `_ABSENT != 'eager'`. That is the guard doing its job — a record that cannot say what it ran
-cannot be certified as having run the same thing — and it is not fixable by re-running the
-baselines, which would cost roughly 22 GPU-hours to change a field while changing no arithmetic. The
+cannot be certified as having run the same thing — and it is not worth re-running the baselines
+to fix, which would cost roughly 22 GPU-hours to change a field while changing no arithmetic. The
 panel will therefore report a `NOT PAIRED` line whose content is provenance, not computation, and
 the report has to say which.
+
+**But provenance and recoverability are not the same thing, and the first draft of this section
+conflated them.** It said nothing recovered what those four ran. Their own records do.
+`baselines_lfm2.do_run` linearises, calibrates and scores *one object*: `quantize` returns the model
+in memory and `score` hands that same object to `evaluate.run` with no `save_pretrained` and no
+reload in between. The `banks_after: 0` sitting in `gptq_4b.quant.json` is therefore a count of the
+weights that were then scored, not a claim about a checkpoint someone later opened — and a model
+with no batched bank has no grouped kernel to take. The arithmetic was the loop, on the strength of
+a number this campaign wrote down.
+
+That changes which arms are actually unknown, and the answer is worth stating precisely because it
+is not the four:
+
+| | dispatch | on what evidence |
+|---|---|---|
+| `gptq_4b` `awq_4b` `gptq_3b` `awq_3b` | the loop | `banks_after: 0`, counted in the scoring process |
+| `bf16` `dq_4b` `dq_3b` | unrecorded | nothing; structurally `grouped_mm`, but that is a fact about transformers 5.14.1's default, not about these runs |
+
+The unknown set is exactly the re-score set. That is not a coincidence and it is a better argument
+than the one this section opened with: the three arms being re-scored are the three whose arithmetic
+no artifact states, and the four being left alone are left alone because their own quantizer records
+answer the question. `panel_table.print_dispatch` renders the split, and it renders the evidence
+— `loop (22 banks -> 0)` rather than a bare `loop` — because the count is the reason to
+believe it. The guard is unchanged and still refuses: recovery reads a sibling file, pairing reads
+the record, and a record is not certified by a neighbour that can speak for it.
 
 **Which makes one absence worth printing.** `_comparability` reads `record.get("experts")` and
 treats a non-dict as absent. A `null` — a dense model, no dispatch, none possible — and a

@@ -238,6 +238,29 @@ def infer_params(out: Path, manifest: dict[str, Any]) -> int | None:
     return None
 
 
+def linearization_of(out: Path, arm: dict[str, Any]) -> dict[str, Any] | None:
+    """What ``llm-compressor`` did to this arm's expert banks, per the run that did it.
+
+    From the ``.quant.json`` side file that `baselines_lfm2.score` writes beside the eval
+    record. The two describe one object: `quantize` linearises, calibrates and returns the
+    model *in memory*, and `score` hands that same object to `evaluate.run` without a save
+    or a reload. So ``banks_after`` is not a claim about a checkpoint the scorer later
+    opened -- it is a count taken in the same process on the weights that were then scored.
+
+    Returns ``None`` for an arm with no such file, which is every arm this repository
+    quantizes itself. That absence is the point: see `dispatch_of`.
+    """
+    record = resolve_stored(out, arm.get("record"))
+    if record is None:
+        return None
+    side = record.with_suffix(".quant.json")
+    if not side.is_file():
+        return None
+    payload = json.loads(side.read_text(encoding="utf-8"))
+    report = payload.get("linearization")
+    return report if isinstance(report, dict) else None
+
+
 def allocation_of(out: Path, arm: dict[str, Any]) -> dict[str, Any] | None:
     """The allocator's own account of a DynQuant arm: widths and breached floors.
 
@@ -304,6 +327,9 @@ def rows(
                 # the distinction `_comparability` also cannot make. See `dispatch_of`.
                 "experts": (record or {}).get("experts"),
                 "experts_recorded": record is not None and "experts" in record,
+                # What the quantizer did to this arm's banks, from the record it wrote in
+                # the same process. Recovers the dispatch when the eval record cannot.
+                "linearization": linearization_of(out, arm),
                 "allocation": allocation_of(out, arm),
                 "seconds": (record or {}).get("seconds"),
             }
@@ -376,10 +402,10 @@ def print_accuracy(built: list[dict[str, Any]], chance: float | None) -> None:
         print(f"{'(guessing)':10s} {chance * 100:10.2f}%")
 
 
-def dispatch_of(row: dict[str, Any]) -> tuple[str, bool]:
-    """What the record says about the experts dispatch, and whether it says anything.
+def dispatch_of(row: dict[str, Any]) -> tuple[str, str]:
+    """Which arithmetic this arm ran, from its record and from the record beside it.
 
-    `_pin_experts_dispatch` writes one of exactly two things, so a record can be in one
+    `_pin_experts_dispatch` writes one of exactly two things, so an eval record is in one
     of exactly three states. A model whose config carries `_experts_implementation` gets
     `{found, ran}` -- what the dispatch was on arrival and what it was when the scorer
     ran. A model whose config does not gets `null`, which is a dense model and not a
@@ -394,14 +420,26 @@ def dispatch_of(row: dict[str, Any]) -> tuple[str, bool]:
     nothing to dispatch" and "we do not know what this ran" pair with each other and the
     guard stays quiet, which is the one straddle a panel can make without being told.
 
-    Returns the text and whether this row is the unknown case.
+    But a missing field is not always a missing fact. An arm quantized by `baselines_lfm2`
+    has a `.quant.json` beside it reporting `banks_after: 0`, counted in the process that
+    then scored that same object, and a model with no batched bank has no grouped kernel
+    to take: the arithmetic is the loop, whatever the config says. That is recovered rather
+    than recorded, and the difference is not pedantic -- the guard still refuses it,
+    because a record that cannot state what it ran is not certified by a neighbour that
+    can. What it changes is which arms are genuinely unknown, and that set turns out to be
+    exactly the arms worth re-scoring.
+
+    Returns the text and one of `recorded`, `dense`, `recovered`, `unknown`.
     """
-    if not row["experts_recorded"]:
-        return "not recorded", True
-    experts = row["experts"]
-    if not isinstance(experts, dict):
-        return "none (dense)", False
-    return f"{experts.get('ran')} (from {experts.get('found')})", False
+    if row["experts_recorded"]:
+        experts = row["experts"]
+        if not isinstance(experts, dict):
+            return "none (dense)", "dense"
+        return f"{experts.get('ran')} (from {experts.get('found')})", "recorded"
+    report = row["linearization"]
+    if isinstance(report, dict) and report.get("banks_after") == 0:
+        return f"loop ({report.get('banks_before')} banks -> 0)", "recovered"
+    return "not recorded", "unknown"
 
 
 def print_dispatch(built: list[dict[str, Any]]) -> None:
@@ -417,25 +455,42 @@ def print_dispatch(built: list[dict[str, Any]]) -> None:
     header = f"{'arm':10s} {'experts dispatch':>26s}"
     print(header)
     print("-" * len(header))
-    silent = []
+    recovered, silent = [], []
     for row in scored:
-        text, unknown = dispatch_of(row)
-        if unknown:
+        text, state = dispatch_of(row)
+        if state == "recovered":
+            recovered.append(row["label"])
+        elif state == "unknown":
             silent.append(row["label"])
         print(f"{row['label']:10s} {text:>26s}")
+    if recovered:
+        print()
+        print(
+            f"  {len(recovered)} arm(s) carry no dispatch field but were linearised to "
+            f"zero banks: {', '.join(recovered)}."
+        )
+        print(
+            "  That count was taken in the process that went on to score the same object, "
+            "so the arithmetic is"
+        )
+        print(
+            "  the loop and nothing had to be assumed about a checkpoint. Recovered, not "
+            "recorded: `_comparability`"
+        )
+        print("  reads the eval record and still refuses to pair them.")
     if silent:
         print()
         print(
-            f"  {len(silent)} arm(s) carry no dispatch field: {', '.join(silent)}. Those "
-            f"records predate it, and nothing recovers what they ran."
+            f"  {len(silent)} arm(s) carry no dispatch field and no linearization report: "
+            f"{', '.join(silent)}."
         )
         print(
-            "  To `_comparability` that is the same absence as a `null` -- a model with no "
-            "bank to dispatch -- so"
+            "  Nothing written down says what these ran, and to `_comparability` the "
+            "absence is the same one a"
         )
         print(
-            "  the two pair with each other and the guard stays quiet. This block is "
-            "where the difference shows."
+            "  dense model's `null` makes, so they pair with each other in silence. They "
+            "are the re-score set."
         )
 
 

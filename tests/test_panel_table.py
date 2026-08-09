@@ -667,6 +667,14 @@ def _set_experts(out: Path, label: str, value: Any) -> None:
     record.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _set_linearization(out: Path, label: str, value: Any) -> None:
+    """Put a ``linearization`` block into the arm's ``.quant.json`` side file."""
+    side = out / f"{label}.quant.json"
+    payload = json.loads(side.read_text(encoding="utf-8"))
+    payload["linearization"] = value
+    side.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
 def test_a_null_dispatch_and_a_missing_one_are_the_same_absence_to_the_guard(
     table: Any, tmp_path: Path
 ) -> None:
@@ -693,7 +701,7 @@ def test_a_null_dispatch_and_a_missing_one_are_the_same_absence_to_the_guard(
     block = printed.split("experts dispatch")[1]
     assert "none (dense)" in block, "a null is a fact about the model, not a gap"
     assert "not recorded" in block, "a missing key is a gap, and has to read as one"
-    named = block.split("carry no dispatch field: ")[1].split(".")[0]
+    named = block.split("no linearization report: ")[1].split(".")[0]
     assert "bf16" in named and "gptq_4b" not in named
     assert "NOT PAIRED" not in printed, (
         "the guard reads both absences as _ABSENT and pairs them, which is why this "
@@ -723,3 +731,64 @@ def test_a_recorded_dispatch_refuses_to_pair_with_a_record_that_predates_the_fie
     assert "eager (from grouped_mm)" in printed.split("experts dispatch")[1]
     assert "NOT PAIRED" in printed
     assert "experts.ran" in printed
+
+
+def test_a_bank_count_from_the_scoring_process_recovers_a_missing_dispatch(
+    table: Any, tmp_path: Path
+) -> None:
+    """A missing field is not always a missing fact, and the difference is auditable.
+
+    ``baselines_lfm2.do_run`` linearises, calibrates and scores one object: ``quantize``
+    returns the model in memory and ``score`` hands that same object to ``evaluate.run``
+    with no save and no reload. So ``banks_after: 0`` in the ``.quant.json`` beside the
+    record is a count of the weights that were then scored, and a model with no batched
+    bank has no grouped kernel to take -- the arithmetic was the loop.
+
+    That matters because the alternative reading, "four arms ran we-know-not-what", makes
+    the panel's main comparison unfalsifiable and argues for ~22 GPU-hours of re-runs. The
+    real unknown is the complement: the arms with no such report. This pins that the two
+    are told apart, and that the recovered arms drop out of the re-score list.
+
+    Turns red when: the recovery is dropped and every field-less record reads as unknown,
+    or it widens to treat any ``linearization`` block as proof regardless of the count.
+    """
+    out = _write_panel(tmp_path / "arms")
+    for label in ("gptq_4b", "awq_4b", "gptq_3b", "awq_3b"):
+        _set_linearization(out, label, {"banks_before": 22, "banks_after": 0})
+
+    printed = _run(table, out)
+    block = printed.split("experts dispatch")[1]
+    assert "loop (22 banks -> 0)" in block, "the count is the evidence and has to be shown"
+
+    recovered = block.split("linearised to zero banks: ")[1].split(".")[0]
+    assert all(label in recovered for label in ("gptq_4b", "awq_4b", "gptq_3b", "awq_3b"))
+
+    unknown = block.split("no linearization report: ")[1].split(".")[0]
+    assert "bf16" in unknown and "dq_4b" in unknown and "dq_3b" in unknown, (
+        "the arms with no report are the re-score set, and the block has to name them"
+    )
+    assert "gptq_4b" not in unknown, "recovered is not unknown"
+
+
+def test_a_linearization_that_left_banks_behind_recovers_nothing(
+    table: Any, tmp_path: Path
+) -> None:
+    """The recovery is the zero, not the presence of a report.
+
+    ``load_linearized`` refuses a run whose ``banks_after`` is non-zero, so this state
+    should not reach a stored panel -- which is exactly why the reader must not treat the
+    block's existence as the fact. A partially linearised model still holds a batched bank
+    for the grouped kernel to take, and what it dispatched is then unknown in the full
+    sense.
+
+    Turns red when: the check softens to ``"linearization" in payload`` or to a truthiness
+    test on the report, either of which would certify an arm that still had a bank.
+    """
+    out = _write_panel(tmp_path / "arms")
+    _set_linearization(out, "gptq_4b", {"banks_before": 22, "banks_after": 3})
+
+    printed = _run(table, out)
+    block = printed.split("experts dispatch")[1]
+    assert "linearised to zero banks" not in block, "three banks is not zero banks"
+    unknown = block.split("no linearization report: ")[1].split(".")[0]
+    assert "gptq_4b" in unknown
