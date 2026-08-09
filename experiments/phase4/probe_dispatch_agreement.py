@@ -119,7 +119,14 @@ def teacher_forced_argmax(
 
 
 def build_batches(model_dir: str, *, items: int, shots: int, shot_seed: int, split: str) -> Any:
-    """The panel's own items, prompts and framing -- not a re-implementation of them.
+    """The panel's own loader, prompt builder and chat framing.
+
+    Not the panel's own few-shot prefix, and the difference is worth stating rather than
+    letting a reader assume it away. ``_pick_shots`` samples from the whole train pool;
+    this takes a short prefix of it, because loading the full mixture to draw two
+    exemplars costs more than the measurement does. Nothing here is compared to a panel
+    accuracy -- all three passes see one prompt set and the output is agreement between
+    them -- so the prefix only has to be realistic and identical across passes. It is both.
 
     Returns the tokenizer alongside the batches because the caller needs neither and the
     model load needs both to have agreed on a vocabulary.
