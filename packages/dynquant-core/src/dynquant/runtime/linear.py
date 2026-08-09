@@ -422,17 +422,38 @@ def _quantizable_modules(model: nn.Module) -> list[tuple[str, nn.Linear | nn.Emb
     ]
 
 
+_ENCODER_REMEDY = (
+    "The encoder reaches it, so score this map with `dynquant eval --map-apply encode` or "
+    "write it with `dynquant quantize --map`; both give the same accuracy, and "
+    "`dynquant export` packs it at the bytes its manifest claims."
+)
+"""What to do instead, for every target the packed runtime declines but the encoder takes.
+
+One sentence and one copy of it. Each refusal below adds only what is specific to its own
+case, because these three messages differ in *why* and not in *what next*, and the version
+that spelled the remedy out once and left the other branches as dead ends is what this
+replaces.
+"""
+
+
 def _resolve_module(model: nn.Module, name: str) -> nn.Linear | nn.Embedding:
     """The module the packed runtime will replace, or a refusal that says which kind.
 
-    Two different failures used to arrive with one message. A name this model does not
-    have and a name that addresses a *tensor* rather than a module both raise
-    ``AttributeError`` out of ``get_submodule``, and both were reported as "not a module
-    of this model" -- which reads as a map built for another checkpoint. It is not: a
-    batched MoE expert bank keeps its experts as bare 3-D parameters, so the allocator
-    priced it, the encoder can encode it, and only the *packed* runtime cannot hold it.
-    Sending someone to check their map when the map is right costs more than the missing
-    branch saved.
+    Three failures, three messages, and each of the first two once wore the wrong one.
+
+    A name this model does not have and a name addressing a *tensor* both raise
+    ``AttributeError`` out of ``get_submodule``, and both were reported as "not a module of
+    this model" -- which reads as a map built for another checkpoint. It is not: a batched
+    MoE expert bank keeps its experts as bare 3-D parameters, so the allocator priced it,
+    the encoder can encode it, and only the *packed* runtime cannot hold it.
+
+    The third is a module that owns a weight and is neither class. An
+    ``Lfm2MoeTopKRouter`` -- and Qwen3-Next's router, and GPT-OSS's -- holds
+    ``[num_experts, hidden]`` as its own parameter and calls ``F.linear`` on it, so there is
+    a weight to quantize but no ``Linear`` forward to replace. That case was being told it
+    was a batched expert bank and pointed at a grouped path it does not need. The refusal
+    itself is right in all three: packing swaps a module's forward, and these are the shapes
+    that have no forward to swap.
     """
     try:
         module = model.get_submodule(name)
@@ -443,19 +464,25 @@ def _resolve_module(model: nn.Module, name: str) -> nn.Linear | nn.Embedding:
             raise DynQuantError(
                 f"{name!r} is a tensor, not a module -- a batched expert bank, which the "
                 f"packed runtime cannot hold: packing replaces Linear and Embedding "
-                f"modules, and there is no module here to replace. The encoder handles it, "
-                f"so score this map with `dynquant eval --map-apply encode` or write it "
-                f"with `dynquant quantize --map`; both give the same accuracy. "
-                f"`dynquant export` packs it too, at the bytes its manifest claims -- a "
-                f"size-honest directory that this runtime still cannot load back, which is "
+                f"modules, and there is no module here to replace. {_ENCODER_REMEDY} That "
+                f"is a size-honest directory this runtime still cannot load back, which is "
                 f"why the export report lists its banks. The grouped packed path is not "
                 f"built yet."
             ) from exc
         raise DynQuantError(f"bit map names {name!r}, which is not a module of this model") from exc
     if not isinstance(module, nn.Linear | nn.Embedding):
+        from dynquant.quant.quantizer import resolves_to_weight
+
+        if resolves_to_weight(model, name):
+            raise DynQuantError(
+                f"{name!r} is a {type(module).__name__}, which owns a weight but is not a "
+                f"Linear or an Embedding, so the packed runtime has no forward to replace "
+                f"-- an MoE router calling `F.linear` on its own parameter is the usual "
+                f"case, and it is not a batched expert bank. {_ENCODER_REMEDY}"
+            )
         raise DynQuantError(
-            f"{name!r} is a {type(module).__name__}; the packed runtime replaces Linear and "
-            f"Embedding only. Batched MoE expert banks need the grouped path."
+            f"{name!r} is a {type(module).__name__} and owns no weight to quantize. A bit "
+            f"map names the leaves that hold weights, not the containers that hold them."
         )
     return module
 

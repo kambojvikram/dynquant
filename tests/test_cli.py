@@ -453,8 +453,8 @@ def test_the_guard_accepts_every_name_the_quantizer_behind_it_would_encode() -> 
         _shared.check_map_covers(model, {"experts.absent_proj": 4})
 
 
-def test_a_bank_the_packed_runtime_cannot_hold_is_told_apart_from_a_wrong_map() -> None:
-    """Two failures, one message, and the message named the wrong one.
+def test_what_the_packed_runtime_cannot_hold_is_told_apart_from_a_wrong_map() -> None:
+    """Four outcomes, four messages, and two of them once wore another's.
 
     ``get_submodule`` raises ``AttributeError`` both for a name this model does not have
     and for a name that addresses a *tensor* -- and a batched expert bank is the second.
@@ -463,11 +463,16 @@ def test_a_bank_the_packed_runtime_cannot_hold_is_told_apart_from_a_wrong_map() 
     encode it, and the only thing that cannot hold it is packing, because there is no
     module there to replace.
 
-    Asserted as a *distinction*: both halves in one test, because a single message that
-    happens to match one of them is exactly the state this replaced.
+    A router is the third, and it arrived after the first fix. It owns a weight and is not
+    a ``Linear``, so it fell to the whitelist branch and was told it was a batched expert
+    bank needing a grouped path -- wrong about what it is, and silent about
+    ``--map-apply encode``, which handles it today.
 
-    Turns red when: the two branches collapse back into one, or the bank case stops
-    naming the mode that does work.
+    Asserted as a *set of distinctions*: all four in one test, because a single message
+    that happens to match one of them is exactly the state this replaced.
+
+    Turns red when: any two branches collapse into one, or a case that the encoder can
+    still reach stops naming the mode that does work.
     """
     import torch
     from torch import nn
@@ -479,18 +484,41 @@ def test_a_bank_the_packed_runtime_cannot_hold_is_told_apart_from_a_wrong_map() 
             super().__init__()
             self.gate_up_proj = nn.Parameter(torch.randn(4, 256, 128))
 
+    class _Router(nn.Module):
+        """Shaped like `Lfm2MoeTopKRouter`: a bare weight, `F.linear`, no `Linear`."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = nn.Parameter(torch.randn(8, 128))
+
     class _Tiny(nn.Module):
         def __init__(self) -> None:
             super().__init__()
             self.experts = _Bank()
+            self.gate = _Router()
             self.o_proj = nn.Linear(128, 128, bias=False)
 
-    with pytest.raises(DynQuantError, match="encode") as bank:
-        pack_model(_Tiny(), {"experts.gate_up_proj": 4}, group_size=128, compute_device=None)
-    assert "not a module of this model" not in str(bank.value)
+    def refuse(name: str) -> str:
+        with pytest.raises(DynQuantError) as caught:
+            pack_model(_Tiny(), {name: 4}, group_size=128, compute_device=None)
+        return str(caught.value)
 
-    with pytest.raises(DynQuantError, match="not a module of this model"):
-        pack_model(_Tiny(), {"experts.absent_proj": 4}, group_size=128, compute_device=None)
+    bank = refuse("experts.gate_up_proj")
+    assert "encode" in bank
+    assert "not a module of this model" not in bank
+
+    router = refuse("gate")
+    assert "encode" in router
+    # The two it used to be confused with, and the one thing it must say about itself.
+    assert "not a module of this model" not in router
+    assert "not a batched expert bank" in router
+
+    assert "not a module of this model" in refuse("experts.absent_proj")
+
+    # A container owns nothing to pack, so there is no encoder route to offer either.
+    container = refuse("experts")
+    assert "owns no weight" in container
+    assert "encode" not in container
 
 
 def test_encoding_a_map_reaches_the_weights_packing_cannot() -> None:

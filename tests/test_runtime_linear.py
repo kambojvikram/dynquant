@@ -212,8 +212,13 @@ def test_pack_model_raises_on_a_name_the_model_does_not_have(model):
 
 
 def test_pack_model_raises_rather_than_skipping_an_unsupported_module(model):
-    with pytest.raises(DynQuantError, match="Linear and Embedding only"):
+    # The empty name resolves to the root module, which owns no weight of its own --
+    # the container case, distinct from a router (a weight with no Linear forward) and
+    # from a batched bank (a weight with no module at all). All three are refused; only
+    # this one has no encoder route to offer instead.
+    with pytest.raises(DynQuantError, match="owns no weight") as caught:
         pack_model(model, {"": 4})
+    assert "encode" not in str(caught.value)
 
 
 # --------------------------------------------------------------------------
