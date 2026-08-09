@@ -571,10 +571,29 @@ the one with no argument behind it.
 **Three bits is slower again, and that is a third thing.** `gptq_3b` is scoring at roughly 3.8
 s/item against `gptq_4b`'s 1.65 — another 2.3x, at the same dispatch, the same runtime, the same
 decode budget and the same batch size. Either `compressed-tensors` unpacks 3-bit more expensively
-than 4-bit, or the 3-bit model has degraded into longer generations against the 1,024-token cap. The
-record separates them when it lands: accuracy and `detail.errored` speak to the second, and if it is
-the second then the cost of evaluating a baseline is partly a function of how badly that baseline
-was hurt, which is a thing to know before budgeting a panel by arm count.
+than 4-bit, or the 3-bit model has degraded into longer generations against the 1,024-token cap. If
+it is the second then the cost of evaluating a baseline is partly a function of how badly that
+baseline was hurt, which is a thing to know before budgeting a panel by arm count.
+
+This paragraph also said the landing record would separate them, naming accuracy and
+`detail.errored`. The four records already in hand say it will not. `errored` counts SQL that failed
+to execute and it does not order the clock: `gptq_4b` has 187 and is the faster of the linearised
+pair, `awq_4b` has 118 and is the slower. `unparseable` is 0 on all four and `unfinished_reasoning`
+is 0 on all four. Nothing recorded is a length proxy, which is a gap in the record rather than an
+answer.
+
+**And the second hypothesis is easier to satisfy than it sounds.** Decoding is greedy and batched at
+32, and a `generate` call runs until every sequence in its batch has stopped, so each batch costs
+what its *longest* generation costs. A 3-bit model does not have to write longer answers on average
+to double the clock — it has to fail to stop on one item in thirty-two. `unparseable: 0` does not
+rule that out either: a generation truncated at the cap can still carry extractable SQL earlier in
+its text, so it scores like any other item and says nothing about how long it ran.
+
+Separating them wants a fixed-length teacher-forced forward on the 3-bit and 4-bit weights, where
+nothing is generated and unpacking is the only thing left. The panel cannot supply it: `run` is
+"quantize and score in one process (no checkpoint)" and no baseline weights survive the arm that
+made them, so the price of asking is a re-quantization — about 32 minutes for GPTQ, 47 for AWQ, from
+their own `quantize_seconds`.
 
 **The general form.** A measurement whose conclusion holds at one scale and fails at another is not
 a wrong measurement, and calling it one hides the actual failure. `1.79e-07` was true of a one-layer
