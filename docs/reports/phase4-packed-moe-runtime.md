@@ -520,13 +520,29 @@ awq_4b    the loop      compressed-tensors, 4-bit         23,350.9     1.946    
 Same 12,000 items, same batch size, same decode budget, same GPU, one arm after another. The two
 that kept their banks scored in under three hours each; the two linearised into 2,201 `Linear`s took
 five and a half. **The confound is that those are the same two arms.** Linearisation and on-the-fly
-dequantization arrive together and no arm in this panel has one without the other. What bounds it is
-the 18% between `gptq_4b` and `awq_4b` — kernel choice alone, at identical dispatch and identical
-shapes: differences of that order exist and they are an order below the gap. `dq_4b` cannot help,
-because `apply: encode` writes the reconstruction back in the compute dtype, so it runs plain bf16
-matmuls and pays no dequantization at all. So the linearised arms cost 1.9—2.3x the banked ones,
-most of it plausibly the 22 grouped matmuls becoming 22 × 32 = 704 module calls per forward, and
-*plausibly* is the honest word.
+dequantization arrive together and no arm in this panel has one without the other. `dq_4b` cannot
+help, because `apply: encode` writes the reconstruction back in the compute dtype, so it runs plain
+bf16 matmuls and pays no dequantization at all.
+
+**And the thing I first said bounded that confound does not bound it.** The revision of this
+paragraph written a day earlier offered the 18% between `gptq_4b` and `awq_4b` as the ceiling —
+"kernel choice alone, at identical dispatch and identical shapes," so differences of that order
+exist and are an order below the gap. The two manifests say otherwise. Both arms are 4 bits at
+`group_size` 128 over the same 2,201 modules for the same 4,399,629,312 bytes, which is not two
+kernels; it is one. What actually differs is that AWQ is asymmetric where GPTQ is symmetric, so one
+dequant subtracts a zero point the other does not, and that AWQ's smoothing moved every one of the
+2,201 weights (`max_weight_delta: 2.89`), which changes what the model writes and therefore how long
+it writes for against a 1,024-token cap. So the 18% prices one dequant scheme against another, plus
+the length difference between two sets of weights. **A difference inside dequantization is not a
+bound on dequantization**, and dequantizing against not dequantizing at all is the confound. The
+number was real and the inference from it was not.
+
+So the linearised arms cost 1.9—2.3x the banked ones and this panel cannot say how much of that is
+the 22 grouped matmuls becoming 22 × 32 = 704 module calls per forward. What can say is two
+measurements that were already on the list for other reasons, and both are cheap because both have
+identical weights on either side and therefore no dequantization anywhere in them: `eager` against
+`grouped_mm`, which the re-score produces, and the loop against `eager`, which is 24 teacher-forced
+items on the bf16 model. Between them they isolate exactly the two halves that arrive together here.
 
 **And this is the loop against `grouped_mm`, which is not the pair the rest of §8 is about.** The
 accuracy number above is `eager` against `grouped_mm`. The clock here is the loop against
