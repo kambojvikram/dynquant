@@ -30,6 +30,7 @@ widths, and whether the driver that runs the arms runs at all are five separate 
 | 17 | Which of DynQuant’s two prices chose the widths, and on how much of the model? | **44 of 133 modules — 91.54% of parameters — by the rank-product proxy rescaled by 1.807e-17**, because a batched expert bank has no boundary where the Gauss–Newton form exists; the concordance guard reads 1.000 over the other 8.46% | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
 | 18 | Does the seven-arm panel driver run? | **Not until six defects were removed** — three of them fail *after* the calibration pass, one would have finished and entered the table as round-to-nearest wearing an AWQ label, the fifth would have run all seven arms over the whole 16 143-item test split because `--limit` is forwarded only when set, and the sixth would have let `--resume` staple in a record scored on another checkpoint | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
 | 19 | How many of the six quantized variants can actually be published? | **Four can be written; two can be loaded** — `dynquant export` refused a batched expert bank and said the packed *format* could not hold one; the format always could, and the refusal came from a second copy of the name resolver -- which then refused a second time, on a router, because the copy had been narrowed twice. Both DynQuant arms now write packed at their manifest bytes, size-honest and not yet loadable -- but *not loadable* turned out to mean transformers skipping the unknown `quant_method` and **returning a randomly initialised model with no exception**, measured identically on 4.53.2, 5.10.1 and 5.14.1, none of which has entry-point discovery. An `HfQuantizer` now makes that a hard error, round-trips a dense model to 4.9e-4 of the encoder, and stops a tied `lm_head` crashing on a packed embedding that has no `.weight`. And *needs the grouped path* was two blockers read as one: the kernel that makes batched experts fast, and the object that lets them be held at all. The second is Python -- the parent reaches an expert by **indexing**, so a module registered under the parameter's own name intercepts it and dequantizes 10.5 MiB of a 336 MiB bank per hit. That is 91.5% of this model, and it was also 91.5% missing from the byte denominator, which walked modules and so never saw a tensor no module owns. The two 3-bit baselines were refused for a false reason as well: `compressed-tensors` packs 1-8 bits and round-trips 3-bit fine, but at `32 // 3` values per word it stores **3.2 bits against a label of 3**, and vLLM sizes the same tensor as `Fraction(32, 3)` -- 192 words per 2048-wide row where 205 were written | [`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) §12 |
+| 20 | Is the model the panel scores the model a person would download? | **It was three defects away** — a rank-3 test that could not tell a batched expert bank from a `Conv1d` kernel, on a model where **18 of 24 layers are conv**; a packed bank that installed cleanly and then died *inside transformers* at `weight.transpose(-2, -1)`, because 5.14.1 replaces every `*Experts.forward` with a dispatcher whose **default is `grouped_mm`**, so the indexing loop the whole design rests on is not what runs; and the packer and the in-place encoder disagreeing by **0.0082** on the same fp32 bank — 16% of what quantization itself moves — because the scale dtype had **three definitions** that agree on fp16 and bf16 and therefore on every model anyone ships. All three are now zero, or exactly 0 where exactness is the honest bar, verified against the genuine `Lfm2MoeExperts` | [`phase4-packed-moe-runtime.md`](phase4-packed-moe-runtime.md) |
 
 The method itself — signals, sensitivity estimator, allocator, encoder, format, packed
 runtime, kernels — is documented end to end in the
@@ -856,6 +857,52 @@ duplicate is gone rather than widened again. The full 38 M map then exports who
 byte. Only rank-1 tensors go unpriced: 205 056 B on the real model, 0.0047% of the 4-bit
 anchor and 21x inside the panel's match tolerance, and the same set `llm-compressor` counts as its
 211 712 fp16 parameters.
+
+## 20. Phase 4 — the artifact and the measurement were three defects apart
+
+[`phase4-packed-moe-runtime.md`](phase4-packed-moe-runtime.md) · fixed 2026-08-09
+
+The panel scores the **encoder**, `quantize_model(in_place=True)`, because a matched-byte panel
+needs one GPU pass per arm and nothing on disk. What a person downloads is the **packer**. Those
+are two implementations of one format, and the panel’s evidentiary value is entirely the claim
+that they are the same object. Run against the genuine `Lfm2MoeExperts` rather than the synthetic
+copy the unit tests use, they were not, in three ways that hid behind each other.
+
+**Rank 3 is not a bank.** `resolve_target` accepted any rank-3 `nn.Parameter` as a batched expert
+bank. LFM2.5-8B-A1B is a hybrid whose **18 of 24 layers are short convolutions**, and an
+`nn.Conv1d` kernel is `[channels, 1, width]` — rank 3, and a `[1, 3]` strip of it per "expert".
+
+**The indexing loop is not what runs.** The design rests on a counted property: 49 of the 52
+`*Experts*` classes in transformers 5.14.1 reach an expert by indexing their bank. That is a count
+of what those classes’ `forward` methods contain, and `integrations/moe.py` **replaces** each one
+with a dispatcher reading `config._experts_implementation` against `ALL_EXPERTS_FUNCTIONS`. The
+loop is only the `eager` entry; the default is `grouped_mm`, which hands the bank whole to
+`torch._grouped_mm`. So the bank installed correctly, passed every test, and raised
+`'DynQuantExpertBank' object has no attribute 'transpose'` at its first real forward. Both the pack
+path and the load path now move the model through its own `set_experts_implementation`, and the
+move is free: eager and `grouped_mm` differ by **1.79e-07** against a quantization effect of
+**0.0101**. What it costs is the fast path — which is precisely the P8 kernel’s job, and the
+right home for that kernel is now visible: registered *into* `ALL_EXPERTS_FUNCTIONS` beside those
+four.
+
+**One format, two encodings.** The packer and the encoder encoded the same fp32 bank 0.0082 apart.
+Three copies of the scale-dtype rule: the packer used the weight’s own dtype, the exporter used
+fp16 unless already half, the encoder passed nothing and inherited the exporter’s. All three agree
+on fp16 and bf16 — so on every model anyone ships — and the disagreement waited for an fp32
+test model. The **fourth** instance of *a second copy of a registry agrees until it doesn’t*, and
+the most expensive, because the two copies were the two things being compared. Settled on 16-bit
+metadata in one shared `storage_dtype()`, not on accuracy grounds but because `budget.py` prices
+every quoted bit-width against `metadata_bits: int = 16` and fp32 scales would put a model 0.25
+bits/weight above its own manifest; the first attempt, on the weight’s own dtype, turned 166 tests
+red and that is what identified the budget as the fourth copy. The one caller that genuinely needs
+the parent’s dtype — `DynQuantExpertBank.__getitem__`, which is asked for a weight before any
+activation exists — is told at construction and holds it in a non-persistent buffer so `.half()`
+carries it.
+
+Afterwards, on the genuine class: `max|bank[e] - encoder[e]| = 0`, packed-vs-encoder logits `= 0`,
+and a bank exported and reloaded through `from_pretrained` returns `0`. Eleven mutations across the
+two fixes, all eleven red. The limit is scale, not fidelity: this is the real *class* at 4 layers
+and 6 experts in fp32, and the 8B’s own export-and-reload is running beside the panel.
 
 ## Conventions that apply to every campaign
 

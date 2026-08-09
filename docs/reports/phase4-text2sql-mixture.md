@@ -2006,6 +2006,24 @@ All three fail at the first forward with "a module is not a tensor" rather than 
 the side of that line to be on. Nothing in the design was tuned to LFM2: it happens to sit in the
 94% case, and a family whose MoE block has not been released yet works if it indexes.
 
+**Correction, and the reason the count was not enough.** 49 of 52 is a count of what those classes'
+own `forward` methods do, and on transformers 5.14.1 that is not what runs. `integrations/moe.py`
+decorates each of them with `@use_experts_implementation`, which *replaces* `forward` with a
+dispatcher that reads `config._experts_implementation` and picks from `ALL_EXPERTS_FUNCTIONS` --
+`grouped_mm`, `batched_mm`, `deepgemm`, `sonicmoe`, or `eager`. The indexing loop counted above is
+only the `eager` entry, reached by falling through to `original_forward`; the **default is
+`grouped_mm`** (`modeling_utils.py:2099`), which hands the bank whole to `torch._grouped_mm` after
+asking it to `transpose`. So the 49 was a true statement about a code path that 5.14.1 skips, and
+the genuine `Lfm2MoeExperts` -- installed cleanly, banks in place, every test above still green --
+died at its first forward inside transformers with `'DynQuantExpertBank' object has no attribute
+'transpose'`. What the count really establishes is narrower and still worth having: 49 of 52
+families *can* be served by an indexed bank, once something puts them on the dispatch that indexes.
+`pack_model` and the load path now both do that through the model's own
+`set_experts_implementation`, and `PackReport` records the move. See
+[the packed-MoE runtime report](phase4-packed-moe-runtime.md), which also measures what the move
+costs in accuracy (nothing: 1.8e-07 against a quantization effect of 0.0101) and what it costs in
+speed (the fast path, which is what the P8 kernel is for).
+
 The arithmetic is why this is worth having before the kernel. A layer's `gate_up_proj` is
 `[32, 2688, 2048]`: **336 MiB** in bf16, **89.25 MiB** packed at 4 bits with fp16 scales and
 offsets per 128-value group. What exists dense while an expert runs is one slice of it, **10.5
