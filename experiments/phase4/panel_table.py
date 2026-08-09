@@ -589,7 +589,9 @@ def main(argv: list[str] | None = None) -> int:
         "only-right-right. The verdict follows the Holm-adjusted p within its own block.",
         "Sizes are the manifest's, not the loaded model's: a DynQuant arm is scored by",
         "encoding its widths back into bf16, so it holds fp16 and claims the allocator's",
-        "bytes -- which is the size the same map writes when packed to disk.",
+        "bytes -- the size the same map writes when packed to disk, short by the rank-1",
+        "tensors the budget does not price (205 KB here: norms, layernorms and expert",
+        "bias, 0.005% of the 4b anchor and 21x inside this panel's match tolerance).",
     ):
         print(line)
 
