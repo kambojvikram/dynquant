@@ -369,9 +369,10 @@ in memory  4,400,549,888 = packed + dense 3,104,768  (conv 221,184 + restored ro
 
 The allocator's price is what the manifest promises, the disk figure is what a downloader pays, and
 the memory figure is what the model occupies while answering. They differ by 264 KB and 2.9 MB, and
-both differences are named rather than absorbed: the rank-1 tensors the budget does not yet price,
-the safetensors container, and the 22 routers that live at 8 bits on disk and bf16 in RAM because
-no packed forward can stand where they stand (§4).
+both differences are named rather than absorbed: the rank-1 tensors the budget did not price, the
+safetensors container, and the 22 routers that live at 8 bits on disk and bf16 in RAM because no
+packed forward can stand where they stand (§4). The first of those is now priced — see §10,
+where a 205 KB rounding error turns out to be 91.5% of a differently-shaped model.
 
 **Every tensor in the map came back exactly.**
 
@@ -526,3 +527,74 @@ The remaining gap after that is speed, not correctness, and it is the one the P8
 close. Worth noting what closing it would also do: a DynQuant grouped GEMM registered into
 `ALL_EXPERTS_FUNCTIONS` serves a packed bank on the default dispatch, so nothing would need to move
 at all, and this entire section becomes moot rather than merely resolved.
+
+---
+
+## 10. The denominator was smaller than the file
+
+Section 7 named three differences and absorbed none of them. One has now been closed, and closing
+it turned out to be a larger change than the 205,056 bytes that prompted it.
+
+`classify_model` records every tensor it declines to classify in `ModelGraph.skipped`, with a
+reason. Nothing then read that dictionary. `total_params()` summed the quantizable modules and the
+ones floored at compute dtype; `Budget.from_target` divided by that sum and subtracted a fixed cost
+built from the same two groups. So the refused tensors were documented and unpriced — present in
+the artifact, absent from the arithmetic describing it.
+
+**The size of the error depends entirely on what got refused, and the range is four orders of
+magnitude.**
+
+| what is refused | on which model | share of the model |
+|---|---|---|
+| 1-D norms and biases | LFM2.5-8B-A1B | 205,056 B of 4.4 GB, 0.005% |
+| a batched expert bank, wrong orientation | a `gpt_oss`-shaped MoE | **91.5% of quantizable parameters** |
+
+The first is why this looked like a rounding error and sat on the list as "price the rank-1
+tensors". The second is what it actually is. `_expert_bank` refuses a bank whose input axis is not
+last, because grouping along the wrong axis still round-trips and still reports a plausible
+reconstruction error — there is no later symptom, so the refusal is correct. But a refused bank
+is the *entire* MLP of every layer, and on an LFM2-class model that is 91.5% of the quantizable
+parameters. A budget that leaves it out of the denominator is not off by a header; it is sizing a
+different model.
+
+**What changed.** `skipped` becomes `dict[str, SkippedTensor]` carrying `num_params` and `tied_to`
+alongside the reason. `total_params()` gains a third term, `floor_cost_bits()` and
+`Budget.from_target` charge the refused parameters at the 16-bit floor, and `dynquant inspect`
+writes the count into the manifest beside `unquantized` rather than inside it — they are both
+dense on disk, but one is a role's floor and the other is a tensor the graph declined to have an
+opinion about, and on the MoE above the difference is most of the model.
+
+All three refusal sites file through one recorder that gives the parameters to the first name and
+records a `tied_to` on the rest. Two modules sharing one norm would otherwise be counted twice,
+which is the tied-embedding error running in the opposite direction: that one made a shared tensor
+27% of a model twice over, this one would make a shared norm 32 KB twice over. The mechanism is the
+same and only the magnitude is forgiving.
+
+**One term is still named and still not priced.** The safetensors container, 58,880 bytes on this
+model, is a function of the tensor *names* and offsets — which do not exist until the allocation
+being budgeted has been made. It cannot be priced from inside `Budget.from_target` without
+allocating first, so a target is hit to within a header, and the module docstring says so rather
+than letting a reader discover it from a `du` that is 0.001% off.
+
+**A test that had been reading an accident.** `test_a_zero_score_is_cut_to_the_minimum_for_free`
+pins the reason `percentile_ranks` maps to an *open* interval: a score of exactly zero prices every
+cut as free, and on Qwen3.5-2B that put 20 of 187 modules at 2 bits and scored the model at 20.8%
+against 65.1%. The test ran at an 8.0-bit target, where the allocator's downgrade pass never
+executes at all. What it was actually observing was the *upgrade* pass, which accepts a zero-value
+move when no priced move can afford the slack that remains — so whether the zero-scored module
+finished below its peers depended on the size of that remainder. This change moved the remainder by
+0.09% of the budget and the assertion flipped, with nothing about the handling of a zero having
+changed.
+
+That is worth recording as its own small lesson. **A test whose subject is a downgrade should not
+be run at a target where nothing is downgraded.** It now runs at 4.0 — the target the incident in
+its own docstring happened at — where the victim is cut *through its floor* to the minimum and is
+the only module in the model there. Three assertions instead of one, and all three are about the
+mechanism rather than about the leftovers.
+
+**What this does not change.** The panel's four landed arms were allocated under the old
+accounting, and on this model the correction is 205,056 bytes against a 4.4 GB anchor: 0.005%,
+against a 0.1% match tolerance. The maps are not invalidated and are not being re-derived. The
+eager re-score of section 8 reuses them through `--rescore`, precisely so that the dispatch is the
+only thing that moves between the two measurements — this change is the second one that would
+otherwise have ridden along.

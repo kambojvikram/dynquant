@@ -19,6 +19,41 @@ ones that invalidate artifacts a user has already produced.
 
 ## [Unreleased]
 
+### Fixed — the allocator priced a smaller model than it was writing
+
+`classify_model` records every tensor it declines to classify in `ModelGraph.skipped`,
+with a reason. Nothing read that dictionary. `total_params()` summed the quantizable
+modules and the ones floored at compute dtype, and `Budget.from_target` divided by that
+sum — so refused tensors were documented and unpriced: present in the artifact,
+absent from the arithmetic describing it.
+
+The magnitude spans four orders of magnitude and depends on *what* got refused. On
+LFM2.5-8B-A1B the refused tensors are 1-D norms and biases, 205,056 bytes against
+4.4 GB (0.005%, against a 0.1% match tolerance) — which is why this sat on the list
+as "price the rank-1 tensors". But `_expert_bank` also refuses a whole batched bank
+whose input axis is not last, and a refused bank is the entire MLP of every layer:
+**91.5% of the quantizable parameters** on an LFM2-class MoE. A budget that leaves that
+out of the denominator is not off by a header, it is sizing a different model.
+
+`skipped` becomes `dict[str, SkippedTensor]` carrying `num_params` and `tied_to`.
+`total_params()` gains a third term, `floor_cost_bits()` and `Budget.from_target` charge
+the refused parameters at the 16-bit floor, and `dynquant inspect` writes the count into
+the manifest beside `unquantized` rather than inside it. All three refusal sites file
+through one recorder that gives the parameters to the first name and records a `tied_to`
+on the rest, so two modules sharing one norm cannot pay for it twice — the
+tied-embedding error running in the opposite direction.
+
+The safetensors container, 58,880 bytes on the same model, is still not priced and is now
+named in the module docstring: its size is a function of the tensor names and offsets,
+which do not exist until the allocation being budgeted has been made. A target is hit to
+within a header.
+
+No existing bit map is invalidated. The phase-4 panel's arms were allocated under the old
+accounting and are reused as-is through `--rescore`, so the correction does not ride along
+with the dispatch re-score it would otherwise have been confounded with. Full reasoning in
+[`docs/reports/phase4-packed-moe-runtime.md`](docs/reports/phase4-packed-moe-runtime.md)
+§10.
+
 ### Fixed — CI, red since `a428231`, on two rules the repository set against itself
 
 Nothing here reaches the wheel: `scripts/` and `tests/` are not packaged, so the
