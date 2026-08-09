@@ -480,10 +480,23 @@ wrong.
 
 **The fix is singular.** GPTQ and AWQ cannot be moved to `grouped_mm`; there is nothing left to
 dispatch. `eager` is therefore the only dispatch all seven arms can share, and it is also the one a
-downloader runs, so a single re-run decontaminates the panel and validates the artifact claim at
-once: `dq_4b` and `bf16` re-scored on `eager` at the same anchors, the same 12,000 items, the same
-seed, paired against the stored per-item hits so the comparison is a McNemar test and not two
-independent rates.
+downloader runs, so one re-run decontaminates the panel and validates the artifact claim at once:
+the three arms that kept their banks — `bf16`, `dq_4b` and `dq_3b` — re-scored on
+`eager` at the same anchors, the same 12,000 items, the same seed, paired against the stored
+per-item hits so the comparison is a McNemar test and not two independent rates. The four
+linearised arms need nothing: they already computed eager.
+
+**And the code fix, so the next panel cannot straddle it.** A re-run repairs one campaign; what
+allowed the campaign to be built this way was that no record said which computation produced its
+number. `dynquant eval` now pins the dispatch to `eager` after the model is resolved — in `run`,
+not in `_load_runtime`, because a baseline arrives through `model=` and a ceiling applies no map,
+so that is the only point every arm passes through — and writes `{found, ran}` into the record.
+`EXPERTS_PAIRING_FIELDS` then refuses to pair two arms that ran different arithmetic, exempt on
+absence because a dense model has no dispatch and never will. `--experts-impl auto` restores the
+model's own choice, which is what measuring the dispatch itself needs and what a panel must not
+use. Both phase-4 drivers state the flag on every scoring command rather than inheriting it, for
+the reason `eval_flags` already states the decode budget: a default that moves under a driver is a
+difference between arms that the records still describe as shared.
 
 **The general form.** A measurement whose conclusion holds at one scale and fails at another is not
 a wrong measurement, and calling it one hides the actual failure. `1.79e-07` was true of a one-layer
