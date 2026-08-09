@@ -1,0 +1,39 @@
+{
+  "model": "LiquidAI/LFM2.5-8B-A1B",
+  "model_path": "/workspace/models/LFM2.5-8B-A1B",
+  "dataset": "gretelai/synthetic_text_to_sql+Salesforce/wikisql+b-mc2/sql-create-context",
+  "examples_requested": 50000,
+  "conversations_seen": 50000,
+  "conversations_kept": 49905,
+  "drop_rate": 0.0019,
+  "unmaskable_rate": 0.0,
+  "over_max_len_rate": 0.0019,
+  "dropped_by_reason": {
+    "too long": 95
+  },
+  "tokens": 16812638,
+  "supervised_tokens": 1485945,
+  "mask_mode": "template",
+  "mask_mode_requested": "auto",
+  "mask_mode_probe": {
+    "template": 32,
+    "assemble": 32
+  },
+  "max_len": 2048,
+  "sources": {
+    "text2sql/gretel": 16667,
+    "text2sql/wikisql": 16667,
+    "text2sql/create-context": 16666
+  },
+  "sources_overlapping_an_eval_task": [],
+  "contamination_markers": [
+    "gsm8k",
+    "humaneval",
+    "mbpp"
+  ],
+  "decontaminated": {
+    "gretel": 5,
+    "wikisql": 21,
+    "create-context": 3990
+  }
+}

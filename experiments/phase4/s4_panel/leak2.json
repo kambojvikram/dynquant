@@ -1,0 +1,95 @@
+{
+  "limit": 400,
+  "seed": 0,
+  "examples": 50000,
+  "eval_items": 400,
+  "eval_by_source": {
+    "gretel": 200,
+    "wikisql": 200
+  },
+  "pool": {
+    "gretel": {
+      "rows": 100000,
+      "distinct_questions": 99805,
+      "hits": {
+        "gretel": {
+          "questions": 0,
+          "of": 200,
+          "examples": [],
+          "gold_queries": 4
+        },
+        "wikisql": {
+          "questions": 0,
+          "of": 200,
+          "examples": [],
+          "gold_queries": 0
+        }
+      }
+    },
+    "wikisql": {
+      "rows": 56355,
+      "distinct_questions": 56105,
+      "hits": {
+        "gretel": {
+          "questions": 0,
+          "of": 200,
+          "examples": [],
+          "gold_queries": null
+        },
+        "wikisql": {
+          "questions": 1,
+          "of": 200,
+          "examples": [
+            "wikisql/2-13655126-1/75"
+          ],
+          "gold_queries": null
+        }
+      }
+    },
+    "create-context": {
+      "rows": 78577,
+      "distinct_questions": 78251,
+      "hits": {
+        "gretel": {
+          "questions": 0,
+          "of": 200,
+          "examples": [],
+          "gold_queries": 0
+        },
+        "wikisql": {
+          "questions": 189,
+          "of": 200,
+          "examples": [
+            "wikisql/2-10808089-3/1",
+            "wikisql/2-1604940-1/2",
+            "wikisql/1-15778392-1/5",
+            "wikisql/1-25869317-1/6",
+            "wikisql/2-11870943-7/7"
+          ],
+          "gold_queries": 0
+        }
+      }
+    }
+  },
+  "sampled": {
+    "distinct_questions": 46708,
+    "hits": {
+      "gretel": {
+        "questions": 0,
+        "of": 200,
+        "examples": []
+      },
+      "wikisql": {
+        "questions": 38,
+        "of": 200,
+        "examples": [
+          "wikisql/1-27039190-3/8",
+          "wikisql/2-16450028-1/22",
+          "wikisql/2-18823880-4/25",
+          "wikisql/2-17282079-5/33",
+          "wikisql/2-12821570-2/34"
+        ]
+      }
+    }
+  }
+}

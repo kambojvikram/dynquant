@@ -1,0 +1,69 @@
+{
+  "model": "/workspace/runs/s4/lfm25-8b-a1b.text2sql/merged",
+  "stats": "/workspace/runs/s4/lfm25-8b-a1b.text2sql/stats/dynquant_stats.json",
+  "moments": "/workspace/runs/s4/lfm25-8b-a1b.text2sql/stats/dynquant_moments.safetensors",
+  "group_size": 128,
+  "tolerance": 0.001,
+  "anchors": {
+    "4": 4399629312,
+    "3": 3332904576
+  },
+  "arms": [
+    {
+      "label": "bf16",
+      "kind": "ceiling",
+      "anchor": null,
+      "target_bytes": null,
+      "nbytes": null,
+      "record": "/workspace/runs/s4/panel/bf16.json"
+    },
+    {
+      "label": "gptq_4b",
+      "kind": "gptq",
+      "anchor": 4,
+      "target_bytes": 4399629312,
+      "nbytes": 4399629312,
+      "record": "/workspace/runs/s4/panel/gptq_4b.json"
+    },
+    {
+      "label": "awq_4b",
+      "kind": "awq",
+      "anchor": 4,
+      "target_bytes": 4399629312,
+      "nbytes": null,
+      "record": null
+    },
+    {
+      "label": "dq_4b",
+      "kind": "dq",
+      "anchor": 4,
+      "target_bytes": 4399629312,
+      "nbytes": null,
+      "record": null
+    },
+    {
+      "label": "gptq_3b",
+      "kind": "gptq",
+      "anchor": 3,
+      "target_bytes": 3332904576,
+      "nbytes": null,
+      "record": null
+    },
+    {
+      "label": "awq_3b",
+      "kind": "awq",
+      "anchor": 3,
+      "target_bytes": 3332904576,
+      "nbytes": null,
+      "record": null
+    },
+    {
+      "label": "dq_3b",
+      "kind": "dq",
+      "anchor": 3,
+      "target_bytes": 3332904576,
+      "nbytes": null,
+      "record": null
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "model": "LiquidAI/LFM2.5-8B-A1B",
+  "model_path": "/workspace/models/LFM2.5-8B-A1B",
+  "dataset": "gretelai/synthetic_text_to_sql+Salesforce/wikisql+b-mc2/sql-create-context",
+  "examples_requested": 50000,
+  "conversations_seen": 50000,
+  "conversations_kept": 49905,
+  "drop_rate": 0.0019,
+  "unmaskable_rate": 0.0,
+  "over_max_len_rate": 0.0019,
+  "dropped_by_reason": {
+    "too long": 95
+  },
+  "tokens": 16812638,
+  "supervised_tokens": 1485945,
+  "mask_mode": "template",
+  "mask_mode_requested": "auto",
+  "mask_mode_probe": {
+    "template": 32,
+    "assemble": 32
+  },
+  "max_len": 2048,
+  "sources": {
+    "text2sql/gretel": 16667,
+    "text2sql/wikisql": 16667,
+    "text2sql/create-context": 16666
+  },
+  "sources_overlapping_an_eval_task": [],
+  "contamination_markers": [
+    "gsm8k",
+    "humaneval",
+    "mbpp"
+  ],
+  "decontaminated": {
+    "gretel": 5,
+    "wikisql": 21,
+    "create-context": 3990
+  },
+  "regime": "lora",
+  "lora_rank": 32,
+  "estimator": "outer_exact",
+  "epochs": 1.0,
+  "lr": 0.0001,
+  "effective_batch": 32,
+  "steps": 1560,
+  "train_loss": 0.1113953912869478,
+  "seconds": 24111.8,
+  "tracked_modules": 152,
+  "stats_file": "/workspace/runs/s4/lfm25-8b-a1b.text2sql/stats/dynquant_stats.json",
+  "stats_modules": 152,
+  "output": "/workspace/runs/s4/lfm25-8b-a1b.text2sql/merged",
+  "commit": "d0d33f3bce6f3f59359ce704b16040c7e9ba78f5"
+}
