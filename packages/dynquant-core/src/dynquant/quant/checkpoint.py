@@ -290,39 +290,51 @@ def export_packed_checkpoint(
 def _resolve(model: nn.Module, name: str) -> tuple[torch.Tensor, str]:
     """The tensor ``name`` addresses, and the state-dict key it is stored under.
 
-    A name that reaches no module goes to :func:`~dynquant.quant.quantizer.target_tensor`,
-    the resolver ``quantize_model`` uses. This was a second copy built on ``get_submodule``
-    alone, and it refused every batched MoE expert bank -- a 3-D ``nn.Parameter`` that
-    ``get_submodule`` cannot reach -- saying the packed format could not represent one.
+    *Which* tensor is :func:`~dynquant.quant.quantizer.target_tensor`'s answer and only
+    its answer, because that is the resolver ``quantize_model`` encodes through and the
+    one ``resolves_to_weight`` runs as pre-flight. This function used to be a second copy
+    of it, and a copy narrows: it has now been narrower than the original twice.
 
-    That was wrong about the format. ``QuantTensor`` carries ``logical_shape`` for exactly
-    this case and flattens ``[E, out, in]`` into ``[E * out, in]`` rows, so a bank packs,
-    round-trips and accounts for its bytes like any other tensor. What actually cannot read
-    a packed bank back is the *runtime*, which swaps modules and has none to swap; that
-    refusal lives in ``runtime.linear`` and says so there. Conflating the two here made a
-    resolver's blind spot look like a limit of the format, and cost the two DynQuant arms
-    of a six-variant release their size-honest artifact.
+    First it was built on ``get_submodule`` alone and refused every batched MoE expert
+    bank -- a 3-D ``nn.Parameter`` no module owns -- saying the packed *format* could not
+    represent one. That was wrong about the format. ``QuantTensor`` carries
+    ``logical_shape`` for exactly this case and flattens ``[E, out, in]`` into
+    ``[E * out, in]`` rows, so a bank packs, round-trips and accounts for its bytes like
+    any other tensor.
 
-    The key travels with the tensor because the two differ -- ``f"{name}.weight"`` for a
-    module, ``name`` itself for a bare parameter -- and it is what marks the dense copy as
-    already written. Get it wrong and the bank is written twice, packed and in full.
+    Delegating only the *no module found* branch fixed that case and left the next one a
+    line below: a ``Linear | Embedding`` whitelist that ``target_tensor`` has never had.
+    An ``Lfm2MoeTopKRouter`` -- and Qwen3-Next's router, and GPT-OSS's -- owns a plain
+    ``[num_experts, hidden]`` weight and calls ``F.linear`` on it, so it is a module,
+    ``get_submodule`` reaches it, and it is neither of the two. A map that passed
+    pre-flight and that ``quantize_model`` encodes without complaint was refused here by
+    name and by type. Two narrowings out of one duplicate is the argument for no
+    duplicate: the whitelist is gone and the criterion is the packer's own, which is that
+    a tensor exists to pack.
+
+    The *key* is a different question and stays here. A module contributes
+    ``f"{name}.weight"`` and a bare parameter contributes ``name`` itself, and the key is
+    what marks the dense copy as already written -- get it wrong and the tensor is written
+    twice, packed and in full, and the "quantized" directory is larger than the checkpoint
+    it compressed.
+
+    What genuinely cannot read a packed bank back is the *runtime*, which swaps modules
+    and has none to swap; that refusal lives in ``runtime.linear`` and says so there.
     """
+    from dynquant.quant.quantizer import target_tensor
+
+    tensor = target_tensor(model, name)
     try:
         module: nn.Module | None = model.get_submodule(name)
     except AttributeError:
         module = None
 
-    if module is None:
-        from dynquant.quant.quantizer import target_tensor
-
-        return target_tensor(model, name), name
-
-    if not isinstance(module, nn.Linear | nn.Embedding):
-        raise DynQuantError(
-            f"{name!r} is a {type(module).__name__}; the packed format covers Linear, "
-            f"Embedding and batched expert banks held as bare parameters."
-        )
-    return module.weight, f"{name}.weight"
+    # Identity, not ``isinstance``: the question is whether the tensor that was resolved
+    # is the one the state dict files under ``f"{name}.weight"``, and the only thing that
+    # settles it is whether it is that module's own ``weight``.
+    if module is not None and getattr(module, "weight", None) is tensor:
+        return tensor, f"{name}.weight"
+    return tensor, name
 
 
 def _tied_aliases(model: nn.Module) -> dict[int, list[str]]:

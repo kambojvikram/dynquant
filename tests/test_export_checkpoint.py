@@ -33,7 +33,10 @@ from dynquant.integration.serving_common.schema import (
 transformers = pytest.importorskip("transformers")
 torch = pytest.importorskip("torch")
 
-from dynquant.quant.checkpoint import export_packed_checkpoint  # noqa: E402
+from dynquant.quant.checkpoint import (  # noqa: E402
+    _resolve,
+    export_packed_checkpoint,
+)
 
 
 def tiny_model(*, tie_word_embeddings: bool = False):
@@ -321,7 +324,10 @@ def test_a_map_for_another_model_names_the_module_it_could_not_find(tmp_path):
         )
 
 
-def test_a_non_linear_module_is_refused_rather_than_skipped(tmp_path):
+def test_a_module_with_no_weight_is_refused_rather_than_skipped(tmp_path):
+    # A container, not a leaf: `LlamaMLP` owns three Linears and no tensor of its
+    # own. The refusal is about there being nothing to pack, which is the packer's
+    # own criterion -- not about the class not appearing on a whitelist.
     model = tiny_model()
     with pytest.raises(DynQuantError, match="LlamaMLP"):
         export_packed_checkpoint(
@@ -347,6 +353,82 @@ def test_skipped_modules_are_reported_not_dropped(exported):
     tensors = load_file(report.output_dir / HF_WEIGHTS_FILENAME)
     for name in report.skipped_modules:
         assert f"{name}.weight" in tensors
+
+
+# --------------------------------------------------------------------------
+# Modules that are not Linear but own a weight
+# --------------------------------------------------------------------------
+
+ROUTER = "model.layers.0.mlp.gate"
+
+
+class BareWeightRouter(torch.nn.Module):
+    """A router shaped the way transformers ships one.
+
+    `Lfm2MoeTopKRouter`, Qwen3-Next's router and GPT-OSS's all hold
+    `[num_experts, hidden]` as their own parameter and call `F.linear` on it rather
+    than owning a `Linear`. So `get_submodule` reaches the module, the module owns a
+    weight, and the module is not a `Linear` -- the one combination the export path's
+    whitelist refused while `quantize_model` encoded it without complaint.
+    """
+
+    def __init__(self, num_experts: int, hidden: int) -> None:
+        super().__init__()
+        torch.manual_seed(2)
+        self.weight = torch.nn.Parameter(torch.randn(num_experts, hidden, dtype=torch.float16))
+
+
+@pytest.fixture
+def exported_router(tmp_path):
+    model = tiny_model()
+    model.model.layers[0].mlp.gate = BareWeightRouter(8, 128)
+    report = export_packed_checkpoint(
+        model, {ROUTER: 8}, output_dir=tmp_path / "ckpt", compute_device=None
+    )
+    return model, report
+
+
+def test_a_router_that_is_not_a_linear_packs_at_the_width_it_was_given(exported_router):
+    from safetensors.torch import load_file
+
+    _, report = exported_router
+    tensors = load_file(report.output_dir / HF_WEIGHTS_FILENAME)
+    assert tensors[f"{ROUTER}.qweight"].shape == (8, 32)
+    assert tensors[f"{ROUTER}.scales"].shape == (8, 1)
+    meta = report.layers[ROUTER]
+    assert meta["bits"] == 8
+    # 8 bits of payload plus one fp16 scale and one fp16 offset over a 128-wide group.
+    assert meta["bits_per_weight"] == pytest.approx(8.25)
+
+
+def test_a_packed_router_is_not_also_written_dense(exported_router):
+    from safetensors.torch import load_file
+
+    model, report = exported_router
+    tensors = load_file(report.output_dir / HF_WEIGHTS_FILENAME)
+    assert f"{ROUTER}.weight" not in tensors
+    fp16 = sum(t.numel() * t.element_size() for t in model.state_dict().values())
+    assert report.total_bytes < fp16
+
+
+def test_a_router_is_not_reported_as_an_expert_bank(exported_router):
+    # It resolves through the module branch, so its key is `f"{name}.weight"` and the
+    # not-yet-loadable caveat -- which is about bare parameters -- must not attach to it.
+    _, report = exported_router
+    assert report.banks == ()
+    assert "expert bank" not in report.summary()
+
+
+def test_the_export_resolver_answers_what_the_quantizer_answers(exported_router):
+    # The property the whitelist broke, stated directly: pre-flight said yes, the
+    # quantizer said yes, and export said no. One resolver, so one answer.
+    from dynquant.quant.quantizer import resolves_to_weight, target_tensor
+
+    model, report = exported_router
+    for name in (ROUTER, "model.layers.0.self_attn.q_proj", "model.embed_tokens"):
+        assert resolves_to_weight(model, name)
+        assert target_tensor(model, name) is _resolve(model, name)[0]
+    assert set(report.layers) == {ROUTER}
 
 
 # --------------------------------------------------------------------------
