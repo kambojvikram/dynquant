@@ -412,3 +412,136 @@ def test_the_load_path_and_the_packing_path_classify_a_bank_the_same_way() -> No
             assert isinstance(target, ExpertBank)
             assert target.name == name
             assert target.weight is model.get_parameter(name)
+
+
+# --------------------------------------------------------------------------
+# Rank 3 is a shape, not a promise
+# --------------------------------------------------------------------------
+
+
+class _ShortConv(nn.Module):
+    """``Lfm2MoeShortConv``, reduced to the part that matters: a real ``nn.Conv1d``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.conv = nn.Conv1d(HIDDEN, HIDDEN, kernel_size=3, groups=HIDDEN, bias=False)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        return self.conv(hidden_states.transpose(1, 2)).transpose(1, 2)
+
+
+class _NamedWeightExperts(nn.Module):
+    """``JetMoeParallelExperts``: a genuine bank that happens to be called ``weight``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.weight = nn.Parameter(torch.empty(EXPERTS, HIDDEN, HIDDEN))
+
+    def forward(self, hidden_states: torch.Tensor, expert: int) -> torch.Tensor:
+        return F.linear(hidden_states, self.weight[expert])
+
+
+def test_a_conv_kernel_is_rank_3_and_is_not_a_batched_expert_bank() -> None:
+    """The defect the genuine ``Lfm2MoeExperts`` found that no fixture here could.
+
+    Everything above was checked against banks, and rank 3 was the whole test for what
+    a bank is. ``nn.Conv1d`` keeps its kernel as ``[out, in / groups, width]`` -- rank 3,
+    named ``weight``, and on LFM2.5-8B-A1B eighteen of twenty-four layers are conv. So a
+    map naming one under ``--map-apply pack`` got a :class:`DynQuantExpertBank` installed
+    where ``F.conv1d`` expects a tensor, and died inside torch with a type error listing
+    seven positional arguments rather than at the resolver with a reason.
+
+    It is refused now, and refused for its own reason: a conv kernel is not indexed one
+    expert at a time by anybody, so no grouped path will ever hold it, and the message
+    says that rather than repeating the bank sentence.
+
+    Turns red when: rank alone decides again -- and, in the other direction, when the
+    discriminator is written against the *name*. That is the tempting rule and it is
+    wrong: of the eight rank-3 ``weight``/``bias`` declarations in transformers 5.14.1,
+    ``JetMoeParallelExperts`` reaches its through ``F.linear(x, self.weight[i])``. Both
+    directions are asserted below, because a name rule passes the conv half alone.
+    """
+
+    class _Mixed(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.short_conv = _ShortConv()
+            self.block = _Block()
+            self.jetmoe = _NamedWeightExperts()
+            self.proj = nn.Linear(HIDDEN, HIDDEN, bias=False)
+            # A bank hung on a bare nn.Module, which is a namespace and not a layer.
+            self.namespace = nn.Module()
+            self.namespace.gate_up_proj = nn.Parameter(torch.empty(EXPERTS, HIDDEN, HIDDEN))
+
+    torch.manual_seed(0)
+    model = _Mixed().half().eval()
+
+    kernel = model.short_conv.conv.weight
+    assert kernel.ndim == 3, "the premise: a conv kernel and a bank share a rank"
+
+    with pytest.raises(DynQuantError) as caught:
+        resolve_target(model, "short_conv.conv.weight")
+    refusal = str(caught.value)
+    assert "Conv1d" in refusal
+    assert "indexed by nothing" in refusal
+    assert "encode" in refusal
+    # Not the bank sentence, and not the wrong-map one.
+    assert "indexed one expert at a time" not in refusal
+    assert "not a module of this model" not in refusal
+
+    # The owner is what decides, so a bank keeps resolving whatever it is called -- and
+    # `nn.Module` is a namespace, not a layer, which the exporter's own fixture relies on.
+    for name in ("block.experts.gate_up_proj", "jetmoe.weight", "namespace.gate_up_proj"):
+        target = resolve_target(model, name)
+        assert isinstance(target, ExpertBank), name
+        assert target.weight is model.get_parameter(name)
+
+    # A Linear is a torch.nn layer too, and its weight is 2-D. The conv sentence is
+    # about a rank it does not have, so it keeps the message it always had.
+    with pytest.raises(DynQuantError) as linear:
+        resolve_target(model, "proj.weight")
+    assert "bare 2-D parameter" in str(linear.value)
+    assert "conv kernel" not in str(linear.value)
+
+
+def test_packing_a_bank_beside_a_conv_leaves_the_conv_running() -> None:
+    """The failure was a broken forward, so the fix is checked by running one.
+
+    A refusal message is easy to assert and easy to get right while still installing the
+    wrong object somewhere else in the same pass. This packs the bank of a model that
+    also owns a conv and then calls it: if the resolver ever reaches past its map, or
+    ``replace_module`` deregisters a parameter it should not, ``F.conv1d`` says so.
+
+    Turns red when: packing touches anything the map did not name, or the conv kernel
+    stops being a tensor by the time torch sees it.
+    """
+
+    class _ConvThenMoE(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.short_conv = _ShortConv()
+            self.block = _Block()
+            self.config = LlamaConfig(hidden_size=HIDDEN, tie_word_embeddings=False)
+
+        def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+            padded = F.pad(hidden_states.unsqueeze(0), (0, 0, 2, 0))
+            return self.block(self.short_conv(padded).squeeze(0))
+
+    torch.manual_seed(0)
+    model = _ConvThenMoE()
+    with torch.no_grad():
+        for param in model.parameters():
+            param.normal_(0.0, 0.05)
+    model = model.half().eval()
+
+    before = _out(model)
+    pack_model(model, {BANKS[0]: 4, BANKS[1]: 3}, compute_device=None)
+
+    assert isinstance(model.block.experts.gate_up_proj, DynQuantExpertBank)
+    assert isinstance(model.short_conv.conv.weight, torch.nn.Parameter)
+
+    after = _out(model)
+    assert torch.isfinite(after).all()
+    # Quantization moved the answer, and the conv still contributed to it: a conv whose
+    # kernel had been replaced would not have produced a number at all.
+    assert (after - before).abs().max() > 0.0

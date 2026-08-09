@@ -598,6 +598,44 @@ replaces.
 """
 
 
+def _owner_is_a_torch_builtin(model: nn.Module, name: str) -> bool:
+    """Whether the module holding ``name`` is one of ``torch.nn``'s own layers.
+
+    Rank 3 was the whole test for "batched expert bank", and it is not enough:
+    ``nn.Conv1d`` keeps its kernel as ``[out, in / groups, width]``, which is rank 3 and
+    named ``weight``, and 18 of LFM2.5-8B-A1B's 24 layers are conv. Packing one installed
+    a :class:`DynQuantExpertBank` where ``F.conv1d`` expects a tensor.
+
+    The tempting rule -- refuse rank 3 named ``weight`` -- is wrong. Of the eight rank-3
+    ``weight``/``bias`` declarations in transformers 5.14.1, ``JetMoeParallelExperts``
+    reaches its by ``F.linear(x, self.weight[i])``: a genuine bank that happens to be
+    called ``weight``. So the question is not what the parameter is called but who owns it.
+
+    A ``torch.nn`` *layer* is never a bank. Its forward is torch's own and passes the
+    parameter whole, so nothing indexes it one expert at a time; ``Conv1d``,
+    ``ConvTranspose1d`` and ``Bilinear`` are the rank-3 cases today and any future one
+    inherits the same guarantee. Everything else -- a class some model file wrote -- is
+    judged on rank, as before.
+
+    Layer, not merely a ``torch.nn`` class: a bare ``nn.Module`` is a namespace, and
+    holding a bank on one is what the export fixture does and what any model file is free
+    to do. Overriding ``forward`` is what separates the two, and it is the same property
+    the paragraph above is really about -- a class that consumes its own parameters.
+    ``ModuleList`` and ``ModuleDict`` do not override it either, so containers fall on the
+    namespace side without being enumerated.
+    """
+    parent, _, _leaf = name.rpartition(".")
+    try:
+        owner = model.get_submodule(parent) if parent else model
+    except AttributeError:  # pragma: no cover - `resolves_to_weight` already found it
+        return False
+    owner_type = type(owner)
+    return (
+        owner_type.__module__.startswith("torch.nn.modules")
+        and owner_type.forward is not nn.Module.forward
+    )
+
+
 def resolve_target(
     model: nn.Module, name: str, *, source: str = "bit map"
 ) -> nn.Linear | nn.Embedding | ExpertBank:
@@ -619,9 +657,12 @@ def resolve_target(
     MoE expert bank keeps its experts as bare 3-D parameters, so the allocator priced it
     and the encoder encodes it. The runtime now holds one too, as
     :class:`DynQuantExpertBank`, so that case returns rather than refusing -- but only at
-    rank 3. A bare *2-D* parameter is still refused, and for a reason that survives the
-    grouped path: its owner passes it whole to ``F.linear``, so there is no index at which
-    a module could stand in for it.
+    rank 3 and only when a model file owns it. A bare *2-D* parameter is still refused, and
+    for a reason that survives the grouped path: its owner passes it whole to ``F.linear``,
+    so there is no index at which a module could stand in for it. A rank-3 parameter owned
+    by a ``torch.nn`` layer is refused for the same reason wearing a different shape --
+    ``nn.Conv1d``'s kernel is rank 3 as well, and on LFM2.5-8B-A1B 18 of 24 layers are conv,
+    so this is the common case on the campaign's own model rather than an exotic one.
 
     The third is a module that owns a weight and is neither class. An
     ``Lfm2MoeTopKRouter`` -- and Qwen3-Next's router, and GPT-OSS's -- holds
@@ -639,7 +680,16 @@ def resolve_target(
         if resolves_to_weight(model, name):
             tensor = target_tensor(model, name)
             if tensor.ndim == 3:
-                return ExpertBank(name=name, weight=tensor)
+                if not _owner_is_a_torch_builtin(model, name):
+                    return ExpertBank(name=name, weight=tensor)
+                owner = type(model.get_submodule(name.rpartition(".")[0])).__name__
+                raise DynQuantError(
+                    f"{name!r} is the 3-D weight of a {owner}, a torch.nn layer whose "
+                    f"forward passes it whole. Rank 3 is the shape of a batched expert "
+                    f"bank, and a conv kernel is `[out, in / groups, width]` -- the same "
+                    f"rank, indexed by nothing -- so the packed runtime has no module to "
+                    f"put here. {_ENCODER_REMEDY}"
+                ) from exc
             raise DynQuantError(
                 f"{name!r} is a bare {tensor.ndim}-D parameter, not a module. The packed "
                 f"runtime holds a batched expert bank -- rank 3, indexed one expert at a "
