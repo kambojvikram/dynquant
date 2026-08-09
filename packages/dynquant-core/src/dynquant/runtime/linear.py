@@ -308,6 +308,13 @@ class DynQuantExpertBank(_PackedModule):
     fails loudly at the first forward rather than quietly, which is the right side
     to be on, and :meth:`dequantize` is the escape hatch for anyone who genuinely
     wants the whole bank dense and has the memory for it.
+
+    Counted, not assumed: of the 52 ``*Experts*`` classes in transformers 5.14.1 that
+    hold their experts as one parameter, 49 index it. The three that do not are
+    ``Llama4TextExperts`` and ``InklingSharedExperts``, both ``torch.bmm`` against the
+    whole bank, and ``DbrxExpertGLU``, whose parameter is already flattened to
+    ``[E * ffn, hidden]`` -- the same flattening used here -- but which reaches an
+    expert through ``.view(...)[expert_idx]``, and a module has no ``.view()``.
     """
 
     def __init__(self, weight: QuantTensor) -> None:

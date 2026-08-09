@@ -1983,14 +1983,28 @@ kernel, and the second was written in Python in an afternoon once the two were t
 
 What made it possible is a property of the model, not of us. `Lfm2MoeExperts.forward` reaches an
 expert by **indexing** -- `nn.functional.linear(current_state, self.gate_up_proj[expert_idx])`,
-once per hit expert, in a Python loop -- and Qwen3-Next's and GPT-OSS's batched blocks do the same.
-So the access a packed runtime has to intercept is `__getitem__` on the bank, and
-`nn.Module.__setattr__` will register a module under the parameter's old name once the parameter is
-deregistered. `DynQuantExpertBank[e]` then slices its own rows and dequantizes them; the parent
-receives the `[out, in]` matrix it expected, and nothing about it is edited, subclassed, or
-enumerated by `model_type`. Both shortcuts that were on the table -- dequantizing the model to fp16
-at load, and rewriting one forward per architecture -- are avoided, and a family whose MoE block
-has not been released yet works if it indexes.
+once per hit expert, in a Python loop. So the access a packed runtime has to intercept is
+`__getitem__` on the bank, and `nn.Module.__setattr__` will register a module under the parameter's
+old name once the parameter is deregistered. `DynQuantExpertBank[e]` then slices its own rows and
+dequantizes them; the parent receives the `[out, in]` matrix it expected, and nothing about it is
+edited, subclassed, or enumerated by `model_type`. Both shortcuts that were on the table --
+dequantizing the model to fp16 at load, and rewriting one forward per architecture -- are avoided.
+
+How far that generalises is a countable question, so it was counted rather than asserted. Of the
+**52** `*Experts*` classes in transformers 5.14.1 that hold their experts as one `nn.Parameter`,
+**49 index it** and three do not:
+
+- `Llama4TextExperts` -- `torch.bmm(hidden_states, self.gate_up_proj)`, the whole bank at once.
+- `InklingSharedExperts` -- `torch.bmm(hidden_states, self.gate_proj.transpose(1, 2))`, likewise,
+  and it calls `.transpose` on the parameter as well.
+- `DbrxExpertGLU` -- the interesting one. Its `w1` is **already 2-D**, `[E * ffn, hidden]`, and the
+  caller does `self.mlp.w1.view(split_expert_shape)[expert_idx]`. That flattening is byte-for-byte
+  the one `QuantTensor` uses for a bank, but the access goes through `.view()` on the parameter
+  before the index, and a module has no `.view()`.
+
+All three fail at the first forward with "a module is not a tensor" rather than silently, which is
+the side of that line to be on. Nothing in the design was tuned to LFM2: it happens to sit in the
+94% case, and a family whose MoE block has not been released yet works if it indexes.
 
 The arithmetic is why this is worth having before the kernel. A layer's `gate_up_proj` is
 `[32, 2688, 2048]`: **336 MiB** in bf16, **89.25 MiB** packed at 4 bits with fp16 scales and
