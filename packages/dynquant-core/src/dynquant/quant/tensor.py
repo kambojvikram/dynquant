@@ -116,6 +116,35 @@ class QuantLayout(str, Enum):
     TC_SHUFFLED = "tc_shuffled"
 
 
+def storage_dtype(weight: torch.Tensor) -> torch.dtype:
+    """The dtype scales and offsets are stored in: 16-bit, unless the weight already is.
+
+    This is a *format* decision, not a numerical one, and it is settled by
+    :mod:`dynquant.allocate.budget`: ``metadata_bits: int = 16``, "an fp16 scale and an
+    fp16 offset per 128". Every quoted bit-width in this project is computed against that
+    constant, so a weight whose scales were stored in fp32 would occupy 0.25 bits/weight
+    more than its own manifest claims at group 128 -- and the manifest is the number the
+    method is judged on.
+
+    It has to be *one* function, which is the part that was learned the hard way. There
+    were three copies: the packer returned the weight's own dtype, the exporter returned
+    fp16 unless the weight was already half, and the in-place encoder passed nothing and
+    took :meth:`QuantTensor.from_dense`'s own fallback, which was the exporter's rule. On
+    fp16 and bf16 all three agree -- so on every model anyone ships they agree -- and the
+    disagreement waited for an fp32 test model, where it surfaced as a packed bank sitting
+    0.0082 from the in-place encoder that was supposed to be its yardstick: one 4-bit
+    step, and 16% of what quantizing the model moved in the first place.
+
+    The objection to fp16 metadata is that :meth:`QuantTensor.dequantize` returns the
+    scale dtype when it is not told otherwise, so an fp32 model would find fp16 weights in
+    its graph. It does not hold for a Linear: :func:`dynquant.runtime.ops.quantized_matmul`
+    dequantizes to ``x.dtype``, following the activation. It holds for exactly one caller,
+    :meth:`dynquant.runtime.linear.DynQuantExpertBank.__getitem__`, which has no activation
+    to follow -- so that one is told the dtype at construction instead of inferring it here.
+    """
+    return weight.dtype if weight.dtype in (torch.float16, torch.bfloat16) else torch.float16
+
+
 @dataclass(slots=True)
 class QuantTensor:
     """A group-wise affine-quantized 2-D matrix in packed form.
@@ -278,9 +307,7 @@ class QuantTensor:
         in_features = logical_shape[-1]
         geom = row_geometry(bits, group_size, in_features)
         group_size = geom.group_size  # PER_ROW_GROUP_SIZE stays the sentinel
-        compute_dtype = compute_dtype or (
-            weight.dtype if weight.dtype in (torch.float16, torch.bfloat16) else torch.float16
-        )
+        compute_dtype = compute_dtype or storage_dtype(weight)
 
         rows = weight.reshape(-1, in_features)
         padded = geom.padded_in_features

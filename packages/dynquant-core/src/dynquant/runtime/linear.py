@@ -44,7 +44,7 @@ from dynquant.constants import DEFAULT_GROUP_SIZE, QUANT_TENSOR_SUFFIXES
 from dynquant.errors import DynQuantError
 from dynquant.quant.device import quantize_tensor, resolve_compute_device
 from dynquant.quant.grid import CLIP_CANDIDATES
-from dynquant.quant.tensor import QuantLayout, QuantTensor
+from dynquant.quant.tensor import QuantLayout, QuantTensor, storage_dtype
 
 from . import ops
 
@@ -69,6 +69,11 @@ _log = get_logger(__name__)
 _PACKED = QUANT_TENSOR_SUFFIXES["packed"]
 _SCALES = QUANT_TENSOR_SUFFIXES["scale"]
 _OFFSETS = QUANT_TENSOR_SUFFIXES["offset"]
+# Not in `QUANT_TENSOR_SUFFIXES`: the three above name tensors a checkpoint
+# carries, and this one names a zero-element buffer that exists only to make a
+# dtype follow `.to()`. Registering it non-persistently keeps it out of every
+# `state_dict` the suffix registry describes.
+_OUT_DTYPE = "_out_dtype"
 
 
 class _PackedModule(nn.Module):
@@ -215,7 +220,7 @@ class DynQuantLinear(_PackedModule):
             group_size=group_size,
             symmetric=symmetric,
             candidates=candidates,
-            compute_dtype=_storage_dtype(linear.weight),
+            compute_dtype=storage_dtype(linear.weight),
             device=resolve_compute_device(compute_device),
         )
         return cls(quantized.to(linear.weight.device), linear.bias)
@@ -263,7 +268,7 @@ class DynQuantEmbedding(_PackedModule):
             group_size=group_size,
             symmetric=symmetric,
             candidates=candidates,
-            compute_dtype=_storage_dtype(embedding.weight),
+            compute_dtype=storage_dtype(embedding.weight),
             device=resolve_compute_device(compute_device),
         )
         return cls(quantized.to(embedding.weight.device), padding_idx=embedding.padding_idx)
@@ -318,11 +323,33 @@ class DynQuantExpertBank(_PackedModule):
     expert through ``.view(...)[expert_idx]``, and a module has no ``.view()``.
     """
 
-    def __init__(self, weight: QuantTensor) -> None:
+    def __init__(self, weight: QuantTensor, *, out_dtype: torch.dtype | None = None) -> None:
         if len(weight.logical_shape) != 3:
             raise ValueError(f"an expert bank is [experts, out, in]; got {weight.logical_shape}")
         super().__init__(weight)
         self.num_experts = int(self.logical_shape[0])
+        # The one place in this package that has to be *told* its output dtype.
+        #
+        # Everywhere else the answer is read off the activation: `quantized_matmul`
+        # dequantizes to `x.dtype`, so a packed Linear emits whatever it was handed and
+        # the scale dtype never reaches the graph. `__getitem__` is handed nothing --
+        # the parent asks for a weight and only then calls `F.linear` -- so returning
+        # the scale dtype means returning `storage_dtype`'s answer, which is fp16 by
+        # format decree even when the model around it is fp32.
+        #
+        # Kept in a zero-element buffer rather than a plain attribute so that it moves
+        # with the model: `nn.Module._apply` casts floating-point buffers, so `.half()`
+        # or `.float()` on the parent updates this the same way it updates the scales.
+        # Non-persistent, because it is a property of the live model and not of the
+        # checkpoint -- a bank loaded into an fp32 model should serve fp32.
+        self.register_buffer(
+            _OUT_DTYPE, torch.empty(0, dtype=out_dtype or weight.compute_dtype), persistent=False
+        )
+
+    @property
+    def out_dtype(self) -> torch.dtype:
+        """What :meth:`__getitem__` returns: the parent's compute dtype, not the scales'."""
+        return self.get_buffer(_OUT_DTYPE).dtype
 
     @classmethod
     def from_parameter(
@@ -341,10 +368,10 @@ class DynQuantExpertBank(_PackedModule):
             group_size=group_size,
             symmetric=symmetric,
             candidates=candidates,
-            compute_dtype=_storage_dtype(bank),
+            compute_dtype=storage_dtype(bank),
             device=resolve_compute_device(compute_device),
         )
-        return cls(quantized.to(bank.device))
+        return cls(quantized.to(bank.device), out_dtype=bank.dtype)
 
     def __getitem__(self, index: Any) -> torch.Tensor:
         """Expert ``index``, dequantized. The only access pattern a bank needs.
@@ -365,14 +392,16 @@ class DynQuantExpertBank(_PackedModule):
         if not 0 <= expert < self.num_experts:
             raise IndexError(f"expert {int(index)} out of range for a bank of {self.num_experts}")
         band = self.out_features
-        return self.weight_qt.rows(expert * band, (expert + 1) * band).dequantize()
+        return self.weight_qt.rows(expert * band, (expert + 1) * band).dequantize(
+            dtype=self.out_dtype
+        )
 
     def __len__(self) -> int:
         return self.num_experts
 
     def dequantize(self) -> torch.Tensor:
         """The whole bank, dense. Defeats the point; exists for tests and parity checks."""
-        return self.weight_qt.dequantize()
+        return self.weight_qt.dequantize(dtype=self.out_dtype)
 
     # `nn.Module` has none of these, and a parent that asks a parameter for its shape
     # or dtype before using it -- a dtype check, an `empty_like` -- is asking something
@@ -540,7 +569,7 @@ def pack_model(
                 group_size=group_size,
                 symmetric=symmetric,
                 candidates=candidates,
-                compute_dtype=_storage_dtype(weight),
+                compute_dtype=storage_dtype(weight),
                 device=device,
             )
             # Back to the model's device before the swap. Leaving it where the
@@ -780,7 +809,7 @@ def _wrap(
         # No `tied_to`: aliasing is discovered by walking Linear and Embedding
         # modules, and a bank is in no alias group -- two layers' experts are two
         # tensors. If that ever stops being true the alias pass will find them.
-        return DynQuantExpertBank(quantized)
+        return DynQuantExpertBank(quantized, out_dtype=target.weight.dtype)
     if isinstance(target, nn.Embedding):
         return DynQuantEmbedding(quantized, padding_idx=target.padding_idx, tied_to=tied_to)
     return DynQuantLinear(quantized, target.bias, tied_to=tied_to)
@@ -803,19 +832,6 @@ def replace_module(model: nn.Module, name: str, replacement: nn.Module) -> None:
     parent = model.get_submodule(parent_name) if parent_name else model
     parent._parameters.pop(leaf, None)
     setattr(parent, leaf, replacement)
-
-
-def _storage_dtype(weight: torch.Tensor) -> torch.dtype:
-    """The dtype scales and offsets are stored in: the weight's own.
-
-    Not "whatever is smallest". The scale dtype is the module's compute dtype --
-    it is what ``dequantize`` returns and what the kernels require the activation
-    to match -- so choosing fp16 metadata for an fp32 model makes every packed
-    module emit fp16 into an fp32 graph, and the first Linear downstream fails on
-    a dtype mismatch. The metadata saving would be real (0.25 bits/weight at group
-    128) and irrelevant: nobody serves an fp32 model.
-    """
-    return weight.dtype
 
 
 def packed_bytes(model: nn.Module) -> dict[str, Any]:

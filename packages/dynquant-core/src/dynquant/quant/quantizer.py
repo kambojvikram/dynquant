@@ -38,6 +38,7 @@ from dynquant.errors import DynQuantError
 
 from .device import quantize_tensor, resolve_compute_device
 from .grid import CLIP_CANDIDATES
+from .tensor import storage_dtype
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -170,9 +171,7 @@ def quantize_model(
                 group_size=group_size,
                 symmetric=symmetric,
                 candidates=candidates,
-                compute_dtype=original.dtype
-                if original.dtype in (torch.float16, torch.bfloat16)
-                else None,
+                compute_dtype=storage_dtype(original),
                 channel_weight=cweight,
                 device=device,
             )

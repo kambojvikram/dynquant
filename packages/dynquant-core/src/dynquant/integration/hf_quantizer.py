@@ -80,7 +80,7 @@ from dynquant.integration.serving_common.schema import (
     ModuleQuantSpec,
     QuantizationConfigSchema,
 )
-from dynquant.quant.tensor import QuantTensor
+from dynquant.quant.tensor import QuantTensor, storage_dtype
 from dynquant.runtime.linear import (
     DynQuantEmbedding,
     DynQuantExpertBank,
@@ -341,17 +341,20 @@ def _shell(target: nn.Linear | nn.Embedding | ExpertBank, spec: ModuleQuantSpec)
         group_size=spec.group_size,
         in_features=in_features,
         logical_shape=logical_shape,
-        # A `meta` skeleton still carries the dtype the model was built in, which is
-        # the dtype the scales were written in -- the exporter stores metadata in the
-        # weight's own dtype (`_storage_dtype`). Reading it from the module keeps the
-        # two ends of that decision in agreement without a second rule here.
-        dtype=weight.dtype,
+        # A `meta` skeleton still carries the dtype the model was built in, and
+        # `storage_dtype` turns that into the dtype the exporter wrote the scales in --
+        # 16-bit, unless the weight was already half. Calling the same function both
+        # ends keeps the skeleton shaped like the shards without a second rule here.
+        # It does not have to be exactly right: `load_state_dict` casts on copy. It has
+        # to be right for `assign=True`, which the low-memory loader uses, where a
+        # mismatch would silently leave the buffer in whichever dtype won the race.
+        dtype=storage_dtype(weight),
         device=weight.device,
         symmetric=spec.symmetric,
         has_offsets=not spec.symmetric,
     )
     if isinstance(target, ExpertBank):
-        return DynQuantExpertBank(empty)
+        return DynQuantExpertBank(empty, out_dtype=weight.dtype)
     if isinstance(target, nn.Embedding):
         return DynQuantEmbedding(empty, padding_idx=target.padding_idx)
     return DynQuantLinear(empty, target.bias)

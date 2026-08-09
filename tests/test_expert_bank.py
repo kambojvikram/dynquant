@@ -745,3 +745,158 @@ def test_the_load_path_moves_the_dispatch_too(tmp_path) -> None:
     reference = _fresh()
     quantize_model(reference, _bits(), in_place=True, compute_device=None)
     assert (_out(model) - _out(reference)).abs().max().item() < 1e-3
+
+
+# --------------------------------------------------------------------------
+# The dtype the scales are stored in, and the dtype the bank hands back
+# --------------------------------------------------------------------------
+
+
+def _fresh32() -> _MoEModel:
+    """``_fresh()`` without the ``.half()``. Everything below turns on that one call.
+
+    Three copies of the scale-dtype rule agreed on fp16 and bf16, which is every model
+    anyone ships, so the disagreement could only ever surface here.
+    """
+    torch.manual_seed(0)
+    model = _MoEModel()
+    with torch.no_grad():
+        for param in model.parameters():
+            param.normal_(0.0, 0.05)
+    return model.eval()
+
+
+def test_the_packer_and_the_encoder_encode_an_fp32_bank_identically() -> None:
+    """Same weights, same width, two code paths -- and they used to differ by 0.0082.
+
+    ``pack_model`` and ``quantize_model(in_place=True)`` are the artifact and its
+    yardstick: every accuracy this project reports for a DynQuant arm is measured on the
+    encoder, and every byte is measured on the packer. If the two encode differently then
+    the panel's numbers describe a model nobody can download. They did, on fp32, by about
+    one 4-bit step -- 16% of what quantizing the model moved at all -- because the packer
+    stored fp32 scales and the encoder stored fp16 ones.
+
+    Exact equality, not a tolerance: these are the same arithmetic on the same inputs, so
+    any gap at all is two rules again.
+
+    Turns red when: a fourth caller grows its own idea of the metadata dtype.
+    """
+    packed = _fresh32()
+    pack_model(packed, _bits(), compute_device=None)
+
+    encoded = _fresh32()
+    quantize_model(encoded, _bits(), in_place=True, compute_device=None)
+
+    for name in BANKS:
+        bank = packed.get_submodule(name)
+        dense = encoded.get_parameter(name)
+        for expert in range(EXPERTS):
+            gap = (bank[expert] - dense[expert]).abs().max().item()
+            assert gap == 0.0, f"{name}[{expert}] differs by {gap}"
+
+
+def test_an_fp32_bank_stores_16_bit_metadata_and_still_hands_back_fp32() -> None:
+    """The two halves of the resolution, which pull in opposite directions.
+
+    The budget prices metadata at 16 bits -- ``metadata_bits: int = 16``, "an fp16 scale
+    and an fp16 offset per 128" -- and every average-bits figure in this project is
+    computed against that constant, so fp32 scales would put a model 0.25 bits/weight
+    above its own manifest at group 128. That settles the storage question.
+
+    It does not settle what ``bank[e]`` returns. A packed Linear never has to decide:
+    ``quantized_matmul`` dequantizes to ``x.dtype``, following the activation. A bank is
+    asked for a weight before any activation is in sight, so it is told at construction
+    what its parent computes in -- otherwise an fp32 model gets fp16 weights and
+    ``F.linear`` raises on the mismatch.
+
+    Turns red when: the metadata rule follows the weight again (the byte claim breaks), or
+    the bank hands back its metadata dtype again (the fp32 forward breaks).
+    """
+    model = _fresh32()
+    pack_model(model, _bits(), compute_device=None)
+
+    bank = model.get_submodule(BANKS[0])
+    assert bank.weight_qt.scales.dtype is torch.float16
+    assert bank.weight_qt.offsets is not None and bank.weight_qt.offsets.dtype is torch.float16
+    assert bank.out_dtype is torch.float32
+    assert bank[0].dtype is torch.float32
+    assert bank.dequantize().dtype is torch.float32
+
+    # And the parent's own loop runs, which is what the mismatch would have stopped.
+    with torch.no_grad():
+        out = model(torch.randn(6, HIDDEN))
+    assert out.dtype is torch.float32 and torch.isfinite(out).all()
+
+
+def test_the_output_dtype_moves_with_the_model() -> None:
+    """``.half()`` on the parent has to reach the bank, or the next forward raises.
+
+    A caller who packs in fp32 and then casts the model down is doing something ordinary,
+    and the bank's answer is not a constant chosen at construction -- it is a property of
+    the live model. Holding it in a zero-element buffer is what makes ``nn.Module._apply``
+    carry it, the same mechanism that carries the scales.
+
+    Turns red when: the dtype goes back to being a plain Python attribute, which survives
+    ``.to()`` unchanged and starts lying at the first cast.
+    """
+    model = _fresh32()
+    pack_model(model, _bits(), compute_device=None)
+    bank = model.get_submodule(BANKS[0])
+    assert bank.out_dtype is torch.float32
+
+    model.half()
+    assert bank.out_dtype is torch.float16
+    assert bank[0].dtype is torch.float16
+    with torch.no_grad():
+        assert torch.isfinite(model(_x())).all()
+
+    model.float()
+    assert bank.out_dtype is torch.float32
+    assert bank[0].dtype is torch.float32
+
+    # It is not in the checkpoint: a bank loaded into an fp32 model should serve fp32,
+    # whatever the model it was written from computed in.
+    assert not [key for key in model.state_dict() if key.endswith("_out_dtype")]
+
+
+def test_an_fp32_bank_survives_the_round_trip_through_a_checkpoint(tmp_path) -> None:
+    """Export and load are a third and fourth copy of the same decision.
+
+    ``export_packed_checkpoint`` writes the scales and ``_shell`` builds the skeleton that
+    receives them; the low-memory loader assigns rather than copies, so a skeleton in the
+    wrong dtype is not corrected on the way in. Both ends call ``storage_dtype`` now, and
+    this is the test that keeps them calling the same one.
+
+    Turns red when: either end starts deriving the metadata dtype from the model instead.
+    """
+    from safetensors.torch import load_file
+
+    out = tmp_path / "ckpt"
+    export_packed_checkpoint(_fresh32(), _bits(), output_dir=out, compute_device=None)
+
+    state: dict[str, torch.Tensor] = {}
+    for shard in sorted(out.glob("*.safetensors")):
+        state.update(load_file(str(shard)))
+    scale_key = BANKS[0] + "." + QUANT_TENSOR_SUFFIXES["scale"]
+    assert state[scale_key].dtype is torch.float16, "the exporter owes the budget 16 bits"
+
+    import json
+
+    payload = json.loads((out / "config.json").read_text(encoding="utf-8"))
+    config = hf_quantizer.build_config_class()(**payload["quantization_config"])
+    quantizer = hf_quantizer.build_quantizer_class()(config)
+    loaded = _fresh32()
+    quantizer._process_model_before_weight_loading(loaded)
+
+    bank = loaded.get_submodule(BANKS[0])
+    assert bank.weight_qt.scales.dtype is torch.float16
+    assert bank.out_dtype is torch.float32
+
+    missing, unexpected = loaded.load_state_dict(state, strict=False)
+    assert not missing and not unexpected, (missing, unexpected)
+
+    reference = _fresh32()
+    quantize_model(reference, _bits(), in_place=True, compute_device=None)
+    with torch.no_grad():
+        probe = torch.randn(6, HIDDEN)
+        assert (loaded(probe) - reference(probe)).abs().max().item() == 0.0

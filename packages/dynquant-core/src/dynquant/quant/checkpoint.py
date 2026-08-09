@@ -55,6 +55,7 @@ from dynquant.integration.serving_common.schema import (
 )
 from dynquant.quant.device import quantize_tensor, resolve_compute_device
 from dynquant.quant.grid import CLIP_CANDIDATES
+from dynquant.quant.tensor import storage_dtype
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -191,7 +192,7 @@ def export_packed_checkpoint(
                 group_size=group_size,
                 symmetric=symmetric,
                 candidates=candidates,
-                compute_dtype=_storage_dtype(weight),
+                compute_dtype=storage_dtype(weight),
                 device=device,
             )
         # Off the accelerator before it lands in the write buffer. The point of
@@ -349,11 +350,6 @@ def _tied_aliases(model: nn.Module) -> dict[int, list[str]]:
         if isinstance(module, nn.Linear | nn.Embedding):
             groups.setdefault(module.weight.data_ptr(), []).append(name)
     return groups
-
-
-def _storage_dtype(weight: torch.Tensor) -> torch.dtype:
-    """The dtype scales are stored in: the weight's own, unless it is fp32."""
-    return weight.dtype if weight.dtype in (torch.float16, torch.bfloat16) else torch.float16
 
 
 def _unique_state_dict(model: nn.Module) -> dict[str, torch.Tensor]:
