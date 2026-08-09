@@ -34,7 +34,7 @@ the tied module registers no table at all and reads the owner's: see
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 import torch
 from torch import nn
@@ -57,6 +57,7 @@ __all__ = [
     "DynQuantLinear",
     "ExpertBank",
     "PackReport",
+    "RestoredWeight",
     "pack_model",
     "packed_bytes",
     "replace_module",
@@ -433,6 +434,33 @@ class DynQuantExpertBank(_PackedModule):
 
 
 @dataclass(frozen=True)
+class RestoredWeight:
+    """A weight the format stores packed and the runtime has to hand back dense.
+
+    An ``Lfm2MoeTopKRouter`` owns ``[num_experts, hidden]`` and calls ``F.linear`` on
+    it. There is a tensor to quantize and no forward to replace, so the disk side and
+    the memory side of the format disagree about it: ``dynquant export`` writes it
+    packed -- it only needs a tensor -- and nothing can stand in the module's place at
+    run time. Refusing it on the load path made the two sides disagree in the worst
+    possible way, by writing an artifact our own ``from_pretrained`` could not read.
+
+    The resolution is that the *disk* contract is "a tensor exists" and the *memory*
+    contract is "a forward exists", the loader sits between them, and a target that
+    satisfies the first and not the second is dequantized once at load and held dense.
+    On LFM2.5-8B-A1B that is 22 routers, 2.9 MB of 4.4 GB -- the bytes the manifest
+    claims are still the bytes on disk, and the loaded model is numerically what the
+    encoder scored, which is the property the panel rests on.
+
+    Only :func:`resolve_target` with ``restore=True`` returns one. ``pack_model``
+    leaves the default, because it genuinely cannot hold this packed.
+    """
+
+    name: str
+    module: nn.Module
+    weight: torch.Tensor
+
+
+@dataclass(frozen=True)
 class ExpertBank:
     """A bare 3-D parameter :func:`resolve_target` accepts, and where it lives.
 
@@ -717,9 +745,21 @@ def _owner_is_a_torch_builtin(model: nn.Module, name: str) -> bool:
     )
 
 
+@overload
 def resolve_target(
-    model: nn.Module, name: str, *, source: str = "bit map"
-) -> nn.Linear | nn.Embedding | ExpertBank:
+    model: nn.Module, name: str, *, source: str = ..., restore: Literal[False] = ...
+) -> nn.Linear | nn.Embedding | ExpertBank: ...
+
+
+@overload
+def resolve_target(
+    model: nn.Module, name: str, *, source: str = ..., restore: Literal[True]
+) -> nn.Linear | nn.Embedding | ExpertBank | RestoredWeight: ...
+
+
+def resolve_target(
+    model: nn.Module, name: str, *, source: str = "bit map", restore: bool = False
+) -> nn.Linear | nn.Embedding | ExpertBank | RestoredWeight:
     """What the packed runtime will replace, or a refusal that says which kind.
 
     Public, and shared with the ``from_pretrained`` load path, because that path asks
@@ -750,8 +790,17 @@ def resolve_target(
     ``[num_experts, hidden]`` as its own parameter and calls ``F.linear`` on it, so there is
     a weight to quantize but no ``Linear`` forward to replace. That case was being told it
     was a batched expert bank and pointed at a grouped path it does not need. The refusal
-    itself is right in all three: packing swaps a module's forward, and these are the shapes
-    that have no forward to swap.
+    itself is right for a *packer* in all three: packing swaps a module's forward, and these
+    are the shapes that have no forward to swap.
+
+    It is not right for a *loader*, and that is what ``restore`` is. ``dynquant export``
+    packs anything that resolves to a tensor, which includes the third case, so refusing it
+    here meant writing 22 routers into an LFM2.5-8B-A1B checkpoint that ``from_pretrained``
+    then declined to read -- an artifact rejected by its own reader, found only by exporting
+    the 8B and loading it back. Under ``restore=True`` the third case returns a
+    :class:`RestoredWeight` instead: the loader fills packed buffers on the module and
+    dequantizes them once, after the state dict lands. The first two cases are unaffected,
+    and a name that resolves to no tensor at all is still refused under either flag.
     """
     try:
         module = model.get_submodule(name)
@@ -785,6 +834,9 @@ def resolve_target(
         from dynquant.quant.quantizer import resolves_to_weight
 
         if resolves_to_weight(model, name):
+            if restore:
+                weight = cast(torch.Tensor, module.weight)
+                return RestoredWeight(name=name, module=module, weight=weight)
             raise DynQuantError(
                 f"{name!r} is a {type(module).__name__}, which owns a weight but is not a "
                 f"Linear or an Embedding, so the packed runtime has no forward to replace "
@@ -843,14 +895,25 @@ def packed_bytes(model: nn.Module) -> dict[str, Any]:
     ``dense_bytes`` is a model whose compression did not happen.
 
     Three passes, because two of them cannot see everything. The module pass finds
-    packed modules and dense Linears and Embeddings. The third finds what
-    ``named_modules`` structurally cannot: a weight that is a bare
+    packed modules, dense Linears and Embeddings, and restored targets. The third
+    finds what ``named_modules`` structurally cannot: a weight that is a bare
     :class:`~torch.nn.Parameter` on a module of some other class -- an unpacked
     expert bank, an MoE router holding ``[num_experts, hidden]`` and calling
     ``F.linear`` on it. Those were previously in neither total, so on
     LFM2.5-8B-A1B the denominator omitted 91.5% of the model and every ratio
     computed from it was flattering. Rank < 2 is skipped: norms and biases are not
     quantization targets and counting them would move the goalposts the other way.
+
+    A **restored** target is the same omission wearing the other face. The load path
+    keeps the module, hands it packed buffers to receive and dequantizes them once
+    into the ``weight`` its own forward reads (see
+    :class:`~dynquant.runtime.linear.RestoredWeight`), so the module is not a packed
+    module and its weight is not a parameter -- invisible to all three passes as
+    written, though it is the one place in the format where both encodings are
+    resident at the same time. It is reported as both: the buffers into
+    ``packed_bytes`` and the dequantized weight into ``dense_bytes``, named
+    ``<module>.weight (restored)`` so a reader can tell it from a module the surgery
+    simply missed. On LFM2.5-8B-A1B that is 22 routers, 2.9 MB dense.
     """
     packed = 0
     dense = 0
@@ -873,6 +936,21 @@ def packed_bytes(model: nn.Module) -> dict[str, Any]:
             seen.add(weight.data_ptr())
             dense += weight.numel() * weight.element_size()
             dense_names.append(name)
+        else:
+            own = dict(module.named_buffers(recurse=False))
+            if _PACKED not in own:
+                continue
+            for buffer_name in (_PACKED, _SCALES, _OFFSETS, "weight"):
+                buffer = own.get(buffer_name)
+                if buffer is None or buffer.data_ptr() in seen:
+                    continue
+                seen.add(buffer.data_ptr())
+                size = buffer.numel() * buffer.element_size()
+                if buffer_name == "weight":
+                    dense += size
+                    dense_names.append(f"{name}.weight (restored)")
+                else:
+                    packed += size
 
     for name, param in model.named_parameters():
         if param.ndim < 2 or param.data_ptr() in seen:

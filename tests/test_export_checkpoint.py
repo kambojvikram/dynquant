@@ -419,6 +419,46 @@ def test_a_router_is_not_reported_as_an_expert_bank(exported_router):
     assert "expert bank" not in report.summary()
 
 
+def test_a_map_naming_something_no_loader_could_read_is_refused_before_any_bytes(
+    tmp_path,
+) -> None:
+    """The writer asks the reader's question first, and asks it before ``mkdir``.
+
+    The packer's rule is "a tensor exists to pack" and the runtime's is "something can
+    stand where this stands". Those were allowed to differ, and the difference shipped:
+    the LFM2.5-8B-A1B export wrote 22 routers over 23 minutes and ``from_pretrained``
+    refused the 4.4 GB artifact it had just produced. A router is now *restored* rather
+    than refused, so the case that broke is fixed -- but the two rules can still drift,
+    and this is what stops the drift from reaching disk.
+
+    Two names that genuinely have no reader: a bare 2-D parameter, whose owner passes it
+    whole to ``F.linear`` so no module can stand at its index, and a ``Conv1d`` kernel,
+    which is rank 3 like a bank and indexed by nothing -- on the campaign's own model 18
+    of 24 layers are conv, so that is the common case rather than an exotic one.
+
+    Turns red when: the pre-flight is dropped, or moved after ``out.mkdir`` -- a refusal
+    that leaves a directory behind is a refusal someone will mistake for a checkpoint.
+    """
+    model = tiny_model()
+    model.model.layers[0].mlp.gate = BareWeightRouter(8, 128)
+    model.model.layers[0].mlp.conv = torch.nn.Conv1d(64, 64, 3, groups=64, bias=False)
+
+    for name, reason in (
+        (f"{ROUTER}.weight", "bare 2-D parameter"),
+        ("model.layers.0.mlp.conv.weight", "3-D weight of a Conv1d"),
+    ):
+        out = tmp_path / name
+        with pytest.raises(DynQuantError, match=reason):
+            export_packed_checkpoint(model, {name: 8}, output_dir=out, compute_device=None)
+        assert not out.exists(), out
+
+    # And the width the encoder *can* place is still written: the guard rejects the two
+    # shapes above and nothing else, or every published checkpoint stops being writable.
+    kept = tmp_path / "kept"
+    report = export_packed_checkpoint(model, {ROUTER: 8}, output_dir=kept, compute_device=None)
+    assert set(report.layers) == {ROUTER}
+
+
 def test_the_export_resolver_answers_what_the_quantizer_answers(exported_router):
     # The property the whitelist broke, stated directly: pre-flight said yes, the
     # quantizer said yes, and export said no. One resolver, so one answer.

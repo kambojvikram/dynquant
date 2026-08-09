@@ -157,9 +157,12 @@ def export_packed_checkpoint(
         that were written, not predicted from the bit map.
 
     Raises:
-        DynQuantError: If a name in ``bits`` is not a Linear or Embedding module
-            of ``model``, or if the model has no ``config`` to write.
+        DynQuantError: If a name in ``bits`` addresses nothing the packed runtime
+            could put back -- see :func:`~dynquant.runtime.linear.resolve_target` --
+            or if the model has no ``config`` to write.
     """
+    _refuse_what_no_loader_reads(model, bits)
+
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -288,6 +291,34 @@ def export_packed_checkpoint(
 # --------------------------------------------------------------------------
 
 
+def _refuse_what_no_loader_reads(model: nn.Module, bits: Mapping[str, int]) -> None:
+    """Check every name against the *load* path's rule before writing any of them.
+
+    The packer's criterion is that a tensor exists to pack, and it is the right one
+    for a packer. It is not sufficient for a *checkpoint*, because a checkpoint has to
+    be read back, and the reader can only put something where a module or an indexable
+    bank stands. Those two rules were allowed to differ exactly once: the 8B export
+    wrote 22 ``Lfm2MoeTopKRouter`` weights without complaint and ``from_pretrained``
+    then refused the artifact it had just produced -- 4.4 GB and 23 minutes of encoding
+    rejected by its own reader, which is the worst shape this project's recurring
+    two-copies-of-one-registry failure has taken.
+
+    The fix for that was to widen the loader (a router is dequantized once after load;
+    see :class:`~dynquant.runtime.linear.RestoredWeight`), and this is the guard that
+    keeps the two from drifting apart again. It *asks* the loader's own resolver rather
+    than restating its rule, so there is still exactly one rule, and it asks before
+    ``out.mkdir`` so an unreadable map costs a refusal instead of a directory.
+
+    Not a duplicate of the pre-flight in ``dynquant.commands``: that one answers "would
+    the encoder encode this", which is a strictly weaker question and the one the
+    ``--map-apply encode`` arms need.
+    """
+    from dynquant.runtime.linear import resolve_target
+
+    for name in sorted(bits):
+        resolve_target(model, name, restore=True)
+
+
 def _resolve(model: nn.Module, name: str) -> tuple[torch.Tensor, str]:
     """The tensor ``name`` addresses, and the state-dict key it is stored under.
 
@@ -319,8 +350,10 @@ def _resolve(model: nn.Module, name: str) -> tuple[torch.Tensor, str]:
     twice, packed and in full, and the "quantized" directory is larger than the checkpoint
     it compressed.
 
-    What genuinely cannot read a packed bank back is the *runtime*, which swaps modules
-    and has none to swap; that refusal lives in ``runtime.linear`` and says so there.
+    What the *runtime* can put back is a narrower question again, and it is asked once
+    up front by :func:`_refuse_what_no_loader_reads` rather than here -- the answer used
+    to be nobody's job on this path, which is how a checkpoint came to be written that
+    ``from_pretrained`` refused to read.
     """
     from dynquant.quant.quantizer import target_tensor
 

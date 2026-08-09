@@ -69,12 +69,14 @@ itself. The only defences are the model card and the two lines above appearing i
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, cast
 
+import torch
 from torch import nn
 
 from dynquant._logging import get_logger
-from dynquant.constants import HF_QUANT_METHOD
+from dynquant.constants import HF_QUANT_METHOD, QUANT_TENSOR_SUFFIXES
 from dynquant.errors import MissingDependencyError
 from dynquant.integration.serving_common.schema import (
     ModuleQuantSpec,
@@ -86,6 +88,7 @@ from dynquant.runtime.linear import (
     DynQuantExpertBank,
     DynQuantLinear,
     ExpertBank,
+    RestoredWeight,
     _PackedModule,
     replace_module,
     resolve_target,
@@ -179,6 +182,7 @@ def build_quantizer_class() -> type:
             super().__init__(quantization_config, **kwargs)
             self._packed_names: tuple[str, ...] = ()
             self._dense_keys: frozenset[str] = frozenset()
+            self._restored: dict[str, tuple[QuantTensor, torch.dtype]] = {}
 
         def validate_environment(self, *args: Any, **kwargs: Any) -> None:
             # Nothing beyond torch. The reference decode path is pure torch and the
@@ -199,13 +203,20 @@ def build_quantizer_class() -> type:
             schema: QuantizationConfigSchema = cast(Any, self.quantization_config).schema
             shells: dict[str, nn.Module] = {}
             dense_keys: set[str] = set()
+            restored: dict[str, tuple[QuantTensor, torch.dtype]] = {}
             for name, spec in sorted(schema.modules.items()):
-                target = resolve_target(model, name, source="quantization_config")
-                shells[name] = _shell(target, spec)
+                target = resolve_target(model, name, source="quantization_config", restore=True)
                 # The key that used to hold this target's dense weight, which is the
                 # key the loader will now miss. A module contributed `name.weight`;
                 # a bank *is* the parameter, so it contributed `name`.
                 dense_keys.add(name if isinstance(target, ExpertBank) else f"{name}.weight")
+                if isinstance(target, RestoredWeight):
+                    # No forward to swap, so nothing is replaced: the module keeps its
+                    # own and is given packed buffers to receive, which the after-hook
+                    # turns back into the weight it already knows how to use.
+                    restored[name] = _prepare_restore(target, spec)
+                    continue
+                shells[name] = _shell(target, spec)
                 replace_module(model, name, shells[name])
             packed = set(schema.modules)
             tied = _tie_output_embedding(model, packed)
@@ -213,18 +224,38 @@ def build_quantizer_class() -> type:
             dense_keys |= {f"{name}.weight" for name in tied}
             self._packed_names = tuple(sorted(packed))
             self._dense_keys = frozenset(dense_keys)
+            self._restored = restored
             # A bank installed here reaches a forward the same way a packed one does,
             # so it needs the same dispatch. `pack_model` does this for the quantize
             # path; nothing shared runs on this one.
             if any(isinstance(shell, DynQuantExpertBank) for shell in shells.values()):
                 use_eager_experts(model)
             _log.info(
-                "prepared %d packed modules for loading%s",
+                "prepared %d packed modules for loading%s%s",
                 len(self._packed_names),
                 f", {tied[0]} reading the input table" if tied else "",
+                f", {len(restored)} restored dense after load" if restored else "",
             )
 
         def _process_model_after_weight_loading(self, model: Any, **kwargs: Any) -> Any:
+            # Everything else is already a packed module and stays packed. These are the
+            # targets with no forward to replace -- routers -- and this is the one point
+            # in the format where a dense tensor is materialised on purpose. It happens
+            # here rather than at export because the bytes on disk are the bytes the
+            # manifest priced, and it happens at all because the alternative was an
+            # artifact our own `from_pretrained` refused.
+            dense = 0
+            for name, (empty, out_dtype) in self._restored.items():
+                module = model.get_submodule(name)
+                weight = _restore_weight(module, empty, out_dtype)
+                dense += weight.numel() * weight.element_size()
+            if self._restored:
+                _log.info(
+                    "restored %d weight(s) dense after load, %s B: %s",
+                    len(self._restored),
+                    f"{dense:,}",
+                    "no module could stand where they stand",
+                )
             return model
 
         def update_missing_keys(
@@ -320,6 +351,86 @@ def _disable_retying(model: Any) -> None:
     model.tie_weights = _already_tied
 
 
+def _empty_like(weight: torch.Tensor, spec: ModuleQuantSpec) -> QuantTensor:
+    """Correctly shaped, unfilled packed buffers for one target.
+
+    The geometry comes from the *model* -- a checkpoint records ``out_features`` as
+    the packer's row count, which is enough to check a shard against and not enough
+    to rebuild rank 3 from -- and the scale dtype from ``storage_dtype``, the same
+    function the exporter wrote them with.
+    """
+    logical_shape = tuple(int(extent) for extent in weight.shape)
+    return QuantTensor.empty(
+        bits=spec.bits,
+        group_size=spec.group_size,
+        in_features=logical_shape[-1],
+        logical_shape=logical_shape,
+        # A `meta` skeleton still carries the dtype the model was built in, and
+        # `storage_dtype` turns that into the dtype the exporter wrote the scales in --
+        # 16-bit, unless the weight was already half. Calling the same function both
+        # ends keeps the skeleton shaped like the shards without a second rule here.
+        # It does not have to be exactly right: `load_state_dict` casts on copy. It has
+        # to be right for `assign=True`, which the low-memory loader uses, where a
+        # mismatch would silently leave the buffer in whichever dtype won the race.
+        dtype=storage_dtype(weight),
+        device=weight.device,
+        symmetric=spec.symmetric,
+        has_offsets=not spec.symmetric,
+    )
+
+
+def _prepare_restore(
+    target: RestoredWeight, spec: ModuleQuantSpec
+) -> tuple[QuantTensor, torch.dtype]:
+    """Give a router packed buffers to be loaded into, and take its parameter away.
+
+    The parameter has to go: ``transformers`` reports every key the skeleton has and
+    the checkpoint does not, and a module still advertising ``weight`` would produce
+    one missing-key warning per router -- indistinguishable, to a reader, from the
+    silent-random-model failure this quantizer exists to prevent.
+
+    ``weight`` comes back immediately as a **non-persistent** buffer holding nothing,
+    so the module is never without the attribute its own forward reads, and so that
+    ``state_dict`` -- and therefore ``save_pretrained`` -- carries the three packed
+    tensors and not a dense fourth. A checkpoint saved from a loaded model is then
+    the one that was loaded, which is what ``is_serializable`` claims.
+    """
+    empty = _empty_like(target.weight, spec)
+    module = target.module
+    del module._parameters["weight"]
+    for suffix, tensor in (
+        (QUANT_TENSOR_SUFFIXES["packed"], empty.packed),
+        (QUANT_TENSOR_SUFFIXES["scale"], empty.scales),
+        (QUANT_TENSOR_SUFFIXES["offset"], empty.offsets),
+    ):
+        if tensor is not None:
+            module.register_buffer(suffix, tensor, persistent=True)
+    module.register_buffer("weight", target.weight.detach(), persistent=False)
+    return empty, target.weight.dtype
+
+
+def _restore_weight(module: nn.Module, empty: QuantTensor, out_dtype: torch.dtype) -> torch.Tensor:
+    """Dequantize a router's packed buffers back into the weight its forward reads.
+
+    Reads the buffers off the module rather than closing over the tensors handed to
+    :func:`_prepare_restore`: the low-memory loader copies with ``assign=True``, which
+    *replaces* the buffer object, so the tensors held from before the load are the
+    empty ones and comparing against them would compare against garbage.
+    """
+    loaded = replace(
+        empty,
+        packed=module.get_buffer(QUANT_TENSOR_SUFFIXES["packed"]),
+        scales=module.get_buffer(QUANT_TENSOR_SUFFIXES["scale"]),
+        offsets=(
+            None if empty.offsets is None else module.get_buffer(QUANT_TENSOR_SUFFIXES["offset"])
+        ),
+    )
+    loaded.validate()
+    weight = loaded.dequantize(dtype=out_dtype)
+    module.register_buffer("weight", weight, persistent=False)
+    return weight
+
+
 def _shell(target: nn.Linear | nn.Embedding | ExpertBank, spec: ModuleQuantSpec) -> nn.Module:
     """An empty packed module of the right shape, on the original's own device.
 
@@ -334,25 +445,7 @@ def _shell(target: nn.Linear | nn.Embedding | ExpertBank, spec: ModuleQuantSpec)
     skeleton transformers has already built from ``config.json`` knows the real one.
     """
     weight = target.weight
-    logical_shape = tuple(int(extent) for extent in weight.shape)
-    in_features = logical_shape[-1]
-    empty = QuantTensor.empty(
-        bits=spec.bits,
-        group_size=spec.group_size,
-        in_features=in_features,
-        logical_shape=logical_shape,
-        # A `meta` skeleton still carries the dtype the model was built in, and
-        # `storage_dtype` turns that into the dtype the exporter wrote the scales in --
-        # 16-bit, unless the weight was already half. Calling the same function both
-        # ends keeps the skeleton shaped like the shards without a second rule here.
-        # It does not have to be exactly right: `load_state_dict` casts on copy. It has
-        # to be right for `assign=True`, which the low-memory loader uses, where a
-        # mismatch would silently leave the buffer in whichever dtype won the race.
-        dtype=storage_dtype(weight),
-        device=weight.device,
-        symmetric=spec.symmetric,
-        has_offsets=not spec.symmetric,
-    )
+    empty = _empty_like(weight, spec)
     if isinstance(target, ExpertBank):
         return DynQuantExpertBank(empty, out_dtype=weight.dtype)
     if isinstance(target, nn.Embedding):

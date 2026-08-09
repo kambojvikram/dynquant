@@ -29,6 +29,7 @@ from dynquant.runtime.linear import (  # noqa: E402
     DynQuantEmbedding,
     DynQuantLinear,
     ExpertBank,
+    RestoredWeight,
     packed_bytes,
     resolve_target,
 )
@@ -355,6 +356,220 @@ def test_the_load_path_refuses_by_the_packing_rule_and_not_a_copy_of_it() -> Non
     container = _refuse("experts")
     assert "owns no weight" in container
     assert "encode" not in container
+
+
+# --------------------------------------------------------------------------
+# The one target the two sides of the format disagreed about
+# --------------------------------------------------------------------------
+
+
+def test_a_router_is_refused_for_packing_and_restored_for_loading() -> None:
+    """One resolver, two contracts, and the flag that names which one is asking.
+
+    The disk contract is "a tensor exists to pack" -- ``dynquant export`` writes
+    anything ``target_tensor`` resolves. The memory contract is "a forward exists to
+    replace". An ``Lfm2MoeTopKRouter`` satisfies the first and not the second, and
+    while both sides asked the same *question* they got the packer's answer, so the
+    8B export wrote 22 routers into a checkpoint ``from_pretrained`` then refused to
+    read: an artifact rejected by its own reader.
+
+    ``restore`` is that difference made explicit rather than resolved by a second
+    copy of the resolver -- the failure this whole section exists to prevent, and the
+    fifth time in this project that two copies of one registry have agreed until
+    they did not.
+
+    Turns red when: ``restore`` starts rescuing a case that has no tensor at all
+    (which would hand the loader a target it cannot fill), or the default stops
+    refusing (which would let ``pack_model`` install a module where the parent
+    indexes a parameter).
+    """
+    restored = resolve_target(_Tiny(), "gate", source="quantization_config", restore=True)
+    assert isinstance(restored, RestoredWeight)
+    assert restored.name == "gate"
+    assert restored.weight.shape == (8, 128)
+
+    # The default is still the packer's answer, so `pack_model` is unchanged.
+    assert "not a batched expert bank" in _refuse("gate")
+
+    # And `restore` is not a general amnesty. A container has no tensor to fill, so
+    # rescuing it would produce a target the loader cannot load rather than one it
+    # can, and a name this model lacks is wrong under either contract.
+    for name, reason in (("experts", "owns no weight"), ("absent", "not a module of this model")):
+        with pytest.raises(DynQuantError, match=reason):
+            resolve_target(_Tiny(), name, source="quantization_config", restore=True)
+
+    # The two cases that resolve resolve identically under both flags: ``restore``
+    # changes one branch, and a flag that quietly changed the others would make the
+    # loaded model a different object from the scored one.
+    for name in ("experts.gate_up_proj", "o_proj"):
+        kept = resolve_target(_Tiny(), name, source="quantization_config", restore=True)
+        assert type(kept) is type(resolve_target(_Tiny(), name, source="quantization_config"))
+
+
+class _Routed(nn.Module):
+    """A model whose targets include the shape that has no forward to replace.
+
+    Deliberately not a ``transformers`` architecture: no released model class has a
+    router this test could reach through ``from_pretrained`` without a trust-remote-code
+    download, and the property under test belongs to the loader rather than to any
+    architecture. Driven through the quantizer's own hooks the way
+    :mod:`tests.test_expert_bank` drives the bank path.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = _Router()
+        self.o_proj = nn.Linear(128, 128, bias=False)
+        # Real, because `export_packed_checkpoint` writes config.json through
+        # `config.save_pretrained` and reads the block back on the way in.
+        self.config = _config(tied=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.o_proj(x) @ self.gate.weight.t()
+
+
+def _routed_bits() -> dict[str, int]:
+    # Two widths, and the router is not given the Linear's: a restore path reading a
+    # file-level default rather than the per-module entry would still produce a
+    # plausible tensor of the right shape.
+    return {"gate": 8, "o_proj": 4}
+
+
+def _fresh_routed() -> _Routed:
+    torch.manual_seed(0)
+    return _Routed().eval()
+
+
+def _routed_state(path) -> dict:
+    from safetensors.torch import load_file
+
+    state: dict[str, torch.Tensor] = {}
+    for shard in sorted(path.glob("*.safetensors")):
+        state.update(load_file(str(shard)))
+    return state
+
+
+def _routed_loaded(tmp_path):
+    """Export a router-bearing model and bring it back through the quantizer's hooks."""
+    out = tmp_path / "ckpt"
+    export_packed_checkpoint(_fresh_routed(), _routed_bits(), output_dir=out, compute_device=None)
+
+    block = json.loads((out / "config.json").read_bytes().decode("utf-8"))["quantization_config"]
+    quantizer = hf_quantizer.build_quantizer_class()(hf_quantizer.build_config_class()(**block))
+    model = _fresh_routed()
+    quantizer._process_model_before_weight_loading(model)
+    # `assign=True` because that is what the low-memory loader does, and it is the
+    # harder case: it *replaces* every buffer object rather than filling it, so a
+    # restore that closed over the tensors it registered before the load would
+    # dequantize the empty ones and this would still be green under the default.
+    missing, unexpected = model.load_state_dict(_routed_state(out), strict=False, assign=True)
+    quantizer._process_model_after_weight_loading(model)
+    return model, quantizer, out, (missing, unexpected)
+
+
+def test_everything_the_exporter_writes_for_a_router_is_something_the_loader_reads(
+    tmp_path,
+) -> None:
+    """The contract that was missing, stated as a set equality on tensor names.
+
+    Every other test here exports and loads the same architecture, so the two sides
+    of the format could only disagree about a target no test used -- which is exactly
+    what happened, on the one target the exporter was deliberately widened to accept
+    and the loader was not. This asserts the general form instead: the keys
+    ``export_packed_checkpoint`` wrote are the keys the prepared skeleton offers, with
+    nothing missing and nothing left over.
+
+    Turns red when: either side of the format grows a tensor the other does not know
+    about.
+    """
+    _model, _quantizer, out, (missing, unexpected) = _routed_loaded(tmp_path)
+    assert not missing and not unexpected, (missing, unexpected)
+
+    expected = {
+        f"{module}.{suffix}"
+        for module in _routed_bits()
+        for suffix in (QUANT_TENSOR_SUFFIXES[kind] for kind in ("packed", "scale", "offset"))
+    }
+    assert set(_routed_state(out)) == expected
+
+
+def test_a_restored_router_holds_what_the_encoder_would_have_written(tmp_path) -> None:
+    """Dequantized once at load, to the encoder's numbers and not merely to numbers.
+
+    Exact rather than within a tolerance: the packer and the encoder run the same
+    arithmetic on the same weight, so any gap at all is the scale-dtype split of
+    :mod:`tests.test_expert_bank` wearing a third face.
+
+    Turns red when: the restore reads the pre-load buffers instead of the loaded ones
+    -- which ``assign=True`` replaces rather than fills -- or the output dtype stops
+    following the model it is loading into.
+    """
+    model, _quantizer, _out, _keys = _routed_loaded(tmp_path)
+
+    reference = _fresh_routed()
+    quantize_model(reference, _routed_bits(), in_place=True, compute_device=None)
+
+    assert model.gate.weight.dtype == reference.gate.weight.dtype
+    assert (model.gate.weight - reference.gate.weight).abs().max().item() == 0.0
+
+    with torch.no_grad():
+        x = torch.randn(2, 128)
+        assert (model(x) - reference(x)).abs().max().item() < 1e-4
+        # And moved from the unquantized weight, or the line above is satisfied by a
+        # loader that quietly kept the dense tensor the skeleton started with.
+        assert (model.gate.weight - _fresh_routed().gate.weight).abs().max().item() > 0
+
+
+def test_a_restored_router_saves_back_packed_and_not_dense(tmp_path) -> None:
+    """The dense weight is materialised in memory and must not reach the disk again.
+
+    ``is_serializable`` claims a load-then-save round trip is the identity on the
+    packed tensors. A router carrying its dequantized weight as an ordinary buffer
+    writes a fourth tensor per router -- bytes the manifest never priced, in a
+    checkpoint that then disagrees with its own ``quantization_config``. It is
+    registered non-persistent for exactly that reason, which is a one-word property
+    with no other symptom.
+
+    Turns red when: either ``persistent=False`` is dropped, or the parameter is
+    shadowed instead of deregistered -- a live ``_parameters["weight"]`` is reported
+    missing at load, one warning per router, which reads like the silent-random-model
+    failure.
+    """
+    model, _quantizer, out, _keys = _routed_loaded(tmp_path)
+
+    state = model.state_dict()
+    assert "gate.weight" not in state
+    assert set(state) == set(_routed_state(out))
+    assert "weight" not in model.gate._parameters
+
+
+def test_a_restored_router_is_reported_in_both_totals_and_named_as_restored(tmp_path) -> None:
+    """The one place in the format where both encodings are resident, so say so.
+
+    ``packed_bytes`` walks the module tree, and a restored router is not a packed
+    module, not a dense ``Linear`` and not a bare ``Parameter`` -- it is a module
+    holding buffers, the one shape all three passes were blind to. Reporting nothing
+    for it is the tied-embedding error running backwards: a denominator that omits
+    what the loaded model actually costs.
+
+    Turns red when: these are counted twice, or the module pass stops recognising
+    them and the 2.9 MB on LFM2.5-8B-A1B goes back to being invisible.
+    """
+    model, _quantizer, _out, _keys = _routed_loaded(tmp_path)
+    accounting = packed_bytes(model)
+
+    dense = model.gate.weight
+    assert accounting["dense_bytes"] == dense.numel() * dense.element_size()
+    assert accounting["dense_modules"] == ["gate.weight (restored)"]
+
+    buffers = dict(model.gate.named_buffers(recurse=False))
+    router_packed = sum(
+        buffers[name].numel() * buffers[name].element_size()
+        for name in QUANT_TENSOR_SUFFIXES.values()
+        if name in buffers
+    )
+    assert accounting["packed_bytes"] == router_packed + model.o_proj.nbytes
+    assert accounting["total_bytes"] == accounting["packed_bytes"] + accounting["dense_bytes"]
 
 
 # --------------------------------------------------------------------------
