@@ -341,7 +341,7 @@ def test_the_verdict_follows_the_corrected_p_and_not_the_raw_one(
         line for line in printed.splitlines() if line.startswith("3b  DynQuant vs GPTQ")
     )
     assert three_bit.endswith("separated") and not three_bit.endswith("NOT separated")
-    assert "Holm-adjusted over the 6 comparisons" in printed
+    assert "Holm-adjusted over 6 of 6 comparisons in this block" in printed
 
 
 def test_the_size_column_is_the_manifests_and_the_ceiling_is_derived_from_a_count_on_disk(
@@ -474,8 +474,41 @@ def test_an_arm_that_did_not_run_is_a_missing_row_and_not_a_missing_comparison(
     # Two head-to-head rows name awq_3b, and one ceiling row does.
     assert printed.count("(needs both arms)") == 3
     assert "3/7 arms scored" not in printed and "6/7 arms scored" in printed
-    assert "Holm-adjusted over the 4 comparisons" in printed, "the head family shrinks with it"
-    assert "Holm-adjusted over the 5 comparisons" in printed, "and so does the ceiling family"
+    assert "Holm-adjusted over 4 of 6 comparisons" in printed, "the head family shrinks with it"
+    assert "Holm-adjusted over 5 of 6 comparisons" in printed, "and so does the ceiling family"
+    # A short family is corrected less than the finished panel will be, so an adjusted
+    # p read mid-run can only move the unfavourable way. The count does not say that.
+    assert printed.count("a short family, so these adjusted p are weaker") == 2
+
+
+def test_a_block_reads_in_the_families_declared_order_however_much_of_it_ran(
+    table: Any, tmp_path: Path
+) -> None:
+    """The rows a partial panel can compute belong where the family put them.
+
+    Classification and printing were one loop, so a skipped comparison printed immediately
+    and a computed one printed after every skip. At two arms of seven that puts the single
+    comparison the panel *can* make underneath five placeholders -- the ordering only reads
+    correctly once nothing is missing, which is when it has stopped mattering. This is the
+    state a running panel is read in, repeatedly, for a day and a half.
+    """
+    # Dropping a 3-bit arm leaves the four earlier rows computable and the last two not,
+    # so declared order and availability order disagree and the old code is discriminated
+    # against: it printed the two skips first.
+    out = _write_panel(tmp_path / "arms", omit=("awq_3b",))
+    printed = _run(table, out)
+
+    block = (
+        printed.split("head to head, at matched bytes")[1]
+        .split("what each method cost")[0]
+        .splitlines()
+    )
+    rows = [line for line in block if line[:2] in {"4b", "3b"}]
+    assert [line[:28].rstrip() for line in rows] == [q for _, _, q in table.HEAD_TO_HEAD], (
+        "every row is present and in the family's order, computed or not"
+    )
+    skipped = [i for i, line in enumerate(rows) if "(needs both arms)" in line]
+    assert skipped == [4, 5], "the placeholders sit where the family put them, not on top"
 
 
 def test_a_manifest_read_from_another_directory_still_finds_its_records(

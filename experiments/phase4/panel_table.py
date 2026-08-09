@@ -475,36 +475,62 @@ def print_comparisons(
     print(header)
     print("-" * len(header))
 
+    # Classify first and print afterwards, so the block reads in the family's declared
+    # order on a partial panel. Printing skips inside the loop and computed rows after it
+    # put the one comparison a half-finished run *can* make at the bottom, under five
+    # placeholders -- readable only once nothing is missing, which is exactly when the
+    # ordering stops mattering.
     computed: list[dict[str, Any]] = []
+    rows: list[dict[str, Any] | str] = []
     for left, right, question in family:
         if left not in records or right not in records:
-            print(f"{question:28s} (needs both arms)")
+            rows.append(f"{question:28s} (needs both arms)")
             continue
         if pairable is not None:
-            print(f"{question:28s} (records are not comparable)")
+            rows.append(f"{question:28s} (records are not comparable)")
             continue
         a, b = records[left], records[right]
         if not a.get("hits") or not b.get("hits"):
-            print(f"{question:28s} (no per-item hits recorded)")
+            rows.append(f"{question:28s} (no per-item hits recorded)")
             continue
         paired = compare_paired(a["hits"], b["hits"], label_a=left, label_b=right)
-        computed.append({"left": left, "right": right, "question": question, "paired": paired})
+        entry = {"left": left, "right": right, "question": question, "paired": paired}
+        computed.append(entry)
+        rows.append(entry)
 
     adjusted = holm([entry["paired"].p_value for entry in computed])
     for entry, p_adj in zip(computed, adjusted, strict=True):
-        paired = entry["paired"]
-        low, high = paired.interval_points
         entry["p_adjusted"] = p_adj
         entry["separated"] = p_adj < 0.05
+    for row in rows:
+        if isinstance(row, str):
+            print(row)
+            continue
+        paired = row["paired"]
+        low, high = paired.interval_points
         print(
-            f"{entry['question']:28s} {paired.delta_points:+6.2f} "
+            f"{row['question']:28s} {paired.delta_points:+6.2f} "
             f"{f'[{low:+.2f}, {high:+.2f}]':>18s} "
             f"{f'{paired.a_only}/{paired.b_only}':>11s} "
-            f"{paired.p_value:10.3g} {p_adj:10.3g}  "
-            f"{'separated' if entry['separated'] else 'NOT separated'}"
+            f"{paired.p_value:10.3g} {row['p_adjusted']:10.3g}  "
+            f"{'separated' if row['separated'] else 'NOT separated'}"
         )
     if computed:
-        print(f"  Holm-adjusted over the {len(computed)} comparisons in this block")
+        # Say when the family is short. Holm's multiplier is the number of comparisons it
+        # actually corrected, so a block read at four of six arms is corrected *less* than
+        # the same block will be at seven -- an adjusted p quoted from a running panel can
+        # only move one way when the panel finishes, and it is the unfavourable way. The
+        # count alone does not carry that; a reader has to know the family size to notice
+        # the difference, and the reader here is someone glancing at a table mid-run.
+        short = len(computed) < len(family)
+        print(
+            f"  Holm-adjusted over {len(computed)} of {len(family)} comparisons in this"
+            + (
+                " block -- a short family, so these adjusted p are weaker than the finished panel's"
+                if short
+                else " block"
+            )
+        )
     return computed
 
 
