@@ -545,3 +545,203 @@ def test_packing_a_bank_beside_a_conv_leaves_the_conv_running() -> None:
     # Quantization moved the answer, and the conv still contributed to it: a conv whose
     # kernel had been replaced would not have produced a number at all.
     assert (after - before).abs().max() > 0.0
+
+
+# --------------------------------------------------------------------------
+# The dispatch that stopped calling the loop
+# --------------------------------------------------------------------------
+
+
+class _DispatchedExperts(_Experts):
+    """``Lfm2MoeExperts`` as transformers 5.14.1 actually reaches it.
+
+    Every ``*Experts`` class this design was measured against indexes its bank, and on
+    5.14.1 that stopped being what runs. ``@use_experts_implementation`` replaces the
+    class's ``forward`` with a dispatcher that reads ``config._experts_implementation``
+    and picks from ``ALL_EXPERTS_FUNCTIONS``; the loop above is only the ``eager`` entry,
+    and the default is ``grouped_mm``, which passes the bank whole.
+
+    Reduced here to the one line that decides it: ``weight.transpose(-2, -1)``, which is
+    where ``integrations/moe.py`` asked a :class:`DynQuantExpertBank` for a tensor method
+    and got ``AttributeError`` out of ``nn.Module``.
+    """
+
+    def __init__(self, config: object) -> None:
+        super().__init__()
+        self.config = config
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        top_k_index: torch.Tensor,
+        top_k_weights: torch.Tensor,
+    ) -> torch.Tensor:
+        if getattr(self.config, "_experts_implementation", "eager") == "eager":
+            return super().forward(hidden_states, top_k_index, top_k_weights)
+        return self._grouped(hidden_states, top_k_index, top_k_weights)
+
+    def _grouped(
+        self,
+        hidden_states: torch.Tensor,
+        top_k_index: torch.Tensor,
+        top_k_weights: torch.Tensor,
+    ) -> torch.Tensor:
+        # One batched matmul over every expert at once -- the shape `torch._grouped_mm`
+        # exists to serve, and the reason a module cannot stand where the bank stood.
+        gate, up = torch.matmul(hidden_states, self.gate_up_proj.transpose(-2, -1)).chunk(2, dim=-1)
+        dense = torch.matmul(F.silu(gate) * up, self.down_proj.transpose(-2, -1))
+        mask = F.one_hot(top_k_index, num_classes=EXPERTS)
+        weights = (mask * top_k_weights.unsqueeze(-1)).sum(dim=1)
+        return (dense * weights.t().unsqueeze(-1)).sum(dim=0).to(hidden_states.dtype)
+
+
+class _DispatchedModel(nn.Module):
+    """``_MoEModel``'s parameters exactly, behind ``_experts_implementation``.
+
+    The names match so an export written from one loads into the other, which is how
+    the load path is checked below without a second checkpoint.
+    """
+
+    def __init__(self, implementation: str = "grouped_mm") -> None:
+        super().__init__()
+        self.config = LlamaConfig(hidden_size=HIDDEN, tie_word_embeddings=False)
+        self.config._experts_implementation = implementation
+        self.proj = nn.Linear(HIDDEN, HIDDEN, bias=False)
+        self.block = nn.Module()
+        self.block.gate = _Router()
+        self.block.experts = _DispatchedExperts(self.config)
+        self.moves: list[str] = []
+
+    def set_experts_implementation(self, implementation: str) -> None:
+        self.moves.append(implementation)
+        self.config._experts_implementation = implementation
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        projected = self.proj(hidden_states)
+        weights, index = self.block.gate(projected)
+        return self.block.experts(projected, index, weights)
+
+
+def _fresh_dispatched(implementation: str = "grouped_mm") -> _DispatchedModel:
+    torch.manual_seed(0)
+    model = _DispatchedModel(implementation)
+    with torch.no_grad():
+        for param in model.parameters():
+            param.normal_(0.0, 0.05)
+    return model.half().eval()
+
+
+def test_the_two_dispatches_agree_so_moving_between_them_is_free() -> None:
+    """The premise of the switch: eager and grouped are the same arithmetic.
+
+    If they were not, packing would be changing the model's answer twice -- once by
+    quantizing and once by taking a different route through the same weights -- and the
+    accuracy the panel reports would not be the accuracy of the map. On a real tiny
+    LFM2-MoE the two agree to 1.8e-07 in fp32; this fixture is fp16, so the bar is
+    fp16-sized, and the point is the ratio to what quantization itself moves.
+
+    Turns red when: the fixture's grouped path stops being an honest transcription of
+    the eager one, which would make every assertion below vacuous.
+    """
+    grouped = _out(_fresh_dispatched("grouped_mm"))
+    eager = _out(_fresh_dispatched("eager"))
+    assert (grouped - eager).abs().max().item() < 1e-2, (grouped - eager).abs().max().item()
+
+
+def test_packing_a_bank_moves_the_model_off_the_dispatch_that_cannot_hold_one() -> None:
+    """A packed bank answers ``bank[e]`` and nothing else, so eager is not a preference.
+
+    This is the second defect the genuine ``Lfm2MoeExperts`` found: the resolver was
+    fixed, the bank installed cleanly, and the forward still died -- inside transformers,
+    at ``weight.transpose(-2, -1)``, because 5.14.1 routes experts through a dispatcher
+    whose default hands the whole bank to a grouped matmul.
+
+    Turns red when: the switch stops being applied, or is applied by writing the config
+    attribute directly while the model has a setter that does more than that.
+    """
+    model = _fresh_dispatched("grouped_mm")
+    assert model.config._experts_implementation == "grouped_mm"
+
+    report = pack_model(model, {BANKS[0]: 4, BANKS[1]: 3}, compute_device=None)
+
+    assert isinstance(model.block.experts.gate_up_proj, DynQuantExpertBank)
+    assert model.config._experts_implementation == "eager"
+    assert model.moves == ["eager"], "the model's own setter is what should have run"
+    assert report.experts_implementation == "grouped_mm"
+    assert "grouped_mm" in report.summary() and "eager" in report.summary()
+
+    # And the model runs, which is the whole claim -- previously an AttributeError.
+    packed = _out(model)
+    assert torch.isfinite(packed).all()
+
+    reference = _fresh_dispatched("eager")
+    quantize_model(reference, {BANKS[0]: 4, BANKS[1]: 3}, in_place=True, compute_device=None)
+    assert (packed - _out(reference)).abs().max().item() < 1e-3
+
+
+def test_nothing_moves_for_a_model_that_has_nowhere_to_move() -> None:
+    """Three ways to have no dispatch, one answer, and no lie in the report.
+
+    ``use_eager_experts`` is called on every pack that installs a bank, and most models
+    it will ever see have no such config -- every transformers before 5.14, and every
+    dense model after. Reporting a move that did not happen would put a sentence in the
+    summary that no operator could act on.
+
+    Turns red when: the helper starts inventing the attribute it is looking for, or the
+    report records a move for a pack that installed no bank at all.
+    """
+    from dynquant.runtime.linear import use_eager_experts
+
+    already = _fresh_dispatched("eager")
+    assert use_eager_experts(already) is None
+    assert already.moves == []
+
+    # `_MoEModel`'s config is a plain LlamaConfig: no such attribute, nothing to do.
+    plain = _fresh()
+    assert use_eager_experts(plain) is None
+    report = pack_model(plain, _bits(), compute_device=None)
+    assert report.experts_implementation is None
+    assert "dispatch" not in report.summary()
+
+    # A pack that installs no bank must not touch a dispatch it never depended on.
+    dense_only = _fresh_dispatched("grouped_mm")
+    dense_report = pack_model(dense_only, {"proj": 4}, compute_device=None)
+    assert dense_report.experts_implementation is None
+    assert dense_only.config._experts_implementation == "grouped_mm"
+    assert dense_only.moves == []
+
+
+def test_the_load_path_moves_the_dispatch_too(tmp_path) -> None:
+    """``from_pretrained`` installs banks without going anywhere near ``pack_model``.
+
+    The two paths share ``resolve_target`` and ``_shell`` and nothing else, so a fix
+    written into the packer alone leaves the published checkpoint -- the artifact anyone
+    but us will ever touch -- raising ``AttributeError`` on its first forward.
+
+    Turns red when: the load path grows its own idea of which dispatch a bank needs.
+    """
+    from safetensors.torch import load_file
+
+    out = tmp_path / "ckpt"
+    export_packed_checkpoint(_fresh(), _bits(), output_dir=out, compute_device=None)
+
+    import json
+
+    payload = json.loads((out / "config.json").read_text(encoding="utf-8"))
+    config = hf_quantizer.build_config_class()(**payload["quantization_config"])
+    quantizer = hf_quantizer.build_quantizer_class()(config)
+    model = _fresh_dispatched("grouped_mm")
+    quantizer._process_model_before_weight_loading(model)
+
+    assert model.config._experts_implementation == "eager"
+    assert model.moves == ["eager"]
+
+    state: dict[str, torch.Tensor] = {}
+    for shard in sorted(out.glob("*.safetensors")):
+        state.update(load_file(str(shard)))
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    assert not missing and not unexpected, (missing, unexpected)
+
+    reference = _fresh()
+    quantize_model(reference, _bits(), in_place=True, compute_device=None)
+    assert (_out(model) - _out(reference)).abs().max().item() < 1e-3

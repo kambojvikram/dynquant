@@ -89,6 +89,7 @@ from dynquant.runtime.linear import (
     _PackedModule,
     replace_module,
     resolve_target,
+    use_eager_experts,
 )
 
 __all__ = [
@@ -212,6 +213,11 @@ def build_quantizer_class() -> type:
             dense_keys |= {f"{name}.weight" for name in tied}
             self._packed_names = tuple(sorted(packed))
             self._dense_keys = frozenset(dense_keys)
+            # A bank installed here reaches a forward the same way a packed one does,
+            # so it needs the same dispatch. `pack_model` does this for the quantize
+            # path; nothing shared runs on this one.
+            if any(isinstance(shell, DynQuantExpertBank) for shell in shells.values()):
+                use_eager_experts(model)
             _log.info(
                 "prepared %d packed modules for loading%s",
                 len(self._packed_names),

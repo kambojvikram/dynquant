@@ -61,6 +61,7 @@ __all__ = [
     "packed_bytes",
     "replace_module",
     "resolve_target",
+    "use_eager_experts",
 ]
 
 _log = get_logger(__name__)
@@ -435,6 +436,8 @@ class PackReport:
         self.tied: dict[str, str] = {}
         """name -> the name whose packed tensor it shares."""
         self.skipped: list[str] = []
+        self.experts_implementation: str | None = None
+        """The dispatch this model was moved off, if a bank forced the move."""
 
     @property
     def fp16_bytes(self) -> int:
@@ -462,6 +465,11 @@ class PackReport:
             lines.append(
                 f"  {len(self.tied)} tied module(s) share {shared / 2**30:.3f} GiB "
                 f"of that, counted once"
+            )
+        if self.experts_implementation is not None:
+            lines.append(
+                f"  experts dispatch moved from {self.experts_implementation!r} to 'eager': "
+                f"a packed bank is indexed one expert at a time"
             )
         if self.skipped:
             lines.append(f"  {len(self.skipped)} left dense: {', '.join(self.skipped[:5])}")
@@ -572,8 +580,52 @@ def pack_model(
     for name, _module in _quantizable_modules(model):
         report.skipped.append(name)
 
+    if any(isinstance(model.get_submodule(name), DynQuantExpertBank) for name in report.modules):
+        report.experts_implementation = use_eager_experts(model)
+
     _log.info("%s", report.summary())
     return report
+
+
+def use_eager_experts(model: nn.Module) -> str | None:
+    """Move a transformers MoE onto the one dispatch a packed bank can serve.
+
+    ``DynQuantExpertBank`` implements exactly one contract: ``bank[e]`` returns expert
+    ``e`` dequantized. Every ``*Experts`` class measured for this held to it -- and then
+    transformers 5.14.1 stopped calling those forwards. ``integrations/moe.py`` wraps
+    them and picks from ``config._experts_implementation``: ``grouped_mm`` (**the
+    default**), ``batched_mm``, ``deepgemm``, ``sonicmoe``, or ``eager``. Only ``eager``
+    is the indexing loop; ``grouped_mm`` hands the whole bank to ``torch._grouped_mm``,
+    which asks it to ``transpose`` and gets an ``AttributeError`` from ``nn.Module``.
+
+    So this is not a preference, it is the difference between a model that runs and one
+    that does not, and it costs nothing to be sure of: eager and ``grouped_mm`` agree to
+    1.8e-07 on a tiny LFM2-MoE. What it does cost is speed, since ``grouped_mm`` is the
+    fast path -- and that is the gap the grouped kernel closes, by registering itself in
+    ``ALL_EXPERTS_FUNCTIONS`` where these four already live rather than by fighting them.
+
+    Returns the implementation moved away from, or ``None`` if nothing moved -- a model
+    with no transformers config, one already eager, and one on an older transformers that
+    has no such dispatch are all the same answer.
+    """
+    config = getattr(model, "config", None)
+    if config is None:
+        return None
+    current = getattr(config, "_experts_implementation", None)
+    if current is None or current == "eager":
+        return None
+    setter = getattr(model, "set_experts_implementation", None)
+    if callable(setter):
+        setter("eager")
+    else:  # pragma: no cover - every model with the attribute also has the setter
+        config._experts_implementation = "eager"
+    _log.warning(
+        "moved the experts dispatch from %r to 'eager': a packed bank is indexed one "
+        "expert at a time, and %r passes the whole bank to a grouped matmul",
+        current,
+        current,
+    )
+    return str(current)
 
 
 def _quantizable_modules(model: nn.Module) -> list[tuple[str, nn.Linear | nn.Embedding]]:
