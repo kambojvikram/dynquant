@@ -56,6 +56,7 @@ __all__ = [
     "PackReport",
     "pack_model",
     "packed_bytes",
+    "resolve_target",
 ]
 
 _log = get_logger(__name__)
@@ -364,7 +365,7 @@ def pack_model(
     owner_by_ptr: dict[int, tuple[str, QuantTensor, _PackedModule]] = {}
 
     for index, (name, width) in enumerate(targets):
-        module = _resolve_module(model, name)
+        module = resolve_target(model, name)
         weight = module.weight
         ptr = weight.data_ptr()
         dense_bytes = weight.numel() * weight.element_size()
@@ -403,7 +404,7 @@ def pack_model(
         for name in names:
             if name in report.modules:
                 continue
-            module = _resolve_module(model, name)
+            module = resolve_target(model, name)
             _replace(model, name, _wrap(module, quantized, tied_to=holder))
             report.tied[name] = owner_name
 
@@ -436,8 +437,18 @@ replaces.
 """
 
 
-def _resolve_module(model: nn.Module, name: str) -> nn.Linear | nn.Embedding:
+def resolve_target(
+    model: nn.Module, name: str, *, source: str = "bit map"
+) -> nn.Linear | nn.Embedding:
     """The module the packed runtime will replace, or a refusal that says which kind.
+
+    Public, and shared with the ``from_pretrained`` load path, because that path asks
+    exactly this question: which named targets can be swapped for a packed module. It
+    had its own three-branch copy of this for about an hour -- narrower than this one by
+    the container case, which is how every previous copy in this project started. The
+    only thing that genuinely differs between the two callers is what to call the thing
+    that named the target, so that is the only thing parameterised: a ``bit map`` when
+    packing a live model, a ``quantization_config`` when loading a checkpoint.
 
     Three failures, three messages, and each of the first two once wore the wrong one.
 
@@ -469,7 +480,9 @@ def _resolve_module(model: nn.Module, name: str) -> nn.Linear | nn.Embedding:
                 f"why the export report lists its banks. The grouped packed path is not "
                 f"built yet."
             ) from exc
-        raise DynQuantError(f"bit map names {name!r}, which is not a module of this model") from exc
+        raise DynQuantError(
+            f"{source} names {name!r}, which is not a module of this model"
+        ) from exc
     if not isinstance(module, nn.Linear | nn.Embedding):
         from dynquant.quant.quantizer import resolves_to_weight
 
@@ -481,8 +494,9 @@ def _resolve_module(model: nn.Module, name: str) -> nn.Linear | nn.Embedding:
                 f"case, and it is not a batched expert bank. {_ENCODER_REMEDY}"
             )
         raise DynQuantError(
-            f"{name!r} is a {type(module).__name__} and owns no weight to quantize. A bit "
-            f"map names the leaves that hold weights, not the containers that hold them."
+            f"{name!r} is a {type(module).__name__} and owns no weight to quantize. A "
+            f"{source} names the leaves that hold weights, not the containers that hold "
+            f"them."
         )
     return module
 

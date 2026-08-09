@@ -80,10 +80,15 @@ _LAZY: dict[str, str] = {
     "SignalTracker": "dynquant.signals.tracker",
     "TrackerConfig": "dynquant.signals.tracker",
     "track_signals": "dynquant.signals.context",
+    # serving. Resolving this lazily is the reason `register_hf_quantizer` is a
+    # call and not something `import dynquant` does for you: reaching it imports
+    # transformers, which is the cost the whole table exists to defer.
+    "register_hf_quantizer": "dynquant.integration.hf_quantizer",
 }
 
 if TYPE_CHECKING:  # pragma: no cover -- import-time cost avoided at runtime
     from .graph.roles import ModuleRole, RowPartition, role_of_name
+    from .integration.hf_quantizer import register_hf_quantizer
     from .quant.pack import pack_nbit, unpack_nbit
     from .quant.tensor import QuantLayout, QuantTensor
     from .signals.callback import DynQuantCallback
@@ -119,6 +124,7 @@ __all__ = [
     "__version__",
     "load_stats",
     "pack_nbit",
+    "register_hf_quantizer",
     "role_of_name",
     "save_stats",
     "track_signals",

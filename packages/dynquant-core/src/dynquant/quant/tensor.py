@@ -541,6 +541,58 @@ class QuantTensor:
         qt.validate()
         return qt
 
+    @classmethod
+    def empty(
+        cls,
+        *,
+        bits: int,
+        group_size: int,
+        in_features: int,
+        logical_shape: tuple[int, ...],
+        dtype: torch.dtype,
+        device: torch.device | str = "cpu",
+        symmetric: bool = False,
+        has_offsets: bool = True,
+        row_offset: int = 0,
+        layout: QuantLayout = QuantLayout.LINEAR,
+    ) -> QuantTensor:
+        """Correctly shaped buffers with undefined contents, for a load path to fill.
+
+        A checkpoint loader needs the *shape* of every packed tensor before it has any
+        of the values: ``transformers`` builds the module tree first and then copies
+        tensors into it by name. Deriving those shapes at the call site would be a
+        third implementation of the geometry -- after :meth:`from_dense` and
+        :meth:`validate` -- and the one place this project has repeatedly been bitten
+        is a second copy of a rule that agrees until it doesn't. So the shapes come
+        from :func:`~dynquant.quant.pack.row_geometry`, the same resolver the encoder
+        used, and the result is a tensor that :meth:`validate` accepts.
+
+        The contents are ``torch.empty``: uninitialised, not zeroed. A loader that
+        fails to fill one of these has a bug, and zeros would hide it behind a model
+        that runs and answers badly. Garbage does not survive a comparison against
+        the reference and zeros can.
+        """
+        geom = row_geometry(bits, group_size, in_features)
+        num_rows = 1
+        for extent in logical_shape[:-1]:
+            num_rows *= int(extent)
+        return cls(
+            packed=torch.empty((num_rows, geom.words_per_row), dtype=torch.int32, device=device),
+            scales=torch.empty((num_rows, geom.num_groups), dtype=dtype, device=device),
+            offsets=(
+                torch.empty((num_rows, geom.num_groups), dtype=dtype, device=device)
+                if has_offsets
+                else None
+            ),
+            bits=bits,
+            group_size=group_size,
+            in_features=in_features,
+            logical_shape=tuple(int(extent) for extent in logical_shape),
+            row_offset=row_offset,
+            layout=layout,
+            symmetric=symmetric,
+        )
+
     def validate(self) -> None:
         """Assert every geometric and dtype invariant. Cheap; always run on load."""
         if self.bits not in BIT_OPTIONS:

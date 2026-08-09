@@ -8,8 +8,11 @@ submodule raises :class:`~dynquant.errors.MissingDependencyError` with the right
 * :mod:`dynquant.integration.peft_utils` -- adapter-aware naming and merging, the
   bridge between "what the tracker saw during a LoRA run" and "what the quantizer
   will find in the merged checkpoint".
-* ``dynquant.integration.hf_quantizer`` -- ``HfQuantizer`` registration, so
-  ``AutoModelForCausalLM.from_pretrained`` loads a DynQuant checkpoint (phase 9).
+* :mod:`dynquant.integration.hf_quantizer` -- ``HfQuantizer`` registration, so
+  ``AutoModelForCausalLM.from_pretrained`` loads a DynQuant checkpoint instead of
+  skipping the unknown ``quant_method`` and returning a randomly initialised model.
+  Reached as ``dynquant.register_hf_quantizer()``; unregistered, the failure is
+  silent.
 """
 
 from __future__ import annotations
