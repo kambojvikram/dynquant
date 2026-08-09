@@ -83,6 +83,16 @@ class ExportReport:
     quantized_elements: int
     files: tuple[str, ...]
     layers: dict[str, dict[str, Any]] = field(default_factory=dict)
+    banks: tuple[str, ...] = ()
+    """Entries written from a bare parameter rather than a module.
+
+    Batched MoE expert banks. They pack, they account for their bytes, and the
+    packed runtime cannot load them back -- it swaps ``Linear`` and ``Embedding``
+    modules and a bank is neither. So a directory with any of these is size-honest
+    and not yet loadable, which is two different facts about one artifact and the
+    reason this is a field rather than a log line: a caller publishing to a Hub has
+    to be able to read the caveat off the report it already has.
+    """
 
     @property
     def total_bytes(self) -> int:
@@ -97,12 +107,18 @@ class ExportReport:
 
     def summary(self) -> str:
         tied = f", {len(self.tied)} tied module(s) sharing a table" if self.tied else ""
+        banks = (
+            f". {len(self.banks)} of the packed modules are batched expert banks: "
+            f"the size is real, the packed runtime cannot load them back yet"
+            if self.banks
+            else ""
+        )
         return (
             f"{self.quantized_modules} modules packed at {self.average_bits:.4f} "
             f"average bits{tied}: {self.total_bytes / 2**30:.3f} GiB on disk "
             f"({self.packed_bytes / 2**30:.3f} quantized + "
             f"{self.dense_bytes / 2**30:.3f} left dense) across "
-            f"{len(self.files)} file(s)"
+            f"{len(self.files)} file(s){banks}"
         )
 
 
@@ -156,11 +172,17 @@ def export_packed_checkpoint(
     packed_bytes = 0
     quantized_elements = 0
     consumed: set[str] = set()
+    banks: list[str] = []
 
     targets = sorted(bits.items())
     for index, (name, width) in enumerate(targets):
-        module = _resolve(model, name)
-        weight = module.weight
+        weight, state_key = _resolve(model, name)
+        if state_key == name:
+            # The key equals the name only for a bare parameter -- a module contributes
+            # `f"{name}.weight"`. That is the batched expert bank case, and the report
+            # carries it out so a caller can read the "size-honest, not yet loadable"
+            # caveat off the object it already has instead of re-deriving it from shapes.
+            banks.append(name)
 
         with torch.no_grad():
             quantized, search = quantize_tensor(
@@ -194,6 +216,12 @@ def export_packed_checkpoint(
         }
         packed_bytes += quantized.nbytes
         quantized_elements += quantized.num_dense_elements
+
+        # This tensor's own key first, because a bare expert bank is in no alias
+        # group -- `_tied_aliases` walks modules, and a bank is not one. Left out,
+        # the dense pass below would write the bank a second time at full width and
+        # the directory would be larger than the fp16 model it compressed.
+        consumed.add(state_key)
 
         # Every module sharing this weight's storage is now represented on disk,
         # and writing the table again would cost 27% of a tied 2B model for a
@@ -248,6 +276,7 @@ def export_packed_checkpoint(
         quantized_elements=quantized_elements,
         files=files,
         layers=layers,
+        banks=tuple(banks),
     )
     _write_manifest(out, schema=schema, report=report, provenance=provenance)
     return report
@@ -258,29 +287,42 @@ def export_packed_checkpoint(
 # --------------------------------------------------------------------------
 
 
-def _resolve(model: nn.Module, name: str) -> nn.Linear | nn.Embedding:
-    try:
-        module = model.get_submodule(name)
-    except AttributeError as exc:
-        from dynquant.quant.quantizer import resolves_to_weight
+def _resolve(model: nn.Module, name: str) -> tuple[torch.Tensor, str]:
+    """The tensor ``name`` addresses, and the state-dict key it is stored under.
 
-        if resolves_to_weight(model, name):
-            raise DynQuantError(
-                f"{name!r} is a tensor, not a module -- a batched expert bank. The packed "
-                f"format stores one entry per module and there is no module here, so this "
-                f"map cannot be exported yet. `dynquant quantize --map` writes the same "
-                f"widths as encoded values in a loadable checkpoint."
-            ) from exc
-        raise DynQuantError(
-            f"the bit map names {name!r}, which is not a module of this model. A map built "
-            f"for a different checkpoint does not transfer."
-        ) from exc
+    A name that reaches no module goes to :func:`~dynquant.quant.quantizer.target_tensor`,
+    the resolver ``quantize_model`` uses. This was a second copy built on ``get_submodule``
+    alone, and it refused every batched MoE expert bank -- a 3-D ``nn.Parameter`` that
+    ``get_submodule`` cannot reach -- saying the packed format could not represent one.
+
+    That was wrong about the format. ``QuantTensor`` carries ``logical_shape`` for exactly
+    this case and flattens ``[E, out, in]`` into ``[E * out, in]`` rows, so a bank packs,
+    round-trips and accounts for its bytes like any other tensor. What actually cannot read
+    a packed bank back is the *runtime*, which swaps modules and has none to swap; that
+    refusal lives in ``runtime.linear`` and says so there. Conflating the two here made a
+    resolver's blind spot look like a limit of the format, and cost the two DynQuant arms
+    of a six-variant release their size-honest artifact.
+
+    The key travels with the tensor because the two differ -- ``f"{name}.weight"`` for a
+    module, ``name`` itself for a bare parameter -- and it is what marks the dense copy as
+    already written. Get it wrong and the bank is written twice, packed and in full.
+    """
+    try:
+        module: nn.Module | None = model.get_submodule(name)
+    except AttributeError:
+        module = None
+
+    if module is None:
+        from dynquant.quant.quantizer import target_tensor
+
+        return target_tensor(model, name), name
+
     if not isinstance(module, nn.Linear | nn.Embedding):
         raise DynQuantError(
-            f"{name!r} is a {type(module).__name__}; the packed format covers Linear and "
-            f"Embedding only. Batched MoE expert banks need the grouped path."
+            f"{name!r} is a {type(module).__name__}; the packed format covers Linear, "
+            f"Embedding and batched expert banks held as bare parameters."
         )
-    return module
+    return module.weight, f"{name}.weight"
 
 
 def _tied_aliases(model: nn.Module) -> dict[int, list[str]]:
@@ -416,8 +458,12 @@ def _write_manifest(
 
     Nothing loads from this. ``config.json`` is the contract, because that is the
     only file a loader hands to ``from_config``. The manifest carries the
-    per-layer reconstruction error, the tie map and the provenance -- what
-    somebody reproducing a number needs and no loader does.
+    per-layer reconstruction error, the tie map, the provenance and the list of
+    batched expert banks -- what somebody reproducing a number needs and no loader
+    does. The banks are here and not only on :class:`ExportReport` because the
+    report is gone when the process ends and the directory is not: whoever uploads
+    this folder has to be able to read "size-honest, not yet loadable" off the
+    folder itself.
     """
     manifest = {
         "schema": MANIFEST_SCHEMA,
@@ -432,6 +478,7 @@ def _write_manifest(
             "average_bits": round(report.average_bits, 6),
         },
         "tied": dict(sorted(report.tied.items())),
+        "expert_banks": sorted(report.banks),
         "provenance": dict(provenance or {}),
         "layers": {name: dict(meta) for name, meta in sorted(report.layers.items())},
     }

@@ -44,7 +44,13 @@ if TYPE_CHECKING:
 
     from torch import Tensor, nn
 
-__all__ = ["LayerQuantResult", "QuantizationReport", "quantize_model", "resolves_to_weight"]
+__all__ = [
+    "LayerQuantResult",
+    "QuantizationReport",
+    "quantize_model",
+    "resolves_to_weight",
+    "target_tensor",
+]
 
 _log = get_logger(__name__)
 
@@ -148,7 +154,7 @@ def quantize_model(
             )
 
     for index, (name, width) in enumerate(sorted(bits.items())):
-        weight = _target_tensor(model, name)
+        weight = target_tensor(model, name)
         cweight = None if channel_weights is None else channel_weights[name]
         if cweight is not None and cweight.numel() != weight.shape[-1]:
             raise DynQuantError(
@@ -220,13 +226,13 @@ def resolves_to_weight(model: nn.Module, name: str) -> bool:
     copies.
     """
     try:
-        _target_tensor(model, name)
+        target_tensor(model, name)
     except DynQuantError:
         return False
     return True
 
 
-def _target_tensor(model: nn.Module, name: str) -> Tensor:
+def target_tensor(model: nn.Module, name: str) -> Tensor:
     """The tensor ``name`` addresses -- a module's ``weight``, or a bare parameter.
 
     Almost every name in a bit map resolves to a module that owns a ``weight``. A

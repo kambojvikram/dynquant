@@ -445,8 +445,11 @@ def _resolve_module(model: nn.Module, name: str) -> nn.Linear | nn.Embedding:
                 f"packed runtime cannot hold: packing replaces Linear and Embedding "
                 f"modules, and there is no module here to replace. The encoder handles it, "
                 f"so score this map with `dynquant eval --map-apply encode` or write it "
-                f"with `dynquant quantize --map`; both give the same accuracy. The grouped "
-                f"packed path is not built yet."
+                f"with `dynquant quantize --map`; both give the same accuracy. "
+                f"`dynquant export` packs it too, at the bytes its manifest claims -- a "
+                f"size-honest directory that this runtime still cannot load back, which is "
+                f"why the export report lists its banks. The grouped packed path is not "
+                f"built yet."
             ) from exc
         raise DynQuantError(f"bit map names {name!r}, which is not a module of this model") from exc
     if not isinstance(module, nn.Linear | nn.Embedding):

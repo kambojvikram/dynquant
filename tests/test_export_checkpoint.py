@@ -347,3 +347,154 @@ def test_skipped_modules_are_reported_not_dropped(exported):
     tensors = load_file(report.output_dir / HF_WEIGHTS_FILENAME)
     for name in report.skipped_modules:
         assert f"{name}.weight" in tensors
+
+
+# --------------------------------------------------------------------------
+# Batched expert banks
+# --------------------------------------------------------------------------
+
+
+BANK = "model.layers.0.mlp.experts.gate_up_proj"
+
+
+def tiny_model_with_a_bank():
+    """A Llama with an MoE-style expert bank grafted onto its first layer.
+
+    Batched-MoE checkpoints keep every expert's weight in one 3-D ``nn.Parameter``
+    -- ``[num_experts, out, in]`` -- and have no ``nn.Linear`` for them anywhere.
+    Grafting one on reproduces the property that actually matters, a quantization
+    target ``get_submodule`` cannot reach, without downloading an 8B model, and
+    leaves the rest of the fixture identical to every other test in this file.
+    """
+    model = tiny_model()
+    experts = torch.nn.Module()
+    torch.manual_seed(1)
+    experts.gate_up_proj = torch.nn.Parameter(torch.randn(8, 256, 128, dtype=torch.float16))
+    model.model.layers[0].mlp.experts = experts
+    return model
+
+
+@pytest.fixture
+def exported_bank(tmp_path):
+    model = tiny_model_with_a_bank()
+    report = export_packed_checkpoint(
+        model, {BANK: 4}, output_dir=tmp_path / "ckpt", compute_device=None
+    )
+    return model, report
+
+
+def test_a_batched_expert_bank_packs_at_the_width_it_was_given(exported_bank):
+    """Banks are 91.5% of an LFM2.5-8B-A1B; refusing them refuses the model.
+
+    This path used to raise, saying the packed *format* could not represent a
+    bank. The format could all along -- ``logical_shape`` exists for exactly this
+    -- and the refusal came from a second copy of the name resolver that only knew
+    ``get_submodule``. What future diff turns this red: reintroducing a
+    module-only lookup in the export path, or dropping ``logical_shape`` from the
+    flattening.
+    """
+    from safetensors.torch import load_file
+
+    _model, report = exported_bank
+    tensors = load_file(report.output_dir / HF_WEIGHTS_FILENAME)
+
+    assert set(report.banks) == {BANK}
+    # [8, 256, 128] flattens to 2048 rows of 128 values; 4 bits each is 16 words.
+    assert tuple(tensors[f"{BANK}.qweight"].shape) == (2048, 16)
+    assert tuple(tensors[f"{BANK}.scales"].shape) == (2048, 1)
+
+    layer = report.layers[BANK]
+    assert layer["logical_shape"] == [8, 256, 128]
+    assert layer["num_rows"] == 2048
+    # 4 bits per weight plus an fp16 scale and offset for each 128-value group.
+    assert layer["nbytes"] == 139_264
+    assert report.average_bits == pytest.approx(4.25)
+
+
+def test_a_packed_bank_is_not_also_written_dense(exported_bank):
+    """What the state-dict key returned beside the tensor is for.
+
+    A bank belongs to no tie-alias group -- ``_tied_aliases`` walks modules and a
+    bank is not one -- so unless the loop marks the bank's own key consumed, the
+    dense pass writes all 262 144 values again at fp16 and the "quantized"
+    directory comes out *larger* than the checkpoint it compressed.
+    """
+    from safetensors.torch import load_file
+
+    model, report = exported_bank
+    tensors = load_file(report.output_dir / HF_WEIGHTS_FILENAME)
+
+    assert BANK not in tensors
+    assert f"{BANK}.weight" not in tensors
+    fp16 = sum(t.numel() * t.element_size() for t in model.state_dict().values())
+    assert report.total_bytes < fp16
+
+
+def test_a_packed_bank_dequantizes_back_to_rank_three(exported_bank):
+    """``logical_shape`` is what makes the flattening reversible.
+
+    Without it a bank reads back as a 2048x128 matrix and every consumer that
+    slices per expert is silently off, which is worse than the refusal was.
+    """
+    from safetensors.torch import load_file
+
+    from dynquant.quant.tensor import QuantTensor
+    from dynquant.runtime import ops
+
+    model, report = exported_bank
+    tensors = load_file(report.output_dir / HF_WEIGHTS_FILENAME)
+    meta = report.layers[BANK]
+
+    restored = ops.dequantize(
+        QuantTensor(
+            packed=tensors[f"{BANK}.qweight"],
+            scales=tensors[f"{BANK}.scales"],
+            offsets=tensors[f"{BANK}.offsets"],
+            bits=4,
+            group_size=meta["group_size"],
+            in_features=meta["in_features"],
+            logical_shape=tuple(meta["logical_shape"]),
+        )
+    )
+    original = model.get_parameter(BANK).detach()
+    assert restored.shape == original.shape
+    error = torch.linalg.vector_norm(restored.float() - original.float())
+    assert error / torch.linalg.vector_norm(original.float()) < 0.1
+
+
+def test_the_bank_caveat_travels_with_the_directory(exported_bank):
+    """Size-honest and loadable are two facts, and the folder outlives the report.
+
+    Whoever uploads this to a Hub next week has the directory and not the
+    ``ExportReport``, so the manifest has to carry the caveat too.
+    """
+    _model, report = exported_bank
+    summary = report.summary()
+    assert "batched expert banks" in summary
+    assert "cannot load them back" in summary
+
+    manifest = json.loads((report.output_dir / MANIFEST_FILENAME).read_text())
+    assert manifest["expert_banks"] == [BANK]
+
+
+def test_a_directory_without_banks_makes_no_claim_about_them(exported):
+    """The caveat is conditional: a dense model's report must not carry it."""
+    _model, _bits, report = exported
+    assert report.banks == ()
+    assert "expert bank" not in report.summary()
+    manifest = json.loads((report.output_dir / MANIFEST_FILENAME).read_text())
+    assert manifest["expert_banks"] == []
+
+
+def test_the_packed_runtime_still_refuses_a_bank_and_now_names_the_writer(exported_bank):
+    """The export change must not read as "banks work everywhere now".
+
+    ``pack_model`` swaps modules and a bank is not one, so it still refuses -- and
+    its message points at ``dynquant export`` for the size-honest artifact rather
+    than leaving someone to discover the writer that works by reading the source.
+    """
+    from dynquant.runtime.linear import pack_model
+
+    model = tiny_model_with_a_bank()
+    with pytest.raises(DynQuantError, match="dynquant export"):
+        pack_model(model, {BANK: 4}, compute_device=None)
