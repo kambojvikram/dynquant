@@ -135,6 +135,14 @@ def eval_flags(args: argparse.Namespace, label: str) -> list[str]:
     One builder rather than one per arm kind: the shot count, the shot seed, the prompt
     style and the decode budget are what make two records comparable, and a panel where
     one arm was scored under different ones is not a panel.
+
+    ``--experts-impl`` is here for a stronger reason than the rest. The others are settings
+    the arms could in principle disagree about; this one is which *arithmetic* the model
+    runs, and the arms disagreed about it silently. A dq arm encodes in place and keeps
+    ``post_init``'s ``grouped_mm``; a GPTQ or AWQ arm arrives from ``llm-compressor`` with
+    its banks linearised into per-expert ``Linear`` modules and computes eager; on
+    LFM2.5-8B-A1B those differ on 1.24% of teacher-forced tokens, 0.29x the quantization
+    effect and the same order as the margin between the two.
     """
     flags = [
         "--label",
@@ -162,6 +170,11 @@ def eval_flags(args: argparse.Namespace, label: str) -> list[str]:
         str(args.max_new_tokens),
         "--keep-predictions",
         str(args.keep_predictions),
+        # Stated rather than inherited, exactly like the decode budget above: the default
+        # lives in `dynquant eval` and this driver is the thing that has to be able to say
+        # what every arm ran, including after that default moves.
+        "--experts-impl",
+        args.experts_impl,
     ]
     for name, value in (("--limit", args.limit), ("--batch-size", args.batch_size)):
         if value is not None:
@@ -654,6 +667,11 @@ def build_parser() -> argparse.ArgumentParser:
     # whatever this is set to; `predictions` is a debugging sample of raw generations, and
     # seven arms x 400 of them is a manifest nobody reads. Raise it to look at an arm.
     run.add_argument("--keep-predictions", type=int, default=0)
+    # `eager` on every arm, because it is the only dispatch all seven can share: a
+    # linearised baseline has no `*Experts` module left to put on `grouped_mm`, and a
+    # packed download is forced to `eager` whatever the panel did. `auto` is for measuring
+    # the dispatch itself, which is not what a panel does.
+    run.add_argument("--experts-impl", default="eager", choices=("eager", "auto"))
     run.set_defaults(func=do_run)
 
     return parser

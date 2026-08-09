@@ -611,6 +611,12 @@ def eval_namespace(args: argparse.Namespace) -> argparse.Namespace:
         str(args.shot_seed),
         "--prompt-style",
         args.prompt_style,
+        # The arm this driver builds has no `*Experts` module left -- `llm-compressor`
+        # rewrites the bank into per-expert `Linear`s, which is what `eager` computes -- so
+        # pinning changes nothing here and records everything: it is what lets this record
+        # pair against a dq arm that *was* moved.
+        "--experts-impl",
+        args.experts_impl,
         "--label",
         args.label,
         # Stated because the model field below stops being a path. `eval` defaults the
@@ -768,6 +774,12 @@ def build_parser() -> argparse.ArgumentParser:
         # number that script exists to measure.
         p.add_argument("--max-new-tokens", type=int, default=None)
         p.add_argument("--keep-predictions", type=int, default=None)
+        # A second copy of a `dynquant eval` flag, which is a shape this campaign has been
+        # bitten by four times. Kept anyway, for the reason `eval_namespace` gives: this
+        # parser exists so the driver can *state* what it wants and let the CLI's own
+        # parser supply everything it did not. The default here matches the CLI's, and the
+        # value is threaded through rather than re-derived.
+        p.add_argument("--experts-impl", default="eager", choices=("eager", "auto"))
 
     p = sub.add_parser("plan", help="what the recipe can see and what each width costs")
     p.add_argument("--model", required=True)

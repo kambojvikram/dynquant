@@ -957,3 +957,39 @@ def test_a_dynquant_record_older_than_the_signal_is_stale_and_a_baseline_is_not(
     message = str(caught.value)
     assert "dq_4b.json predates the stats file" in message
     assert "gptq_4b" not in message
+
+
+def test_every_scoring_arm_names_the_experts_dispatch(arms: Any, tmp_path: Path) -> None:
+    """The confound that had already contaminated four landed arms of this panel.
+
+    bf16 and the dq arms encode in place and keep ``post_init``'s ``grouped_mm``; GPTQ and
+    AWQ arrive from ``llm-compressor`` with their expert banks rewritten into per-expert
+    ``Linear`` modules, so they compute what eager computes. On LFM2.5-8B-A1B the two
+    dispatches disagree on 1.24% of teacher-forced tokens, 0.29x the quantization effect,
+    which is the same order as the dq-minus-GPTQ margin the panel exists to report. Every
+    arm therefore says ``eager`` out loud, and a panel run under a future default that
+    changed underneath it is not a thing this driver can produce.
+
+    The allocation command is excluded on purpose: ``dynquant inspect`` scores nothing, so
+    a dispatch flag on it would be a flag with no meaning, and asserting its absence is
+    what keeps the pin attached to the commands that generate tokens.
+
+    Turns red when: the flag leaves ``eval_flags``, or its value stops being pinned and
+    starts being inherited from whatever ``dynquant eval`` currently defaults to.
+    """
+    args = _args(arms)
+    scoring = {
+        "bf16": arms.ceiling_cmd(
+            args, arms.Arm("bf16", "ceiling", None, None), tmp_path / "b.json"
+        ),
+        "gptq_4b": arms.baseline_cmd(args, arms.Arm("gptq_4b", "gptq", 4, 1), tmp_path / "g.json"),
+        "dq_4b": arms.dq_eval_cmd(
+            args, arms.Arm("dq_4b", "dq", 4, 1), tmp_path / "m.json", tmp_path / "d.json"
+        ),
+    }
+    for label, command in scoring.items():
+        assert "--experts-impl" in command, label
+        assert command[command.index("--experts-impl") + 1] == "eager", label
+
+    allocating = arms.dq_inspect_cmd(args, arms.Arm("dq_4b", "dq", 4, 1), tmp_path / "m.json")
+    assert "--experts-impl" not in allocating
