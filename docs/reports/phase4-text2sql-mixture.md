@@ -1738,6 +1738,39 @@ GPTQ pass over 2112 expert matrices plus the attention and conv blocks is theref
 half an hour on this card: a real cost, 9% of the arm, and one that could not have selected a
 different launch. It is also the first time this campaign has had the number at all.
 
+**Two routes to that number agree, and their disagreement is the overhead.** The timing added to
+`_run` records the quantize call directly, so the subtraction above is checkable rather than
+merely plausible: `gptq_4b.quant.json` reports `quantize_seconds` of **1 928.5**, against the
+**1 977 s** the wall-clock decomposition left over. The two differ by **48.5 s** -- inside the
+45-64 s band that phase 3 measured thirty-six times for model load and task setup, which is
+exactly the term the subtraction could not separate and the instrumented number excludes. Neither
+route was calibrated against the other; they were computed from different files.
+
+**AWQ's calibration costs 1.46x GPTQ's, and the record says where it goes.** `awq_4b` reports
+**2 812.2 s -- 46.9 minutes -- against GPTQ's 32.1**, on the same 256 samples at 1024 tokens over
+the same checkpoint. The difference is not the forward pass, which both pay once: it is the
+smoothing search. AWQ resolves 6 mappings and rewrites **2 176 of 2 201 linears** before
+quantizing any of them, and its record carries the evidence as `weights_moved: 2201` with a
+`max_weight_delta` of **2.89**, where GPTQ reports `0` and `0.0` for both. That pair measures the
+pre-quantization *transform* and not the rounding -- GPTQ simply has no transform -- so it is not
+a rounding check and must not be read as one. The rounding check is separate, is
+`probe_unique_values_per_row`, and both arms pass it independently: **59-210 distinct values per
+row for AWQ and 5-195 for GPTQ**, against the 256 a 4-bit group-of-128 quantizer can produce over
+sixteen groups and the 2 048 an unrounded row would show. That probe exists because
+`llm-compressor`'s `oneshot` fits scales without rounding weights unless the modifier does it,
+and an arm that skipped rounding would otherwise score the original checkpoint and look excellent.
+
+**The rehearsal predicted the smoothing coverage gap exactly.** Four months of this campaign's
+rehearsals have predicted numbers that then arrived different; this one arrived identical. The
+38 M double left `{conv.out_proj: 4, lm_head: 1, self_attn.out_proj: 2}` unsmoothed, and the
+prediction written down before the real arm ran was that the same three roles would scale with
+depth to `{18, 1, 6}`. The record reads `{conv.out_proj: 18, lm_head: 1, self_attn.out_proj: 6}`
+-- 18 conv layers, being the 24 that are not the 6 attention layers, those 6 attention output
+projections, and the one head. So 25 of 2 201 linears are quantized without smoothing, and which
+25 is a property of the architecture's mapping rules, not of the calibration data: AWQ's smoothing
+needs a mapping from a normalization to the linears it feeds, and an output projection sitting
+behind an operator that is not a norm has none. The double was worth its four minutes.
+
 ### `--resume` can tell that a record exists; it cannot tell whose it is
 
 The panel launches with `--resume`, and resume is the right default: an arm that dies at the fifth
