@@ -465,7 +465,36 @@ def check_pairable(arms: list[Arm]) -> None:
             )
 
 
-def check_resumable(out: Path, args: argparse.Namespace, arms: list[Arm]) -> None:
+def rescored_labels(spec: str, arms: list[Arm]) -> frozenset[str]:
+    """Arms to score again from the artifacts they already hold.
+
+    `--resume` answers "which arms are done"; this answers a different question, and the
+    difference is the whole point. An arm that has to be scored again because the *scorer*
+    changed has not had its allocation invalidated, and re-deriving the map is not a free
+    no-op that happens to cost a few minutes: it is a second change, made silently, in the
+    same run as the one being measured. The eager re-score of section 8 is exactly this
+    shape -- the dispatch moved, the bit map did not -- and a re-run that re-allocated
+    would compare a new dispatch on a new map against an old dispatch on an old one.
+
+    So a rescored DynQuant arm reuses `maps/<label>.json` and refuses if it is not there,
+    rather than generating one. It is still weighed and still checked against its anchor:
+    reusing an allocation is not the same as trusting it.
+
+    Refuses an unknown label instead of ignoring it, because the failure it prevents is a
+    typo that silently rescores nothing and reports success.
+    """
+    wanted = frozenset(part.strip() for part in spec.split(",") if part.strip())
+    known = {arm.label for arm in arms}
+    if unknown := sorted(wanted - known):
+        raise SystemExit(
+            f"--rescore names {unknown}, which this panel does not plan. It plans {sorted(known)}."
+        )
+    return wanted
+
+
+def check_resumable(
+    out: Path, args: argparse.Namespace, arms: list[Arm], *, rescore: frozenset[str]
+) -> None:
     """A reused record was scored by *some* run. Check that it was scored by this one.
 
     :func:`check_pairable` compares records against each other through ``_comparability``,
@@ -508,16 +537,26 @@ def check_resumable(out: Path, args: argparse.Namespace, arms: list[Arm]) -> Non
 
     stale = []
     for arm in arms:
-        record = out / f"{arm.label}.json"
-        if not record.is_file():
+        # The check has to follow whatever is being *kept*, which is not always the record.
+        # A rescored arm's record is about to be overwritten, so its age says nothing about
+        # this run; what it carries forward instead is its allocation map, and that is the
+        # artifact that has to postdate the inputs. A rescored arm with no map to keep is
+        # refused in `do_run` rather than here, where there is nothing yet to be stale.
+        rescoring = arm.label in rescore
+        if rescoring and arm.kind != "dq":
             continue
-        written = record.stat().st_mtime
+        kept = out / "maps" / f"{arm.label}.json" if rescoring else out / f"{arm.label}.json"
+        if not kept.is_file():
+            continue
+        written = kept.stat().st_mtime
         sources = {"the model": Path(args.model) / "config.json"}
         if arm.kind == "dq":
             sources["the stats file"] = Path(args.stats)
         for what, source in sources.items():
             if source.exists() and written < source.stat().st_mtime:
-                stale.append(f"{record.name} predates {what}, {source}")
+                # Relative, because a map and a record share a basename and the message has
+                # to say which of the two is the one that went stale.
+                stale.append(f"{kept.relative_to(out)} predates {what}, {source}")
     if stale:
         raise SystemExit(
             "\n".join(
@@ -577,8 +616,14 @@ def do_run(args: argparse.Namespace) -> int:
 
     budgets = anchor_bytes(args.model, args.group_size)
     arms = plan_arms(budgets)
-    if args.resume:
-        check_resumable(out, args, arms)
+    rescore = rescored_labels(args.rescore, arms)
+    # `--rescore` implies the resume checks and the resume skipping. Naming three arms to
+    # score again and having the other four score again too is not a thing anyone means,
+    # and the input checks are wanted *more* here, not less: a re-score reuses more of the
+    # previous run than a resume does.
+    resuming = args.resume or bool(rescore)
+    if resuming:
+        check_resumable(out, args, arms, rescore=rescore)
     print(
         "anchors: " + ", ".join(f"{w}b -> {b} B ({b / 2**30:.3f} GiB)" for w, b in budgets.items()),
         flush=True,
@@ -591,16 +636,29 @@ def do_run(args: argparse.Namespace) -> int:
         # manifest at its realised size: a resume that skipped the weighing would write
         # `"nbytes": null` where the matched-byte evidence goes, and the panel would
         # read as one that never claimed a size rather than one that stopped checking.
-        reused = args.resume and record.is_file()
+        rescoring = arm.label in rescore
+        reused = resuming and record.is_file() and not rescoring
         if reused:
             print(f"\n{arm.label}: reusing {record}", flush=True)
+        if rescoring:
+            print(f"\n{arm.label}: scoring again, allocation unchanged", flush=True)
         if arm.kind == "ceiling":
             if not reused:
                 _run(ceiling_cmd(args, arm, record), what=arm.label)
             check_uncensored(record)
         elif arm.kind == "dq":
-            if not reused:
+            if rescoring and not save_map.is_file():
+                raise SystemExit(
+                    f"--rescore {arm.label} reuses the allocation this arm was already "
+                    f"given, and {save_map} is not there. Drop it from --rescore to "
+                    f"allocate it afresh; a re-score that quietly re-allocates changes two "
+                    f"things and reports one."
+                )
+            if not reused and not rescoring:
                 _run(dq_inspect_cmd(args, arm, save_map), what=f"{arm.label} allocation")
+            # On both paths, including the rescored one. Reusing a map is not trusting it:
+            # the arm still has to appear in the manifest at its realised size and still
+            # has to hit the anchor, or the re-score is a matched-byte claim nobody checked.
             arm.nbytes = map_nbytes(save_map, str(arm.target_bytes))
             check_matched(arm)
             arm.extra["map"] = str(save_map)
@@ -646,6 +704,17 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--device", default="cuda", help="where every arm loads (default: cuda)")
     run.add_argument("--trust-remote-code", action="store_true")
     run.add_argument("--resume", action="store_true", help="skip arms whose record exists")
+    run.add_argument(
+        "--rescore",
+        default="",
+        metavar="LABEL[,LABEL...]",
+        help=(
+            "score these arms again from the allocation they already have, and resume the "
+            "rest. For when the scorer changed and the bit map did not -- a plain rerun "
+            "would re-allocate, which is a second change in the run that is measuring the "
+            "first. Refuses an arm whose map is missing rather than making one"
+        ),
+    )
     run.add_argument("--calib-samples", type=int, default=256)
     run.add_argument("--seq-len", type=int, default=1024)
     run.add_argument("--seed", type=int, default=0)

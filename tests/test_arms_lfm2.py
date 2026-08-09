@@ -913,7 +913,7 @@ def test_resuming_into_another_panels_directory_refuses(arms: Any, tmp_path: Pat
     args = _resume_args(arms, tmp_path / "merged", tmp_path / "dynquant_stats.json", out)
 
     with pytest.raises(SystemExit) as caught:
-        arms.check_resumable(out, args, [])
+        arms.check_resumable(out, args, [], rescore=frozenset())
 
     message = str(caught.value)
     assert "some-other-merge" in message
@@ -952,7 +952,7 @@ def test_a_dynquant_record_older_than_the_signal_is_stale_and_a_baseline_is_not(
     panel = [arms.Arm("dq_4b", "dq", 4, 1), arms.Arm("gptq_4b", "gptq", 4, 1)]
 
     with pytest.raises(SystemExit) as caught:
-        arms.check_resumable(out, args, panel)
+        arms.check_resumable(out, args, panel, rescore=frozenset())
 
     message = str(caught.value)
     assert "dq_4b.json predates the stats file" in message
@@ -993,3 +993,104 @@ def test_every_scoring_arm_names_the_experts_dispatch(arms: Any, tmp_path: Path)
 
     allocating = arms.dq_inspect_cmd(args, arms.Arm("dq_4b", "dq", 4, 1), tmp_path / "m.json")
     assert "--experts-impl" not in allocating
+
+
+# --- scoring again without allocating again -------------------------------------------
+
+
+def test_a_rescored_arm_keeps_its_allocation_and_scores_again(
+    arms: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one operation the eager re-score needs, and the one a plain rerun cannot do.
+
+    Section 8 of the packed-MoE report calls for three arms scored again under a pinned
+    experts dispatch at the same anchors on the same items. Deleting their records and
+    resuming would have re-run ``dynquant inspect`` too, so each DynQuant arm would have
+    carried a freshly derived bit map into a comparison whose entire subject is the
+    dispatch. The allocator is deterministic and the map would very likely have come back
+    identical -- which is the argument that makes this easy to get wrong, because "very
+    likely identical" is not a control, and any later change to budget accounting turns it
+    into two changes measured as one.
+
+    The arm is still weighed from the map it kept: reusing an allocation is not trusting it.
+
+    Turns red when: ``--rescore`` starts allocating, or stops scoring, or skips the weighing.
+    """
+    out, spent = _resumable(arms, tmp_path, monkeypatch, {one: _record() for one in PANEL})
+
+    assert arms.do_run(_args(arms, [*RUN[:-1], str(out), "--rescore", "bf16,dq_4b"])) == 0
+    assert spent == ["bf16", "dq_4b"], spent
+    assert "dq_4b allocation" not in spent
+
+    manifest = json.loads((out / "arms.json").read_text(encoding="utf-8"))
+    priced = {arm["label"]: arm["nbytes"] for arm in manifest["arms"]}
+    assert priced["dq_4b"] == ANCHORS[4]
+    assert priced["dq_3b"] == ANCHORS[3], "an arm not named must still be resumed, not run"
+
+
+def test_a_rescored_arm_with_no_map_is_refused_rather_than_allocated(
+    arms: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The failure mode the flag exists to prevent, arriving through the flag itself.
+
+    Falling back to allocation when the map is missing would be the friendly behaviour and
+    would defeat the point: the caller asked for the previous allocation and would be given
+    a new one, in the run where that difference is the thing being controlled for.
+
+    Turns red when: the missing-map branch is softened into a warning or a fallback.
+    """
+    out, spent = _resumable(arms, tmp_path, monkeypatch, {one: _record() for one in PANEL})
+    (out / "maps" / "dq_4b.json").unlink()
+
+    with pytest.raises(SystemExit, match=r"--rescore dq_4b reuses the allocation"):
+        arms.do_run(_args(arms, [*RUN[:-1], str(out), "--rescore", "dq_4b"]))
+    assert "dq_4b allocation" not in spent
+
+
+def test_rescore_refuses_a_label_the_panel_does_not_plan(arms: Any) -> None:
+    """A typo that rescores nothing and exits 0 is the quietest way to not do the work.
+
+    Turns red when: unknown labels are filtered instead of refused.
+    """
+    with pytest.raises(SystemExit, match=r"--rescore names \['dq4b'\]"):
+        arms.rescored_labels("dq4b,bf16", arms.plan_arms(ANCHORS))
+    assert arms.rescored_labels(" dq_4b , bf16 ", arms.plan_arms(ANCHORS)) == {"dq_4b", "bf16"}
+
+
+def test_a_rescored_arm_is_checked_against_its_map_not_its_record(
+    arms: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The staleness check has to follow the artifact being kept, which moved.
+
+    ``check_resumable`` exists because a skip-if-output-exists guard cannot see that its
+    output predates its input. Under ``--rescore`` the output being kept is no longer the
+    record -- that is about to be rewritten, so its age says nothing -- it is the map. A
+    check still pointed at the record would read a *fresh* timestamp, pass, and let a bit
+    map derived from a superseded signal file be scored as though it came from this one.
+    That is the original defect surviving the fix for it, one artifact to the left.
+
+    The two assertions are the discrimination, not the refusal: the same directory has to
+    pass under ``--resume`` and fail under ``--rescore``, because under ``--resume`` the
+    record is what carries forward and the record is new enough.
+
+    Turns red when: the check stops distinguishing the two, in either direction.
+    """
+    out, spent = _resumable(arms, tmp_path, monkeypatch, {one: _record() for one in PANEL})
+    merged = tmp_path / "merged"
+    merged.mkdir()
+    (merged / "config.json").write_text("{}", encoding="utf-8")
+    stats = tmp_path / "dynquant_stats.json"
+    stats.write_text("{}", encoding="utf-8")
+
+    os.utime(merged / "config.json", (500, 500))
+    os.utime(out / "maps" / "dq_4b.json", (1000, 1000))
+    os.utime(stats, (2000, 2000))
+    for label in PANEL:
+        os.utime(out / f"{label}.json", (3000, 3000))
+
+    argv = ["run", "--model", str(merged), "--stats", str(stats), "--out", str(out)]
+    with pytest.raises(SystemExit, match=r"maps.dq_4b\.json predates the stats file"):
+        arms.do_run(_args(arms, [*argv, "--rescore", "dq_4b"]))
+
+    assert arms.do_run(_args(arms, [*argv, "--resume"])) == 0
+    assert spent == [], "the record postdates every input, so a resume has nothing to redo"
