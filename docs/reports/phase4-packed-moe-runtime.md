@@ -633,15 +633,30 @@ grouped path has no batched tensor to take. The conclusion is right and the rout
 accident. The operative fact §8 needed is narrower than what it wrote: there is no *batched* bank
 left, so the grouped kernel cannot run, so the arithmetic is the loop.
 
-**The numerical claim is still unmeasured.** "They already computed eager" is an inference from
-structure: both index one expert at a time. Nothing in this campaign has put the linearised loop and
-the `eager` dispatch on the same input and compared. The 1.24% figure is `eager` against
-`grouped_mm`; it says nothing about `eager` against a `ModuleList` of `Linear`s. The re-run in §8
-is designed to put every arm on one arithmetic, and it rests on that inference at the last step. The
-yardstick already exists — teacher-forced argmax agreement over the same 24 items — and
-running it against a linearised bf16 costs minutes beside the 5.5 hours an arm's eval takes. Until
-it runs, the panel's claim is "all arms index one expert at a time" and not "all arms compute
-identical values."
+**The numerical claim, half measured.** "They already computed eager" was an inference from
+structure: both index one expert at a time. The 1.24% figure is `eager` against `grouped_mm` and
+says nothing about `eager` against a `ModuleList` of `Linear`s, so the §8 re-run rests on that
+inference at its last step. The cheap half of the measurement now exists. Same four-layer model,
+weights deep-copied before either side moved, one put on `eager` and the other through
+`linearize_moe`, 4 × 48 random ids:
+
+```
+argmax agreement   1.0        max |delta|   0.0        bitwise identical   True
+```
+
+Bitwise, not close. Both sides run the same GEMM over the same contiguous weight in the same order,
+and there is no numeric difference for a router to turn discrete or for 22 layers to compound —
+which is the structural difference from the `eager`-vs-`grouped_mm` pair, where 1.8e-07 at one layer
+became 1.24% of tokens at 24. The linearised model also still read `grouped_mm` in its config while
+producing that output, which is the setting being inert stated as a measurement rather than as an
+argument.
+
+It is still a tiny CPU model in fp32, and §8's lesson is precisely that such a result does not
+transfer. What it changes is the prior and the failure it would catch: a disagreement here would
+have been decisive, because nothing at this scale compounds. The scaled check — teacher-forced
+argmax over the same 24 items, bf16, on the real model — costs minutes beside the 5.5 hours an
+arm's eval takes and runs after the panel. Until then the panel's claim is "all arms index one
+expert at a time, and at small scale that is bit-identical arithmetic."
 
 **And the records will not pair, correctly.** The four landed baselines were scored by a build that
 predates the `experts` field, so they carry no key at all. After the re-run the three DynQuant-side
