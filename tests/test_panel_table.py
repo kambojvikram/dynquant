@@ -654,3 +654,73 @@ def test_a_run_that_measured_nothing_does_not_read_as_a_measured_run(table) -> N
         {"measured_modules": 0, "proxied_modules": 133, "proxied_share": 1.0, "scale": 1.0}
     )
     assert "nothing was measured" in line
+
+
+# --- which arithmetic each arm ran ----------------------------------------------------
+
+
+def _set_experts(out: Path, label: str, value: Any) -> None:
+    """Put an ``experts`` block into a stored record, or a bare ``null``."""
+    record = out / f"{label}.json"
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    payload["experts"] = value
+    record.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def test_a_null_dispatch_and_a_missing_one_are_the_same_absence_to_the_guard(
+    table: Any, tmp_path: Path
+) -> None:
+    """The straddle a panel can make without being told, and where it becomes visible.
+
+    ``_pin_experts_dispatch`` writes ``null`` for a model with no batched bank to
+    dispatch -- every dense model, and every baseline whose banks ``llm-compressor``
+    rewrote into per-expert ``Linear`` modules. A record written before the field existed
+    has no key. ``_comparability`` reads both as ``_ABSENT`` and pairs them, which is
+    correct for the ``null`` and is carried along for free by the missing key.
+
+    So a panel can hold "this model had nothing to dispatch" beside "we do not know what
+    this ran" and the guard will not say so. On LFM2.5-8B-A1B the two dispatches disagree
+    on 1.24% of teacher-forced tokens, 0.29x what quantizing to 4 bits moves, so the
+    unknown is on the same axis as the result. The last assertion is the reason the block
+    exists: nothing else in the table reports it.
+
+    Turns red when: the two absences stop rendering differently, the warning stops naming
+    the arms it applies to, or the block is dropped because "the pairing guard covers it".
+    """
+    out = _write_panel(tmp_path / "arms")
+    _set_experts(out, "gptq_4b", None)
+
+    printed = _run(table, out)
+    block = printed.split("experts dispatch")[1]
+    assert "none (no bank)" in block, "a null is a fact about the model, not a gap"
+    assert "not recorded" in block, "a missing key is a gap, and has to read as one"
+    named = block.split("carry no dispatch field: ")[1].split(".")[0]
+    assert "bf16" in named and "gptq_4b" not in named
+    assert "NOT PAIRED" not in printed, (
+        "the guard reads both absences as _ABSENT and pairs them, which is why this "
+        "block is the only place the difference appears"
+    )
+
+
+def test_a_recorded_dispatch_refuses_to_pair_with_a_record_that_predates_the_field(
+    table: Any, tmp_path: Path
+) -> None:
+    """The other half, and the panel's own next step.
+
+    Re-scoring the three arms that kept their expert banks on ``--experts-impl eager``
+    puts ``{found, ran}`` into their records and leaves the ``llm-compressor`` baselines
+    as they are. ``_ABSENT != "eager"``, so the guard fires -- correctly, because a
+    baseline written before the field cannot say what it ran. This pins that the fix to
+    the arithmetic is not silent about the bookkeeping it breaks, so the re-score cannot
+    be read as a clean seven-arm panel when it is a three-arm one beside four unknowns.
+
+    Turns red when: ``experts.ran`` leaves ``EXPERTS_PAIRING_FIELDS``, or the exemption
+    for an absent field widens from "pairs with absence" to "pairs with anything".
+    """
+    out = _write_panel(tmp_path / "arms")
+    _set_experts(out, "dq_4b", {"found": "grouped_mm", "ran": "eager"})
+
+    printed = _run(table, out)
+    assert "eager (from grouped_mm)" in printed.split("experts dispatch")[1]
+    assert "NOT PAIRED" in printed
+    assert "experts.ran" in printed

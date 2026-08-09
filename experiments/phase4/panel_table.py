@@ -299,6 +299,11 @@ def rows(
                 "unfinished": detail.get("unfinished_reasoning"),
                 "by_source": detail.get("by_source") or {},
                 "apply": ((record or {}).get("packed") or {}).get("apply"),
+                # Two fields for one value because a missing key and a `null` are
+                # different facts and `.get` cannot tell them apart -- which is exactly
+                # the distinction `_comparability` also cannot make. See `dispatch_of`.
+                "experts": (record or {}).get("experts"),
+                "experts_recorded": record is not None and "experts" in record,
                 "allocation": allocation_of(out, arm),
                 "seconds": (record or {}).get("seconds"),
             }
@@ -369,6 +374,68 @@ def print_accuracy(built: list[dict[str, Any]], chance: float | None) -> None:
         )
     if chance:
         print(f"{'(guessing)':10s} {chance * 100:10.2f}%")
+
+
+def dispatch_of(row: dict[str, Any]) -> tuple[str, bool]:
+    """What the record says about the experts dispatch, and whether it says anything.
+
+    `_pin_experts_dispatch` writes one of exactly two things, so a record can be in one
+    of exactly three states. A model with a batched expert bank gets
+    `{found, ran}` -- what the dispatch was on arrival and what it was when the scorer
+    ran. A model with no bank to dispatch gets `null`: every dense model, and every
+    baseline whose banks `llm-compressor` rewrote into per-expert `Linear` modules. A
+    record written before the field existed has no key at all.
+
+    The last two are the same absence to `_comparability`, which reads
+    `record.get("experts")` and treats a non-dict as `_ABSENT`. That is deliberate for
+    `null` -- a dense model has no dispatch and never will, so absence has to pair with
+    absence -- and it takes a missing key along with it. So "we know this model had
+    nothing to dispatch" and "we do not know what this ran" pair with each other and the
+    guard stays quiet, which is the one straddle a panel can make without being told.
+
+    Returns the text and whether this row is the unknown case.
+    """
+    if not row["experts_recorded"]:
+        return "not recorded", True
+    experts = row["experts"]
+    if not isinstance(experts, dict):
+        return "none (no bank)", False
+    return f"{experts.get('ran')} (from {experts.get('found')})", False
+
+
+def print_dispatch(built: list[dict[str, Any]]) -> None:
+    """Which arithmetic each arm ran, per its own record.
+
+    On LFM2.5-8B-A1B the two experts dispatches disagree on 1.24% of teacher-forced
+    tokens -- 0.29x the effect quantization itself has -- so this is not a provenance
+    note, it is a column on the panel's main axis.
+    """
+    scored = [row for row in built if row["accuracy"] is not None]
+    if not scored:
+        return
+    header = f"{'arm':10s} {'experts dispatch':>26s}"
+    print(header)
+    print("-" * len(header))
+    silent = []
+    for row in scored:
+        text, unknown = dispatch_of(row)
+        if unknown:
+            silent.append(row["label"])
+        print(f"{row['label']:10s} {text:>26s}")
+    if silent:
+        print()
+        print(
+            f"  {len(silent)} arm(s) carry no dispatch field: {', '.join(silent)}. Those "
+            f"records predate it, and nothing recovers what they ran."
+        )
+        print(
+            "  To `_comparability` that is the same absence as a `null` -- a model with no "
+            "bank to dispatch -- so"
+        )
+        print(
+            "  the two pair with each other and the guard stays quiet. This block is "
+            "where the difference shows."
+        )
 
 
 def print_by_source(built: list[dict[str, Any]]) -> None:
@@ -678,6 +745,8 @@ def main(argv: list[str] | None = None) -> int:
     print_sizes(built, params, tolerance)
     print()
     print_accuracy(built, chance)
+    print()
+    print_dispatch(built)
     print()
     print_by_source(built)
     print()
