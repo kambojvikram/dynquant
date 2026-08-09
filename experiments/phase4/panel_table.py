@@ -39,10 +39,26 @@ measurement whose answer is the interval; nobody doubts the sign. Both are corre
 each within its own block, and the block sizes are printed so a reader who disagrees with
 the split can multiply by twelve instead.
 
+Where the per-source block sits
+-------------------------------
+
+``--sources`` turns the head-to-head family into a per-dataset decomposition. It is a
+decomposition and not a second experiment: the same twelve hits are being re-partitioned,
+so a method that wins on one source and loses on the other has not thereby produced two
+findings to choose between. It is here because the aggregate raises the question and
+cannot answer it -- the records store 12,000 hits in one order and a per-source total,
+and nothing that says which item is which.
+
+The labels are therefore checked, not trusted. A source vector is only accepted if, for
+every arm, the hits at the positions it calls a given source sum to exactly the
+``by_source`` count that arm wrote during its own run. Eight integer agreements on this
+panel, and a shuffle reconstructed from the wrong seed would have to reproduce all eight.
+
 Run::
 
     python experiments/phase4/panel_table.py --arms runs/s4/arms
     python experiments/phase4/panel_table.py --arms runs/s4/arms --json > table.json
+    python experiments/phase4/panel_table.py --arms runs/s4/arms --sources runs/s4/arms/sources.json
 """
 
 from __future__ import annotations
@@ -534,6 +550,94 @@ def print_comparisons(
     return computed
 
 
+def load_sources(
+    out: Path, given: str | None, records: dict[str, dict[str, Any]]
+) -> tuple[list[str] | None, str | None]:
+    """Per-item source labels, or a reason there are none.
+
+    Verified against the records rather than accepted: every arm wrote a per-source
+    correct/total during its own run, and a label vector that disagrees with any of them
+    is the wrong vector. Returning the reason instead of raising keeps a bad or missing
+    ``sources.json`` from taking the rest of the table down with it -- the aggregate rows
+    are what the panel is for, and they do not need this.
+    """
+    path = Path(given) if given else out / "sources.json"
+    if not path.exists():
+        return None, None if given is None else f"{path} does not exist"
+    try:
+        labels = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return None, f"{path}: {exc}"
+    if not isinstance(labels, list) or not all(isinstance(name, str) for name in labels):
+        return None, f"{path}: expected a json list of strings"
+
+    checked = 0
+    for label, record in sorted(records.items()):
+        hits = record.get("hits")
+        stored = (record.get("detail") or {}).get("by_source")
+        if not hits or not stored:
+            continue
+        if len(hits) != len(labels):
+            return None, f"{label} has {len(hits)} hits against {len(labels)} labels"
+        for name, pair in sorted(stored.items()):
+            correct, total = int(pair[0]), int(pair[1])
+            mine = sum(1 for hit, src in zip(hits, labels, strict=True) if src == name and hit)
+            count = sum(1 for src in labels if src == name)
+            if (mine, count) != (correct, total):
+                return None, (
+                    f"{label}/{name}: labels say {mine}/{count}, the record says {correct}/{total}"
+                )
+            checked += 1
+    if not checked:
+        return None, "no arm records both hits and a per-source breakdown to check against"
+    return labels, None
+
+
+def restrict(
+    records: dict[str, dict[str, Any]], labels: list[str], name: str
+) -> dict[str, dict[str, Any]]:
+    """The same records with every hit vector cut down to one source's items."""
+    subset: dict[str, dict[str, Any]] = {}
+    for label, record in records.items():
+        hits = record.get("hits")
+        if not hits or len(hits) != len(labels):
+            continue
+        kept = [hit for hit, src in zip(hits, labels, strict=True) if src == name]
+        subset[label] = {**record, "hits": kept}
+    return subset
+
+
+def print_source_blocks(
+    labels: list[str] | None,
+    why_not: str | None,
+    records: dict[str, dict[str, Any]],
+    pairable: str | None,
+) -> dict[str, list[dict[str, Any]]]:
+    if labels is None:
+        if why_not:
+            print(f"per-source head to head: unavailable -- {why_not}")
+            print()
+        return {}
+    blocks: dict[str, list[dict[str, Any]]] = {}
+    for name in sorted(set(labels)):
+        count = sum(1 for src in labels if src == name)
+        blocks[name] = print_comparisons(
+            f"head to head, on {name} alone ({count:,} of {len(labels):,} items)",
+            HEAD_TO_HEAD,
+            restrict(records, labels, name),
+            pairable,
+        )
+        print()
+    print(
+        "  The per-source blocks re-partition the same hits the block above tests, so a "
+        "method\n  ahead on one source and behind on the other has produced one result "
+        "with structure,\n  not two results to choose between. Each block is Holm-"
+        "corrected within itself."
+    )
+    print()
+    return blocks
+
+
 def as_json(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
@@ -551,6 +655,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="assemble the phase-4 panel table")
     parser.add_argument("--arms", required=True, help="the --out directory arms_lfm2 run wrote")
     parser.add_argument("--json", action="store_true", help="emit the assembled table as json")
+    parser.add_argument(
+        "--sources",
+        help="json list of per-item source labels; defaults to sources.json beside the arms",
+    )
     args = parser.parse_args(argv)
 
     out = Path(args.arms)
@@ -581,6 +689,8 @@ def main(argv: list[str] | None = None) -> int:
         print()
     head = print_comparisons("head to head, at matched bytes", HEAD_TO_HEAD, records, pairable)
     print()
+    labels, why_not = load_sources(out, args.sources, records)
+    blocks = print_source_blocks(labels, why_not, records, pairable)
     ceiling = print_comparisons("what each method cost", AGAINST_CEILING, records, pairable)
     print()
     for line in (
@@ -606,6 +716,9 @@ def main(argv: list[str] | None = None) -> int:
                     "pairing_error": pairable,
                     "arms": built,
                     "head_to_head": as_json(head),
+                    "head_to_head_by_source": {
+                        name: as_json(entries) for name, entries in blocks.items()
+                    },
                     "against_ceiling": as_json(ceiling),
                 },
                 indent=2,
