@@ -537,6 +537,15 @@ twice over the same 12,000 items with the dispatch as the only difference. Whate
 the number a grouped kernel registered into `ALL_EXPERTS_FUNCTIONS` would be recovering, which is
 the first time this campaign will have priced that work instead of asserting it is worth doing.
 
+For nothing, but not for free: the re-score overwrites the records it re-scores, so the sequence is
+`cp -a panel panel_grouped_mm` and then `dispatch_delta.py --before panel_grouped_mm --after panel`.
+That script exists because a measurement contingent on remembering a `cp` is a measurement that gets
+lost, and it carries one refusal worth naming here. If both records report the same dispatch it
+prints no row. Two runs of the same computation pair into a delta of exactly zero at p = 1.0, and
+that table is a clean demonstration that the dispatch is free — which is the claim this section
+retracted, reproduced by the fix having silently not run. The zero is the most convincing output the
+tool could produce and the least trustworthy, so it is refused instead of printed.
+
 It also re-prices the re-score. Budgeting three arms at 2.8 hours each assumes `eager` is as cheap
 as `grouped_mm`, and the premise of this whole section is that it is not: `eager` indexes one expert
 at a time, like the loop. It should sit below the loop, since it indexes inside one batched tensor
