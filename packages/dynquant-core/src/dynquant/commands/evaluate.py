@@ -868,6 +868,34 @@ def _comparability(record: dict[str, Any]) -> dict[str, Any]:
     return values
 
 
+def problem_set_difference(
+    left: dict[str, Any], right: dict[str, Any]
+) -> dict[str, tuple[Any, Any]]:
+    """Where two records disagree about *what was asked*, which is what stops a pairing.
+
+    A paired test lines two hit vectors up element-wise, so it needs both runs to have
+    been scored over the same items in the same order. Every field in the contract names
+    something that would break that -- the task, the backend, the split, the shot count
+    and seed, the item limit, the decode budget, the prompt framing -- except one.
+
+    ``experts.ran`` names how an answer was computed, not which question was asked. Two
+    arms on different expert dispatches answered the same items in the same order and
+    their vectors do pair; what the difference costs is the *reading* of the delta, since
+    the two dispatches disagree on 1.24% of teacher-forced tokens on LFM2.5-8B-A1B --
+    0.29x what quantizing that model to 4 bits moves. That is a caveat to price on a
+    comparison, not a reason to refuse it, and ``panel_table`` prices it per row with a
+    mark. Excluded here by name from ``EXPERTS_PAIRING_FIELDS``, so a field added there is
+    excluded with it rather than quietly becoming fatal.
+
+    This exists because both callers had started to grow their own copy of the subtraction
+    and a third was about to. A caller that wants the difference including the dispatch
+    still has ``_comparability``.
+    """
+    computation = {f"experts.{field}" for field in EXPERTS_PAIRING_FIELDS}
+    a, b = _comparability(left), _comparability(right)
+    return {key: (a[key], b[key]) for key in a if a[key] != b[key] and key not in computation}
+
+
 def _compare(record: dict[str, Any], path: str) -> dict[str, Any]:
     """Paired McNemar against a record written by an earlier run."""
     from dynquant.errors import DynQuantError

@@ -450,7 +450,7 @@ def check_pairable(arms: list[Arm]) -> None:
     ``computation`` below. It is the only member of the contract that describes how an
     answer was computed rather than which question was asked.
     """
-    from dynquant.commands.evaluate import EXPERTS_PAIRING_FIELDS, _comparability
+    from dynquant.commands.evaluate import _comparability, problem_set_difference
 
     # Every arm passed in has been scored -- the caller hands over the prefix of the panel
     # that has, not the whole panel. Filtering here instead would make the check silently
@@ -474,20 +474,17 @@ def check_pairable(arms: list[Arm]) -> None:
     # score again under a dispatch the four reused baselines predate, the disagreement is
     # explained in full by the command that was typed, and a fatal check would stop the
     # driver on the second arm -- after the ceiling re-score and before any DynQuant arm.
-    computation = {f"experts.{field}" for field in EXPERTS_PAIRING_FIELDS}
     expected = _comparability(records[reference])
     reported = []
     for label, record in records.items():
-        found = _comparability(record)
-        differed = {k: (expected[k], found[k]) for k in expected if expected[k] != found[k]}
-        problem = {k: v for k, v in differed.items() if k not in computation}
+        problem = problem_set_difference(records[reference], record)
         if problem:
             raise SystemExit(
                 f"{label} was not scored under the same settings as {reference}: {problem} "
                 f"as (reference, {label}). Their hit vectors describe different problem sets "
                 f"and cannot be paired. A reused record is the usual cause."
             )
-        if differed:
+        if _comparability(record) != expected:
             reported.append(label)
     if reported:
         # One line per arm boundary rather than one per mismatching arm, because this runs

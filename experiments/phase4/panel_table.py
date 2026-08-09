@@ -193,23 +193,27 @@ def resolve_stored(out: Path, stored: str | None) -> Path | None:
 
 
 def check_pairable(records: dict[str, dict[str, Any]]) -> str | None:
-    """Refuse to pair records that were not scored under the same settings.
+    """Whether the directory is homogeneous, as a banner over the whole table.
 
     ``arms_lfm2 run`` already checks this as each arm lands. Checked again because this
     script can be pointed at a directory the run did not assemble -- a resumed panel, a
     hand-merged one -- and pairing two hit vectors that describe different problem sets
     produces a number rather than an error.
+
+    Advisory now, and that is the change. It used to gate every row in every block: one
+    arm disagreeing with the ceiling blanked `GPTQ vs AWQ` too, a comparison neither the
+    stale arm nor the ceiling is part of. A panel is a set of pairs and comparability is a
+    property of a pair, so `print_comparisons` decides row by row and this says only that
+    somewhere in the directory two arms do not agree.
     """
-    from dynquant.commands.evaluate import _comparability
+    from dynquant.commands.evaluate import problem_set_difference
 
     if not records:
         return None
     reference = "bf16" if "bf16" in records else next(iter(records))
-    expected = _comparability(records[reference])
     for label, record in records.items():
-        found = _comparability(record)
-        if found != expected:
-            differed = {k: (expected[k], found[k]) for k in expected if expected[k] != found[k]}
+        differed = problem_set_difference(records[reference], record)
+        if differed:
             return (
                 f"{label} was not scored under the same settings as {reference}: {differed} "
                 f"as ({reference}, {label}). Their hit vectors are not paired."
@@ -482,13 +486,15 @@ def print_dispatch(built: list[dict[str, Any]]) -> None:
     header = f"{'arm':10s} {'experts dispatch':>26s}"
     print(header)
     print("-" * len(header))
-    recovered, silent = [], []
+    recovered, silent, eager = [], [], []
     for row in scored:
         text, state = dispatch_of(row)
         if state == "recovered":
             recovered.append(row["label"])
         elif state == "unknown":
             silent.append(row["label"])
+        elif state == "recorded" and (row["experts"] or {}).get("ran") == "eager":
+            eager.append(row["label"])
         print(f"{row['label']:10s} {text:>26s}")
     if recovered:
         print()
@@ -502,9 +508,12 @@ def print_dispatch(built: list[dict[str, Any]]) -> None:
         )
         print(
             "  the loop and nothing had to be assumed about a checkpoint. Recovered, not "
-            "recorded: `_comparability`"
+            "recorded -- what that"
         )
-        print("  reads the eval record and still refuses to pair them.")
+        print(
+            "  costs is this line, not the comparison: a dispatch difference is priced on "
+            "the row, not refused."
+        )
     if silent:
         print()
         print(
@@ -515,9 +524,28 @@ def print_dispatch(built: list[dict[str, Any]]) -> None:
             "  Nothing written down says what these ran, and to `_comparability` the "
             "absence is the same one a"
         )
+        print("  dense model's `null` makes, so nothing flags them. They are the re-score set.")
+    if recovered and eager:
+        # The one claim the panel makes that no measurement on this model supports. It
+        # only becomes load-bearing once both buckets are occupied, which is precisely
+        # the state the eager re-score produces -- so the note appears exactly when the
+        # table stops showing any other caveat, and does not nag before then.
+        print()
         print(
-            "  dense model's `null` makes, so they pair with each other in silence. They "
-            "are the re-score set."
+            f"  {len(eager)} arm(s) ran `eager` and {len(recovered)} ran the linearised "
+            f"loop. The panel treats those"
+        )
+        print(
+            "  as one class -- both index one expert at a time -- on a four-layer CPU "
+            "fp32 model where the two"
+        )
+        print(
+            "  were bitwise identical. Bitwise is strong, but section 8 of the report is "
+            "an agreement at small"
+        )
+        print(
+            "  scale that did not survive to 8B. Nothing below is marked for dispatch; "
+            "that rests on this."
         )
 
 
@@ -629,11 +657,11 @@ def print_comparisons(
     title: str,
     family: tuple[tuple[str, str, str], ...],
     records: dict[str, dict[str, Any]],
-    pairable: str | None,
     arithmetic: dict[str, str | None],
     *,
     explain_arithmetic: bool = True,
 ) -> list[dict[str, Any]]:
+    from dynquant.commands.evaluate import problem_set_difference
     from dynquant.eval.compare import compare_paired
 
     print(title)
@@ -655,10 +683,14 @@ def print_comparisons(
         if left not in records or right not in records:
             rows.append(f"{question:28s} (needs both arms)")
             continue
-        if pairable is not None:
-            rows.append(f"{question:28s} (records are not comparable)")
-            continue
         a, b = records[left], records[right]
+        # These two against each other. The fields are named in the row because the reader
+        # has to act on them -- "not comparable" alone sends someone to diff two 120 KB
+        # records to learn that one of them was scored at a different `--limit`.
+        differed = problem_set_difference(a, b)
+        if differed:
+            rows.append(f"{question:28s} (not comparable: {', '.join(sorted(differed))})")
+            continue
         if not a.get("hits") or not b.get("hits"):
             rows.append(f"{question:28s} (no per-item hits recorded)")
             continue
@@ -813,7 +845,6 @@ def print_source_blocks(
     labels: list[str] | None,
     why_not: str | None,
     records: dict[str, dict[str, Any]],
-    pairable: str | None,
     arithmetic: dict[str, str | None],
 ) -> dict[str, list[dict[str, Any]]]:
     if labels is None:
@@ -828,7 +859,6 @@ def print_source_blocks(
             f"head to head, on {name} alone ({count:,} of {len(labels):,} items)",
             HEAD_TO_HEAD,
             restrict(records, labels, name),
-            pairable,
             arithmetic,
             explain_arithmetic=False,
         )
@@ -897,15 +927,11 @@ def main(argv: list[str] | None = None) -> int:
     # One map for every block, built from the same rows the dispatch census printed, so
     # the flag and the census cannot disagree about what an arm ran.
     arithmetic = {row["label"]: arithmetic_of(row) for row in built}
-    head = print_comparisons(
-        "head to head, at matched bytes", HEAD_TO_HEAD, records, pairable, arithmetic
-    )
+    head = print_comparisons("head to head, at matched bytes", HEAD_TO_HEAD, records, arithmetic)
     print()
     labels, why_not = load_sources(out, args.sources, records)
-    blocks = print_source_blocks(labels, why_not, records, pairable, arithmetic)
-    ceiling = print_comparisons(
-        "what each method cost", AGAINST_CEILING, records, pairable, arithmetic
-    )
+    blocks = print_source_blocks(labels, why_not, records, arithmetic)
+    ceiling = print_comparisons("what each method cost", AGAINST_CEILING, records, arithmetic)
     print()
     for line in (
         "delta = left minus right, percentage points, on the same problems in the same order.",

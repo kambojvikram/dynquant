@@ -724,6 +724,67 @@ end can still be unrunnable, and the cost of finding that out is paid in whateve
 before it hits the wall. Reading `check_resumable` established the re-score would *start*. It took
 reading `check_pairable` to establish it would *finish*, and only the second question was load-bearing.
 
+**And then the same question, asked once more, produced a worse answer than the first one.** The
+driver was fixed so the re-score could finish. That left the table, and the table had the same bug
+in a more expensive form. `panel_table`'s `pairable` is a single string for the whole directory:
+`check_pairable` walks the arms, returns the first disagreement with `bf16`, and every row in every
+block then short-circuits to `(records are not comparable)`. Not the affected rows — all of them.
+After the eager re-score three arms carry `experts.ran` and four do not, the flag fires, and the
+panel prints no delta, no interval and no p-value anywhere. Including `GPTQ vs AWQ`, a comparison
+neither re-scored arm is part of. **The re-score would have cleared every caveat and deleted the
+numbers the caveats were annotating.** Run against the four landed records with `bf16` and `dq_4b`
+given the field they will have, the pre-fix script prints exactly that:
+
+```
+4b  DynQuant vs GPTQ         (records are not comparable)
+4b  DynQuant vs AWQ          (records are not comparable)
+4b  GPTQ vs AWQ              (records are not comparable)
+```
+
+Two things were wrong and they are worth separating, because only one of them is about dispatch.
+
+**A panel is a set of pairs, and comparability is a property of a pair.** One stale arm anywhere in
+the directory blanking comparisons it does not appear in is a defect on its own, independent of
+anything to do with experts — it means a single bad `awq_3b` would cost the entire seven-arm
+table rather than the two rows containing it. Comparability is now decided per comparison, and the
+row names the field: `(not comparable: decode.max_new_tokens)`, not a bare "not comparable" that
+sends someone to diff two 120 KB records.
+
+**And `experts.ran` should not have been in the pairing contract at all.** This reverses a decision
+§11 recorded two revisions ago, so here is the reasoning rather than just the outcome. It went in
+because two arms on different dispatches produce a delta contaminated by dispatch, and that is
+true. The error was the response. *Paired* has a technical meaning — the two hit vectors index
+the same items in the same order — and a dispatch difference does not break it. The concern is
+about what the delta **means**, which is a different thing from whether it can be computed, and the
+panel already had somewhere to put it: the `!` mark and the priced footnote added one revision ago.
+Having both mechanisms meant the strong one silently pre-empted the informative one. A number
+carrying "these two arms are not known to have run the same arithmetic, and the gap between
+dispatches is 0.29x the effect you are reading" is strictly more use than a blank row.
+
+The rule now lives once, in `dynquant.commands.evaluate.problem_set_difference`, next to the field
+tuples it subtracts from, because by this point three call sites had started growing their own copy
+of the subtraction. `_comparability` still reports every difference including the dispatch; what
+`problem_set_difference` answers is the narrower question of which differences stop a pairing.
+
+**What the clean table then owes.** After the re-score all seven arms are on indexed arithmetic
+— three recording `eager`, four recovered as the loop — so every mark clears and the panel
+prints numbers with no caveat at all. That is the correct output and the most dangerous one this
+campaign will produce, because the collapse holding it up is that `eager` and the linearised loop
+are one class, and the evidence for that is a four-layer CPU fp32 model where the two were bitwise
+identical. Bitwise is strong. §8 is also an agreement at small scale that did not survive to 8B.
+So the census now prints that claim whenever both buckets are occupied, which is exactly the state
+the re-score creates:
+
+```
+  2 arm(s) ran `eager` and 2 ran the linearised loop. The panel treats those
+  as one class -- both index one expert at a time -- on a four-layer CPU fp32 model where the two
+  were bitwise identical. Bitwise is strong, but section 8 of the report is an agreement at small
+  scale that did not survive to 8B. Nothing below is marked for dispatch; that rests on this.
+```
+
+A table with no caveats has to say what it is resting on, and this one now does. The 8B measurement
+remains owed.
+
 **Which makes one absence worth printing.** `_comparability` reads `record.get("experts")` and
 treats a non-dict as absent. A `null` — a dense model, no dispatch, none possible — and a
 missing key — a record written before anyone asked — are the same value to it, and pair with

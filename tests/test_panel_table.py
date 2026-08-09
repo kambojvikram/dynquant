@@ -425,7 +425,15 @@ def test_records_scored_under_different_settings_are_not_paired(table: Any, tmp_
     The pairing contract lives in the eval command and is read from there, so a field
     added to it reaches this guard without a second copy being updated. What is pinned
     here is that a mismatch turns into no p-value at all rather than into a p-value over
-    two different problem sets.
+    two different problem sets -- and that it does so for the comparisons the stale arm is
+    actually in, not for the whole table.
+
+    That second half is the part that used to be wrong. `pairable` was one string for the
+    panel, so a single arm scored at the wrong decode budget blanked `GPTQ vs AWQ` too, a
+    row it appears nowhere in. Comparability is a property of a pair.
+
+    Turns red when: the check goes back to a panel-wide flag, or the row stops naming the
+    field and an operator has to diff two 120 KB records to find it.
     """
     out = _write_panel(tmp_path / "arms")
     record = out / "gptq_4b.json"
@@ -434,12 +442,18 @@ def test_records_scored_under_different_settings_are_not_paired(table: Any, tmp_
     record.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     printed = _run(table, out)
+    block = printed.split("head to head, at matched bytes")[1].split("head to head, on")[0]
+    rows = {_question(line): line for line in block.splitlines() if line.startswith("4b ")}
     assert "NOT PAIRED" in printed
-    assert "max_new_tokens" in printed, "the differing field is named"
-    assert "records are not comparable" in printed
+    assert "not comparable: decode.max_new_tokens" in rows["4b  DynQuant vs GPTQ"]
+    assert "not comparable" not in rows["4b  DynQuant vs AWQ"], (
+        "neither arm of this row is the stale one, so it is still a comparison"
+    )
+    assert _verdict(rows["4b  DynQuant vs AWQ"]).endswith("separated")
     assert "p (Holm)" in printed, "the block still prints, so the absence is visible"
-    for line in printed.splitlines():
-        assert not line.endswith(" separated"), "no verdict is issued off unpaired vectors"
+    assert not _verdict(rows["4b  DynQuant vs GPTQ"]).endswith("separated"), (
+        "no verdict is issued off unpaired vectors"
+    )
 
 
 def test_the_allocation_reports_which_floors_the_budget_could_not_afford(
@@ -725,28 +739,44 @@ def test_a_null_dispatch_and_a_missing_one_are_the_same_absence_to_the_guard(
     )
 
 
-def test_a_recorded_dispatch_refuses_to_pair_with_a_record_that_predates_the_field(
+def test_a_recorded_dispatch_is_priced_on_the_row_and_does_not_refuse_it(
     table: Any, tmp_path: Path
 ) -> None:
-    """The other half, and the panel's own next step.
+    """A dispatch difference is a caveat on a comparison, not a reason to withhold it.
 
-    Re-scoring the three arms that kept their expert banks on ``--experts-impl eager``
-    puts ``{found, ran}`` into their records and leaves the ``llm-compressor`` baselines
-    as they are. ``_ABSENT != "eager"``, so the guard fires -- correctly, because a
-    baseline written before the field cannot say what it ran. This pins that the fix to
-    the arithmetic is not silent about the bookkeeping it breaks, so the re-score cannot
-    be read as a clean seven-arm panel when it is a three-arm one beside four unknowns.
+    This reverses an earlier decision in this file, so the reason is worth writing down.
+    ``experts.ran`` went into the pairing contract because two arms on different
+    dispatches produce a delta contaminated by dispatch, which is true. The mistake was
+    the response: "paired" has a technical meaning -- the two hit vectors index the same
+    items in the same order -- and a dispatch difference does not break it. The concern is
+    about what the delta *means*, and the panel already has a place to say that, which is
+    the ``!`` mark and the priced footnote under the block.
 
-    Turns red when: ``experts.ran`` leaves ``EXPERTS_PAIRING_FIELDS``, or the exemption
-    for an absent field widens from "pairs with absence" to "pairs with anything".
+    What forced the issue is that the guard, operating exactly as designed, destroyed the
+    result it guards. Re-scoring three arms on ``--experts-impl eager`` gives them
+    ``experts.ran`` while the four ``llm-compressor`` baselines predate the field, the
+    panel-wide flag fires, and every row in every block -- including the two that pair
+    baselines with each other -- goes to "not comparable". The re-score would clear the
+    caveat and blank the numbers it annotates.
+
+    So the delta prints, the mark says the arms are not known to have matched, and the
+    magnitude is on screen. Strictly more information than a blank row.
+
+    Turns red when: the experts block re-enters ``problem_set_difference``, or the row
+    prints a number with the caveat dropped.
     """
     out = _write_panel(tmp_path / "arms")
     _set_experts(out, "dq_4b", {"found": "grouped_mm", "ran": "eager"})
 
     printed = _run(table, out)
+    block = printed.split("head to head, at matched bytes")[1].split("head to head, on")[0]
+    rows = {_question(line): line for line in block.splitlines() if line.startswith("4b ")}
     assert "eager (from grouped_mm)" in printed.split("experts dispatch")[1]
-    assert "NOT PAIRED" in printed
-    assert "experts.ran" in printed
+    assert "NOT PAIRED" not in printed, "the dispatch is not a problem-set difference"
+    assert "not comparable" not in block
+    assert rows["4b  DynQuant vs GPTQ"].rstrip().endswith("!"), "priced, not withheld"
+    assert _verdict(rows["4b  DynQuant vs GPTQ"]).endswith("separated")
+    assert "1.24%" in block and "0.29x" in block
 
 
 def test_a_bank_count_from_the_scoring_process_recovers_a_missing_dispatch(
@@ -867,18 +897,29 @@ def test_the_mark_clears_when_every_arm_is_on_the_indexed_path(table: Any, tmp_p
     `indexed` and the caveat is gone -- while `_comparability` still refuses the four
     field-less records, which is the distinction the census block draws.
 
+    A clean table is the right output here and also the most dangerous one, because the
+    collapse holding it up -- `eager` and the linearised loop are one class -- rests on a
+    four-layer CPU fp32 model and section 8 is an agreement at small scale that did not
+    survive to 8B. So the census prints that claim exactly when both buckets are occupied,
+    which is the state the re-score creates. A panel showing no caveats has to say what it
+    is resting on.
+
     Turns red when: `eager` and a recovered loop stop collapsing to one class, which would
-    make the re-score unable to clear the flag it was run to clear.
+    make the re-score unable to clear the flag it was run to clear; or the clean table
+    stops naming the unmeasured collapse and reads as though nothing is owed.
     """
     out = _write_panel(tmp_path / "arms")
     _all_indexed(out)
 
     printed = _run(table, out)
+    census = printed.split("experts dispatch")[1].split("by source")[0]
     assert "expert arithmetic" not in printed, "every arm is indexed; nothing to flag"
-    assert "NOT PAIRED" in printed, (
-        "the records still cannot pair -- recovery reads a sibling file and pairing reads "
-        "the record, and this is where those two come apart"
+    assert "NOT PAIRED" not in printed, (
+        "the dispatch was the only difference and it is not a problem-set difference"
     )
+    assert "3 arm(s) ran `eager` and 4 ran the linearised loop" in census
+    assert "did not survive to 8B" in census, "the clean table names what it rests on"
+    assert "separated" in printed, "the re-score has to leave the numbers standing"
 
 
 def test_two_unrecorded_arms_do_not_count_as_agreeing(table: Any, tmp_path: Path) -> None:
