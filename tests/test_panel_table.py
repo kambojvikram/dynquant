@@ -672,9 +672,8 @@ def test_a_null_dispatch_and_a_missing_one_are_the_same_absence_to_the_guard(
 ) -> None:
     """The straddle a panel can make without being told, and where it becomes visible.
 
-    ``_pin_experts_dispatch`` writes ``null`` for a model with no batched bank to
-    dispatch -- every dense model, and every baseline whose banks ``llm-compressor``
-    rewrote into per-expert ``Linear`` modules. A record written before the field existed
+    ``_pin_experts_dispatch`` writes ``null`` for a model whose config carries no
+    ``_experts_implementation`` -- a dense model. A record written before the field existed
     has no key. ``_comparability`` reads both as ``_ABSENT`` and pairs them, which is
     correct for the ``null`` and is carried along for free by the missing key.
 
@@ -692,7 +691,7 @@ def test_a_null_dispatch_and_a_missing_one_are_the_same_absence_to_the_guard(
 
     printed = _run(table, out)
     block = printed.split("experts dispatch")[1]
-    assert "none (no bank)" in block, "a null is a fact about the model, not a gap"
+    assert "none (dense)" in block, "a null is a fact about the model, not a gap"
     assert "not recorded" in block, "a missing key is a gap, and has to read as one"
     named = block.split("carry no dispatch field: ")[1].split(".")[0]
     assert "bf16" in named and "gptq_4b" not in named

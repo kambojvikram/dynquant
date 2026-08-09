@@ -380,11 +380,12 @@ def dispatch_of(row: dict[str, Any]) -> tuple[str, bool]:
     """What the record says about the experts dispatch, and whether it says anything.
 
     `_pin_experts_dispatch` writes one of exactly two things, so a record can be in one
-    of exactly three states. A model with a batched expert bank gets
+    of exactly three states. A model whose config carries `_experts_implementation` gets
     `{found, ran}` -- what the dispatch was on arrival and what it was when the scorer
-    ran. A model with no bank to dispatch gets `null`: every dense model, and every
-    baseline whose banks `llm-compressor` rewrote into per-expert `Linear` modules. A
-    record written before the field existed has no key at all.
+    ran. A model whose config does not gets `null`, which is a dense model and not a
+    linearised one: `linearize_moe` rewrites modules and leaves the config alone, so a
+    baseline records `{grouped_mm, eager}` like everyone else. A record written before the
+    field existed has no key at all.
 
     The last two are the same absence to `_comparability`, which reads
     `record.get("experts")` and treats a non-dict as `_ABSENT`. That is deliberate for
@@ -399,7 +400,7 @@ def dispatch_of(row: dict[str, Any]) -> tuple[str, bool]:
         return "not recorded", True
     experts = row["experts"]
     if not isinstance(experts, dict):
-        return "none (no bank)", False
+        return "none (dense)", False
     return f"{experts.get('ran')} (from {experts.get('found')})", False
 
 

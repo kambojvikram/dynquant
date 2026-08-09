@@ -104,9 +104,9 @@ DETAIL_PAIRING_FIELDS = ("prompt_style",)
 #: Three arms of one panel reach the scorer on three different experts dispatches
 #: without anyone choosing it -- packed arms forced to ``eager``, encoded arms left on
 #: ``post_init``'s ``grouped_mm``, and a baseline whose banks ``llm-compressor`` has
-#: already rewritten into per-expert ``Linear`` modules, which has no dispatch left and
-#: computes what ``eager`` computes. Read out of the ``experts`` block, where the run
-#: writes what it found and what it ran.
+#: already rewritten into per-expert ``Linear`` modules, on which the setting is inert
+#: because there is no batched bank for it to act on. Read out of the ``experts`` block,
+#: where the run writes what it found and what it ran.
 #:
 #: Optional, like ``prompt_style``, and for a reason worth stating rather than inheriting.
 #: A dense model has no such dispatch and never will, so absence has to pair with absence
@@ -669,9 +669,20 @@ def _pin_experts_dispatch(model: Any, args: argparse.Namespace) -> dict[str, str
     forced there by ``pack_model`` because only ``eager`` indexes a packed bank one expert
     at a time. A ``--map-apply encode`` arm is on whatever ``post_init`` picked, which in
     transformers 5.14.1 is ``grouped_mm``. A baseline handed in through ``model=`` has had
-    its banks rewritten into per-expert ``Linear`` modules by ``llm-compressor``, so it has
-    no dispatch left at all and computes what ``eager`` computes. Only the first of those
-    three was a decision.
+    its banks rewritten into per-expert ``Linear`` modules by ``llm-compressor``, so it
+    computes the loop whatever the setting says. Only the first of those three was a
+    decision.
+
+    That last one used to be written here as "has no dispatch left at all", and it is
+    wrong in a way worth keeping written down. ``linearize_moe`` replaces *modules*;
+    ``_experts_implementation`` lives on the *config*, which it never touches. Measured on
+    a four-layer LFM2-MoE built from this campaign's own config: the attribute reads
+    ``grouped_mm`` before and after, the setter is still callable, three banks go to zero
+    non-linearised, and this function comes back ``{grouped_mm, eager}`` rather than
+    ``None``. So a linearised baseline records the same pair as every other arm and pairs
+    with them -- and it does so because of what the config says, not because anything has
+    checked that the loop and ``eager`` agree numerically. They should: both index one
+    expert at a time. Nothing here has measured it.
 
     The difference is too large to leave to chance. On LFM2.5-8B-A1B the two dispatches
     disagree on 1.24% of teacher-forced tokens -- 0.29x the effect of quantizing that model
@@ -687,8 +698,9 @@ def _pin_experts_dispatch(model: Any, args: argparse.Namespace) -> dict[str, str
     measuring the dispatch itself instead of comparing across arms.
 
     Returns what the dispatch was when this looked and what it was when this returned, or
-    ``None`` for a model that has none -- which is every dense model and every linearised
-    baseline. ``found`` is not ``post_init``'s choice on a packed arm: packing has already
+    ``None`` for a model whose config carries no such attribute -- a dense model, or one on
+    a transformers old enough to have no dispatch to pick. Not a linearised baseline: see
+    above. ``found`` is not ``post_init``'s choice on a packed arm: packing has already
     moved it by the time this runs, and the honest report is what was there rather than a
     reconstruction of what would have been.
     """
