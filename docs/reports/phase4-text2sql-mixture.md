@@ -1917,6 +1917,63 @@ it -- it scores in memory, at one consistent accounting, and what a serializatio
 those numbers afterwards is a separate question -- but the release plan is not, and it is better to
 know this now than after six uploads.
 
+### The word "no" in that last column was doing less work than it looked
+
+Every "no" above describes something a reader would find out. A 3-bit compressed-tensors
+checkpoint fails in vLLM on a shape mismatch; a batched expert bank was expected to fail in
+`pack_model` by name. Both are refusals. The DynQuant row was not, and the difference was only
+found by running it.
+
+`AutoModelForCausalLM.from_pretrained` on an exported DynQuant directory **does not fail**. With
+no quantizer registered, transformers logs
+
+```
+Unknown quantization type, got dynquant - supported types are: [...].
+Hence, we will skip the quantization.
+```
+
+and then loads the directory as though it were dense. Every `qweight`, `scales` and `offsets`
+entry is an unused checkpoint key, every real weight is "newly initialized", and `from_pretrained`
+returns a **randomly initialised model**. No exception, no non-zero exit. Someone following the
+standard three lines from a model card would get noise and, reasonably, conclude that DynQuant is
+a bad quantizer rather than an absent integration.
+
+Measured on three versions -- 4.53.2, 5.10.1 and 5.14.1 -- with the same outcome on each, and none
+of the three has entry-point discovery for quantizers: `transformers.quantizers.auto` mentions
+`entry_points`, `importlib.metadata` and `plugin` exactly zero times. So the silence is not a
+transitional state that a newer release repairs, and it cannot be closed from the checkpoint side
+at all. It is closed by registering a quantizer, and only in a process that has done so.
+
+So this is now a hard error rather than a random model. `dynquant.integration.hf_quantizer`
+registers a config and an `HfQuantizer` that swaps each module the checkpoint names for a
+correctly shaped but *uninitialised* packed shell, and lets the loader fill the buffers by name --
+there is no weight-copying code, because the packed modules already register their buffers under
+the checkpoint's own key names. A dense model round-trips: logits land within **4.9e-4** of the
+in-place encoder and **1.4e-1** from fp16, the second number being the guard that quantization
+happened at all. A tied head reads the input table rather than a second copy, which had been
+crashing outright -- `tie_weights()` runs after loading and assigns `lm_head.weight =
+embed_tokens.weight`, and a packed embedding has no `.weight`. LFM2.5-8B-A1B and Qwen3.5-2B are
+both tied, so that was every tied model in the campaign. And a bank or a router is refused by
+name, with the reason and with `--map-apply encode` as the route that does work.
+
+Two things about this are worth keeping separate from the fix. The first is that **the report was
+wrong in a way that read as right**: "not loadable -- needs the grouped path" described vLLM's
+refusal accurately and transformers' behaviour not at all, and the two were collapsed because only
+one of them had been run. The second is that the load path very nearly shipped as a private
+three-branch copy of `runtime.linear`'s resolver, narrower by the container case -- the fifth copy
+of that resolver in this project and the third to be caught mid-narrowing. It is now one public
+`resolve_target`, parameterised only by whether a bit map or a `quantization_config` named the
+target, because that is genuinely the only thing the two callers disagree about.
+
+What has *not* changed is the release plan. `dq_4b` and `dq_3b` still cannot be loaded for this
+model, because 91.5% of LFM2.5-8B-A1B is batched expert banks and the grouped path is still P8.
+The change is that the failure is now visible at load time on any architecture, which is what
+makes those two directories safe to publish with a caveat rather than dangerous to publish at all.
+Registration is an explicit `dynquant.register_hf_quantizer()`, not a side effect of
+`import dynquant` -- transformers offers no discovery hook and eager registration would cost 9.8 s
+of transformers import on every CLI invocation against 0.06 s today -- so those two lines belong in
+every model card this campaign produces.
+
 ## 13. Status
 
 Done: the mixture, the admission rule, the metric, the screen, both splits measured, the DML leak
