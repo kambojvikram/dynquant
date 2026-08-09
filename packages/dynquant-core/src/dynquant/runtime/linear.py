@@ -656,10 +656,20 @@ def use_eager_experts(model: nn.Module) -> str | None:
     which asks it to ``transpose`` and gets an ``AttributeError`` from ``nn.Module``.
 
     So this is not a preference, it is the difference between a model that runs and one
-    that does not, and it costs nothing to be sure of: eager and ``grouped_mm`` agree to
-    1.8e-07 on a tiny LFM2-MoE. What it does cost is speed, since ``grouped_mm`` is the
-    fast path -- and that is the gap the grouped kernel closes, by registering itself in
-    ``ALL_EXPERTS_FUNCTIONS`` where these four already live rather than by fighting them.
+    that does not. It is also not free, and an earlier version of this docstring said it
+    was on the strength of a one-layer measurement: eager and ``grouped_mm`` agree to
+    1.8e-07 on a tiny LFM2-MoE, and on LFM2.5-8B-A1B they disagree on 1.24% of
+    teacher-forced tokens, which is 0.29x what quantizing the model does. A top-k router
+    turns a small numeric difference into a discrete one and 22 layers compound it, so the
+    tiny-scale number is a true statement that does not generalise.
+
+    Nothing here can avoid that -- a packed bank has one contract and only one dispatch
+    calls it -- but two things follow for callers. Accuracy measured on one dispatch is
+    not accuracy on the other, so an encoder-scored number and a packed artifact are
+    comparable only when both are put on ``eager``. And the speed cost is the same gap the
+    grouped kernel closes, by registering itself in ``ALL_EXPERTS_FUNCTIONS`` where these
+    four already live rather than by fighting them -- which would also retire the accuracy
+    caveat, since a packed bank served on the default dispatch never has to move.
 
     Returns the implementation moved away from, or ``None`` if nothing moved -- a model
     with no transformers config, one already eager, and one on an older transformers that
@@ -695,8 +705,10 @@ def _quantizable_modules(model: nn.Module) -> list[tuple[str, nn.Linear | nn.Emb
 
 _ENCODER_REMEDY = (
     "The encoder reaches it, so score this map with `dynquant eval --map-apply encode` or "
-    "write it with `dynquant quantize --map`; both give the same accuracy, and "
-    "`dynquant export` packs it at the bytes its manifest claims."
+    "write it with `dynquant quantize --map`; both encode identically, and `dynquant "
+    "export` packs it at the bytes its manifest claims. On a MoE, put the encoder on "
+    "`eager` before scoring: it keeps whatever dispatch `post_init` chose, a packed model "
+    "is forced to `eager`, and the two are not the same computation."
 )
 """What to do instead, for every target the packed runtime declines but the encoder takes.
 

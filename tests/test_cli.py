@@ -1493,8 +1493,16 @@ def test_a_task_that_reports_no_style_pairs_exactly_as_it_did_before(tmp_path: P
     against another record that does not report one -- otherwise adding this field would
     have broken every GSM8K and MMLU comparison the package can make.
 
+    ``experts.ran`` earns the same exemption for a different reason, and the distinction
+    is what this guard is really protecting. ``dynquant eval`` writes an ``experts`` block
+    on every run now -- but it writes ``None`` into it for a dense model, which has no
+    experts dispatch and never will, and ``None`` reads as absence. So absence still means
+    "there was nothing to record" rather than "the command forgot", which is the only
+    thing that makes an exemption safe.
+
     Turns red when: the missing-field guard stops exempting the detail-sourced keys, or
-    the exemption widens to cover fields ``dynquant eval`` writes on every run.
+    the exemption widens to a field whose absence would mean ``dynquant eval`` had
+    dropped it.
     """
     both_absent = _styled(None)
     path = tmp_path / "other.json"
@@ -1502,9 +1510,10 @@ def test_a_task_that_reports_no_style_pairs_exactly_as_it_did_before(tmp_path: P
 
     assert evaluate._compare(both_absent, str(path))
 
-    assert set(evaluate._OPTIONAL_COMPARABILITY) == {"detail.prompt_style"}
+    assert set(evaluate._OPTIONAL_COMPARABILITY) == {"detail.prompt_style", "experts.ran"}
     assert not any(
-        key.split(".", 1)[0] not in {"decode", "detail"} for key in evaluate._OPTIONAL_COMPARABILITY
+        key.split(".", 1)[0] not in {"decode", "detail", "experts"}
+        for key in evaluate._OPTIONAL_COMPARABILITY
     )
 
 
@@ -1618,3 +1627,23 @@ def test_the_table_omits_the_cache_footnote_when_nothing_was_cached() -> None:
         ],
     }
     assert "L2 residency" not in bench.render(result)
+
+
+def test_eval_pins_the_experts_dispatch_unless_asked_not_to() -> None:
+    """The default is the whole point: a panel is only one experiment if nobody opts in.
+
+    Every arm of the LFM2.5 panel was launched without anyone thinking about the experts
+    dispatch, and that is exactly the condition under which three of them ran different
+    arithmetic. A flag defaulting to ``auto`` would reproduce it for the next campaign.
+
+    Turns red when: the default flips, or the flag is dropped and the driver's namespace
+    falls back to the ``getattr`` default in ``run`` without the CLI agreeing with it.
+    """
+    parser = build_parser()
+    assert parser.parse_args(["eval", "m", "--task", "text2sql"]).experts_impl == "eager"
+    assert (
+        parser.parse_args(
+            ["eval", "m", "--task", "text2sql", "--experts-impl", "auto"]
+        ).experts_impl
+        == "auto"
+    )

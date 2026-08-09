@@ -320,3 +320,131 @@ def test_a_top_level_field_missing_from_this_run_is_a_bug_not_a_match(tmp_path: 
     del mine["split"]
     with pytest.raises(DynQuantError, match="bug in `dynquant eval`"):
         evaluate._compare(mine, str(other))
+
+
+class _Config:
+    """Just enough of a transformers config to carry an experts dispatch."""
+
+    def __init__(self, implementation: str) -> None:
+        self._experts_implementation = implementation
+
+
+class _MoE:
+    """A model exposing the two things ``use_eager_experts`` drives, and nothing else.
+
+    Deliberately not a transformers model. The production helper reads
+    ``config._experts_implementation`` and calls ``set_experts_implementation``; a stub
+    that implements exactly those two is what proves the pin goes through the supported
+    seam rather than assigning the private attribute behind the model's back -- which
+    would leave ``post_init``'s bookkeeping stale and the model computing something no
+    field of it admits to.
+    """
+
+    def __init__(self, implementation: str = "grouped_mm") -> None:
+        self.config = _Config(implementation)
+        self.moved: list[str] = []
+
+    def set_experts_implementation(self, implementation: str) -> None:
+        self.moved.append(implementation)
+        self.config._experts_implementation = implementation
+
+
+def test_a_moe_is_pinned_to_eager_and_the_record_says_which(wired: _Spec, tmp_path: Path) -> None:
+    """The confound this field exists for, in the configuration that produced it.
+
+    A packed arm runs on ``eager`` because ``pack_model`` forces it there; an encoded arm
+    runs on whatever ``post_init`` chose, which in transformers 5.14.1 is ``grouped_mm``.
+    On LFM2.5-8B-A1B those two disagree on 1.24% of teacher-forced tokens, 0.29x the
+    effect of quantizing that model to 4 bits -- the same order as the margins the panel
+    reports. Pinning here is what makes a set of arms one experiment.
+
+    Turns red when: the pin moves inside ``_load_runtime``, where a model passed through
+    ``model=`` never reaches it, or the dispatch stops being written into the record.
+    """
+    model = _MoE()
+    out = tmp_path / "arm.json"
+    assert evaluate.run(_args(out=str(out)), model=model) == 0
+
+    assert model.moved == ["eager"]
+    assert model.config._experts_implementation == "eager"
+    record = json.loads(out.read_text(encoding="utf-8"))
+    assert record["experts"] == {"found": "grouped_mm", "ran": "eager"}
+
+
+def test_a_model_with_no_experts_dispatch_records_that_rather_than_guessing(
+    wired: _Spec, tmp_path: Path
+) -> None:
+    """Dense models and linearised baselines are the common case, and must say so.
+
+    ``llm-compressor`` rewrites an expert bank into per-expert ``Linear`` modules, so a
+    GPTQ or AWQ arm has no dispatch left to pin and already computes what ``eager``
+    computes. Writing ``None`` rather than omitting the key is the difference between
+    "there was nothing to choose" and "this run predates the field" -- the same record
+    shape, two different claims.
+
+    Turns red when: the helper invents a value for a model that has no dispatch, which
+    would stop a dense arm pairing against the record of another dense arm.
+    """
+    out = tmp_path / "arm.json"
+    assert evaluate.run(_args(out=str(out)), model=object()) == 0
+    assert json.loads(out.read_text(encoding="utf-8"))["experts"] is None
+
+
+def test_auto_leaves_the_models_own_choice_and_still_records_it(
+    wired: _Spec, tmp_path: Path
+) -> None:
+    """The escape hatch has to be a real one, or the dispatch cost cannot be measured.
+
+    Measuring what the pin costs means running the same arm both ways, so ``auto`` has to
+    reach the scorer unmoved -- and has to write down what ran anyway, because a record
+    that names the dispatch only when it is ``eager`` cannot report the comparison it was
+    made for.
+
+    Turns red when: ``auto`` decays into an alias for ``eager``, or the recording is moved
+    onto the pinning branch.
+    """
+    model = _MoE()
+    out = tmp_path / "arm.json"
+    assert evaluate.run(_args(out=str(out), experts_impl="auto"), model=model) == 0
+
+    assert model.moved == []
+    record = json.loads(out.read_text(encoding="utf-8"))
+    assert record["experts"] == {"found": "grouped_mm", "ran": "grouped_mm"}
+
+
+def test_two_arms_on_different_experts_dispatches_do_not_pair(tmp_path: Path) -> None:
+    """The four arms this campaign had already landed, and no record could have caught.
+
+    bf16 and dq were scored on ``grouped_mm``; GPTQ and AWQ, whose banks ``llm-compressor``
+    had linearised, computed eager. The dq-minus-GPTQ margin was +0.64 points against a
+    dispatch effect worth roughly 0.45 if accuracy tracked token agreement. Nothing in
+    either record said the two had run different arithmetic.
+
+    Turns red when: ``EXPERTS_PAIRING_FIELDS`` empties, or the comparison stops reaching
+    into the ``experts`` block -- the easy mistake, since two of the three nested blocks
+    it reads are about settings and this one is about the computation.
+    """
+    other = tmp_path / "panel.json"
+    other.write_text(
+        json.dumps(_record(label="panel", experts={"found": "grouped_mm", "ran": "grouped_mm"})),
+        encoding="utf-8",
+    )
+    with pytest.raises(DynQuantError, match=r"experts\.ran='grouped_mm'"):
+        evaluate._compare(_record(experts={"found": "eager", "ran": "eager"}), str(other))
+
+
+def test_two_arms_that_both_have_no_dispatch_still_pair(tmp_path: Path, capsys: Any) -> None:
+    """Absence has to stay pairable, or the field breaks every dense comparison there is.
+
+    A dense model has no experts dispatch and never will, so ``None`` on both sides is not
+    a mismatch. It also must not be spelled as the string ``'None'``, which would compare
+    unequal to the absence in every record written before this field existed -- retiring
+    the campaign's own history to fix a MoE problem dense models do not have.
+
+    Turns red when: ``experts.ran`` is promoted out of ``_OPTIONAL_COMPARABILITY``, or a
+    ``None`` block starts being read as a value rather than as absence.
+    """
+    other = tmp_path / "dense.json"
+    other.write_text(json.dumps(_record(label="dense", experts=None)), encoding="utf-8")
+    assert evaluate._compare(_record(), str(other))
+    capsys.readouterr()

@@ -2021,8 +2021,13 @@ families *can* be served by an indexed bank, once something puts them on the dis
 `pack_model` and the load path now both do that through the model's own
 `set_experts_implementation`, and `PackReport` records the move. See
 [the packed-MoE runtime report](phase4-packed-moe-runtime.md), which also measures what the move
-costs in accuracy (nothing: 1.8e-07 against a quantization effect of 0.0101) and what it costs in
-speed (the fast path, which is what the P8 kernel is for).
+costs. An earlier version of this paragraph said "nothing: 1.8e-07 against a quantization effect
+of 0.0101", which is a true measurement of a one-layer model and false at 8B: on LFM2.5-8B-A1B the
+two dispatches disagree on **1.24% of teacher-forced tokens**, **0.29x** what quantizing to 4 bits
+does, because a top-k router turns a numeric difference into a discrete one and 22 layers compound
+it. So the move is not free, it is on the same axis as the margins this panel reports, and
+`dynquant eval` now pins every arm to `eager` and records which dispatch ran. What it costs in
+speed is unchanged: the fast path, which is what the P8 kernel is for.
 
 The arithmetic is why this is worth having before the kernel. A layer's `gate_up_proj` is
 `[32, 2688, 2048]`: **336 MiB** in bf16, **89.25 MiB** packed at 4 bits with fp16 scales and

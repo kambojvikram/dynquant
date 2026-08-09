@@ -631,17 +631,27 @@ def _fresh_dispatched(implementation: str = "grouped_mm") -> _DispatchedModel:
     return model.half().eval()
 
 
-def test_the_two_dispatches_agree_so_moving_between_them_is_free() -> None:
-    """The premise of the switch: eager and grouped are the same arithmetic.
+def test_the_fixtures_two_dispatches_are_transcriptions_of_each_other() -> None:
+    """Fixture fidelity, and nothing about what the two dispatches do on a real model.
 
-    If they were not, packing would be changing the model's answer twice -- once by
-    quantizing and once by taking a different route through the same weights -- and the
-    accuracy the panel reports would not be the accuracy of the map. On a real tiny
-    LFM2-MoE the two agree to 1.8e-07 in fp32; this fixture is fp16, so the bar is
-    fp16-sized, and the point is the ratio to what quantization itself moves.
+    This test was called ``..._agree_so_moving_between_them_is_free`` and was read as the
+    premise of the switch: that packing changes a model's answer once, by quantizing, and
+    not twice. It cannot carry that claim. ``_DispatchedExperts._grouped`` is a
+    hand-written dense-and-mask transcription that never calls ``torch._grouped_mm``, and
+    the fixture is one MoE layer -- so the mechanism by which the two dispatches actually
+    diverge is structurally absent from it. A top-k router turns a last-bit numeric
+    difference into a different set of experts, and depth compounds it: on LFM2.5-8B-A1B
+    the first MoE layer routes bit-identically and the last agrees on 7% of its slots,
+    ending at 1.24% teacher-forced token disagreement, 0.29x the effect of quantizing that
+    model. One layer has no second layer to compound into.
 
-    Turns red when: the fixture's grouped path stops being an honest transcription of
-    the eager one, which would make every assertion below vacuous.
+    So what is checked here is that the fixture's two paths are the same arithmetic, which
+    is what makes every *other* assertion in this file about the switch non-vacuous. The
+    real question is measured on the real model and lives in
+    ``docs/reports/phase4-packed-moe-runtime.md`` section 8; the pin that keeps a panel
+    from straddling it is ``_pin_experts_dispatch`` in ``commands/evaluate.py``.
+
+    Turns red when: the fixture's grouped path stops transcribing its eager one.
     """
     grouped = _out(_fresh_dispatched("grouped_mm"))
     eager = _out(_fresh_dispatched("eager"))

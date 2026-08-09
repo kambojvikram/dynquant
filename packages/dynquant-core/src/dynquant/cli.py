@@ -452,7 +452,7 @@ def _add_eval(subparsers: _SubParsers) -> None:
         help=(
             "how --map reaches the weights: `pack` swaps modules onto the packed "
             "runtime, so VRAM is the packed size; `encode` writes the same encoder's "
-            "output back in the compute dtype, which scores the same and holds fp16. "
+            "output back in the compute dtype, which holds the same values at fp16 size. "
             "`encode` is the only one that reaches a batched MoE expert bank "
             "(default: pack)"
         ),
@@ -462,6 +462,18 @@ def _add_eval(subparsers: _SubParsers) -> None:
         type=int,
         default=DEFAULT_GROUP_SIZE,
         help=f"group size to pack --map at, if the file does not say (default: {DEFAULT_GROUP_SIZE})",
+    )
+    parser.add_argument(
+        "--experts-impl",
+        default="eager",
+        choices=("eager", "auto"),
+        help=(
+            "which experts dispatch a MoE is scored under. `eager` pins it, so every arm "
+            "of a panel computes the same thing and an encoded arm matches the packed "
+            "artifact a download runs; `auto` leaves the model's own choice, which is "
+            "faster and is what to use when measuring the dispatch itself. Ignored by a "
+            "model that has no such dispatch (default: eager)"
+        ),
     )
     # No default here, and deliberately: the tasks do not agree. IFEval ships one
     # split and it is called `train`; HumanEval's loader takes no split argument at

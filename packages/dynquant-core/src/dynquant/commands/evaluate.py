@@ -25,10 +25,19 @@ makes a collapsed arm look like a mildly damaged one.
 memory, so no arm needs a checkpoint written for it. ``--map-apply pack`` (the
 default) swaps the named modules onto the packed runtime, so the weights stay
 quantized in VRAM and the memory figure is real. ``--map-apply encode`` writes the
-same encoder's reconstruction back in the compute dtype: identical accuracy, fp16
+same encoder's reconstruction back in the compute dtype: the same values, fp16
 size, and the only mode that reaches a weight held as a bare parameter rather than
 a module -- which on a batched-expert MoE is most of the model. A directory written
 by ``dynquant quantize`` is the same thing as ``encode``, spelled on disk.
+
+**It pins the experts dispatch.** The two modes hold the same values and do not, on
+a MoE, run the same computation: packing forces ``eager``, because only ``eager``
+indexes a packed bank one expert at a time, while encoding leaves whatever the model
+chose at ``post_init``. On LFM2.5-8B-A1B those two dispatches disagree on 1.24% of
+teacher-forced tokens, 0.29x what quantizing to 4 bits does -- the same order as the
+margins this command exists to measure. So every run is put on ``eager``, which is
+also what a downloaded checkpoint runs, and the record says which dispatch it was.
+See ``--experts-impl``.
 """
 
 from __future__ import annotations
@@ -44,7 +53,14 @@ from . import _shared
 if TYPE_CHECKING:
     import argparse
 
-__all__ = ["DECODE_PAIRING_FIELDS", "DETAIL_PAIRING_FIELDS", "PAIRING_FIELDS", "TASKS", "run"]
+__all__ = [
+    "DECODE_PAIRING_FIELDS",
+    "DETAIL_PAIRING_FIELDS",
+    "EXPERTS_PAIRING_FIELDS",
+    "PAIRING_FIELDS",
+    "TASKS",
+    "run",
+]
 
 #: Everything two records must agree on before their hit vectors may be paired.
 #:
@@ -83,6 +99,22 @@ DECODE_PAIRING_FIELDS = ("max_new_tokens",)
 #: only a mismatch against a record that has one.
 DETAIL_PAIRING_FIELDS = ("prompt_style",)
 
+#: The same contract once more, for the *computation* rather than for a setting.
+#:
+#: Three arms of one panel reach the scorer on three different experts dispatches
+#: without anyone choosing it -- packed arms forced to ``eager``, encoded arms left on
+#: ``post_init``'s ``grouped_mm``, and a baseline whose banks ``llm-compressor`` has
+#: already rewritten into per-expert ``Linear`` modules, which has no dispatch left and
+#: computes what ``eager`` computes. Read out of the ``experts`` block, where the run
+#: writes what it found and what it ran.
+#:
+#: Optional, like ``prompt_style``, and for a reason worth stating rather than inheriting.
+#: A dense model has no such dispatch and never will, so absence has to pair with absence
+#: -- which means a record written before this field existed also pairs with a dense one,
+#: and with another record written before this field existed. Nothing recovers what those
+#: runs ran. What the field buys is that no run from here on is unable to say.
+EXPERTS_PAIRING_FIELDS = ("ran",)
+
 #: Comparability keys whose absence from *this* run's record is legitimate.
 #:
 #: Every other pairing field is written by ``dynquant eval`` on every run, so missing one
@@ -90,7 +122,10 @@ DETAIL_PAIRING_FIELDS = ("prompt_style",)
 #: task's, three tasks carry none at all, and the ones that do carry different keys. So
 #: absence here has to mean "this task does not report a style", which pairs cleanly
 #: against another record that does not report one and refuses against one that does.
-_OPTIONAL_COMPARABILITY = frozenset(f"detail.{field}" for field in DETAIL_PAIRING_FIELDS)
+_OPTIONAL_COMPARABILITY = frozenset(
+    [f"detail.{field}" for field in DETAIL_PAIRING_FIELDS]
+    + [f"experts.{field}" for field in EXPERTS_PAIRING_FIELDS]
+)
 
 #: Distinguishes "this record does not carry the field" from "it carries ``None``".
 #: ``split`` is legitimately ``None`` for a single-set dataset, so absence cannot be
@@ -380,6 +415,12 @@ def run(args: argparse.Namespace, *, model: Any = None) -> int:
         # size accounting puts it in its own record beside this one -- writing it into
         # `packed` would claim this command measured it.
         packed = None
+
+    # After the branch and not inside `_load_runtime`, because a baseline arrives through
+    # `model=` and a ceiling applies no map at all -- so this is the only point in the
+    # command that every arm of a panel passes through.
+    experts = _pin_experts_dispatch(model, args)
+
     tokenizer = _shared.load_tokenizer(
         args.tokenizer or args.model, trust_remote_code=args.trust_remote_code
     )
@@ -422,6 +463,7 @@ def run(args: argparse.Namespace, *, model: Any = None) -> int:
             "greedy": True,
         },
         "packed": packed,
+        "experts": experts,
         "hits": result.hits,
         "predictions": result.predictions,
     }
@@ -619,14 +661,65 @@ def _pick_shots(spec: _TaskSpec, count: int, *, seed: int, split: str | None) ->
     return [pool[i] for i in chosen]
 
 
+def _pin_experts_dispatch(model: Any, args: argparse.Namespace) -> dict[str, str] | None:
+    """Put every arm of a panel on one experts dispatch, and record which one ran.
+
+    Three arms of the same panel arrive here on three different dispatches with nothing
+    on the command line saying so. A ``--map-apply pack`` arm is already on ``eager``,
+    forced there by ``pack_model`` because only ``eager`` indexes a packed bank one expert
+    at a time. A ``--map-apply encode`` arm is on whatever ``post_init`` picked, which in
+    transformers 5.14.1 is ``grouped_mm``. A baseline handed in through ``model=`` has had
+    its banks rewritten into per-expert ``Linear`` modules by ``llm-compressor``, so it has
+    no dispatch left at all and computes what ``eager`` computes. Only the first of those
+    three was a decision.
+
+    The difference is too large to leave to chance. On LFM2.5-8B-A1B the two dispatches
+    disagree on 1.24% of teacher-forced tokens -- 0.29x the effect of quantizing that model
+    to 4 bits -- because a top-k router turns a numeric difference into a discrete one and
+    22 layers compound it. A panel that varies dispatch alongside quantizer cannot say
+    which of the two moved its margin.
+
+    ``eager`` is the only dispatch every arm can share: a linearised baseline cannot be put
+    on ``grouped_mm``, there is nothing left to dispatch. It is also what a downloaded
+    packed checkpoint runs, which is what makes an encoder-scored number a claim about the
+    artifact rather than about a configuration nobody will reproduce. It is the slower
+    path, and ``--experts-impl auto`` leaves the model's own choice alone for anyone
+    measuring the dispatch itself instead of comparing across arms.
+
+    Returns what the dispatch was when this looked and what it was when this returned, or
+    ``None`` for a model that has none -- which is every dense model and every linearised
+    baseline. ``found`` is not ``post_init``'s choice on a packed arm: packing has already
+    moved it by the time this runs, and the honest report is what was there rather than a
+    reconstruction of what would have been.
+    """
+    config = getattr(model, "config", None)
+    found = getattr(config, "_experts_implementation", None)
+    if found is None:
+        return None
+    if getattr(args, "experts_impl", "eager") == "eager":
+        from dynquant.runtime.linear import use_eager_experts
+
+        use_eager_experts(model)
+    ran = getattr(config, "_experts_implementation", None)
+    return {"found": str(found), "ran": str(ran)}
+
+
 def _apply_map(model: Any, args: argparse.Namespace) -> dict[str, Any]:
     """Put the map's widths into the weights, one of the two ways there are.
 
-    Both run the same encoder over the same widths and score the same; they differ in
-    what the model then holds. Packing keeps the values packed in VRAM, which is the
-    configuration whose memory figure is real and the default for that reason.
-    Encoding writes the reconstruction back in the compute dtype -- right accuracy,
-    fp16 size -- and is the only one that reaches a weight that is not a module.
+    Both run the same encoder over the same widths and put the same values into the
+    weights; they differ in what the model then holds, and on a MoE in what it then
+    computes. Packing keeps the values packed in VRAM, which is the configuration whose
+    memory figure is real and the default for that reason. Encoding writes the
+    reconstruction back in the compute dtype -- same values, fp16 size -- and is the only
+    one that reaches a weight that is not a module.
+
+    The computation diverges because ``pack_model`` forces the experts dispatch to
+    ``eager`` and the encoder leaves it alone, and the two dispatches are not the same
+    arithmetic on a real model: 1.24% of teacher-forced tokens on LFM2.5-8B-A1B.
+    :func:`run` pins the dispatch after this returns, which puts both modes back on the
+    same footing; a caller reaching this function directly does not get that and has to
+    pin its own.
 
     That last clause is why the choice exists rather than being decided here. On a
     batched-expert MoE the packed runtime has nothing to replace for 91.5% of the
@@ -741,7 +834,11 @@ def _comparability(record: dict[str, Any]) -> dict[str, Any]:
     waves through the mismatch it exists to catch.
     """
     values = {field: record.get(field, _ABSENT) for field in PAIRING_FIELDS}
-    for prefix, fields in (("decode", DECODE_PAIRING_FIELDS), ("detail", DETAIL_PAIRING_FIELDS)):
+    for prefix, fields in (
+        ("decode", DECODE_PAIRING_FIELDS),
+        ("detail", DETAIL_PAIRING_FIELDS),
+        ("experts", EXPERTS_PAIRING_FIELDS),
+    ):
         block = record.get(prefix)
         for field in fields:
             values[f"{prefix}.{field}"] = (
