@@ -1909,7 +1909,7 @@ So the honest state of the six, before any accuracy number is in:
 |---|---|---|---|
 | `gptq_4b`, `awq_4b` | compressed-tensors | yes, 4.0 bits exactly | yes -- vLLM and transformers |
 | `gptq_3b`, `awq_3b` | writable but 3.2 bits | no, 6.7% over | no -- 205 words vs 192 |
-| `dq_4b`, `dq_3b` | DynQuant packed, byte-exact | yes, both widths | no -- needs the grouped path |
+| `dq_4b`, `dq_3b` | DynQuant packed, byte-exact | yes, both widths | yes -- packed bank, not yet run on the 8B |
 
 Two of six are publishable and servable today; two are blocked on our own kernel work; two are
 blocked on an ecosystem gap that is not ours to close. The accuracy panel is unaffected by all of
@@ -1973,6 +1973,68 @@ Registration is an explicit `dynquant.register_hf_quantizer()`, not a side effec
 `import dynquant` -- transformers offers no discovery hook and eager registration would cost 9.8 s
 of transformers import on every CLI invocation against 0.06 s today -- so those two lines belong in
 every model card this campaign produces.
+
+### The bank was never unrepresentable, only unreachable by a module swap
+
+The paragraph above is superseded, and it is kept because its last sentence is the mistake worth
+recording. "The grouped path is still P8" treated one blocker as two: a *kernel* that makes batched
+experts fast, and a *runtime object* that lets them be held at all. Only the first of those is a
+kernel, and the second was written in Python in an afternoon once the two were told apart.
+
+What made it possible is a property of the model, not of us. `Lfm2MoeExperts.forward` reaches an
+expert by **indexing** -- `nn.functional.linear(current_state, self.gate_up_proj[expert_idx])`,
+once per hit expert, in a Python loop -- and Qwen3-Next's and GPT-OSS's batched blocks do the same.
+So the access a packed runtime has to intercept is `__getitem__` on the bank, and
+`nn.Module.__setattr__` will register a module under the parameter's old name once the parameter is
+deregistered. `DynQuantExpertBank[e]` then slices its own rows and dequantizes them; the parent
+receives the `[out, in]` matrix it expected, and nothing about it is edited, subclassed, or
+enumerated by `model_type`. Both shortcuts that were on the table -- dequantizing the model to fp16
+at load, and rewriting one forward per architecture -- are avoided, and a family whose MoE block
+has not been released yet works if it indexes.
+
+The arithmetic is why this is worth having before the kernel. A layer's `gate_up_proj` is
+`[32, 2688, 2048]`: **336 MiB** in bf16, **89.25 MiB** packed at 4 bits with fp16 scales and
+offsets per 128-value group. What exists dense while an expert runs is one slice of it, **10.5
+MiB**, and it is transient. Across 44 banks that is the 91.5% of LFM2.5-8B-A1B that had no packed
+representation at all. What it does not buy is speed: a token routed to 4 experts dequantizes 4
+slices per layer instead of reading packed memory in a fused GEMM, so this is a memory result and
+not a throughput one. The fused kernel is the other half of P8 and lands *against* this interface
+rather than replacing it -- `QuantTensor.rows()` returns a band of rows as a view, which is the
+same segment addressing a grouped GEMM needs.
+
+Two accounting defects fell out of writing it, both of which were making earlier numbers look
+better than they were.
+
+The first is that `packed_bytes` walked `named_modules()`, so a tensor no module owns was outside
+the byte denominator entirely. On this model that is 91.5% of the parameters -- every unpacked bank
+and every router -- and any ratio printed from it flattered us by that much. It now has a third
+pass over `named_parameters()` at rank >= 2. This is the tied-embedding error running backwards:
+that one counted a tensor twice because two modules shared it, this one counted a tensor zero times
+because no module held it, and both are the same wrong assumption that the module tree enumerates
+the weights.
+
+The second is that the load path built its shell from `spec.out_features`, which for a bank is the
+*flattened* row count -- 86 016 for the tensor above -- and cannot rebuild rank 3 on its own. The
+shell now reads the geometry off the model it is about to replace a parameter in, so a bank that
+loads is a bank of the right shape rather than a 86 016 x 2048 matrix that silently mis-slices per
+expert.
+
+What still refuses, and must, is the shape one rank down. An `Lfm2MoeTopKRouter` holds a bare 2-D
+`nn.Parameter` and calls `F.linear(hidden_states, self.weight)` -- it passes the tensor **whole**,
+so there is no index at which a module could stand and no grouped kernel that changes it. The
+message says that rather than promising a future path, and points at `--map-apply encode`, which
+reaches it today.
+
+The honest limit on all of this: it is verified against a synthetic MoE whose `forward` is the
+`Lfm2MoeExperts` loop copied verbatim, not against the 8B. Ten tests cover it -- the bank's output
+matches the in-place encoder to under 1e-3 while sitting more than 20x further from fp16 than that,
+the per-expert slice is asserted to *share storage* rather than copy, the keys `dynquant export`
+writes are asserted equal to the buffers the packed module registers (values included), and a bank
+exported to disk is loaded back through the real `_process_model_before_weight_loading`. Five
+deliberate mutations were introduced and all five turned tests red. But the real model has not been
+loaded through this path, because the box's clone is pinned at the panel's commit and moving it
+while seven arms score against it would invalidate the panel. That run is queued behind it, and
+until it happens the table above says "not yet run on the 8B" rather than "yes".
 
 ## 13. Status
 

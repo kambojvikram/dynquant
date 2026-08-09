@@ -294,7 +294,7 @@ class DynQuantExpertBank(_PackedModule):
     -------------------------------
     One expert's worth of fp16 exists at a time, transiently, against the whole bank
     resident for the whole run. On LFM2.5-8B-A1B a layer's ``gate_up_proj`` is
-    ``[32, 2688, 2048]`` -- 352 MiB in bf16 -- and one expert of it is 11 MiB. The
+    ``[32, 2688, 2048]`` -- 336 MiB in bf16 -- and one expert of it is 10.5 MiB. The
     saving is the 44 banks that are 91.5% of that model; the cost is that a token
     routed to 4 experts dequantizes 4 slices rather than reading 4 slices of packed
     memory in a fused kernel. That fused kernel is the other half of P8 and lands
