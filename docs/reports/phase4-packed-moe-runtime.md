@@ -454,9 +454,11 @@ unhelpful about the conclusion. Against the panel's own numbers — bf16 84.26%,
 **0.64**. A dispatch effect at 0.29x of quantization is worth roughly **0.45 points** if accuracy
 moved the way token agreement does. That is the same order as the margin.
 
-**And it falls on exactly the wrong axis.** GPTQ and AWQ have no `*Experts` module left to
+**And it falls on exactly the wrong axis.** GPTQ and AWQ have no *batched* bank left to
 dispatch: `llm-compressor` linearises all 22 banks into 2,201 `Linear`s (`banks_before: 22,
-banks_after: 0, linear_share: 1.0`), which *is* the eager arithmetic. bf16 and DynQuant kept their
+banks_after: 0, linear_share: 1.0`), so the grouped kernel has no tensor to take and the arithmetic
+is the loop. The `*Experts` modules and the config field both survive it, which matters for what the
+records can say and is taken up in §11. bf16 and DynQuant kept their
 banks and ran `grouped_mm`. So the panel compares **dq(grouped_mm) against gptq(eager)**, and the
 dispatch difference is confounded with the quantizer difference on precisely the comparison that
 carries the headline.
@@ -485,7 +487,8 @@ downloader runs, so one re-run decontaminates the panel and validates the artifa
 the three arms that kept their banks — `bf16`, `dq_4b` and `dq_3b` — re-scored on
 `eager` at the same anchors, the same 12,000 items, the same seed, paired against the stored
 per-item hits so the comparison is a McNemar test and not two independent rates. The four
-linearised arms need nothing: they already computed eager.
+linearised arms need nothing: they already computed eager — an inference from structure that
+§11 pins as still unmeasured, and separates from what their records are able to state.
 
 **And the code fix, so the next panel cannot straddle it.** A re-run repairs one campaign; what
 allowed the campaign to be built this way was that no record said which computation produced its
@@ -493,7 +496,9 @@ number. `dynquant eval` now pins the dispatch to `eager` after the model is reso
 not in `_load_runtime`, because a baseline arrives through `model=` and a ceiling applies no map,
 so that is the only point every arm passes through — and writes `{found, ran}` into the record.
 `EXPERTS_PAIRING_FIELDS` then refuses to pair two arms that ran different arithmetic, exempt on
-absence because a dense model has no dispatch and never will. `--experts-impl auto` restores the
+absence because a dense model has no dispatch and never will — an exemption that also covers a
+record written before the field existed, which is the one straddle it cannot see and §11 prints
+instead. `--experts-impl auto` restores the
 model's own choice, which is what measuring the dispatch itself needs and what a panel must not
 use. Both phase-4 drivers state the flag on every scoring command rather than inheriting it, for
 the reason `eval_flags` already states the decode budget: a default that moves under a driver is a
@@ -598,3 +603,68 @@ against a 0.1% match tolerance. The maps are not invalidated and are not being r
 eager re-score of section 8 reuses them through `--rescore`, precisely so that the dispatch is the
 only thing that moves between the two measurements — this change is the second one that would
 otherwise have ridden along.
+---
+
+## 11. What a linearised baseline still carries
+
+§8 planned one re-run: `bf16`, `dq_4b` and `dq_3b` re-scored on `eager`, the four
+`llm-compressor` arms left alone because "they already computed eager." Both halves of that
+sentence turn out to need work, and only one of them is about arithmetic.
+
+**The structural claim was wrong in its mechanism.** §8 says GPTQ and AWQ "have no `*Experts`
+module left to dispatch," and `_pin_experts_dispatch` was written to return `None` for them on that
+basis — a model with nothing to dispatch, filed beside a dense one. `linearize_moe` replaces
+*modules*. `_experts_implementation` lives on the *config*, which it never touches.
+
+A four-layer LFM2-MoE built from this campaign's own config, on CPU, says so directly:
+
+| | before `linearize_moe` | after |
+|---|---|---|
+| `config._experts_implementation` | `grouped_mm` | `grouped_mm` |
+| `set_experts_implementation` callable | yes | yes |
+| modules named `*.experts` | 3 | 3 |
+| non-linearised banks (`get_non_linearized_moes`) | 3 | 0 |
+| per-expert `Linear`s under `.experts` | 0 | 288 |
+
+`use_eager_experts` then returns `'grouped_mm'` and leaves `'eager'`. So a re-scored baseline would
+record `{found: grouped_mm, ran: eager}` exactly like an encoded DynQuant arm, and the two would
+pair — on the strength of a config field, on a model where setting it is inert because the
+grouped path has no batched tensor to take. The conclusion is right and the route to it is an
+accident. The operative fact §8 needed is narrower than what it wrote: there is no *batched* bank
+left, so the grouped kernel cannot run, so the arithmetic is the loop.
+
+**The numerical claim is still unmeasured.** "They already computed eager" is an inference from
+structure: both index one expert at a time. Nothing in this campaign has put the linearised loop and
+the `eager` dispatch on the same input and compared. The 1.24% figure is `eager` against
+`grouped_mm`; it says nothing about `eager` against a `ModuleList` of `Linear`s. The re-run in §8
+is designed to put every arm on one arithmetic, and it rests on that inference at the last step. The
+yardstick already exists — teacher-forced argmax agreement over the same 24 items — and
+running it against a linearised bf16 costs minutes beside the 5.5 hours an arm's eval takes. Until
+it runs, the panel's claim is "all arms index one expert at a time" and not "all arms compute
+identical values."
+
+**And the records will not pair, correctly.** The four landed baselines were scored by a build that
+predates the `experts` field, so they carry no key at all. After the re-run the three DynQuant-side
+arms will carry `{grouped_mm, eager}` and `_comparability` will refuse them against the four:
+`_ABSENT != 'eager'`. That is the guard doing its job — a record that cannot say what it ran
+cannot be certified as having run the same thing — and it is not fixable by re-running the
+baselines, which would cost roughly 22 GPU-hours to change a field while changing no arithmetic. The
+panel will therefore report a `NOT PAIRED` line whose content is provenance, not computation, and
+the report has to say which.
+
+**Which makes one absence worth printing.** `_comparability` reads `record.get("experts")` and
+treats a non-dict as absent. A `null` — a dense model, no dispatch, none possible — and a
+missing key — a record written before anyone asked — are the same value to it, and pair with
+each other silently. That exemption has to exist for the dense case. So `panel_table.py` now prints
+a dispatch census: the three states rendered distinctly, and the arms in the third named. It is the
+only place in the panel where the difference between "nothing to dispatch" and "nobody recorded it"
+appears, because the guard by construction cannot raise on it.
+
+**The general form, and it is not the same one as §8's.** §8 was a measurement carried across
+scales without being re-taken. This is a claim about one object justified by reasoning about
+another: the sentence was about modules, the code read the config, and the two agreed on the answer
+while disagreeing about everything else. A structural rewrite that leaves the configuration behind
+is the ordinary case, not the exotic one — `named_modules` missing bare parameters and a
+reconciling byte total that files every quantized tensor under "dense" are the same shape. The check
+that would have caught it is cheap and was available the whole time: build the object, do the
+rewrite, print the field.
