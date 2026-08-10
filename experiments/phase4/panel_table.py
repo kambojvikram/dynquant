@@ -875,7 +875,7 @@ def print_comparisons(
         print(
             f"  Holm-adjusted over {len(computed)} of {len(family)} comparisons in this"
             + (
-                " block -- a short family, so these adjusted p are weaker than the finished panel's"
+                " block -- a short family, so these adjusted p can only rise when the rest land"
                 if short
                 else " block"
             )

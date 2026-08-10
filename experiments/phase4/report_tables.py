@@ -99,7 +99,7 @@ def notes(entries: list[dict[str, Any]]) -> str:
     if corrected < declared:
         lines.append(
             f"Holm-adjusted over {corrected} of {declared} comparisons -- a short family, "
-            f"so these adjusted *p* are weaker than the finished panel's."
+            f"so these adjusted *p* can only rise when the remaining ones land."
         )
     return "\n\n" + "\n\n".join(lines) if lines else ""
 

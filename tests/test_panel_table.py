@@ -530,9 +530,10 @@ def test_an_arm_that_did_not_run_is_a_missing_row_and_not_a_missing_comparison(
     assert "Holm-adjusted over 4 of 6 comparisons" in printed, "the head family shrinks with it"
     assert "Holm-adjusted over 5 of 6 comparisons" in printed, "and so does the ceiling family"
     # A short family is corrected less than the finished panel will be, so an adjusted
-    # p read mid-run can only move the unfavourable way. The count does not say that. Once
-    # per block that ran short: the four above plus the ceiling family at five of six.
-    assert printed.count("a short family, so these adjusted p are weaker") == 5
+    # p read mid-run can only move the unfavourable way -- and the note says which way,
+    # because "weaker" reads as either the evidence or the number and they point opposite
+    # ways here. Once per block that ran short: the four above plus the ceiling at five of six.
+    assert printed.count("a short family, so these adjusted p can only rise") == 5
 
 
 def test_a_block_reads_in_the_families_declared_order_however_much_of_it_ran(
