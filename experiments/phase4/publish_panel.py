@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -52,6 +53,20 @@ from dataclasses import dataclass
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+CORE_SRC = HERE.parents[1] / "packages" / "dynquant-core" / "src"
+
+# Every child this launches needs `dynquant` importable, and nothing installs it in the
+# venv on the campaign box. The recipe children get there on their own -- `baselines_lfm2`
+# puts the source on `sys.path` once it is running -- but `python -m dynquant export`
+# cannot, because the module has to resolve before any code of ours runs. Set here rather
+# than asked of whoever types the command: an env var the operator has to remember is the
+# same arrangement that let panel_table.py ship unable to run outside my own shell.
+if CORE_SRC.is_dir():  # pragma: no cover - exercised through a subprocess
+    _inherited = os.environ.get("PYTHONPATH", "")
+    if str(CORE_SRC) not in _inherited.split(os.pathsep):
+        os.environ["PYTHONPATH"] = (
+            f"{CORE_SRC}{os.pathsep}{_inherited}" if _inherited else str(CORE_SRC)
+        )
 
 #: Arms this script knows how to publish, and what it calls the two shapes. A `bf16` ceiling
 #: is not published: it is the checkpoint the panel started from, already on disk, and
@@ -218,6 +233,25 @@ def guard(steps: list[Step], *, force: bool) -> None:
                 f"{step.label}: {step.out} already exists. It is either a finished publish "
                 f"or half of one, and this script cannot tell which. Move it aside, or pass "
                 f"--force to overwrite."
+            )
+
+    # Last, because it is the only check here that costs a process. It is a check at all
+    # because the map arms are published last: `-m dynquant` failing to resolve, or a clone
+    # too old to carry `export`, is an error that would otherwise arrive two and a half
+    # hours in with every recipe arm already paid for. Probed with the subcommand rather
+    # than bare `--help` so a resolvable module without this command is caught too.
+    if any(step.kind in MAP_KINDS for step in steps):
+        probe = subprocess.run(
+            [_python(), "-m", "dynquant", "export", "--help"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if probe.returncode != 0:
+            raise SystemExit(
+                f"{_python()} cannot run `-m dynquant export`, which every map arm is "
+                f"published with, so those arms would fail after the recipe arms had "
+                f"run:\n{(probe.stderr or probe.stdout).strip()}"
             )
 
 

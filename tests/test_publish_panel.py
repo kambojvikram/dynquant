@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -249,3 +251,109 @@ def test_the_expensive_arms_go_first_because_the_box_is_not_a_volume(
     first_map = min(i for i, k in enumerate(kinds) if k in driver.MAP_KINDS)
     assert last_recipe < first_map
     assert sorted(s.label for s in steps) != [s.label for s in steps]
+
+
+def _exec_driver() -> Any:
+    """A fresh module object, because the thing under test is an import side effect."""
+    spec = importlib.util.spec_from_file_location("_dq_publish_fresh", DRIVER)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    # Registered before exec, as the fixture above does: a `@dataclass` in the module body
+    # resolves its own annotations through `sys.modules[cls.__module__]`.
+    sys.modules["_dq_publish_fresh"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _scored_records_exist(steps: list[Any]) -> None:
+    """Satisfy the guard's own file check, which is not what these two tests are about."""
+    for step in steps:
+        if step.scored is not None:
+            step.scored.write_text("{}", encoding="utf-8")
+
+
+class _Fake:
+    """Stand-in for `subprocess.run`, answering the two calls `guard` makes."""
+
+    def __init__(self, *, probe_returncode: int) -> None:
+        self.probe_returncode = probe_returncode
+        self.calls: list[list[str]] = []
+
+    def __call__(self, cmd: list[str], **kwargs: Any) -> Any:
+        self.calls.append(list(cmd))
+        if "pgrep" in cmd[0]:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(
+            cmd, self.probe_returncode, "", "No module named dynquant"
+        )
+
+    @property
+    def probes(self) -> list[list[str]]:
+        return [cmd for cmd in self.calls if "dynquant" in cmd]
+
+
+def test_a_map_arm_that_cannot_be_exported_is_refused_before_the_recipes_run(
+    driver: Any, tmp_path: Any, monkeypatch: Any
+) -> None:
+    """The failure this guard exists to move to the front, and the one it did not check.
+
+    `python -m dynquant export` is how both map arms are published, and on the campaign
+    box nothing installs `dynquant` in the venv -- so the command resolves only if the
+    environment carries the package source. The map arms run *last*, after 2.7 h of GPTQ
+    and AWQ passes that a recycle cannot give back, so an unresolvable CLI is discovered
+    at the one point where discovering it is worthless.
+
+    Turns red when: the probe is dropped, or moved after the first recipe runs, or reduced
+    to a bare `-m dynquant --help` that a clone without the `export` command would pass.
+    """
+    fake = _Fake(probe_returncode=1)
+    monkeypatch.setattr(driver.subprocess, "run", fake)
+    steps = driver.plan(_arms(tmp_path), tmp_path / "out")
+    _scored_records_exist(steps)
+
+    with pytest.raises(SystemExit, match="after the recipe arms had run"):
+        driver.guard(steps, force=False)
+
+    assert fake.probes, fake.calls
+    assert fake.probes[0][-3:] == ["dynquant", "export", "--help"], fake.probes[0]
+
+
+def test_a_plan_with_no_map_arm_is_not_asked_about_a_cli_it_never_calls(
+    driver: Any, tmp_path: Any, monkeypatch: Any
+) -> None:
+    """A guard that refuses for a reason the plan cannot reach is a guard people learn to
+    pass `--force` around. Only the map arms use `-m dynquant`; a recipe-only publish must
+    not be blocked by whether it resolves.
+    """
+    fake = _Fake(probe_returncode=1)
+    monkeypatch.setattr(driver.subprocess, "run", fake)
+    steps = driver.plan(_arms(tmp_path), tmp_path / "out", only=["gptq_4b"])
+    _scored_records_exist(steps)
+
+    driver.guard(steps, force=False)
+    assert fake.probes == [], fake.calls
+
+
+def test_the_children_can_import_core_with_nothing_exported(monkeypatch: Any) -> None:
+    """The fix itself, checked by spawning a child rather than reading the variable back.
+
+    Asserting that PYTHONPATH contains a string would pass for a path that points nowhere.
+    What the map arms need is that a fresh interpreter, started from this environment,
+    can import `dynquant` -- so that is what is asserted, with PYTHONPATH removed first so
+    the shell I happen to run the suite from cannot supply the answer.
+
+    Turns red when: the environment plumbing is dropped, or CORE_SRC stops resolving to
+    the package source.
+    """
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    fresh = _exec_driver()
+    assert fresh.CORE_SRC.is_dir(), fresh.CORE_SRC
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import dynquant; print(dynquant.__file__)"],
+        capture_output=True,
+        text=True,
+        env=os.environ,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "dynquant-core" in result.stdout, result.stdout
