@@ -2206,7 +2206,166 @@ the pin predates `b54b108 Export batched expert banks instead of refusing them`.
 real code, just not this code. A measurement carries the tree it ran on, and on this campaign the
 tree that runs is deliberately not the tree that is written.
 
-## 13. Status
+## 13. The 4-bit margin is a fidelity difference, and so is the confound
+
+The panel reports DynQuant +0.64 points over GPTQ at 4 bits. That number is not one number.
+Split by source it is +1.03 on wikisql and -0.49 on gretel, and Cochran's Q over the two
+calls that heterogeneous (Q=6.32, *p*=0.012). But the sources differ in more than identity:
+the bf16 ceiling is 88.59% on wikisql and 71.63% on gretel, so on this panel "gretel" and
+"hard" are the same column and a source-wise test cannot tell them apart.
+
+**A confound of that shape has a cheap check.** Stratify instead by whether the *ceiling* got
+the item right -- a label that owes nothing to either compared arm, so McNemar stays valid
+inside each half -- and re-run the same paired test.
+
+| stratum | n | DynQuant vs GPTQ | *p* |
+|---|---:|---:|---:|
+| ceiling got it right | 10,111 | **+1.18** | 1.38e-06 |
+| ceiling got it wrong | 1,889 | **-2.22** | 0.00966 |
+| wikisql, ceiling right | 7,917 | **+1.58** | 1.26e-09 |
+| wikisql, ceiling wrong | 1,020 | **-3.24** | 0.00993 |
+| gretel, ceiling right | 2,194 | -0.27 | 0.708 |
+| gretel, ceiling wrong | 869 | -1.04 | 0.417 |
+
+The margin does not merely vary, it **changes sign with difficulty**, and it changes sign
+*within wikisql alone*. The source axis cannot produce that.
+
+### 13.1 One measurement accounts for both halves
+
+A quantized arm either matches the ceiling on an item or flips it -- a hit is a boolean and
+there is no third case -- so accuracy is an **identity**, not a model:
+
+    accuracy = c * agree_where_right + (1 - c) * (1 - agree_where_wrong)
+
+`panel_table.py` computes this now rather than a scratch script, and its load-bearing test
+asserts the identity itself rather than four hand-checked percentages, because every
+plausible mis-edit still prints four believable numbers.
+
+| arm | accuracy | agrees with bf16 | where bf16 right | where bf16 wrong |
+|---|---:|---:|---:|---:|
+| gptq_4b | 82.07% | 93.91% | 95.08% | 87.61% |
+| awq_4b | 81.77% | 93.56% | 94.70% | 87.45% |
+| **dq_4b** | **82.71%** | **95.25%** | **96.26%** | **89.84%** |
+| bf16 | 84.26% | -- | -- | -- |
+
+McNemar on the agreement indicator: dq vs gptq **+1.34** (+507/-346) *p*=3.93e-08; dq vs awq
+**+1.69** (+520/-317) *p*=2.28e-12; gptq vs awq +0.35 (+528/-486) *p*=0.198 -- **the two
+baselines do not separate from each other on fidelity**, exactly as they do not separate on
+accuracy (*p*=0.272). Feeding those back through the identity reproduces the accuracy margin
+to the penny and says which side of the ledger it came from: dq vs gptq is +0.99 where the
+ceiling is right and -0.35 where it is wrong, summing to the observed +0.64; dq vs awq is
++1.32 and -0.38, summing to +0.94.
+
+So the account is: **DynQuant tracks the ceiling more closely in both directions.** It
+inherits bf16's right answers, which wins the 84% of items where the ceiling is right, and
+inherits its wrong ones, which loses the other 16%. Two strata, opposite signs, one cause.
+It also explains why the margin is larger where the ceiling is higher: a point of fidelity
+moves accuracy by `2c - 1`, which is 0.77 on wikisql and 0.43 on gretel.
+
+Running the panel's own Cochran Q on the fidelity indicator separates the two baselines:
+
+| comparison | gretel | wikisql | Q | *p* | |
+|---|---:|---:|---:|---:|---|
+| dq vs gptq, accuracy | -0.49 | +1.03 | 6.32 | 0.012 | heterogeneous |
+| dq vs gptq, fidelity | +0.10 | +1.77 | 7.64 | 0.0057 | heterogeneous |
+| dq vs awq, accuracy | +0.36 | +1.14 | 1.53 | 0.216 | consistent |
+| dq vs awq, fidelity | +1.86 | +1.63 | 0.13 | **0.719** | consistent |
+
+Against AWQ the fidelity edge is flat across sources and the entire variation in the
+*accuracy* margin is the `2c - 1` arithmetic. Against GPTQ the heterogeneity is real and
+lives in fidelity itself. The 3-bit GPTQ arm shows the same instrument reading a collapse:
+it agrees with bf16 on 87.08% of the items bf16 got **wrong** and only 69.70% of the ones it
+got **right** -- an arm that has stopped tracking the ceiling and "agrees" on the failures
+by being broadly wrong. The identity confirms it, 0.8426 x 0.6970 + 0.1574 x 0.1292 =
+60.76%, its accuracy.
+
+### 13.2 The confound is not a hypothesis here, and §8 already measured it
+
+Nothing above is new evidence about the *method*. §8's dispatch probe already established
+that the panel compares **dq(`grouped_mm`) against gptq(`eager`)**: `llm-compressor`
+linearises all 22 banks into 2,201 `Linear`s, so a baseline has no batched tensor left for
+the grouped kernel to take, while bf16 and both DynQuant arms keep their banks -- DynQuant
+being scored by encoding widths back into the ceiling's own checkpoint. §11 then read the
+records and found `experts` **absent** on all five banked arms, so no arm in this panel
+recorded choosing its dispatch.
+
+**That inference had one unstated assumption, and it survives being checked.** Every
+statement of the `grouped_mm` default in this repository cites transformers **5.14.1**, the
+version the checkpoint was written under -- and the panel runs **5.10.1**. On 5.10.1
+`modeling_lfm2_moe` contains no `grouped_mm` at all: `Lfm2MoeExperts.forward` is the
+indexing loop, and the `@use_experts_implementation` decorator swaps it for whatever
+`config._experts_implementation` names. The checkpoint's own config leaves that `None`, and
+`None` reaching `ExpertsInterface.get_interface` returns the eager loop **and logs a warning**
+-- which appears **zero times** in the panel log's 60,674 lines. So it was not `None` at
+forward time. `PreTrainedModel.get_correct_experts_implementation` is where it stops being
+`None`:
+
+```python
+applicable_experts = "grouped_mm" if requested_experts is None else requested_experts
+...
+if applicable_experts == "grouped_mm":
+    try: self._grouped_mm_can_dispatch()
+    except (ValueError, ImportError): applicable_experts = "eager"
+```
+
+`None` becomes `grouped_mm` on 5.10.1 exactly as on 5.14.1, and the one escape hatch cannot
+fire here: `_grouped_mm_can_dispatch` on this version raises only when the class does not
+support setting the implementation at all, which it does. It never asks torch or the device
+whether a grouped matmul is available, so there is no silent hardware fallback to `eager`
+hiding in this panel -- the failure mode that would have made the confound imaginary. The
+banked arms ran `grouped_mm`, on the version that ran them.
+
+**What makes that decisive for a fidelity claim specifically is that §8's probe contains a
+fidelity measurement.** Its first cell is bf16 against bf16, one load, dispatch varied and
+nothing else:
+
+```
+A vs B   bf16: grouped_mm against eager    (dispatch, unquantized)   0.9876
+B vs C   eager: bf16 against dq            (quantization)            0.9567
+```
+
+That 0.9876 is the ceiling agreeing **with itself** at 98.76% across exactly the dispatch
+change that separates the DynQuant arms from the baselines. The quantity this section
+reports is agreement with bf16, and the dispatch alone moves it by **1.24 points** against a
+claimed fidelity gap of **1.34**. The confound is not merely the same order as the effect;
+on the same axis, in the same units, it is nearly the whole of it.
+
+The mapping from teacher-forced token agreement over 24 items to exact-match over 12,000
+generations is unknown, and it is unknown in *both* directions -- 1.24% of gold positions
+spread over 20--40-token queries could touch far more than 1.24% of items, or greedy decode
+could absorb most of it. That uncertainty is the point. The honest statement is:
+
+> At 4 bits DynQuant tracks the unquantized model more closely than either baseline, by
+> +1.34 and +1.69 points of agreement. DynQuant is also scored through the same expert
+> dispatch as the ceiling while the baselines are not, and that difference alone moves
+> agreement with bf16 by 1.24 points. This data cannot separate the two.
+
+The accuracy headline carries the identical caveat, because it is the same measurement seen
+through the identity above -- which is why the panel prints `!` on those rows and why the
+model cards emit the `0.29x` figure rather than stripping it.
+
+One thing §8 does settle in the method's favour: `dynquant_experts_forward` indexes a packed
+bank from inside the grouped path and measures **bit-identical** to `grouped_mm`, 0.00% of
+argmax tokens against `eager`'s 1.95% at this model's MoE geometry. So DynQuant's own packed
+path introduces nothing. The confound is entirely that the *baselines* were moved and the
+ceiling was not.
+
+**The deciding experiment therefore stops being hygiene.** `experiments/phase4/rescore_eager.sh`
+re-scores `bf16`, `dq_4b` and `dq_3b` under `--experts-impl eager`, putting every arm on the
+arithmetic the baselines ran. It re-computes the ceiling too, so every number in §13.1 moves
+-- that is what it is for. §8 brackets it near **15 hours** on the argument that holding the
+weights fixed on both sides leaves the fixed 1.82x multiplier as the only one in play.
+
+### 13.3 A corroborating observation, at the same confidence
+
+Decode time behaves like a fidelity signal. On identical items and hardware, `dq_4b` covered
+items 4800--8800 in **46 minutes** against `awq_4b`'s **1h49m**. A model that emits
+well-formed SQL stops at the terminator; a damaged one runs to `max_new_tokens`, which is
+the mechanism §8 used to attribute at least 1.40--1.45x of the linearised arms' slowdown to
+generation length rather than to unpack cost. It is consistent with the fidelity account. It
+is equally consistent with the dispatch confound, and it is not independent evidence.
+
+## 14. Status
 
 Done: the mixture, the admission rule, the metric, the screen, both splits measured, the DML leak
 closed, the task reachable from the CLI, the reasoning-trace and shots defects fixed, and signal
