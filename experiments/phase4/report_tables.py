@@ -18,13 +18,23 @@ import json
 from pathlib import Path
 from typing import Any
 
-#: The three partitions `panel_table` runs Cochran's Q over, and what each one is called in
-#: prose. Keyed by the payload's own field names so a renamed block fails here rather than
-#: printing an empty table.
+#: The partitions `panel_table` runs Cochran's Q over, and what each one is called in prose.
+#: Keyed by the payload's own field names so a renamed block fails here rather than printing an
+#: empty table.
+#:
+#: `fidelity` is the same source partition as `source` measured over agreement with the ceiling
+#: instead of over accuracy. The two blocks are the same shape, over the same comparisons, with
+#: the same column headers and different numbers -- and §13.1 prints them one under the other --
+#: so the caption is the only thing telling a reader which is which, and it says so rather than
+#: repeating "by source" twice.
 SPREADS = {
     "source": ("source_heterogeneity", "by source"),
     "difficulty": ("difficulty_heterogeneity", "by the ceiling's own answer"),
     "crossed": ("source_and_difficulty_heterogeneity", "by source and difficulty"),
+    "fidelity": (
+        "fidelity_source_heterogeneity",
+        "by source, over agreement with the ceiling rather than accuracy",
+    ),
 }
 
 #: The stratified McNemar blocks, in the order §13 reads them.
@@ -166,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
         "--spread",
         choices=sorted(SPREADS),
         action="append",
-        help="emit one Cochran block; repeatable, and all three if omitted",
+        help="emit one Cochran block; repeatable, and every one of them if omitted",
     )
     args = parser.parse_args(argv)
 

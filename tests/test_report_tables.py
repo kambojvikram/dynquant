@@ -145,6 +145,13 @@ PAYLOAD: dict[str, Any] = {
     "source_heterogeneity": [
         _spread("A vs B", 0.7290, {"gretel": -0.4897, "wikisql": 1.0294}, 6.3178, 1, 0.03586),
     ],
+    # Same partition, same comparison, same column headers -- and different numbers, because
+    # this one is measured over agreement with the ceiling rather than over accuracy. §13.1
+    # prints the two blocks one under the other, so a fixture whose fidelity numbers matched
+    # its accuracy numbers could not tell them apart and neither could a reader.
+    "fidelity_source_heterogeneity": [
+        _spread("A vs B", 1.4385, {"gretel": 0.0979, "wikisql": 1.7679}, 7.6380, 1, 0.01503),
+    ],
 }
 
 
@@ -365,3 +372,62 @@ def test_the_fields_the_formatter_reads_are_fields_the_panel_writes(tables: Any)
     wanted = {field for field, _ in tables.SPREADS.values()} | {f for f, _ in tables.BLOCKS}
     missing = sorted(wanted - emitted)
     assert not missing, f"{missing} are read from the payload and never written into it"
+
+
+def test_the_fidelity_spread_is_not_the_accuracy_spread_wearing_a_caption(
+    tables: Any, tmp_path: Path
+) -> None:
+    """The two source blocks are the same shape over the same comparison, and both are printed.
+
+    §13.1 sets a margin in accuracy beside the same margin in agreement with the ceiling, which
+    is the whole argument of the section: the first is explained by the second. Nothing in
+    either table says which one it is except the caption above it, and nothing in the numbers
+    themselves flags a block that was generated from the wrong payload field -- the two are
+    plausible for each other to three digits.
+
+    Turns red when: both names resolve to one field, or a caption stops distinguishing them.
+    """
+    accuracy = _run(tables, PAYLOAD, tmp_path, "--spread", "source")
+    fidelity = _run(tables, PAYLOAD, tmp_path, "--spread", "fidelity")
+
+    captions = [text.splitlines()[0] for text in (accuracy, fidelity)]
+    assert captions[0] != captions[1], f"both blocks are captioned {captions[0]!r}"
+    assert all(caption.startswith("Cochran's Q by source") for caption in captions)
+
+    for text, field in (
+        (accuracy, "source_heterogeneity"),
+        (fidelity, "fidelity_source_heterogeneity"),
+    ):
+        entry = PAYLOAD[field][0]
+        row = next(row for row in _rows(text, 6) if row[0] == "A vs B")
+        assert row[1] == f"{entry['pooled_points']:+.2f}"
+        assert row[2] == f"{entry['sources']['gretel']:+.2f} / {entry['sources']['wikisql']:+.2f}"
+        assert row[3] == f"{entry['q']:.2f}"
+
+
+def test_every_partition_the_panel_computes_has_a_name_here(tables: Any, tmp_path: Path) -> None:
+    """The other direction of the field check: a partition the panel writes and this cannot ask for.
+
+    `test_the_fields_the_formatter_reads_are_fields_the_panel_writes` catches a name this table
+    has and the panel does not, which fails loudly. The reverse is silent -- the panel computes a
+    partition, serialises it into the payload the model cards read, and no report can ever print
+    it, because the only way to name a block here is to be in this table. That is how the
+    fidelity spread sat in the payload unformatted while §13.1's copy of it was typed by hand.
+
+    Turns red when: a heterogeneity field is added to panel_table and not to SPREADS.
+    """
+    source = PANEL_TABLE.read_text(encoding="utf-8")
+    computed = {
+        key for key in re.findall(r'"([a-z0-9_]+)":', source) if key.endswith("_heterogeneity")
+    }
+    formatted = {field for field, _ in tables.SPREADS.values()}
+    assert computed, "no heterogeneity fields found in panel_table -- the naming changed"
+    unreachable = sorted(computed - formatted)
+    assert not unreachable, f"{unreachable} are computed and serialised but cannot be printed"
+
+    # And every name that survives that is one --spread with no argument actually emits, so a
+    # block cannot be reachable in the table and unreachable in the default set.
+    printed = _run(tables, PAYLOAD, tmp_path)
+    for name, (field, caption) in tables.SPREADS.items():
+        assert PAYLOAD.get(field), f"the fixture does not exercise {name}"
+        assert f"Cochran's Q {caption}," in printed, f"{name} was not printed"
