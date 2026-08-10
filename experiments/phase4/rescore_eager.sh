@@ -27,10 +27,39 @@ export PYTHONPATH="$CLONE/packages/dynquant-core/src${PYTHONPATH:+:$PYTHONPATH}"
 say() { printf '%s\n' "$*" >&2; }
 die() { printf 'refused: %s\n' "$*" >&2; exit 1; }
 
+# The driver, told apart from every command line that merely mentions it. `pgrep -f` matches a
+# whole command line, and this campaign is full of lines carrying the driver's name without being
+# it: a watcher polling for it, a `grep` over these scripts, the `ssh host bash -c '...'` wrapper
+# that launches this very script with a diagnostic appended -- that last one refused a relaunch on
+# 2026-08-09 with the GPU at 1 MiB and nothing scoring, and printed its own PID as the evidence.
+# A guard that refuses cannot afford that: a false positive looks exactly like the true positive it
+# exists to produce, so the only move left to the operator is to decide the guard is wrong.
+#
+# `pgrep -af` prints "PID cmdline", so field 2 is argv[0] and field 3 is argv[1]. A process
+# *running* the driver has `arms_lfm2.py` in one of those two -- field 3 under an interpreter,
+# which is how every script here launches it, and field 2 under its shebang. Anything that only
+# mentions it has the name further along, behind a `bash -c`, a `grep` or an `ssh`. Matching on
+# python in field 2 would work today and would silently miss the shebang form; position does not.
+#
+# A missing tool must not read as a missing driver: without `pgrep` or without `awk` this returns
+# nothing, the caller takes the empty branch, and the guard announces itself as passed at the one
+# moment it had something to say. So it refuses instead, and the way past it is a person looking.
+driver_procs() {
+  command -v pgrep >/dev/null && command -v awk >/dev/null \
+    || die "no pgrep or no awk on this shell, so the running-driver guard cannot run -- and a
+          guard that cannot run is not a guard that passed. Check by hand
+          (ps aux | grep arms_lfm2) and re-run with DRIVER_CHECKED=1 if nothing is scoring."
+  pgrep -af 'arms_lfm2\.py run' | awk '$2 ~ /arms_lfm2\.py$/ || $3 ~ /arms_lfm2\.py$/' || true
+}
+
 # 1. The panel owns the clone until it exits. It was launched from a pinned commit and pulling
 #    the clone under a running driver swaps the code mid-panel for the arms not yet scored.
-if pgrep -af 'arms_lfm2\.py run' >/dev/null; then
-  pgrep -af 'arms_lfm2\.py run' >&2
+#    No DRIVER_CHECKED escape hatch here, unlike the other two: this is the script that starts a
+#    driver, and overriding the guard wrongly means two of them writing the same panel directory.
+#    The discriminator above is what makes an override unnecessary.
+running=$(driver_procs)
+if [ -n "$running" ]; then
+  printf '%s\n' "$running" >&2
   die "the panel driver is still running. The clone is pinned until it exits."
 fi
 

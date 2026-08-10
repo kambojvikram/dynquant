@@ -20,20 +20,32 @@ JOBS=${JOBS:-$(nproc)}
 say() { printf '%s\n' "$*" >&2; }
 die() { printf 'refused: %s\n' "$*" >&2; exit 1; }
 
+# The same helper `rescore_eager.sh` defines, and for the reason written out there: `pgrep -f`
+# matches a command line, so a watcher, a `grep` or the `ssh ... bash -c` wrapper that launched
+# this script all read as a running driver. `pgrep -af` prints "PID cmdline", so field 2 is
+# argv[0] and field 3 is argv[1], and a process actually running the driver is the only kind with
+# `arms_lfm2.py` in one of those two. Missing tools refuse rather than returning empty, because an
+# empty result here is indistinguishable from a clean box.
+driver_procs() {
+  command -v pgrep >/dev/null && command -v awk >/dev/null \
+    || die "no pgrep or no awk on this shell, so the running-driver guard cannot run -- and a
+          guard that cannot run is not a guard that passed. Check by hand
+          (ps aux | grep arms_lfm2) and re-run with DRIVER_CHECKED=1 if nothing is scoring."
+  pgrep -af 'arms_lfm2\.py run' | awk '$2 ~ /arms_lfm2\.py$/ || $3 ~ /arms_lfm2\.py$/' || true
+}
+
 # 1. The same guard `sync_clone.sh` and `rescore_eager.sh` open with, and for the same reason
 #    plus one of this script's own: a build writes into the venv the panel is importing from.
 #    An in-place `pip install` while a driver is thirty hours into a seven-arm run replaces
 #    modules under a live process, and the failure mode is not a clean crash.
 #
-#    An absent `pgrep` must not read as an absent driver. `if pgrep ...` on a shell without it
-#    takes the false branch and builds, announcing the guard as passed.
+#    An absent tool must not read as an absent driver either, which is why `driver_procs` refuses
+#    rather than returning empty: a shell without `pgrep` or `awk` takes the empty branch and
+#    builds, announcing the guard as passed.
 if [ "${DRIVER_CHECKED:-}" != 1 ]; then
-  command -v pgrep >/dev/null \
-    || die "no pgrep on this shell, so the running-driver guard cannot run -- and a guard that
-          cannot run is not a guard that passed. Check by hand (ps aux | grep arms_lfm2) and
-          re-run with DRIVER_CHECKED=1 if nothing is scoring."
-  if pgrep -af 'arms_lfm2\.py run' >/dev/null; then
-    pgrep -af 'arms_lfm2\.py run' >&2
+  running=$(driver_procs)
+  if [ -n "$running" ]; then
+    printf '%s\n' "$running" >&2
     die "the panel driver is still running. The GPU and this venv are its until it exits."
   fi
 fi

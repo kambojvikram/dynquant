@@ -25,21 +25,32 @@ PINNED=${PINNED:-4109dcc476da0b956187519d2a8fd5153d9e3406}
 say() { printf '%s\n' "$*" >&2; }
 die() { printf 'refused: %s\n' "$*" >&2; exit 1; }
 
+# The same helper `rescore_eager.sh` defines, and for the reason written out there: `pgrep -f`
+# matches a command line, so a watcher, a `grep` or the `ssh ... bash -c` wrapper that launched
+# this script all read as a running driver. `pgrep -af` prints "PID cmdline", so field 2 is
+# argv[0] and field 3 is argv[1], and a process actually running the driver is the only kind with
+# `arms_lfm2.py` in one of those two. Missing tools refuse rather than returning empty, because an
+# empty result here is indistinguishable from a clean box.
+driver_procs() {
+  command -v pgrep >/dev/null && command -v awk >/dev/null \
+    || die "no pgrep or no awk on this shell, so the running-driver guard cannot run -- and a
+          guard that cannot run is not a guard that passed. Check by hand
+          (ps aux | grep arms_lfm2) and re-run with DRIVER_CHECKED=1 if nothing is scoring."
+  pgrep -af 'arms_lfm2\.py run' | awk '$2 ~ /arms_lfm2\.py$/ || $3 ~ /arms_lfm2\.py$/' || true
+}
+
 # 1. The same refusal `rescore_eager.sh` opens with, and for a stronger reason here: that script
 #    only reads the clone, this one rewrites it. A driver part-way through arm five loads the next
 #    arm's code from disk when it gets there, so a sync under a running panel produces a panel
 #    whose arms were scored by two different versions and no record of which was which.
-#    And an absent `pgrep` must not look like an absent driver. `if pgrep ...` on a shell without
-#    it takes the false branch and syncs, which is the failure this whole script exists to avoid,
-#    announced as a passing check. So the tool is required, and the only way past it is a person
-#    saying they looked.
+#    And an absent tool must not look like an absent driver, which is why `driver_procs` refuses
+#    rather than returning empty: a shell without `pgrep` or `awk` takes the empty branch and syncs,
+#    the failure this whole script exists to avoid, announced as a passing check. The only way past
+#    it is a person saying they looked.
 if [ "${DRIVER_CHECKED:-}" != 1 ]; then
-  command -v pgrep >/dev/null \
-    || die "no pgrep on this shell, so the running-driver guard cannot run -- and a guard that
-          cannot run is not a guard that passed. Check by hand (ps aux | grep arms_lfm2) and
-          re-run with DRIVER_CHECKED=1 if nothing is scoring."
-  if pgrep -af 'arms_lfm2\.py run' >/dev/null; then
-    pgrep -af 'arms_lfm2\.py run' >&2
+  running=$(driver_procs)
+  if [ -n "$running" ]; then
+    printf '%s\n' "$running" >&2
     die "the panel driver is still running. The clone is pinned until it exits."
   fi
 fi
