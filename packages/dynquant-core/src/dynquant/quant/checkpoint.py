@@ -55,7 +55,7 @@ from dynquant.integration.serving_common.schema import (
 )
 from dynquant.quant.device import quantize_tensor, resolve_compute_device
 from dynquant.quant.grid import CLIP_CANDIDATES
-from dynquant.quant.tensor import storage_dtype
+from dynquant.quant.tensor import QuantTensor, storage_dtype
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -156,6 +156,7 @@ def export_packed_checkpoint(
     max_shard_bytes: int = DEFAULT_SHARD_BYTES,
     provenance: Mapping[str, Any] | None = None,
     progress: Callable[[int, int], None] | None = None,
+    encoder: Callable[[str, torch.Tensor, int], QuantTensor] | None = None,
 ) -> ExportReport:
     """Quantize, pack, and write ``model`` as a loadable checkpoint directory.
 
@@ -172,6 +173,17 @@ def export_packed_checkpoint(
         provenance: Free-form dict recorded in the manifest (stats file,
             allocator, target). Nothing reads it back; it is there so a number can
             be traced to the run that produced it.
+        encoder: Supply the packed tensor for a module instead of quantizing its
+            weight here. Called as ``encoder(name, weight, width)``. The case this
+            exists for is a grid fitted somewhere else -- a GPTQ or AWQ checkpoint
+            being re-housed -- where re-deriving the map from the dequantized
+            weights would move them off the levels the source chose; see
+            :meth:`QuantTensor.from_codes`. The returned tensor must agree with
+            this call's ``bits``, ``group_size`` and ``symmetric``, because the
+            checkpoint schema records those once for the whole directory and a
+            module that quietly differed would be unreadable. No clipping search
+            runs, so the manifest omits its two fields for these modules rather
+            than reporting a search that did not happen.
 
     Returns:
         An :class:`ExportReport`. Its byte counts are measured from the tensors
@@ -209,16 +221,21 @@ def export_packed_checkpoint(
             # caveat off the object it already has instead of re-deriving it from shapes.
             banks.append(name)
 
+        search = None
         with torch.no_grad():
-            quantized, search = quantize_tensor(
-                weight.detach(),
-                bits=width,
-                group_size=group_size,
-                symmetric=symmetric,
-                candidates=candidates,
-                compute_dtype=storage_dtype(weight),
-                device=device,
-            )
+            if encoder is None:
+                quantized, search = quantize_tensor(
+                    weight.detach(),
+                    bits=width,
+                    group_size=group_size,
+                    symmetric=symmetric,
+                    candidates=candidates,
+                    compute_dtype=storage_dtype(weight),
+                    device=device,
+                )
+            else:
+                quantized = encoder(name, weight.detach(), width)
+                _check_encoder_agrees(name, quantized, width, group_size, symmetric)
         # Off the accelerator before it lands in the write buffer. The point of
         # encoding on the GPU is the arithmetic; holding every packed tensor in
         # VRAM until the end would make exporting a 7B need as much VRAM as
@@ -236,8 +253,14 @@ def export_packed_checkpoint(
         )
         layers[name] = {
             **quantized.metadata(),
-            "clipped_fraction": round(search.clipped_fraction, 6),
-            "clip_improvement": round(search.improvement, 6),
+            **(
+                {}
+                if search is None
+                else {
+                    "clipped_fraction": round(search.clipped_fraction, 6),
+                    "clip_improvement": round(search.improvement, 6),
+                }
+            ),
         }
         packed_bytes += quantized.nbytes
         quantized_elements += quantized.num_dense_elements
@@ -310,6 +333,35 @@ def export_packed_checkpoint(
 # --------------------------------------------------------------------------
 # Pieces
 # --------------------------------------------------------------------------
+
+
+def _check_encoder_agrees(
+    name: str, quantized: QuantTensor, width: int, group_size: int, symmetric: bool
+) -> None:
+    """A supplied tensor must match the directory-wide settings, or nothing can read it.
+
+    ``QuantizationConfigSchema`` records ``group_size`` and ``symmetric`` once for the
+    whole checkpoint and ``bits`` per module. An encoder that returned something else
+    would produce a directory that is internally inconsistent in the one way the loader
+    does not check -- it would unpack with the schema's grouping, against words written
+    with another, and the weights would come back as noise rather than as an error.
+    """
+    mismatch = [
+        f"{field}={got!r} (expected {want!r})"
+        for field, got, want in (
+            ("bits", quantized.bits, width),
+            ("group_size", quantized.group_size, group_size),
+            ("symmetric", quantized.symmetric, symmetric),
+        )
+        if got != want
+    ]
+    if mismatch:
+        raise DynQuantError(
+            f"the encoder returned a tensor for {name!r} that disagrees with the "
+            f"checkpoint's settings: {', '.join(mismatch)}. The schema records these once "
+            "for the directory, so the loader would unpack this module with the wrong "
+            "geometry and read noise instead of raising"
+        )
 
 
 def _refuse_what_no_loader_reads(model: nn.Module, bits: Mapping[str, int]) -> None:

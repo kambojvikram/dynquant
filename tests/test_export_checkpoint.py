@@ -677,3 +677,114 @@ def test_what_this_writer_wrote_is_now_what_the_runtime_holds(exported_bank):
 
     for suffix in sorted(written):
         assert torch.equal(exported[f"{BANK}.{suffix}"], held[suffix]), suffix
+
+
+# --------------------------------------------------------------------------
+# A grid fitted somewhere else
+# --------------------------------------------------------------------------
+
+
+def _carrying_encoder(bits_by_name, group_size=128):
+    """An encoder that returns a grid the default one would not have chosen.
+
+    Deliberately not min/max: every group is placed on a band of codes that stops well
+    short of both ends, which is the shape a foreign quantizer leaves behind and the shape
+    ``from_dense`` cannot recover. If the exporter ignored the encoder and quantized the
+    weight itself, the written values would not be these.
+    """
+    from dynquant.quant.tensor import QuantTensor
+
+    produced: dict[str, torch.Tensor] = {}
+
+    def encode(name, weight, width):
+        rows = weight.reshape(-1, weight.shape[-1])
+        num_rows, in_features = rows.shape
+        groups = -(-in_features // group_size)
+        generator = torch.Generator().manual_seed(abs(hash(name)) % (2**31))
+        low, high = 2, min(2 + 5, (1 << width) - 1)
+        codes = torch.randint(
+            low, high + 1, (num_rows, in_features), generator=generator, dtype=torch.int64
+        )
+        scales = torch.full((num_rows, groups), 0.01, dtype=torch.float32)
+        offsets = torch.full((num_rows, groups), -0.125, dtype=torch.float32)
+        qt = QuantTensor.from_codes(
+            codes,
+            scales,
+            offsets,
+            bits=width,
+            group_size=group_size,
+            logical_shape=tuple(weight.shape),
+            compute_dtype=weight.dtype,
+        )
+        produced[name] = qt.dequantize(dtype=torch.float32)
+        return qt
+
+    return encode, produced, bits_by_name
+
+
+def test_a_supplied_grid_is_written_instead_of_a_refitted_one(tmp_path):
+    """The exporter writes the encoder's levels, not levels re-derived from the weight."""
+    from safetensors.torch import load_file
+
+    from dynquant.quant.tensor import QuantTensor
+
+    model = tiny_model()
+    bits = mixed_widths(model)
+    encode, produced, _ = _carrying_encoder(bits)
+    report = export_packed_checkpoint(
+        model, bits, output_dir=tmp_path / "ckpt", compute_device=None, encoder=encode
+    )
+    written = load_file(report.output_dir / HF_WEIGHTS_FILENAME)
+    layers = json.loads((report.output_dir / MANIFEST_FILENAME).read_text(encoding="utf-8"))[
+        "layers"
+    ]
+
+    assert produced, "the encoder was never called"
+    for name, expected in produced.items():
+        subset = {key: value for key, value in written.items() if key.startswith(f"{name}.")}
+        restored = QuantTensor.from_state_dict(name, subset, layers[name])
+        assert torch.equal(restored.dequantize(dtype=torch.float32), expected), name
+
+
+def test_a_supplied_grid_reports_no_clipping_search_it_did_not_run(tmp_path):
+    model = tiny_model()
+    bits = mixed_widths(model)
+    encode, _, _ = _carrying_encoder(bits)
+    report = export_packed_checkpoint(
+        model, bits, output_dir=tmp_path / "ckpt", compute_device=None, encoder=encode
+    )
+    manifest = json.loads((report.output_dir / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    layers = manifest["layers"]
+    assert layers, "no layers recorded"
+    for name, entry in layers.items():
+        assert "clipped_fraction" not in entry, name
+        assert "clip_improvement" not in entry, name
+
+
+def test_an_encoder_disagreeing_with_the_directory_settings_is_refused(tmp_path):
+    """A per-module geometry the schema cannot record would read as noise, not as an error."""
+    from dynquant.quant.tensor import QuantTensor
+
+    model = tiny_model()
+    bits = mixed_widths(model)
+
+    def wrong_group_size(name, weight, width):
+        rows = weight.reshape(-1, weight.shape[-1])
+        groups = -(-rows.shape[1] // 64)
+        return QuantTensor.from_codes(
+            torch.zeros(rows.shape, dtype=torch.int64),
+            torch.ones(rows.shape[0], groups),
+            torch.zeros(rows.shape[0], groups),
+            bits=width,
+            group_size=64,  # the directory is being written at 128
+            logical_shape=tuple(weight.shape),
+        )
+
+    with pytest.raises(DynQuantError, match="group_size=64"):
+        export_packed_checkpoint(
+            model,
+            bits,
+            output_dir=tmp_path / "ckpt",
+            compute_device=None,
+            encoder=wrong_group_size,
+        )

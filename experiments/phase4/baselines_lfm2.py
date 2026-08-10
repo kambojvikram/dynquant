@@ -828,7 +828,9 @@ def expert_rules() -> list[dict[str, Any]]:
     return rules
 
 
-def delinearize_state_dict(model: Any, rules: list[dict[str, Any]]) -> dict[str, Any]:
+def delinearize_state_dict(
+    model: Any, rules: list[dict[str, Any]], tensors: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """The banked state dict a linearized model would have had, by the derived rules.
 
     Reconstructing a *state dict* rather than performing the module surgery in reverse. The
@@ -841,6 +843,14 @@ def delinearize_state_dict(model: Any, rules: list[dict[str, Any]]) -> dict[str,
     rules give, and the expert count from the indices observed -- so a release that changed
     ``2 * moe_intermediate`` to a different fusion would change the derived rules and this
     would follow, rather than quietly padding.
+
+    ``tensors`` overrides what is assembled. The default -- the model's own state dict --
+    rebuilds the weights. The publish path passes the quantizer's per-module *codes*, and
+    then its scales and offsets, through the same call: those are row-indexed exactly as
+    the weights are, so a bank's codes are the concatenation of its parts and the stack of
+    its experts by the identical rule. One assembler rather than two keeps the arrangement
+    that was proven bit-identical from being re-derived, slightly differently, for the
+    tensors nobody round-trip-tested.
     """
     import re
 
@@ -853,7 +863,7 @@ def delinearize_state_dict(model: Any, rules: list[dict[str, Any]]) -> dict[str,
     experts_seen: dict[str, set[int]] = {}
     split_count: dict[str, int] = {}
 
-    for key, tensor in model.state_dict().items():
+    for key, tensor in (model.state_dict() if tensors is None else tensors).items():
         module, _, leaf = key.rpartition(".")
         numbers = [int(n) for n in re.findall(r"\.(\d+)\.", f".{module}.")]
         rule = by_linear.get(re.sub(r"\.(\d+)\.", ".{}.", f".{module}.")[1:-1])
@@ -886,7 +896,18 @@ def delinearize_state_dict(model: Any, rules: list[dict[str, Any]]) -> dict[str,
         for expert in range(len(experts)):
             pieces = [parts[(bank, expert, part)] for part in range(split_count[bank])]
             merged = torch.cat(pieces, dim=0) if len(pieces) > 1 else pieces[0]
-            slices.append(merged.t() if orientation[bank] == "transposed" else merged)
+            if orientation[bank] == "transposed":
+                # Never taken under the rules this llm-compressor produces, and left as a
+                # refusal rather than a `.t()`: a transposed *weight* is meaningful, but the
+                # scales and codes travelling through this same assembler are indexed by row
+                # and group, so transposing them is not a rearrangement of the same numbers.
+                # Silently doing it for one caller and not the other is how the arrangement
+                # that was proven would stop being the arrangement that ships.
+                raise SystemExit(
+                    f"{bank} is stored transposed, which the assembler cannot apply to codes "
+                    "and scales. Re-run probe_linearize_mapping.py -- the layout moved"
+                )
+            slices.append(merged)
         # The bank is a bare Parameter on the experts module, so its state-dict key is the
         # parameter name itself with no ".weight" leaf -- which is what the probe reported
         # and what `from_config` will be looking for.
