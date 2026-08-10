@@ -1907,12 +1907,14 @@ So the honest state of the six, before any accuracy number is in:
 
 | variant | packed container | at its label | loadable today |
 |---|---|---|---|
-| `gptq_4b`, `awq_4b` | compressed-tensors | yes, 4.0 bits exactly | yes -- vLLM and transformers |
+| `gptq_4b`, `awq_4b` | compressed-tensors | yes, 4.0 bits exactly | no -- the expert names are dropped on reload |
 | `gptq_3b`, `awq_3b` | writable but 3.2 bits | no, 6.7% over | no -- 205 words vs 192 |
 | `dq_4b`, `dq_3b` | DynQuant packed, byte-exact | yes, both widths | yes -- packed bank, not yet run on the 8B |
 
-Two of six are publishable and servable today; two are blocked on our own kernel work; two are
-blocked on an ecosystem gap that is not ours to close. The accuracy panel is unaffected by all of
+Two of six are publishable today and they are the DynQuant pair, pending the 8B run; two are
+blocked on an ecosystem gap that is not ours to close; and two -- the pair this sentence used to
+count as the safe ones -- write a directory that loads without complaint and is not the model
+that was quantized. The accuracy panel is unaffected by all of
 it -- it scores in memory, at one consistent accounting, and what a serialization library does with
 those numbers afterwards is a separate question -- but the release plan is not, and it is better to
 know this now than after six uploads.
@@ -2072,6 +2074,74 @@ deliberate mutations were introduced and all five turned tests red. But the real
 loaded through this path, because the box's clone is pinned at the panel's commit and moving it
 while seven arms score against it would invalidate the panel. That run is queued behind it, and
 until it happens the table above says "not yet run on the 8B" rather than "yes".
+
+### And the "yes" in the first row was doing more work than it could support
+
+The row above says `gptq_4b` and `awq_4b` load in vLLM and transformers today. They do load. What
+comes back is not what was written.
+
+The thread starts in the arm's own provenance record. `gptq_4b.quant.json` carries
+`"linearization": {"banks_before": 22, "banks_after": 0}` -- the recipe reached 91.5% of this model
+by **renaming** it, turning every batched bank into 32 x 3 `nn.Linear` modules named
+`experts.<i>.gate_proj` and its two siblings. Every arm depends on that. Only the arm that writes a
+directory depends on it being undone.
+
+Undoing it is a separate llm-compressor feature: `ARCH_TO_2D_MAPPINGS`, applied through
+`set_save_conversion_mapping`. Two things are wrong with it here, and either alone is fatal.
+`load_linearized` calls bare `linearize_moe`, while `set_save_conversion_mapping` is called only
+inside `load_quantizable_moe`'s patched `from_pretrained` -- which this driver does not use, so
+`model._weight_conversions` stays `<unset>`. And even if it were called there would be nothing to
+register: `ARCH_TO_2D_MAPPINGS` holds `deepseek_v4` and `qwen2_moe`.
+`has_linearize_load_mappings("lfm2_moe")` returns **False**. This architecture linearizes through
+the generic protocol, so the surgery runs and its inverse does not exist.
+
+**Measured through the shipped subcommand**, on a four-layer `lfm2_moe` at
+`save --method rtn --bits 4 --group-size 32 --device cpu`. The directory writes: 108 packed expert
+tensors, their scales, `"format": "pack-quantized"`, a `quantization_config` naming them. Reloading
+it prints a table marking all 108 `UNEXPECTED` and both bank tensors `MISSING` per MoE layer, and
+then returns a model. No exception. Finite logits, std 0.154. The banks came back from
+`from_config`.
+
+The table is easy to miss, so the finding needed a number rather than a warning. An n-bit group of
+32 values admits at most 2^n levels; a freshly initialized group holds 32. Counting distinct values
+per group asks whether the weights on disk are the weights in the model, and does not require
+trusting anything the loader says:
+
+| directory | names on disk | distinct values per 32-value group | 4-bit allows |
+|---|---|---|---|
+| `baselines_lfm2.py save` | `experts.<i>.gate_proj` | **32, 32** | 16 |
+| `dynquant quantize` | `experts.<i>.w1/w2/w3` | **13, 12** | 16 |
+
+32 out of 32 is not a quantized tensor. On LFM2.5-8B-A1B that is 91.5% of the weights randomly
+initialized behind a checkpoint that loads, generates, and reports its own `quantization_config`.
+The 8.5% that is attention and the two dense layers arrives intact, which is exactly enough for the
+output to look like a damaged model rather than a broken load.
+
+vLLM does not rescue it. `lfm2_moe.py:162` keys its expert loader on `ckpt_names=("w1", "w2", "w3")`
+-- the canonical on-disk layout, the one transformers folds into banks at load, and precisely the
+one the linearized names are not.
+
+So the count in the paragraph above inverts. The two variants that could be published today are the
+**DynQuant** pair, and the two that were named as the safe ones write a directory whose expert
+weights nothing reads back. Nothing about the accuracy panel changes -- it scores in memory through
+`run`, which never serializes -- but the release plan did, and would not have, because this failure
+has no error to grep for.
+
+`do_save` now refuses before the tokenizer, the calibration rows and the forward pass, since the
+model type answers the question by itself. The condition is llm-compressor's own
+`has_linearize_load_mappings`, so a release that adds `lfm2_moe` opens the gate without anyone
+editing the reason it gives. Five tests cover it, including that a dense checkpoint is *not* asked
+about mappings it does not need and that the panel's `run` path is not gated by an artifact it never
+writes. `experiments/phase4/probe_linearized_save.py` is the measurement as a script: it builds a
+four-layer `lfm2_moe`, saves it both ways, and derives its verdict from the two counts rather than
+asserting one.
+
+**One process note, because it nearly reversed the conclusion the other way.** The first reading of
+the DynQuant column came from the box, where `dynquant export` refused the batched bank outright --
+which would have made the honest count zero of six. That clone is pinned at the panel's commit, and
+the pin predates `b54b108 Export batched expert banks instead of refusing them`. The refusal was
+real code, just not this code. A measurement carries the tree it ran on, and on this campaign the
+tree that runs is deliberately not the tree that is written.
 
 ## 13. Status
 

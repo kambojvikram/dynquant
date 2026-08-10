@@ -528,12 +528,64 @@ def calibration_rows(tokenizer: Any, samples: int, seq_len: int, *, seed: int) -
     return Dataset.from_list(rows)
 
 
-def quantize(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
+def check_publishable(model: Any, linearization: dict[str, Any]) -> None:
+    """Refuse to write a checkpoint whose expert weights nothing will read back.
+
+    ``linearize_moe`` renames every batched bank into ``experts.<i>.gate_proj`` and its
+    two siblings. Putting them back is a separate feature -- ``ARCH_TO_2D_MAPPINGS``,
+    applied through ``set_save_conversion_mapping`` -- and it is registered for
+    ``deepseek_v4`` and ``qwen2_moe`` only. ``lfm2_moe`` linearizes through the generic
+    protocol instead, so the surgery happens and the inverse of it does not exist.
+
+    What that costs was measured on a four-layer ``lfm2_moe``, through this subcommand.
+    The directory is written and looks right: 108 packed expert tensors, their scales,
+    and a ``quantization_config`` naming them. Reloading it prints a report marking all
+    108 ``UNEXPECTED`` and the six bank tensors ``MISSING``, and then returns a model.
+    No exception. The banks come back from ``from_config``, and a 32-value group holds
+    32 distinct values where 4-bit allows 16. On LFM2.5-8B-A1B that is 91.5% of the
+    weights randomly initialized behind finite logits -- the failure prints, passes, and
+    is only visible to someone who reads a table transformers writes on every load.
+
+    vLLM does not rescue it. ``lfm2_moe.py`` keys its expert loader on
+    ``ckpt_names=("w1", "w2", "w3")``, the canonical layout, which is exactly the one the
+    linearized names are not.
+
+    The condition is llm-compressor's own predicate, so a release that adds the mapping
+    opens this gate without anyone editing the reason it gives.
+    """
+    from llmcompressor.modeling.moe.conversion_mappings import has_linearize_load_mappings
+
+    banks = linearization["banks_before"]
+    model_type = model.config.model_type
+    if not banks or has_linearize_load_mappings(model_type):
+        return
+    raise SystemExit(
+        f"{banks} expert bank(s) were linearized and {model_type!r} has no entry in "
+        "llm-compressor's ARCH_TO_2D_MAPPINGS, so nothing converts the names back on the "
+        f"way out. The directory would hold every expert at {model_type}'s linearized "
+        "names, transformers would mark them UNEXPECTED, drop them, and reinitialize the "
+        "banks from the config without raising -- measured at 32 distinct values in a "
+        "32-value group, against 16 for 4-bit. vLLM reads the same weights under "
+        "('w1', 'w2', 'w3') and would not find them either. Score it in-process with "
+        "`run`, which is what the panel does and is unaffected, or publish the widths "
+        "through `dynquant quantize --map`, which never linearizes and round-trips the "
+        "bank as a bank"
+    )
+
+
+def quantize(
+    args: argparse.Namespace, *, for_publication: bool = False
+) -> tuple[Any, dict[str, Any]]:
     """Run the recipe on the linearized model and return it with its provenance record."""
     from llmcompressor import oneshot
     from transformers import AutoTokenizer
 
     model, linearization = load_linearized(args.model, dtype=args.dtype, device=args.device)
+
+    # First, and for the same reason the AWQ check below comes early -- more so, because
+    # this one is answered by the model type alone and its failure is silent.
+    if for_publication:
+        check_publishable(model, linearization)
 
     # Before the tokenizer, the calibration rows and the forward passes, because a mapping
     # that does not fit this architecture is a fact about the model that is knowable from
@@ -710,6 +762,12 @@ def do_save(args: argparse.Namespace) -> int:
     So the refusal was right and its reason was not, which is this project's recurring
     failure mode: a guard refuses, blames the format, and the blame is believed. Here it was
     believed hard enough to be pinned by a test and repeated in two other drivers.
+
+    The width is the second thing checked, not the first. :func:`check_publishable` runs
+    inside ``quantize`` and asks whether the expert *names* survive the round trip, which
+    on this architecture they do not at any width. So the two widths that pass the test
+    below were, until that check existed, the ones that failed silently rather than the
+    ones that worked.
     """
     if 32 % args.bits:
         per_word = 32 // args.bits
@@ -725,7 +783,7 @@ def do_save(args: argparse.Namespace) -> int:
             "it is published for. Score it in-process with `run`, or write it with "
             "`dynquant export`, which packs this width at exactly the label"
         )
-    model, meta = quantize(args)
+    model, meta = quantize(args, for_publication=True)
     out = Path(args.save_to)
     model.save_pretrained(str(out), save_compressed=True)
     meta["bytes_on_disk"] = sum(p.stat().st_size for p in out.rglob("*.safetensors"))

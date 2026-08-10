@@ -489,6 +489,174 @@ def test_the_gate_reports_the_parameter_share_not_just_a_module_count(driver: An
     assert report["linear_share"] == 0.25
 
 
+# --- the publication gate ----------------------------------------------------------------
+#
+# Linearization is what lets the recipe reach 91.5% of this model, and it is also what makes
+# the resulting directory unreadable. The names that go to disk are the linearized ones;
+# putting them back is a separate llm-compressor feature, ARCH_TO_2D_MAPPINGS, registered per
+# architecture -- and this architecture has no entry. What that produces is not an error.
+# transformers marks every expert tensor UNEXPECTED, rebuilds the banks from the config and
+# returns a model with finite logits. Measured on a four-layer lfm2_moe through the shipped
+# `save` subcommand: 108 packed expert tensors written, all 108 UNEXPECTED, both bank tensors
+# MISSING per layer, and the reloaded bank at 32 distinct values in a group of 32 where 4-bit
+# allows 16. `experiments/phase4/probe_linearized_save.py` is that measurement as a script.
+
+
+@contextlib.contextmanager
+def _mapping_registry(registered: set[str], asked: list[str]) -> Any:
+    """Stand in for llm-compressor's per-architecture registry of load-time mappings.
+
+    Faked rather than imported, because the gate's design is that it asks the dependency
+    instead of hardcoding the answer. A test that imported the real predicate would assert
+    today's contents of ``ARCH_TO_2D_MAPPINGS`` -- which is the one thing here expected to
+    change, and the change is supposed to open the gate rather than turn a test red.
+    """
+    import types
+
+    def has_linearize_load_mappings(model_type: str) -> bool:
+        asked.append(model_type)
+        return model_type in registered
+
+    name = "llmcompressor.modeling.moe.conversion_mappings"
+    saved = sys.modules.get(name)
+    sys.modules[name] = types.SimpleNamespace(  # type: ignore[assignment]
+        has_linearize_load_mappings=has_linearize_load_mappings
+    )
+    try:
+        yield
+    finally:
+        if saved is None:
+            del sys.modules[name]
+        else:
+            sys.modules[name] = saved
+
+
+def _linearized_model(model_type: str) -> Any:
+    """A module the gate can read a ``model_type`` off and ``load_linearized`` can count."""
+    import types
+
+    import torch
+
+    model = torch.nn.Linear(4, 4)
+    model.config = types.SimpleNamespace(model_type=model_type)
+    return model
+
+
+def test_a_linearized_bank_with_no_load_mapping_refuses_to_be_published(driver: Any) -> None:
+    """The refusal names the measurement, not the suspicion.
+
+    Every other guard in this driver stops something that would raise later. This one stops
+    something that would *succeed*: a directory that writes, reloads, generates, and holds
+    91.5% freshly initialized weights. So the message has to carry the number that shows it
+    -- 32 distinct values in a 32-value group -- because "would not load correctly" is a
+    claim a reader can dismiss and a count is not.
+
+    Turns red when: the reason stops naming ARCH_TO_2D_MAPPINGS (which is where a reader
+    goes to check whether it is still true), stops naming vLLM's ``('w1', 'w2', 'w3')`` (the
+    other runtime, which fails the same way for the same reason), or stops pointing at the
+    path that does work.
+    """
+    asked: list[str] = []
+    with _mapping_registry(set(), asked), pytest.raises(SystemExit) as caught:
+        driver.check_publishable(_linearized_model("lfm2_moe"), {"banks_before": 22})
+
+    assert asked == ["lfm2_moe"]
+    message = str(caught.value)
+    assert "22 expert bank(s) were linearized" in message
+    assert "'lfm2_moe' has no entry" in message
+    assert "ARCH_TO_2D_MAPPINGS" in message
+    assert "32 distinct values" in message
+    assert "('w1', 'w2', 'w3')" in message
+    assert "`dynquant quantize --map`" in message
+
+
+def test_an_architecture_upstream_has_taught_opens_the_gate_untouched(driver: Any) -> None:
+    """The gate is a question put to the dependency, so the dependency can answer it.
+
+    ``deepseek_v4`` and ``qwen2_moe`` already have entries. If llm-compressor adds
+    ``lfm2_moe``, the checkpoint round-trips and nothing in this repo should have to be
+    edited for the refusal to stop firing -- and, more to the point, nobody should have to
+    notice that it now refuses something that works.
+
+    Turns red when: the predicate is replaced by a literal set of architectures, or by a
+    negative list naming lfm2_moe, either of which pins today's upstream into our code.
+    """
+    asked: list[str] = []
+    with _mapping_registry({"lfm2_moe"}, asked):
+        assert driver.check_publishable(_linearized_model("lfm2_moe"), {"banks_before": 22}) is None
+
+    assert asked == ["lfm2_moe"]
+
+
+def test_a_model_that_was_never_linearized_is_not_asked_about_mappings(driver: Any) -> None:
+    """No banks, no rename, no question to ask -- and asking would blame the wrong thing.
+
+    A dense checkpoint through this driver linearizes nothing, so its names reach disk
+    unchanged whatever the registry says. Gating it on ``has_linearize_load_mappings`` would
+    refuse every architecture llm-compressor has no MoE entry for, which is nearly all of
+    them, for a rename that did not happen.
+
+    Turns red when: the ``banks`` term drops out of the condition, or the two terms swap so
+    the registry is consulted first -- which is invisible until a dense model is saved.
+    """
+    asked: list[str] = []
+    with _mapping_registry(set(), asked):
+        assert driver.check_publishable(_linearized_model("llama"), {"banks_before": 0}) is None
+
+    assert asked == []
+
+
+def test_the_gate_runs_before_the_calibration_pass_it_would_waste(driver: Any) -> None:
+    """Answerable from the model type alone, so it is answered before anything is spent.
+
+    ``quantize`` reaches the tokenizer, 256 calibration rows and a full forward sweep over
+    8 B parameters. Everything the gate needs is on the config object that came back from
+    ``from_pretrained``, and the fake stack here stops at the tokenizer -- so a ``SystemExit``
+    rather than ``_PastTheLoadError`` is the assertion that the order is right.
+
+    Turns red when: the check moves after the tokenizer, or out of ``quantize`` into
+    ``do_save`` past the call, which turns a free refusal into one that costs the
+    calibration pass.
+    """
+    seen: dict[str, Any] = {}
+    asked: list[str] = []
+    args = _args(
+        driver,
+        ["save", "--model", "/unused", "--save-to", "/out", "--method", "gptq", "--bits", "4"],
+    )
+    with (
+        _fake_stack(_linearized_model("lfm2_moe"), surviving=0, seen=seen),
+        _mapping_registry(set(), asked),
+        pytest.raises(SystemExit, match="ARCH_TO_2D_MAPPINGS"),
+    ):
+        driver.do_save(args)
+
+    assert asked == ["lfm2_moe"]
+
+
+def test_the_panel_is_not_gated_by_a_checkpoint_it_never_writes(driver: Any) -> None:
+    """``run`` scores in memory, where the names never leave the module tree.
+
+    Six of the seven arms go through this path and none of them writes a directory, so the
+    round trip the gate is about does not happen to them. A gate on ``quantize`` rather than
+    on publication would have made every baseline arm in the panel unrunnable on this
+    architecture -- refused for a defect in an artifact they do not produce.
+
+    Turns red when: ``for_publication`` stops defaulting to False, or the check moves out of
+    the branch into ``quantize``'s body.
+    """
+    seen: dict[str, Any] = {}
+    asked: list[str] = []
+    with (
+        _fake_stack(_linearized_model("lfm2_moe"), surviving=0, seen=seen),
+        _mapping_registry(set(), asked),
+        pytest.raises(_PastTheLoadError, match="tokenizer"),
+    ):
+        driver.do_run(_args(driver, RUN))
+
+    assert asked == []
+
+
 # --- AWQ smoothing mappings -------------------------------------------------------------
 #
 # llm-compressor has no entry for this architecture in either of its mapping registries, so
