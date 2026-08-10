@@ -1089,3 +1089,406 @@ def test_the_mappings_reach_the_modifier_and_only_on_the_awq_arm(driver: Any) ->
         'if args.method == "awq":\n        mappings, smoothing = resolve_awq_mappings' in quantize
     )
     assert "mappings=mappings" in quantize
+
+
+# --- carrying the recipe's own grid out ------------------------------------------------
+
+
+@contextlib.contextmanager
+def _offload_shim() -> Any:
+    """Stand in for ``compressed_tensors.utils.align_module_device``.
+
+    The real one moves an offloaded module's weights onto the execution device. Nothing in
+    these tests is offloaded, so the behaviour under test is what the driver does with the
+    numbers, not where they live -- and importing compressed-tensors to get a context
+    manager would put a GPU-era dependency on CPU CI for no assertion.
+    """
+    import types
+
+    made_parent = "compressed_tensors" not in sys.modules
+    if made_parent:
+        sys.modules["compressed_tensors"] = types.ModuleType("compressed_tensors")
+    name = "compressed_tensors.utils"
+    saved = sys.modules.get(name)
+    sys.modules[name] = types.SimpleNamespace(  # type: ignore[assignment]
+        align_module_device=lambda _m: contextlib.nullcontext()
+    )
+    try:
+        yield
+    finally:
+        if saved is None:
+            del sys.modules[name]
+        else:
+            sys.modules[name] = saved
+        if made_parent:
+            del sys.modules["compressed_tensors"]
+
+
+def _on_a_grid(
+    *, rows: int, in_features: int, group_size: int, bits: int, band: tuple[int, int]
+) -> Any:
+    """A weight that *is* ``scale * (q - zero)``, with codes confined to ``band``.
+
+    The band is the point. A recipe that leaves every group spanning ``[0, qmax]`` cannot
+    tell a carried grid from a re-fitted one -- min/max recovers the same step either way.
+    GPTQ's compensation and AWQ's clipping search leave groups that do not span, and a
+    narrow band is what those look like, so it is what the fixture builds.
+    """
+    import torch
+
+    groups = -(-in_features // group_size)
+    generator = torch.Generator().manual_seed(11)
+    low, high = band
+    codes = torch.randint(
+        low, high + 1, (rows, in_features), generator=generator, dtype=torch.float32
+    )
+    # Pinned, so the band is exactly `band` rather than whatever the draw happened to hit.
+    codes[:, 0], codes[:, 1] = low, high
+    scale = torch.rand((rows, groups), generator=generator, dtype=torch.float32) * 0.1 + 0.01
+    zero = torch.full((rows, groups), 3.0)
+    wide_scale = scale.repeat_interleave(group_size, dim=1)[:, :in_features]
+    wide_zero = zero.repeat_interleave(group_size, dim=1)[:, :in_features]
+    return codes, scale, zero, wide_scale * (codes - wide_zero)
+
+
+def _quantized(weight: Any, scale: Any, zero: Any, *, bits: int, symmetric: bool = False) -> Any:
+    """A module shaped like one llm-compressor has finished with."""
+    import types
+
+    import torch
+
+    module = torch.nn.Linear(weight.shape[1], weight.shape[0], bias=False)
+    with torch.no_grad():
+        module.weight.copy_(weight)
+    module.register_buffer("weight_scale", scale)
+    if zero is not None:
+        module.register_buffer("weight_zero_point", zero)
+    module.quantization_scheme = types.SimpleNamespace(
+        weights=types.SimpleNamespace(num_bits=bits, symmetric=symmetric)
+    )
+    return module
+
+
+def _holding(**modules: Any) -> Any:
+    import torch
+
+    return torch.nn.ModuleDict(modules)
+
+
+def test_the_recipes_own_codes_are_carried_not_refitted_from_the_weights(driver: Any) -> None:
+    """The whole reason this path exists, stated as the thing a refit would destroy.
+
+    The weights handed over are on a grid whose groups occupy codes 5 through 9 of the 16 a
+    4-bit width offers. Fitting a fresh grid to them -- which is what
+    ``export_packed_checkpoint`` does unaided -- recovers a step four times narrower and
+    puts the original levels between the new ones. Carrying the grid keeps the codes the
+    recipe chose, and the test for that is that they are still 5 through 9.
+    """
+    codes, scale, zero, weight = _on_a_grid(
+        rows=4, in_features=64, group_size=32, bits=4, band=(5, 9)
+    )
+    model = _holding(proj=_quantized(weight, scale, zero, bits=4))
+    with _offload_shim():
+        grids = driver.carried_grids(model, group_size=32)
+
+    import torch
+
+    grid = grids["proj"]
+    assert set(grids) == {"proj"}
+    assert grid["bits"] == 4
+    assert torch.equal(grid["codes"], codes.to(torch.uint8)), "the carried codes moved"
+    assert (int(grid["codes"].min()), int(grid["codes"].max())) == (5, 9), (
+        "codes spanning the full width mean a grid was fitted here, not carried"
+    )
+    assert torch.equal(grid["offsets"], -scale * 3.0)
+
+
+def test_a_carried_grid_reconstructs_the_weight_the_arm_was_scored_on(driver: Any) -> None:
+    """Codes plus a float offset must land back on the levels the zero point described.
+
+    Not bit-exact, and the docstring on ``from_codes`` says why: ``s * q + (-s * z)`` and
+    ``s * (q - z)`` are the same number and round differently. The bound is in units of a
+    code step, because that is the unit in which a *mapping* error would show up -- one
+    step or more -- and this has to be far below it to be worth admitting.
+    """
+    import torch
+
+    from dynquant.quant.tensor import QuantTensor
+
+    _codes, scale, zero, weight = _on_a_grid(
+        rows=4, in_features=64, group_size=32, bits=4, band=(5, 9)
+    )
+    model = _holding(proj=_quantized(weight, scale, zero, bits=4))
+    with _offload_shim():
+        grid = driver.carried_grids(model, group_size=32)["proj"]
+
+    carried = QuantTensor.from_codes(
+        grid["codes"],
+        grid["scales"],
+        grid["offsets"],
+        bits=4,
+        group_size=32,
+        compute_dtype=torch.float32,
+    )
+    step = scale.abs().max()
+    assert ((carried.dequantize().float() - weight).abs().max() / step).item() < 1e-5
+
+
+def test_a_signed_band_is_carried_as_an_unsigned_code_and_an_offset(driver: Any) -> None:
+    """A symmetric scheme has no zero point, and this format has no signed code.
+
+    Both halves matter. compressed-tensors writes symmetric weights on ``[-8, 7]`` with no
+    ``weight_zero_point`` buffer at all, and ``from_codes`` refuses anything outside
+    ``[0, 15]``. Folding the shift into the offset moves no level, and the check is that
+    the reconstruction still equals the weight.
+    """
+    import torch
+
+    generator = torch.Generator().manual_seed(5)
+    scale = torch.rand((3, 2), generator=generator) * 0.1 + 0.01
+    codes = torch.randint(-8, 8, (3, 64), generator=generator, dtype=torch.float32)
+    codes[:, 0], codes[:, 1] = -8, 7
+    weight = scale.repeat_interleave(32, dim=1) * codes
+
+    model = _holding(proj=_quantized(weight, scale, None, bits=4, symmetric=True))
+    with _offload_shim():
+        grid = driver.carried_grids(model, group_size=32)["proj"]
+
+    assert torch.equal(grid["codes"], (codes + 8).to(torch.uint8))
+    assert (int(grid["codes"].min()), int(grid["codes"].max())) == (0, 15)
+    reconstructed = grid["scales"].repeat_interleave(32, dim=1) * grid["codes"].float()
+    assert torch.allclose(reconstructed + grid["offsets"].repeat_interleave(32, dim=1), weight)
+
+
+def test_a_weight_that_is_not_on_its_own_grid_refuses_to_be_carried(driver: Any) -> None:
+    """The check that catches a convention disagreement instead of publishing one.
+
+    ``materialize_quantization`` leaves ``weight == fake_quantize(weight)``, so recomputing
+    the codes and reconstructing has exactly one degree of freedom: whether this file reads
+    the library's convention the way the library writes it. Perturbing one weight off the
+    grid stands in for that disagreement -- what a reader looking at the wrong end of a
+    scale, or the wrong sign of a zero point, would produce.
+    """
+    _codes, scale, zero, weight = _on_a_grid(
+        rows=4, in_features=64, group_size=32, bits=4, band=(5, 9)
+    )
+    weight = weight.clone()
+    weight[2, 3] += 0.3 * scale[2, 0]
+    model = _holding(proj=_quantized(weight, scale, zero, bits=4))
+    with _offload_shim(), pytest.raises(SystemExit, match="does not reproduce"):
+        driver.carried_grids(model, group_size=32)
+
+
+def test_a_scale_that_is_not_per_group_along_the_input_is_refused(driver: Any) -> None:
+    """A per-channel or per-tensor recipe has a different reader, and does not get this one."""
+    import torch
+
+    _codes, scale, _zero, weight = _on_a_grid(
+        rows=4, in_features=64, group_size=32, bits=4, band=(5, 9)
+    )
+    model = _holding(proj=_quantized(weight, scale[:, :1].contiguous(), torch.zeros(4, 1), bits=4))
+    with _offload_shim(), pytest.raises(SystemExit, match="per-group scales"):
+        driver.carried_grids(model, group_size=32)
+
+
+def test_a_model_the_recipe_never_touched_is_refused_rather_than_published_dense(
+    driver: Any,
+) -> None:
+    """An empty grid set writes the unquantized checkpoint under a quantized name."""
+    import torch
+
+    with _offload_shim(), pytest.raises(SystemExit, match="no grid to carry"):
+        driver.carried_grids(_holding(proj=torch.nn.Linear(64, 4)), group_size=32)
+
+
+# --- and arranging it into banks by the rule the weights use ----------------------------
+
+
+BANK_RULES: list[dict[str, Any]] = [
+    {
+        "linear": "l.{}.e.{}.gate_proj",
+        "bank": "l.{}.e.gate_up_proj",
+        "orientation": "as_stored",
+        "splits": 2,
+        "part": 0,
+    },
+    {
+        "linear": "l.{}.e.{}.up_proj",
+        "bank": "l.{}.e.gate_up_proj",
+        "orientation": "as_stored",
+        "splits": 2,
+        "part": 1,
+    },
+    {
+        "linear": "l.{}.e.{}.down_proj",
+        "bank": "l.{}.e.down_proj",
+        "orientation": "as_stored",
+        "splits": 1,
+        "part": 0,
+    },
+]
+"""The shape ``expert_rules()`` derives, written out so this file does not need a model.
+
+Not a second copy of the mapping: ``delinearize_state_dict`` is what is under test here, and
+what it does with a rule is independent of which rule the installed llm-compressor produces.
+``probe_linearize_mapping.py`` is what says these are the real ones, on the real library."""
+
+
+def _expert_grids(*, experts: int, inter: int, hidden: int, bits: int = 4) -> Any:
+    """One grid per linearized expert projection, values chosen to be identifiable."""
+    import torch
+
+    grids: dict[str, dict[str, Any]] = {}
+    for expert in range(experts):
+        for part, (leaf, rows, cols) in enumerate(
+            [("gate_proj", inter, hidden), ("up_proj", inter, hidden), ("down_proj", hidden, inter)]
+        ):
+            tag = expert * 10 + part
+            grids[f"l.0.e.{expert}.{leaf}"] = {
+                "codes": torch.full((rows, cols), tag, dtype=torch.uint8),
+                "scales": torch.full((rows, -(-cols // 4)), float(tag)),
+                "offsets": torch.full((rows, -(-cols // 4)), -float(tag)),
+                "bits": bits,
+            }
+    return grids
+
+
+def test_the_codes_and_the_scales_are_stacked_by_the_rule_the_weights_are(driver: Any) -> None:
+    """One assembler, three tensors, and the arrangement checked on all three.
+
+    A bank's codes have to be the concatenation of its parts and the stack of its experts in
+    the identical order its weights are, or the published checkpoint dequantizes to a model
+    whose experts are permuted -- which loads, runs, and scores somewhere between the arm
+    and noise. The scales carry the same arrangement with the group axis in place of the
+    input axis, and are flattened to one row per output row because that is how the packer
+    folds a bank's leading dimensions.
+    """
+    import torch
+
+    grids = _expert_grids(experts=2, inter=3, hidden=4)
+    banked, width = driver.banked_grids(object(), grids, BANK_RULES)
+
+    assert width == 4
+    assert set(banked) == {"l.0.e.gate_up_proj", "l.0.e.down_proj"}
+    fused = banked["l.0.e.gate_up_proj"]
+    assert tuple(fused["codes"].shape) == (2, 6, 4), "experts stacked, gate over up"
+    for expert in range(2):
+        assert torch.equal(fused["codes"][expert][:3], grids[f"l.0.e.{expert}.gate_proj"]["codes"])
+        assert torch.equal(fused["codes"][expert][3:], grids[f"l.0.e.{expert}.up_proj"]["codes"])
+    # [E, out, groups] flattened to [E * out, groups]: expert 1's up rows are the last three.
+    assert tuple(fused["scales"].shape) == (12, 1)
+    assert [float(v) for v in fused["scales"][:, 0]] == [0, 0, 0, 1, 1, 1, 10, 10, 10, 11, 11, 11]
+    assert [float(v) for v in fused["offsets"][:, 0]] == [
+        -0.0,
+        -0.0,
+        -0.0,
+        -1,
+        -1,
+        -1,
+        -10,
+        -10,
+        -10,
+        -11,
+        -11,
+        -11,
+    ]
+    assert tuple(banked["l.0.e.down_proj"]["codes"].shape) == (2, 4, 3)
+
+
+def test_a_recipe_that_used_two_widths_has_no_entry_for_the_bank_it_fills(driver: Any) -> None:
+    """A bank is one tensor. Two widths inside it is not a checkpoint, it is a bug report."""
+    grids = _expert_grids(experts=2, inter=3, hidden=4)
+    grids["l.0.e.1.up_proj"]["bits"] = 3
+    with pytest.raises(SystemExit, match=r"widths \[3, 4\]"):
+        driver.banked_grids(object(), grids, BANK_RULES)
+
+
+# --- and checking it against the weight it stands in for --------------------------------
+
+
+def _carryable(driver: Any) -> Any:
+    """A one-module banked grid plus the weight it is supposed to reconstruct."""
+    _codes, scale, zero, weight = _on_a_grid(
+        rows=4, in_features=64, group_size=32, bits=4, band=(5, 9)
+    )
+    model = _holding(proj=_quantized(weight, scale, zero, bits=4))
+    with _offload_shim():
+        grids = driver.carried_grids(model, group_size=32)
+    banked, _width = driver.banked_grids(object(), grids, [])
+    return banked, weight
+
+
+def test_a_grid_that_reconstructs_its_weight_is_returned_with_the_gap_recorded(
+    driver: Any,
+) -> None:
+    """The gap is a published number, not a tolerance nobody sees.
+
+    ``scale * code + offset`` and ``scale * (q - zero)`` differ by the rounding of the
+    offset into the storage dtype. Recording the measured worst case per run is what makes
+    the difference between the directory and the scored arm a fact in the record rather
+    than an assumption in a docstring.
+    """
+    banked, weight = _carryable(driver)
+    drift: dict[str, float] = {}
+    encode = driver.carrying_encoder(banked, group_size=32, drift=drift)
+
+    quantized = encode("proj", weight, 4)
+    assert quantized.bits == 4 and quantized.group_size == 32
+    assert set(drift) == {"proj"}
+    assert 0.0 <= drift["proj"] < driver.MAX_CARRY_DRIFT
+
+
+def test_a_grid_arranged_differently_from_its_weight_fails_on_the_module(driver: Any) -> None:
+    """The check that turns a rearrangement error into an exception instead of a score.
+
+    The codes and the weight reach this encoder by different routes -- the integer route
+    through the assembler, the float route through the state dict -- so a rule applied
+    inconsistently to the two shows up as a reconstruction that is whole code steps away.
+    Rolling the rows here is what a wrongly-stacked expert looks like at this scale.
+    """
+    banked, weight = _carryable(driver)
+    drift: dict[str, float] = {}
+    encode = driver.carrying_encoder(banked, group_size=32, drift=drift)
+
+    with pytest.raises(SystemExit, match="code steps away"):
+        encode("proj", weight.roll(1, dims=0), 4)
+
+
+def test_a_module_the_recipe_never_quantized_is_refused_by_the_encoder(driver: Any) -> None:
+    """The bit map and the grids come from one dict; a name in one only means two now."""
+    banked, weight = _carryable(driver)
+    encode = driver.carrying_encoder(banked, group_size=32, drift={})
+    with pytest.raises(SystemExit, match="never quantized"):
+        encode("somewhere.else", weight, 4)
+
+
+def test_publish_takes_the_same_recipe_flags_the_scored_arm_ran(driver: Any) -> None:
+    """A published directory has to come from the recipe whose row it is published under.
+
+    ``publish`` reuses ``quant_flags`` rather than declaring its own, so this asserts the
+    reuse survived: a width, group size or calibration size that ``run`` accepts and
+    ``publish`` silently defaults differently would put a different model behind the number.
+    """
+    published = _args(
+        driver,
+        [
+            "publish",
+            "--model",
+            "/runs/lfm25/finetuned",
+            "--save-to",
+            "/out/gptq4",
+            "--method",
+            "gptq",
+            "--bits",
+            "3",
+            "--group-size",
+            "64",
+        ],
+    )
+    scored = _args(driver, [*RUN, "--group-size", "64", "--out", "/dev/null"])
+    shared = ("method", "bits", "group_size", "calib_samples", "seq_len", "seed", "dtype")
+    assert published.func is driver.do_publish
+    assert published.pack_device == "auto"
+    assert [getattr(published, f) for f in shared if f != "bits"] == [
+        getattr(scored, f) for f in shared if f != "bits"
+    ]

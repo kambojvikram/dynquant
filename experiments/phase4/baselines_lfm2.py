@@ -916,6 +916,290 @@ def delinearize_state_dict(
     return passthrough
 
 
+MAX_CARRY_DRIFT = 0.125
+"""How far a carried reconstruction may sit from the one that was scored, in code steps.
+
+Not zero, and the reason is arithmetic rather than tolerance for error. compressed-tensors
+reconstructs ``scale * (q - zero)`` with an integer zero point; this format stores
+``scale * code + offset`` with a float offset, so the two agree as *grids* -- same levels,
+same codes -- but the offset ``-scale * zero`` is itself rounded to the storage dtype, and
+in bf16 that costs up to 2**-9 of its magnitude. The result is a constant shift per group,
+predicted at a few percent of a step and measured per module by :func:`carrying_encoder`.
+
+A mapping error -- experts stacked in the wrong order, gate and up swapped, a transposed
+bank -- moves weights by whole steps or more, so this threshold is 8x below the smallest
+failure it has to catch and well above the rounding it has to admit. The measured value is
+recorded in the directory's own record either way, so the gap is a published number rather
+than something this constant hides."""
+
+
+def carried_grids(model: Any, *, group_size: int) -> dict[str, dict[str, Any]]:
+    """Each quantized module's integer codes and affine terms, read off the quantizer.
+
+    Not re-fitted from the weights. ``materialize_quantization`` has already written the
+    rounded values back into ``module.weight``, so the floats sit on the quantizer's grid --
+    but recovering the grid from them requires every group to still occupy both ends of its
+    code range, and GPTQ's error compensation and AWQ's clipping search both leave groups
+    that do not. Where a group does not, min/max fits a narrower step, the original levels
+    fall between the new ones, and the published weights are not the ones that were scored.
+    See :meth:`~dynquant.quant.tensor.QuantTensor.from_codes`.
+
+    The codes are recomputed here rather than imported from compressed-tensors, and then
+    *checked*: reconstructing ``scale * (q - zero)`` in the library's own order has to
+    reproduce the materialized weight bit for bit. Since the weight already is
+    ``fake_quantize(weight)``, that check has exactly one degree of freedom -- whether this
+    file's idea of the convention matches the library's -- which is the disagreement that
+    has cost this project four times, and it fails loudly here instead of silently on disk.
+    """
+    import torch
+    from compressed_tensors.utils import align_module_device
+
+    grids: dict[str, dict[str, Any]] = {}
+    for name, module in model.named_modules():
+        scheme = getattr(getattr(module, "quantization_scheme", None), "weights", None)
+        if scheme is None or not hasattr(module, "weight_scale"):
+            continue
+        with align_module_device(module):
+            weight = module.weight.data
+            scale = module.weight_scale.data
+            zero = getattr(module, "weight_zero_point", None)
+            zero = torch.zeros_like(scale) if zero is None else zero.data.to(scale.dtype)
+
+            out_features, in_features = weight.shape
+            groups = -(-in_features // group_size)
+            if tuple(scale.shape) != (out_features, groups):
+                raise SystemExit(
+                    f"{name} carries a {tuple(scale.shape)} scale where a group-{group_size} "
+                    f"recipe on a {tuple(weight.shape)} weight gives {(out_features, groups)}. "
+                    "This reader only understands per-group scales along the input dimension"
+                )
+
+            bits = int(scheme.num_bits)
+            qmin, qmax = 0, (1 << bits) - 1
+            if getattr(scheme, "symmetric", False):
+                # A signed band. The format has no integer zero point, so the shift is
+                # folded into the offset below and no level moves.
+                qmin, qmax = -(1 << (bits - 1)), (1 << (bits - 1)) - 1
+
+            wide_scale = scale.repeat_interleave(group_size, dim=1)[:, :in_features]
+            wide_zero = zero.repeat_interleave(group_size, dim=1)[:, :in_features]
+            codes = torch.clamp(torch.round(weight / wide_scale) + wide_zero, qmin, qmax)
+            recon = (wide_scale * (codes - wide_zero)).to(weight.dtype)
+            if not torch.equal(recon, weight):
+                worst = (recon.float() - weight.float()).abs().max().item()
+                raise SystemExit(
+                    f"{name}: scale * (q - zero) does not reproduce the materialized weight "
+                    f"(max |delta| = {worst:.3e}). Either the weights were never rounded onto "
+                    "the grid, or this reader's idea of compressed-tensors' convention has "
+                    "diverged from the library's. Publishing from here would write a "
+                    "directory that loads and is wrong"
+                )
+
+            grids[name] = {
+                # scale * (q - zero) == scale * (q - qmin) + scale * (qmin - zero), so an
+                # unsigned code and a float offset describe the identical set of levels.
+                "codes": (codes - qmin).to(torch.uint8).cpu(),
+                "scales": scale.detach().cpu().clone(),
+                "offsets": (scale.float() * (qmin - zero.float())).to(scale.dtype).cpu(),
+                "bits": bits,
+            }
+
+    if not grids:
+        raise SystemExit(
+            "no module carries a weight quantization scheme, so there is no grid to carry "
+            "and the directory this would write is the unquantized checkpoint under another "
+            "name. Check that the recipe ran and that materialize_quantization saw it"
+        )
+    return grids
+
+
+def _module_of(key: str) -> str:
+    """A state-dict key back to the module the bit map would name it by.
+
+    A bank is a bare ``Parameter``, so its key *is* its name; a ``Linear`` contributes
+    ``<name>.weight``. ``resolve_target`` accepts both, and this is the one place the
+    difference between the assembler's output and the exporter's input is resolved.
+    """
+    return key[: -len(".weight")] if key.endswith(".weight") else key
+
+
+def banked_grids(
+    model: Any, grids: dict[str, dict[str, Any]], rules: list[dict[str, Any]]
+) -> tuple[dict[str, dict[str, Any]], int]:
+    """The per-module grids rearranged into banks, by the assembler the weights use.
+
+    Codes, scales and offsets each go through :func:`delinearize_state_dict`, the same call
+    that was proven bit-identical on the weights. They can, because all three are indexed by
+    output row: a bank's codes are the concatenation of its parts and the stack of its
+    experts under the identical rule its weights are, and a per-group scale row belongs to
+    the same output row its weight row does. Writing a second arrangement here -- even a
+    correct one -- would be a fifth copy of a mapping that has already gone wrong four times.
+
+    Returns the banked grids and the single width they were all quantized at. A baseline
+    recipe is uniform by construction, and the width has to be checked rather than assumed
+    because a bank assembled from two widths has no single entry in the bit map.
+    """
+    assembled = {
+        field: delinearize_state_dict(
+            model, rules, {f"{name}.weight": grid[field] for name, grid in grids.items()}
+        )
+        for field in ("codes", "scales", "offsets")
+    }
+
+    widths = {grid["bits"] for grid in grids.values()}
+    if len(widths) != 1:
+        raise SystemExit(
+            f"the recipe quantized at widths {sorted(widths)}. Experts at two widths land in "
+            "one bank, which is one tensor with one entry in the bit map, so there is no "
+            "width to record for it"
+        )
+
+    banked: dict[str, dict[str, Any]] = {}
+    for key, codes in assembled["codes"].items():
+        scales, offsets = assembled["scales"][key], assembled["offsets"][key]
+        if scales.ndim == 3:
+            # A bank: [E, out, groups] describes the same E * out rows the packer gets when
+            # it folds the codes' leading dimensions, and in the same order.
+            scales = scales.reshape(-1, scales.shape[-1])
+            offsets = offsets.reshape(-1, offsets.shape[-1])
+        banked[_module_of(key)] = {"codes": codes, "scales": scales, "offsets": offsets}
+    return banked, widths.pop()
+
+
+def carrying_encoder(
+    banked: dict[str, dict[str, Any]], *, group_size: int, drift: dict[str, float]
+) -> Any:
+    """An ``export_packed_checkpoint`` encoder that adopts the baseline's grid.
+
+    Every module the exporter asks about is answered from ``banked`` and then checked
+    against the weight the exporter was going to quantize -- which is the *fresh banked
+    model's* weight, assembled from the materialized floats by one path, against codes
+    assembled by another. So this is not a self-consistency check: the two sides reach the
+    same tensor through the float route and the integer route, and they only agree if the
+    rules were applied identically to both. An expert stacked in the wrong order fails here,
+    on the module, rather than in an accuracy number three days later.
+
+    ``drift`` collects the measured gap in code steps, per module, for the record.
+    """
+    import torch
+
+    from dynquant.quant.tensor import QuantTensor
+
+    def encode(name: str, weight: torch.Tensor, width: int) -> QuantTensor:
+        grid = banked.get(name)
+        if grid is None:
+            raise SystemExit(
+                f"the exporter asked for {name!r}, which the recipe never quantized. The bit "
+                "map and the carried grids came from the same dict, so this means one of "
+                "them was rebuilt in between"
+            )
+        quantized = QuantTensor.from_codes(
+            grid["codes"],
+            grid["scales"],
+            grid["offsets"],
+            bits=width,
+            group_size=group_size,
+            symmetric=False,
+            compute_dtype=weight.dtype,
+            logical_shape=tuple(weight.shape),
+        )
+        got = quantized.dequantize(dtype=weight.dtype)
+        step = grid["scales"].float().abs().amax().clamp_min(torch.finfo(torch.float32).tiny)
+        worst = ((got.float() - weight.float()).abs().amax() / step).item()
+        drift[name] = worst
+        if worst > MAX_CARRY_DRIFT:
+            raise SystemExit(
+                f"{name}: the carried grid reconstructs {worst:.3f} code steps away from the "
+                f"weight the arm was scored on, past the {MAX_CARRY_DRIFT} this format's "
+                "offset rounding accounts for. That is the size of a rearrangement error, "
+                "not of a rounding -- re-run probe_delinearize.py"
+            )
+        return quantized
+
+    return encode
+
+
+def do_publish(args: argparse.Namespace) -> int:
+    """Write the baseline's own grid into a DynQuant-format directory.
+
+    :func:`do_save` cannot publish this model, for two reasons it states at length: the
+    linearized expert names have no inverse registered for ``lfm2_moe``, and 3 bits does not
+    divide 32 so compressed-tensors stores 3.2. Both are properties of that container, and
+    neither is a property of the numbers. This subcommand keeps the numbers and changes the
+    container -- the codes the recipe chose, in the format the DynQuant arms publish in,
+    which packs every width at exactly its label and round-trips a bank as a bank.
+
+    What it does *not* do is re-quantize. Handing the materialized weights to
+    ``export_packed_checkpoint`` unaided would re-fit a grid from them, and where GPTQ or
+    AWQ left a group not spanning its code range that fitted grid is narrower than the one
+    the arm was scored on. The published checkpoint would be a different model than the
+    table's row. The encoder is what keeps the two the same, and the drift it measures is
+    what proves it.
+
+    Not a vLLM artifact. Serving these through vLLM's compressed-tensors path would need a
+    new ``lfm2_moe`` entry in llm-compressor's ``ARCH_TO_2D_MAPPINGS``, which composes with
+    transformers' own checkpoint conversion mapping -- and ``lfm2_moe`` has none, because its
+    published checkpoint is already banked. That is upstream work with an upstream release
+    cycle. This directory loads through ``dynquant``'s own ``HfQuantizer``.
+    """
+    import dataclasses
+
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    from dynquant.quant.checkpoint import export_packed_checkpoint
+
+    model, meta = quantize(args)
+    rules = expert_rules()
+    grids = carried_grids(model, group_size=args.group_size)
+    banked, width = banked_grids(model, grids, rules)
+    weights = delinearize_state_dict(model, rules)
+    config, source = model.config, args.model
+    del model, grids
+
+    # Reloaded from disk rather than built with `from_config`: the banked tree is what the
+    # checkpoint already holds, so this costs a mmap instead of initializing 8.5 B
+    # parameters, and every non-persistent buffer arrives real rather than on meta.
+    # `assign=False` on purpose -- assigning would replace the tied embedding with two
+    # distinct tensors and the exporter, which detects tying by identity, would write it
+    # twice.
+    fresh = AutoModelForCausalLM.from_pretrained(
+        source, config=config, dtype=getattr(torch, args.dtype), device_map="cpu"
+    )
+    fresh.load_state_dict(weights, strict=True)
+    fresh.tie_weights()
+    del weights
+
+    drift: dict[str, float] = {}
+    out = Path(args.save_to)
+    report = export_packed_checkpoint(
+        fresh,
+        dict.fromkeys(banked, width),
+        output_dir=out,
+        group_size=args.group_size,
+        compute_device=args.pack_device,
+        provenance={"baseline": meta, "carried_from": "compressed-tensors"},
+        encoder=carrying_encoder(banked, group_size=args.group_size, drift=drift),
+    )
+    AutoTokenizer.from_pretrained(source).save_pretrained(str(out))
+
+    written = dataclasses.asdict(report)
+    written["output_dir"] = str(written["output_dir"])
+    written.pop("layers", None)
+    meta["published"] = written
+    meta["carry_drift_steps"] = {
+        "max": round(max(drift.values()), 6),
+        "worst_module": max(drift, key=lambda k: drift[k]),
+        "threshold": MAX_CARRY_DRIFT,
+        "modules": len(drift),
+    }
+    meta["bytes_on_disk"] = sum(p.stat().st_size for p in out.rglob("*.safetensors"))
+    (out / "dq_baseline.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    print(json.dumps(meta["carry_drift_steps"], indent=2), flush=True)
+    print(f"-> {out}  {meta['bytes_on_disk'] / 2**30:.2f} GiB", flush=True)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="stage", required=True)
@@ -979,6 +1263,18 @@ def build_parser() -> argparse.ArgumentParser:
     quant_flags(r)
     eval_flags(r)
     r.set_defaults(func=do_run)
+
+    pub = sub.add_parser(
+        "publish", help="quantize and write the baseline's own grid in DynQuant format"
+    )
+    pub.add_argument("--model", required=True)
+    pub.add_argument("--save-to", required=True)
+    # Where the packing arithmetic runs, independent of where the recipe ran. Separate from
+    # --device because the two happen at different times and the second one is cheap: it is
+    # a pack of codes that already exist, not a calibration pass.
+    pub.add_argument("--pack-device", default="auto")
+    quant_flags(pub)
+    pub.set_defaults(func=do_publish)
 
     s = sub.add_parser("save", help="quantize and write a packed checkpoint")
     s.add_argument("--model", required=True)
