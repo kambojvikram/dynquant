@@ -697,6 +697,107 @@ an index row without re-measuring it on the object the claim was being used abou
 whose name asserts the general claim while its body asserts a hand-written fixture's fidelity to
 itself. A one-layer fixture cannot exhibit a cascade. It can only be honest about not trying.
 
+### The cost is now avoidable, and the panel already paid it anyway
+
+§8 established that moving a packed model to `eager` is not free and put it on the same axis as the
+margins this panel reports. The obvious next question is whether the move is *necessary*, and it is
+not. `eager` was never the requirement; indexing was. `grouped_mm_experts_forward` sorts tokens by
+expert, computes segment offsets, masks expert-parallel sentinels and reduces once over the k axis —
+and the only step in it a packed bank cannot answer is the one that hands the whole bank to
+`torch._grouped_mm`. Substituting `bank[e]` for that read leaves every other step intact.
+
+`dynquant.runtime.experts.dynquant_experts_forward` is that substitution, registered into
+`ALL_EXPERTS_FUNCTIONS` under its own name. Measured on a four-layer model at LFM2.5-8B-A1B's real
+MoE geometry — hidden 2048, `moe_intermediate` 1792, 32 experts, top-4, 256 tokens, bf16, all three
+dispatches verifiably selected:
+
+| against `grouped_mm` | max logit gap | argmax tokens disagreeing |
+|---|---|---|
+| `eager` | 0.62109375 | **1.95%** |
+| `dynquant` | **0.0** | **0.00%** |
+
+Against a maximum absolute logit of 4.125. At fp32 the same comparison gives 1.25e-06 and 0.0, which
+is the control: the bf16 gap is an accumulation-order effect and not a different function. The 1.95%
+brackets the 1.24% measured on the real 24-layer model, which is what makes four layers a defensible
+stand-in for this particular question.
+
+**The mechanism is narrower than "a different order", and that turned out to matter.** The first
+attempt to test it asserted that slot order and expert order give different answers, and it failed
+its own vacuity guard: `torch.sum` over a bf16 axis accumulates in an fp32 accumulator and rounds
+**once**, so permuting the summands is nearly harmless. What `eager` does is different in kind — it
+adds each expert's contribution into a bf16 output tensor as it walks the experts, rounding to bf16
+**k times**. One rounding against k roundings is the whole effect, and the test now constructs it
+exactly: one expert contributing 1.0 and three contributing 2^-9 each sum to 1.0078125 in one
+reduction and to 1.0 in four.
+
+**Two things went wrong on the way, and only one of them was the code.** At a tiny geometry — hidden
+64, four experts, top-2 — all three dispatches produced bit-identical logits, and an earlier draft
+of the probe divided by that zero and printed `infx closer`. The temptation was to read the zero as
+a no-op, and two diagnostics refused it: all three dispatches were confirmed selected and
+`grouped_mm` was confirmed to reach the real `torch._grouped_mm`. The zero was real; four experts at
+hidden 64 simply cannot resolve the effect. The fix was to scale *width, expert count and k* rather
+than depth, because those are what a single layer's reduction sees, and to make the probe **refuse**
+on `eager == grouped_mm` instead of reporting a ratio against it.
+
+The second was a genuine bug, and the probe could not have found it. Expert-parallel sentinels were
+folded into bin 0 before the segment offsets were counted. Because the bands are offsets into a
+*sorted* array, widening bin 0 by rows that physically sit at the tail displaces every later band
+off its own rows — a two-expert case returned expert 0's answer for both. The `wide` probe routes no
+sentinels, so it was blind to this by construction and its result stands; the two-expert unit test
+caught it on the first run. This is the division of labour worth keeping: the probe says the two
+agree on a real model, the unit tests say *why*, and the why is where the bug was. Six mutations of
+the forward are now each caught by a named test.
+
+**What this retires, and what it does not.** It retires the condition every packed figure carried —
+a packed artifact's accuracy was comparable to a bf16 number only if the bf16 side was moved to
+`eager` too. A downloaded checkpoint now runs `dynquant`, which is bit-identical to the default. It
+does not retire the re-score, and the reason is the linearised baselines: `llm-compressor` rewrites
+a GPTQ or AWQ arm's banks into per-expert `Linear` modules, so it computes the loop whatever the
+config says and there is nothing left in it to dispatch. `eager` remains the only setting all seven
+arms can share.
+
+### What the banked arms actually ran, confirming what §11 predicted
+
+This section measures a state two earlier paragraphs already called: §8 above records that the
+baselines straddle the dispatch, and §11 records that `_comparability` cannot tell a null `experts`
+key from a missing one. Neither had been checked against the banked records. Doing so is worth the
+paragraph because a predicted failure and an observed one are different evidence, and because the
+prediction was right about the mechanism while understating the reach.
+
+Reading the five records for their dispatch gives `None` five times, and §11's distinction decides
+what that means. The key is **absent**. The panel clone is pinned at `4109dcc`, which predates `_pin_experts_dispatch`,
+`use_eager_experts` and `--experts-impl` alike: nothing pinned anything, and nothing recorded
+anything. The panel venv carries transformers 5.10.1, whose `ALL_EXPERTS_FUNCTIONS` holds
+`{batched_mm, deepgemm, grouped_mm, sonicmoe}` and whose default is `grouped_mm`. So:
+
+| arm | what dispatched | how it got there |
+|---|---|---|
+| `bf16` | `grouped_mm` | `post_init` default, never moved |
+| `dq_4b` | `grouped_mm` | `apply: encode` holds compute-dtype values, so no bank is packed and nothing forces a move |
+| `gptq_4b`, `awq_4b`, `gptq_3b` | the per-expert loop | linearised by `llm-compressor`; the config is not consulted |
+
+Two consequences, pulling in opposite directions. The **bf16-to-DynQuant margin is clean**: both
+sides are on `grouped_mm`, so 84.26 → 82.71 is a quantization effect and nothing else. The
+**DynQuant-to-baseline margins are not**: `dq_4b` at 82.71 against `gptq_4b` at 82.07 is 0.64 points
+across a comparison that also changes dispatch, and the dispatch effect on this model is 1.24% of
+teacher-forced tokens. The confound has no established sign — the earlier concordance measurement
+says the two dispatches differ, not which is better — so this is not a direction to correct for. It
+is a reason the 0.64 cannot be read as a quantizer result until the re-score puts both sides on
+`eager`.
+
+And the pairing guard was never going to catch it, which is the part §11 called and the index row
+still overstates. That row says `EXPERTS_PAIRING_FIELDS` "refuses to pair two arms that ran
+different arithmetic"; it refuses to pair two arms that *recorded* different arithmetic, and here
+all five recorded nothing. `_comparability` treats an absent `experts` key as an exemption, which it
+has to, because a dense model genuinely has no dispatch — so these arms pair with each other and
+with everything scored after them, silently. The guard is not weaker than advertised; it is that an
+arm which never had the field cannot be distinguished by a field. That is what the dispatch census
+in `panel_table.py` prints, and why it names the arms in the third state rather than counting them.
+
+What the observation adds to the prediction is the reach. §8 said four arms straddle; it is five of
+five, because `bf16` is on the unpinned default too. So there is no arm in the banked panel whose
+dispatch was chosen rather than inherited.
+
 ---
 
 ## 9. What this does and does not say about the panel

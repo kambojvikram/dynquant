@@ -710,14 +710,28 @@ def _pin_experts_dispatch(model: Any, args: argparse.Namespace) -> dict[str, str
     model's MoE geometry is bit-identical to ``grouped_mm`` where ``eager`` is not -- 0.00%
     of argmax tokens against 1.95% (``experiments/phase4/probe_experts_dispatch.py``).
 
-    The pin stays on ``eager`` regardless, and the reason is pairing rather than physics.
-    ``EXPERTS_PAIRING_FIELDS`` is ``("ran",)``, so the dispatch is part of an arm's
-    identity, and the panel's already-scored arms ran on ``eager``. Repointing the default
-    would not make those arms wrong; it would silently stop them pairing with every arm
-    scored afterwards, which is the more expensive failure because it is the quiet one. The
-    pessimism it costs is shared by all seven arms equally, so it moves the level and not
-    the margins. ``--experts-impl auto`` leaves the model's own choice alone, which is what
-    to run for the artifact's own number rather than a cross-arm comparison.
+    The pin stays on ``eager`` regardless, and the reason it stays is the half that did
+    not change: a GPTQ or AWQ arm has been through ``llm-compressor``, which rewrites the
+    banks into per-expert ``Linear`` modules, so it computes the indexing loop whatever the
+    config says and cannot be moved onto ``grouped_mm`` or onto ``dynquant`` either. There
+    is nothing left in it to dispatch. ``eager`` is still the only setting all seven arms
+    of a mixed panel can share, and what ``dynquant`` changes is the claim about the
+    artifact, not the arithmetic a linearised baseline is stuck with.
+
+    A first draft of this paragraph justified the pin differently -- that the panel's
+    already-scored arms ran on ``eager``, so repointing the default would unpair them --
+    and that is worth correcting rather than deleting, because the true state is the more
+    awkward one. Those arms were scored by a clone predating this function: they carry no
+    ``experts`` key at all, and ``_comparability`` treats an absent key as an exemption, so
+    they pair with anything. What they actually ran was ``grouped_mm`` for ``bf16`` and for
+    the ``encode``-mode DynQuant arms, and the loop for the ``llm-compressor`` ones. The
+    panel as banked therefore varies dispatch *alongside* quantizer on exactly the
+    comparison it exists to make, and pairing did not object because there was nothing
+    recorded to object to. Pinning here is what stops that recurring; the banked arms need
+    a re-score, not a defence.
+
+    ``--experts-impl auto`` leaves the model's own choice alone, which is what to run for
+    the artifact's own number rather than a cross-arm comparison.
 
     Returns what the dispatch was when this looked and what it was when this returned, or
     ``None`` for a model whose config carries no such attribute -- a dense model, or one on

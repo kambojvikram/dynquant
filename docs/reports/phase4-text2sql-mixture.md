@@ -2031,6 +2031,14 @@ it. So the move is not free, it is on the same axis as the margins this panel re
 `dynquant eval` now pins every arm to `eager` and records which dispatch ran. What it costs in
 speed is unchanged: the fast path, which is what the P8 kernel is for.
 
+Two later corrections, both in [that report's §8](phase4-packed-moe-runtime.md). The move to
+`eager` is no longer required of a packed artifact at all -- `dynquant_experts_forward` indexes the
+bank without leaving the grouped path and measures **bit-identical** to `grouped_mm` where `eager`
+disagrees on 1.95% of argmax tokens. And the pin postdates this panel: the arms banked here carry no
+`experts` key, ran `grouped_mm` for `bf16` and the encode-mode DynQuant arms and the per-expert loop
+for the `llm-compressor` ones, so the DynQuant-to-baseline margins vary dispatch alongside quantizer
+until the re-score lands. The bf16-to-DynQuant margin does not: both sides are on `grouped_mm`.
+
 The arithmetic is why this is worth having before the kernel. A layer's `gate_up_proj` is
 `[32, 2688, 2048]`: **336 MiB** in bf16, **89.25 MiB** packed at 4 bits with fp16 scales and
 offsets per 128-value group. What exists dense while an expert runs is one slice of it, **10.5
