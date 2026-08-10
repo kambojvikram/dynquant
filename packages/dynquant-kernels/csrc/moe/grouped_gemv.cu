@@ -30,13 +30,29 @@
 // different answer (`dequant` into a workspace, then cuBLASLt) and the runtime
 // dispatches there on activation count, exactly as `quantized_matmul` does.
 //
-// Numerically it is `dynquant::gemv` restricted to a band of rows: same fp32
-// accumulate, same fixed-shape warp butterfly, same decode helpers. A segment run
-// through this kernel and the same segment run through `gemv` agree bit for bit,
-// which is the property that lets the runtime pick either. Neither agrees bit for
-// bit with `dequantize -> F.linear`, because cuBLAS reduces in a different order;
-// that difference is the ordinary one between two matmul implementations and is
-// bounded by the fp32 accumulation both ends do.
+// Numerically it is `gemv_kernel` restricted to a band of rows -- the *general*
+// path in `gemv.cu`, not the op. Same chunk-to-lane assignment, same fp32
+// accumulate, same fixed-shape warp butterfly, same decode helpers, and a segment
+// run through either agrees bit for bit.
+//
+// Naming the kernel rather than the op matters, because `dynquant::gemv` is two
+// kernels and picks between them on geometry. `gemv_vec_kernel` takes 128 bits of
+// payload per lane per step where this takes one block, so it sums a row in a
+// different order and lands within fp32 reassociation noise rather than on the
+// same bits -- `test_the_two_gemv_paths_agree` pins that at 2e-3, and it is the
+// path `gemv` chooses for every geometry a transformer actually contains. So the
+// bit-for-bit statement is testable on CUDA only with `DYNQUANT_GEMV_SCALAR=1`,
+// and holds unconditionally on CPU, which has one implementation.
+//
+// There is no vectorized variant here yet and the omission is deliberate for now:
+// the point of this kernel is the launch, and a second decomposition would have to
+// be tuned and pinned before it is worth carrying. The consequence is that a busy
+// expert decodes at the general path's bandwidth, which is the standing item
+// against the >=3x decode gate.
+//
+// Neither agrees bit for bit with `dequantize -> F.linear`, because cuBLAS reduces
+// in a different order; that difference is the ordinary one between two matmul
+// implementations and is bounded by the fp32 accumulation both ends do.
 
 #include <ATen/ATen.h>
 #include <ATen/Dispatch.h>

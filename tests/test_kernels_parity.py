@@ -367,6 +367,16 @@ def test_mismatched_scales_are_rejected_rather_than_reinterpreted(device):
 # is exact equality. A tolerance would let a band-addressing bug through whenever
 # the wrong expert's weights happened to produce a nearby number, which at these
 # scales is most of the time.
+#
+# Exact against *which* gemv, though. There are two, and this file already pins them
+# to each other at 2e-3 rather than at zero, because they sum a row in a different
+# order. The grouped kernel's inner loop is `gemv_kernel` -- the general path -- line
+# for line, so the identity is with that one. On CPU there is only that one and the
+# equality is exact by construction. On CUDA `gemv` picks the vectorized path for
+# every geometry a transformer actually contains, so the comparison has to force the
+# general path, which is an environment variable read once into a function-local
+# static and therefore a subprocess. One process covers every case rather than one
+# per parameter.
 # ---------------------------------------------------------------------------
 
 GROUPED_CASES = [
@@ -385,13 +395,12 @@ def _segments(counts: list[int], device: str) -> torch.Tensor:
     return torch.tensor(offsets, dtype=torch.int32, device=device)
 
 
-@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("bits", [2, 3, 4, 8])
 @pytest.mark.parametrize(
     ("num_experts", "out_features", "in_features", "group_size", "counts"), GROUPED_CASES
 )
 def test_grouped_gemv_matches_the_ungrouped_one_band_for_band(
-    device, bits, num_experts, out_features, in_features, group_size, counts
+    bits, num_experts, out_features, in_features, group_size, counts
 ):
     """Exact equality against ``dynquant::gemv`` on each expert's own band.
 
@@ -399,7 +408,13 @@ def test_grouped_gemv_matches_the_ungrouped_one_band_for_band(
     kernels cannot share code for: the loop version skips it on the host and this one
     has to discover it from two loads and return. An off-by-one in that comparison
     reads the next expert's first row and produces a finite, plausible number.
+
+    CPU, because CPU has one gemv and the equality is therefore exact without asking
+    for anything. The CUDA half of this is
+    :func:`test_grouped_gemv_matches_the_general_gemv_on_cuda`, which has to force a
+    path first.
     """
+    device = "cpu"
     quantized, _ = _quantized(
         num_experts * out_features, in_features, group_size, bits, device, torch.float16
     )
@@ -440,6 +455,90 @@ def test_grouped_gemv_matches_the_ungrouped_one_band_for_band(
             in_features,
         )
         torch.testing.assert_close(got[start:stop], want, rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
+def test_grouped_gemv_matches_the_general_gemv_on_cuda(tmp_path):
+    """The same band-for-band equality on device, with the fast path switched off.
+
+    Not a weaker version of the CPU test -- the same assertion, reached differently.
+    ``DYNQUANT_GEMV_SCALAR=1`` puts ``gemv`` on the general kernel, which is the loop
+    the grouped kernel is a banded copy of, so the two must agree to the bit. Leave
+    the flag off and ``gemv`` vectorizes, and the comparison becomes the 2e-3 one
+    :func:`test_the_two_gemv_paths_agree` already makes and this test would be
+    restating.
+
+    Turns red when: the grouped kernel's decode, its chunk-to-lane assignment or its
+    reduction tree drifts from ``gemv_kernel``'s. Those are three separate files'
+    worth of shared assumption -- ``nbit.cuh`` owns the first, and the other two are
+    copied rather than shared, deliberately, because the register stories differ.
+    Copied code that must stay identical is exactly what needs an assertion holding
+    it there.
+
+    One subprocess for every case, because the flag is read once into a
+    function-local static and a second call in the same process would silently get
+    the first answer.
+    """
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(
+        f"""
+        import torch
+        import dynquant_kernels
+        assert dynquant_kernels.is_available()
+        from dynquant.quant.grid import quantize_with_search
+
+        cases = {GROUPED_CASES!r}
+        for bits in (2, 3, 4, 8):
+            for num_experts, out_features, in_features, group_size, counts in cases:
+                torch.manual_seed(bits * 1000 + in_features)
+                dense = torch.randn(num_experts * out_features, in_features)
+                q, _ = quantize_with_search(
+                    dense, bits=bits, group_size=group_size, symmetric=False,
+                    compute_dtype=torch.float16,
+                )
+                q = q.to("cuda")
+                geom = q.geometry
+                total = sum(counts)
+                torch.manual_seed(bits + total)
+                x = torch.randn(total, in_features, dtype=torch.float16, device="cuda")
+                bounds = [0]
+                for c in counts:
+                    bounds.append(bounds[-1] + c)
+                seg = torch.tensor(bounds, dtype=torch.int32, device="cuda")
+
+                got = torch.ops.dynquant.moe_grouped_gemv(
+                    x, q.packed, q.scales, q.offsets, seg, bits,
+                    geom.effective_group, in_features, out_features,
+                )
+                for e in range(num_experts):
+                    start, stop = bounds[e], bounds[e + 1]
+                    if start == stop:
+                        continue
+                    band = q.rows(e * out_features, (e + 1) * out_features)
+                    want = torch.ops.dynquant.gemv(
+                        x[start:stop].contiguous(), band.packed, band.scales,
+                        band.offsets, bits, geom.effective_group, in_features,
+                    )
+                    if not torch.equal(got[start:stop], want):
+                        d = (got[start:stop].float() - want.float()).abs().max().item()
+                        raise SystemExit(
+                            f"bits={{bits}} shape={{(num_experts, out_features, in_features)}} "
+                            f"expert={{e}} band=[{{start}},{{stop}}) max|delta|={{d}}"
+                        )
+        print("ok")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "DYNQUANT_GEMV_SCALAR": "1"},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("device", DEVICES)

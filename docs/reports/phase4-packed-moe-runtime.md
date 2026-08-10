@@ -1646,11 +1646,21 @@ the whole table in hand and is the composition the CUDA path replaces, refuses.
 - **`grouped_gemv.cu` has never been compiled.** Everything above is the dispatch, the marshalling
   and the contract; none of it is evidence about the kernel. The five parity tests are written and
   skip locally behind `importorskip("dynquant_kernels")`.
-- The `.cu` header claims numerical identity with `dynquant::gemv` band for band. On CPU that holds
-  by construction — same `dequant_cpu`, same fp32 `matmul`. On CUDA it is **a claim, not a
-  measurement**: `gemv` has a vectorized fast path for geometries whose groups tile `in_features`
-  and whose words tile a 128-bit load, and the grouped kernel does not implement it. Either the
-  parity assertion relaxes on CUDA or the docstring is wrong, and which one is not yet known.
+- The `.cu` header claimed numerical identity with `dynquant::gemv` band for band, and **it was
+  wrong about which thing it was identical to** — found by reading, before the compile, which is
+  the only reason it is not a red GPU test tomorrow. `dynquant::gemv` is *two* kernels. The
+  grouped kernel's inner loop is `gemv_kernel`, the general path, line for line; `gemv_vec_kernel`
+  takes 128 bits of payload per lane per step, sums a row in a different order, and this file's
+  own `test_the_two_gemv_paths_agree` already pins the two at **2e-3, not zero**. It is also the
+  path `gemv` chooses for every geometry a transformer actually contains, so an exact assertion
+  against the op would have failed on precisely the shapes that matter and passed on the leftovers.
+  The claim now names the kernel, and the test splits to match: CPU keeps the parametrized exact
+  comparison because CPU has one implementation, and CUDA gets one subprocess under
+  `DYNQUANT_GEMV_SCALAR=1` — the flag is read once into a function-local static, so forcing the
+  path is a process-level decision — covering every case at exact equality inside it.
+- The grouped kernel has **no vectorized variant**, and that is now written down as a cost rather
+  than left as an absence. A busy expert decodes at the general path's bandwidth. Whatever the
+  ≥3× decode gate ends up measuring, that is the first thing standing between it and the number.
 - No speedup is claimed. The ≥3× decode target in P8's gate is unmeasured, and the sync-removal
   property — the reason to build this — is a structural claim backed by a counter, not a clock.
 - Nothing here touches an arm. The panel scores the encoder, `dynquant_experts_forward` already
