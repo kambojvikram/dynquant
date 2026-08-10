@@ -205,6 +205,40 @@ def test_a_ceiling_and_an_unscored_arm_are_refused_rather_than_described(
         cards.card(table, "dq_2b", FINETUNE, repo_prefix=None)
 
 
+def test_a_card_written_mid_panel_still_counts_the_arms_that_have_not_run(
+    cards: Any, table_mod: Any, tmp_path: Path
+) -> None:
+    """Both numbers that said "seven" came from somewhere, and one of them was typed.
+
+    Mid-panel is not an edge case here. The expensive arms are published first and the
+    cheap ones are still scoring, so a card generated then describes a panel that is not
+    finished -- and the version that dropped unscored arms from the results table printed
+    five rows under a sentence claiming seven arms, with nothing to tell a reader the other
+    two exist. The count in that sentence was also a literal, which is the one thing this
+    generator is not allowed to contain: a six-arm panel would have been described as a
+    seven-arm one, correctly formatted and wrong.
+
+    Turns red when: the headline count is hard-coded again, or an unscored arm is dropped
+    from the table instead of being marked.
+    """
+    out = _write_panel(tmp_path / "arms", omit=("awq_3b", "dq_3b"))
+    table, _ = _built(table_mod, out)
+    text = cards.card(table, "dq_4b", FINETUNE, repo_prefix=None)
+
+    assert "one of 7 arms" in text
+    assert "seven-arm" not in text
+    for pending in ("awq_3b", "dq_3b"):
+        assert _row(text, f"| {pending} |").endswith("| *not scored yet* | -- | -- |")
+    results = text.split("## Results")[1].split("This arm, by evaluation source")[0]
+    rows = [
+        line
+        for line in results.splitlines()
+        if line.startswith("| ") and not line.startswith("| arm |")
+    ]
+    assert len(rows) == 7, "every arm the panel declared has a row, scored or not"
+    assert "| **dq_4b** |" in results
+
+
 def test_one_comparison_reads_identically_on_both_of_its_cards(
     cards: Any, table_mod: Any, tmp_path: Path
 ) -> None:

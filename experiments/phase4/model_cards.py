@@ -183,15 +183,22 @@ def what_this_is(base_model: str, row: dict[str, Any], finetune: dict[str, Any])
 
 
 def results_table(table: dict[str, Any], label: str) -> str:
-    """The whole panel, with this arm marked, because one number alone is not a result."""
+    """The whole panel, with this arm marked, because one number alone is not a result.
+
+    An arm that has not been scored keeps its row and says so. Dropping it produced a card
+    whose own first sentence counted seven arms above a table of five, and a reader had no
+    way to learn that two more exist -- which mid-panel is the normal state, since the
+    expensive arms are published first and the cheap ones are still running.
+    """
     lines = [
         "| arm | exec match | size | bits/param |",
         "|---|---|---|---|",
     ]
     for row in table["arms"]:
-        if row.get("accuracy") is None:
-            continue
         bits = row.get("bits_per_param")
+        if row.get("accuracy") is None:
+            lines.append(f"| {row['label']} | *not scored yet* | -- | -- |")
+            continue
         name = f"**{row['label']}**" if row["label"] == label else row["label"]
         lines.append(
             f"| {name} | {percent(row['accuracy'])} | {gib(row.get('nbytes'))} | "
@@ -370,9 +377,9 @@ def card(
         f"# {base_model.split('/')[-1]} text-to-SQL, {method} {row['anchor']}-bit",
         "",
         f"{base_model} fine-tuned on text-to-SQL and quantized to {row['anchor']} bits with "
-        f"{method}. It is one arm of a seven-arm panel in which every quantized arm was "
-        f"allocated the *same byte budget*, so the accuracies below differ by method and "
-        f"not by size.",
+        f"{method}. It is one of {len(table['arms'])} arms in a panel where every quantized "
+        f"arm was allocated the *same byte budget*, so the accuracies below differ by method "
+        f"and not by size.",
         "",
         "## What this is",
         "",

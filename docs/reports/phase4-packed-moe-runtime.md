@@ -1486,10 +1486,13 @@ build anywhere.
   not claimed. What is restored is that the weights a person downloads are the weights that were
   scored — provided `--scored` is given the arm's record. Without it the directory is published on
   the strength of matching flags, which is a claim about the inputs and not about the weights.
-- The cards are generated and have **never been generated from a real table**. `model_cards.py`
-  is exercised against a synthetic seven-arm panel; the landed panel is five arms and its
-  `table.json` does not exist yet, because two arms are still scoring. Nothing uploads, and the
-  Hub push is a separate decision and a separate command.
+- The cards have now been generated from the **real** table, which is where two defects the
+  synthetic panel could not reach came from. The five landed arms produce a `table.json` and the
+  four scored quantized arms produce cards; running them found the headline sentence counting
+  "a seven-arm panel" as a **typed literal**, and the results table silently **dropping the two
+  arms still scoring** — five rows under a sentence claiming seven, with nothing to tell a reader
+  the others exist. The count is derived now and an unscored arm keeps its row. Nothing uploads,
+  and the Hub push is a separate decision and a separate command.
 - The publish path now carries **nineteen** mutations, each with the test it is expected to redden.
   Five of them are the scored check: running the recipe before reading the record, accepting the
   flag without acting on it, skipping a field this pass did not produce, counting coverage over
