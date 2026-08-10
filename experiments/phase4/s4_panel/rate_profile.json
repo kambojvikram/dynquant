@@ -1,0 +1,405 @@
+{
+  "arms": {
+    "awq_4b": [
+      {
+        "block_end": 4000,
+        "items": 800,
+        "seconds": 1410.0,
+        "s_per_item": 1.762
+      },
+      {
+        "block_end": 4800,
+        "items": 800,
+        "seconds": 1201.0,
+        "s_per_item": 1.501
+      },
+      {
+        "block_end": 5600,
+        "items": 800,
+        "seconds": 1155.0,
+        "s_per_item": 1.444
+      },
+      {
+        "block_end": 6400,
+        "items": 800,
+        "seconds": 2161.0,
+        "s_per_item": 2.701
+      },
+      {
+        "block_end": 7200,
+        "items": 800,
+        "seconds": 975.0,
+        "s_per_item": 1.219
+      },
+      {
+        "block_end": 8000,
+        "items": 800,
+        "seconds": 1095.0,
+        "s_per_item": 1.369
+      },
+      {
+        "block_end": 8800,
+        "items": 800,
+        "seconds": 1141.0,
+        "s_per_item": 1.426
+      },
+      {
+        "block_end": 9600,
+        "items": 800,
+        "seconds": 3781.0,
+        "s_per_item": 4.726
+      },
+      {
+        "block_end": 10400,
+        "items": 800,
+        "seconds": 1966.0,
+        "s_per_item": 2.458
+      },
+      {
+        "block_end": 11200,
+        "items": 800,
+        "seconds": 1065.0,
+        "s_per_item": 1.331
+      },
+      {
+        "block_end": 12000,
+        "items": 800,
+        "seconds": 1741.0,
+        "s_per_item": 2.176
+      }
+    ],
+    "dq_4b": [
+      {
+        "block_end": 1600,
+        "items": 800,
+        "seconds": 1065.0,
+        "s_per_item": 1.331
+      },
+      {
+        "block_end": 2400,
+        "items": 800,
+        "seconds": 646.0,
+        "s_per_item": 0.807
+      },
+      {
+        "block_end": 3200,
+        "items": 800,
+        "seconds": 645.0,
+        "s_per_item": 0.806
+      },
+      {
+        "block_end": 4000,
+        "items": 800,
+        "seconds": 615.0,
+        "s_per_item": 0.769
+      },
+      {
+        "block_end": 4800,
+        "items": 800,
+        "seconds": 570.0,
+        "s_per_item": 0.713
+      },
+      {
+        "block_end": 5600,
+        "items": 800,
+        "seconds": 570.0,
+        "s_per_item": 0.713
+      },
+      {
+        "block_end": 6400,
+        "items": 800,
+        "seconds": 571.0,
+        "s_per_item": 0.714
+      },
+      {
+        "block_end": 7200,
+        "items": 800,
+        "seconds": 495.0,
+        "s_per_item": 0.619
+      },
+      {
+        "block_end": 8000,
+        "items": 800,
+        "seconds": 555.0,
+        "s_per_item": 0.694
+      },
+      {
+        "block_end": 8800,
+        "items": 800,
+        "seconds": 600.0,
+        "s_per_item": 0.75
+      },
+      {
+        "block_end": 9600,
+        "items": 800,
+        "seconds": 1245.0,
+        "s_per_item": 1.556
+      },
+      {
+        "block_end": 10400,
+        "items": 800,
+        "seconds": 661.0,
+        "s_per_item": 0.826
+      },
+      {
+        "block_end": 11200,
+        "items": 800,
+        "seconds": 585.0,
+        "s_per_item": 0.731
+      },
+      {
+        "block_end": 12000,
+        "items": 800,
+        "seconds": 465.0,
+        "s_per_item": 0.581
+      }
+    ],
+    "gptq_3b": [
+      {
+        "block_end": 1600,
+        "items": 800,
+        "seconds": 4636.0,
+        "s_per_item": 5.795
+      },
+      {
+        "block_end": 2400,
+        "items": 800,
+        "seconds": 2041.0,
+        "s_per_item": 2.551
+      },
+      {
+        "block_end": 3200,
+        "items": 800,
+        "seconds": 3526.0,
+        "s_per_item": 4.407
+      },
+      {
+        "block_end": 4000,
+        "items": 800,
+        "seconds": 2221.0,
+        "s_per_item": 2.776
+      },
+      {
+        "block_end": 4800,
+        "items": 800,
+        "seconds": 2416.0,
+        "s_per_item": 3.02
+      },
+      {
+        "block_end": 5600,
+        "items": 800,
+        "seconds": 3406.0,
+        "s_per_item": 4.258
+      },
+      {
+        "block_end": 6400,
+        "items": 800,
+        "seconds": 2071.0,
+        "s_per_item": 2.589
+      },
+      {
+        "block_end": 7200,
+        "items": 800,
+        "seconds": 1095.0,
+        "s_per_item": 1.369
+      }
+    ]
+  },
+  "pairs": [
+    {
+      "pair": "awq_4b vs dq_4b",
+      "blocks": [
+        {
+          "block_end": 4000,
+          "awq_4b": 1.762,
+          "dq_4b": 0.769,
+          "ratio": 2.293
+        },
+        {
+          "block_end": 4800,
+          "awq_4b": 1.501,
+          "dq_4b": 0.713,
+          "ratio": 2.107
+        },
+        {
+          "block_end": 5600,
+          "awq_4b": 1.444,
+          "dq_4b": 0.713,
+          "ratio": 2.026
+        },
+        {
+          "block_end": 6400,
+          "awq_4b": 2.701,
+          "dq_4b": 0.714,
+          "ratio": 3.785
+        },
+        {
+          "block_end": 7200,
+          "awq_4b": 1.219,
+          "dq_4b": 0.619,
+          "ratio": 1.97
+        },
+        {
+          "block_end": 8000,
+          "awq_4b": 1.369,
+          "dq_4b": 0.694,
+          "ratio": 1.973
+        },
+        {
+          "block_end": 8800,
+          "awq_4b": 1.426,
+          "dq_4b": 0.75,
+          "ratio": 1.902
+        },
+        {
+          "block_end": 9600,
+          "awq_4b": 4.726,
+          "dq_4b": 1.556,
+          "ratio": 3.037
+        },
+        {
+          "block_end": 10400,
+          "awq_4b": 2.458,
+          "dq_4b": 0.826,
+          "ratio": 2.974
+        },
+        {
+          "block_end": 11200,
+          "awq_4b": 1.331,
+          "dq_4b": 0.731,
+          "ratio": 1.821
+        },
+        {
+          "block_end": 12000,
+          "awq_4b": 2.176,
+          "dq_4b": 0.581,
+          "ratio": 3.744
+        }
+      ],
+      "ratio_min": 1.821,
+      "ratio_max": 3.785,
+      "ratio_spread": 2.079,
+      "fixed_cost_ceiling": {
+        "awq_4b": 1.821,
+        "dq_4b": 0.264
+      },
+      "ceiling_usable": {
+        "awq_4b": true,
+        "dq_4b": false
+      },
+      "ceiling_holds_only_if": "the named arm never takes fewer decode steps than the other on a block. A ceiling below 1.0 is that assumption failing in the open: that arm is faster somewhere, so none of its excess elsewhere can be a fixed per-forward cost"
+    },
+    {
+      "pair": "awq_4b vs gptq_3b",
+      "blocks": [
+        {
+          "block_end": 4000,
+          "awq_4b": 1.762,
+          "gptq_3b": 2.776,
+          "ratio": 0.635
+        },
+        {
+          "block_end": 4800,
+          "awq_4b": 1.501,
+          "gptq_3b": 3.02,
+          "ratio": 0.497
+        },
+        {
+          "block_end": 5600,
+          "awq_4b": 1.444,
+          "gptq_3b": 4.258,
+          "ratio": 0.339
+        },
+        {
+          "block_end": 6400,
+          "awq_4b": 2.701,
+          "gptq_3b": 2.589,
+          "ratio": 1.043
+        },
+        {
+          "block_end": 7200,
+          "awq_4b": 1.219,
+          "gptq_3b": 1.369,
+          "ratio": 0.89
+        }
+      ],
+      "ratio_min": 0.339,
+      "ratio_max": 1.043,
+      "ratio_spread": 3.077,
+      "fixed_cost_ceiling": {
+        "awq_4b": 0.339,
+        "gptq_3b": 0.958
+      },
+      "ceiling_usable": {
+        "awq_4b": false,
+        "gptq_3b": false
+      },
+      "ceiling_holds_only_if": "the named arm never takes fewer decode steps than the other on a block. A ceiling below 1.0 is that assumption failing in the open: that arm is faster somewhere, so none of its excess elsewhere can be a fixed per-forward cost"
+    },
+    {
+      "pair": "dq_4b vs gptq_3b",
+      "blocks": [
+        {
+          "block_end": 1600,
+          "dq_4b": 1.331,
+          "gptq_3b": 5.795,
+          "ratio": 0.23
+        },
+        {
+          "block_end": 2400,
+          "dq_4b": 0.807,
+          "gptq_3b": 2.551,
+          "ratio": 0.317
+        },
+        {
+          "block_end": 3200,
+          "dq_4b": 0.806,
+          "gptq_3b": 4.407,
+          "ratio": 0.183
+        },
+        {
+          "block_end": 4000,
+          "dq_4b": 0.769,
+          "gptq_3b": 2.776,
+          "ratio": 0.277
+        },
+        {
+          "block_end": 4800,
+          "dq_4b": 0.713,
+          "gptq_3b": 3.02,
+          "ratio": 0.236
+        },
+        {
+          "block_end": 5600,
+          "dq_4b": 0.713,
+          "gptq_3b": 4.258,
+          "ratio": 0.167
+        },
+        {
+          "block_end": 6400,
+          "dq_4b": 0.714,
+          "gptq_3b": 2.589,
+          "ratio": 0.276
+        },
+        {
+          "block_end": 7200,
+          "dq_4b": 0.619,
+          "gptq_3b": 1.369,
+          "ratio": 0.452
+        }
+      ],
+      "ratio_min": 0.167,
+      "ratio_max": 0.452,
+      "ratio_spread": 2.701,
+      "fixed_cost_ceiling": {
+        "dq_4b": 0.167,
+        "gptq_3b": 2.212
+      },
+      "ceiling_usable": {
+        "dq_4b": false,
+        "gptq_3b": true
+      },
+      "ceiling_holds_only_if": "the named arm never takes fewer decode steps than the other on a block. A ceiling below 1.0 is that assumption failing in the open: that arm is faster somewhere, so none of its excess elsewhere can be a fixed per-forward cost"
+    }
+  ]
+}

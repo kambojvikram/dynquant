@@ -595,6 +595,56 @@ nothing is generated and unpacking is the only thing left. The panel cannot supp
 made them, so the price of asking is a re-quantization — about 32 minutes for GPTQ, 47 for AWQ, from
 their own `quantize_seconds`.
 
+**A file written for another reason answered it first, and for nothing.** A sampler on the box polls
+`panel.log` every 15 seconds and stamps each new `[text2sql] N/12000` line, which turns the panel's
+own progress into an interval profile: 800 items at a time, across three arms. Record mtimes name
+those arms without inference — the first run of stamps ends at 13:32:29Z and `awq_4b.json` is written
+at 13:32:23Z, the second ends at 16:30:47Z against `dq_4b.json` at 16:30:43Z, the third is `gptq_3b`
+and still running. And the profile is readable at all only because every arm draws the same items in
+the same order: seed 0, limit 12,000, and the four landed records agree to the item on their
+per-source denominators, 3,063 gretel and 8,937 wikisql. Block *k* is the same 800 questions in all
+three. `experiments/phase4/rate_profile.py` does the alignment; `rate.log` and `rate_profile.json`
+are in `experiments/phase4/s4_panel/`.
+
+| block ends at | 4000 | 4800 | 5600 | 6400 | 7200 | 8000 | 8800 | 9600 | 10400 | 11200 | 12000 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `dq_4b` (banked, 4b) | 0.77 | 0.71 | 0.71 | 0.71 | 0.62 | 0.69 | 0.75 | 1.56 | 0.83 | 0.73 | 0.58 |
+| `awq_4b` (loop, 4b) | 1.76 | 1.50 | 1.44 | 2.70 | 1.22 | 1.37 | 1.43 | 4.73 | 2.46 | 1.33 | 2.18 |
+| `gptq_3b` (loop, 3b) | 2.78 | 3.02 | 4.26 | 2.59 | 1.37 | | | | | | |
+| `awq_4b` / `dq_4b` | 2.29 | 2.11 | 2.03 | **3.78** | 1.97 | 1.97 | 1.90 | 3.04 | 2.97 | **1.82** | 3.74 |
+| `gptq_3b` / `awq_4b` | 1.58 | 2.01 | **2.95** | **0.96** | 1.12 | | | | | | |
+
+Seconds per item. The first ratio row is the dispatch question with the bit width held fixed, and it
+is not flat: `awq_4b` costs between 1.82x and 3.78x what `dq_4b` costs depending on which 800 items
+are in front of it, a 2.08x swing. A fixed per-forward cost — unpacking, or 704 module calls in place
+of 22 grouped matmuls — is by construction the same work on every block and would be flat. So 1.82 is
+a **ceiling** on the fixed component, against an aggregate of 2.55x over the same eleven blocks,
+which leaves **at least 1.40x of the linearised arms' cost as decode steps rather than dispatch or
+dequantization**. The ceiling holds only while `awq_4b` never takes *fewer* steps than `dq_4b` on a
+block; that is not checkable from a clock, so the script prints the condition beside the number
+rather than under it. What the profile does not do is split the 1.82 between linearisation and
+dequantization. It narrows the total; the two identical-weight probes above are still the only
+instruments for the split.
+
+The second ratio row settles the 3-bit question, and settles it against the hypothesis this section
+opened with. `awq_4b` and `gptq_3b` are **both linearised** — the loop is on both sides — so the only
+differences are the bit width and the weights. Over their five shared blocks `gptq_3b` runs 1.58x,
+2.01x and 2.95x the cost of `awq_4b`, and then **0.96x on block 6400** and 1.12x on 7200. A fixed
+per-forward unpack cost cannot be negative. One block where the 3-bit arm is the *faster* one says
+its excess everywhere else is not fixed work, and that is the length hypothesis carried positively
+rather than by elimination — without the re-quantization the paragraph above priced at 32 to 47
+minutes.
+
+Two things caveat that rather than withdraw it. `gptq_3b` differs from `awq_4b` in its weights as
+well as its width — a different quantizer, and AWQ's smoothing moved all 2,201 — so "three bits" is
+not the only difference between the sides. But the unpack hypothesis is a claim about *width*, and it
+predicts a floor at or above 1.0 whatever the weights are; that is the prediction that failed. And
+the arm is unfinished at five shared blocks, with up to 15 seconds of poll slop on each stamp — which
+against a block that reads 0.96 from an arm averaging 3.35 s/item moves nothing. What is still worth
+a re-quantization is the *size* of the fixed component rather than its existence, and 0.96 already
+bounds that near zero. It is a smaller question than the one this paragraph was written to ask, and
+it is no longer on the critical path for the panel's table.
+
 **The general form.** A measurement whose conclusion holds at one scale and fails at another is not
 a wrong measurement, and calling it one hides the actual failure. `1.79e-07` was true of a one-layer
 model. What made it load-bearing was carrying it into a docstring, a remedy string, two reports and
