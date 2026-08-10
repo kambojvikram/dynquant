@@ -614,7 +614,23 @@ are in `experiments/phase4/s4_panel/`.
 | `awq_4b` / `dq_4b` | 2.29 | 2.11 | 2.03 | **3.78** | 1.97 | 1.97 | 1.90 | 3.04 | 2.97 | **1.82** | 3.74 |
 | `gptq_3b` / `awq_4b` | 1.58 | 2.01 | **2.95** | **0.96** | 1.12 | | | | | | |
 
-Seconds per item. The first ratio row is the dispatch question with the bit width held fixed, and it
+Seconds per item.
+
+**Block index is item index, not wall-clock index**, and that is what makes the table readable rather
+than merely suggestive. The arms run one after another, so block 9600 of `awq_4b` was scored between
+11:09 and 12:12 and block 9600 of `dq_4b` between 15:41 and 16:02 — four and a half hours apart. A
+spike landing on the same block in both arms therefore cannot be one transient on the card; it has to
+be the items. And 9600 is the slowest block in both arms by a wide margin in both, with 10400 in the
+top three of both. Item cost is real and large on its own: `dq_4b`'s eleven blocks here range 0.58 to
+1.56, a 2.7x swing on one set of weights at one dispatch.
+
+Which is what makes the *unshared* spikes mean something. `awq_4b` is elevated at 6400 — 2.70 against
+its own median of 1.50 — and at 12000, at 2.18, where `dq_4b` sits at 0.71 and 0.58, the second of
+those being `dq_4b`'s fastest block of the eleven. Two arms diverging on the same 800 items, hours
+apart, is not a fixed cost. It is the arms taking different numbers of decode steps on the same
+questions.
+
+The first ratio row is the dispatch question with the bit width held fixed, and it
 is not flat: `awq_4b` costs between 1.82x and 3.78x what `dq_4b` costs depending on which 800 items
 are in front of it, a 2.08x swing. A fixed per-forward cost — unpacking, or 704 module calls in place
 of 22 grouped matmuls — is by construction the same work on every block and would be flat. So 1.82 is
@@ -629,21 +645,29 @@ instruments for the split.
 The second ratio row settles the 3-bit question, and settles it against the hypothesis this section
 opened with. `awq_4b` and `gptq_3b` are **both linearised** — the loop is on both sides — so the only
 differences are the bit width and the weights. Over their five shared blocks `gptq_3b` runs 1.58x,
-2.01x and 2.95x the cost of `awq_4b`, and then **0.96x on block 6400** and 1.12x on 7200. A fixed
-per-forward unpack cost cannot be negative. One block where the 3-bit arm is the *faster* one says
-its excess everywhere else is not fixed work, and that is the length hypothesis carried positively
-rather than by elimination — without the re-quantization the paragraph above priced at 32 to 47
-minutes.
+2.01x and 2.95x the cost of `awq_4b`, and then **0.96x on block 6400** and **1.12x on 7200**. A fixed
+per-forward unpack cost cannot be negative, so a block where the 3-bit arm is the *faster* one says
+its excess everywhere else is not fixed work.
+
+**The 0.96 should not be the number quoted, though**, and the reason is in the paragraph above it.
+Block 6400 is `awq_4b`'s own anomaly — 2.70 where its median is 1.50, and `dq_4b` is flat there, so
+it is not the items. Divide by an arm that was slow for an unexplained reason and the quotient
+inherits the reason. Drop the block entirely and the conclusion survives on 7200, where all three
+arms sit at or near their own minima and `awq_4b` against `dq_4b` reads 1.97 against a median of
+2.1, which is an arm behaving normally. **1.12 is therefore the ceiling worth defending**: the
+fixed component of three bits over four is at most 12% of a forward, against an aggregate of 1.62x
+over the five shared blocks, so at least 1.45x of the 3-bit arm's excess is decode steps. The 0.96
+says the same thing more strongly and rests on less.
 
 Two things caveat that rather than withdraw it. `gptq_3b` differs from `awq_4b` in its weights as
 well as its width — a different quantizer, and AWQ's smoothing moved all 2,201 — so "three bits" is
 not the only difference between the sides. But the unpack hypothesis is a claim about *width*, and it
-predicts a floor at or above 1.0 whatever the weights are; that is the prediction that failed. And
-the arm is unfinished at five shared blocks, with up to 15 seconds of poll slop on each stamp — which
-against a block that reads 0.96 from an arm averaging 3.35 s/item moves nothing. What is still worth
-a re-quantization is the *size* of the fixed component rather than its existence, and 0.96 already
-bounds that near zero. It is a smaller question than the one this paragraph was written to ask, and
-it is no longer on the critical path for the panel's table.
+predicts a *flat* ratio whatever the weights are; a 2.6x swing across five blocks is the prediction
+failing without needing the sub-1.0 block at all. And the arm is unfinished at five shared blocks,
+with up to 15 seconds of poll slop on each stamp — against blocks of 1,095 to 4,636 s, under 1.4%.
+What is still worth a re-quantization is the *size* of the fixed component rather than its existence,
+and 1.12 already bounds it at a tenth of a forward. That is a smaller question than the one this
+paragraph was written to ask, and it is no longer on the critical path for the panel's table.
 
 **And it puts an argument under the top of the re-score bracket, which had none.** The 8.5-to-17
 hours above came from doubling: `eager` might cost what `grouped_mm` costs, or it might cost what
