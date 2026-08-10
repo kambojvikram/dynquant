@@ -37,7 +37,7 @@ if [ -e "$KEEP" ]; then
 fi
 
 # 3. The pinned commit predates --experts-impl. Running the re-score against it scores three
-#    arms a second time on the same dispatch, burns eight to seventeen hours of a rented card,
+#    arms a second time on the same dispatch, burns eight to fifteen hours of a rented card,
 #    and produces the zero `dispatch_delta.py` exists to refuse.
 grep -q -- '--experts-impl' "$CLONE/experiments/phase4/arms_lfm2.py" \
   || die "$CLONE predates --experts-impl. Sync arms_lfm2.py, panel_table.py and
@@ -48,7 +48,7 @@ for needed in dispatch_delta.py probe_dispatch_agreement.py; do
 done
 
 # 4. Cheap, and it has to come first: it wants a free card, and the re-score takes the card
-#    for eight to seventeen hours. It also answers the question the re-scored table will
+#    for eight to fifteen hours. It also answers the question the re-scored table will
 #    rest on -- whether the linearised loop and eager are one class on a real 8B model,
 #    which four places in the package assert from a four-layer CPU fp32 run. It gates
 #    nothing. The re-score happens either way; what this changes is which caveat the

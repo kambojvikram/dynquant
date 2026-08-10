@@ -128,7 +128,7 @@ def test_the_clock_travels_with_the_pair_it_belongs_to(probe: Any) -> None:
     """Both seconds and their ratio, per pair, in the pair's own order.
 
     The seconds are the cheap half of a measurement the alternative to which is an 8.5 to
-    17 hour re-score, so they are worth as much care as the rates. The ratio is
+    15 hour re-score, so they are worth as much care as the rates. The ratio is
     right-over-left so it reads the same direction as the pair label.
 
     Turns red when: the ratio inverts, or the pair keeps a single scalar instead of both

@@ -645,6 +645,17 @@ a re-quantization is the *size* of the fixed component rather than its existence
 bounds that near zero. It is a smaller question than the one this paragraph was written to ask, and
 it is no longer on the critical path for the panel's table.
 
+**And it puts an argument under the top of the re-score bracket, which had none.** The 8.5-to-17
+hours above came from doubling: `eager` might cost what `grouped_mm` costs, or it might cost what
+the loop costs, and 2x was the shape of the second guess rather than a measurement. Two things
+sharpen it. The re-score runs the *same weights* on both sides — `bf16`, `dq_4b` and `dq_3b`, scored
+again — so generation length is held fixed by construction and the only multiplier in play is the
+fixed per-forward one, which is the component the profile bounds. And that bound is 1.82, not 2, and
+it is the bound for the **loop**, which `eager` should sit under. So the re-score is at most 1.82x
+the banked arms' own seconds: 10,308 for `bf16` and 10,011 for `dq_4b` with `dq_3b` still to land,
+which puts the ceiling near **15 hours** and the floor unchanged at 8.5. The floor is still the end
+with no argument behind it.
+
 **The general form.** A measurement whose conclusion holds at one scale and fails at another is not
 a wrong measurement, and calling it one hides the actual failure. `1.79e-07` was true of a one-layer
 model. What made it load-bearing was carrying it into a docstring, a remedy string, two reports and
