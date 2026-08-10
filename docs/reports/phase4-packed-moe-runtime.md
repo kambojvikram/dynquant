@@ -1396,6 +1396,18 @@ a disagreement.
 - This is a **four-layer** model. What remains between here and the 8B is scale, not model class —
   the same architecture, the same linearization, the same banks — but it has not been run, and it
   cannot be until the panel releases the GPU.
+- One leg of that has since been run at 8B, on CPU, while the panel kept the card. A DynQuant arm
+  does not re-calibrate: it exports a saved map, and `export --map maps/dq_4b.json --map-key
+  4399629312 --dry-run` is the whole of that command shape except the write. Against the real
+  merged checkpoint it resolves the key, matches **133** banked tensor names, and predicts
+  **4.096 GiB at 4.1547 average bits, "as recorded"** — the arm's own row. The names, the key and
+  the accounting are therefore not in question at scale; what is still untested at 8B is the write
+  itself, and `export` compares the bytes it wrote against that prediction on its own.
+- The two arm kinds weigh different amounts against their rows and neither is a defect. A map arm
+  was priced in DynQuant's container and exports into it, so it should land on its figure. A
+  recipe arm was scored under compressed-tensors at 4 + 20/128 bits and republishes by carrying
+  the identical codes into a container that spends a full bf16 zero per group, 4 + 32/128 — about
+  **2.3%**, or **+99 MB** at the 4-bit anchor, for the same numbers on dequantization.
 - The published artifact loads through **DynQuant's** `HfQuantizer`, not through vLLM's native
   `compressed-tensors` path. Row 19's "yes — vLLM and transformers" is not restored by this and is
   not claimed. What is restored is that the weights a person downloads are the weights that were

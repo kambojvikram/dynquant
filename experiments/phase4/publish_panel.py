@@ -224,10 +224,21 @@ def guard(steps: list[Step], *, force: bool) -> None:
 def report(step: Step, out: Path) -> str:
     """What the directory weighs, against what the arm was scored at.
 
-    These do not match and are not supposed to. A carried grid keeps the recipe's codes
-    exactly and stores the offset in DynQuant's container, which is 4.25 bits per parameter
-    at 4 and 3.25 at 3 against compressed-tensors' 4.15625 and 3.15625. So the line reports
-    both numbers and the gap, and calls it the container rather than a discrepancy.
+    The two kinds of arm answer this differently, and the line is misread if they are not
+    told apart.
+
+    A **map arm** was priced by the allocator in DynQuant's own container and exports into
+    that same container, so the written bytes should land on the arm's own figure. `dq_4b`
+    is 4,397,666,304 B at 4.1547 average bits by the map's accounting and should write that
+    plus a tokenizer; a gap larger than that is a disagreement between the pricing model and
+    the writer, which `export` also reports on its own.
+
+    A **recipe arm** was scored under compressed-tensors -- 4 + 20/128 bits at 4, the zero
+    point itself packed to four -- and republishes by carrying the identical codes into
+    DynQuant's container, which spends a full bf16 zero per group: 4 + 32/128. Same codes,
+    same numbers on dequantization, about 2.3% more disk. So the gap on those four is the
+    container and not a discrepancy, and the line says so rather than leaving it to be
+    discovered in a directory listing.
     """
     written = sum(f.stat().st_size for f in out.rglob("*") if f.is_file())
     if not step.scored_bytes:
