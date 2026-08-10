@@ -617,6 +617,55 @@ def test_the_json_carries_the_verdict_the_table_printed(table: Any, tmp_path: Pa
     )
 
 
+def test_the_json_carries_the_mark_and_the_file_is_what_the_flag_printed(
+    table: Any, tmp_path: Path
+) -> None:
+    """A downstream reader gets the caveat or it gets a delta with the caveat removed.
+
+    The printed table says two things about every comparison: what it is called, and --
+    with a trailing ``!`` -- whether its two arms are known to have run the same expert
+    arithmetic. Both were dropped on the way into json, which was survivable while the only
+    consumer was a person reading the terminal. It is not survivable now: `model_cards.py`
+    builds six Hub READMEs from this payload, and a serialisation that carries
+    ``separated`` without ``same_arithmetic`` publishes a verdict with its confound
+    stripped -- on this model a dispatch difference worth 0.29x the effect being reported.
+
+    ``--json-out`` is checked against ``--json`` rather than parsed on its own, because the
+    file exists so a downstream tool does not have to find where the human output stopped.
+    Two constructions of the payload would be two tables, which is the thing this whole
+    split exists to prevent.
+
+    Turns red when: ``as_json`` drops either field, or the file and the stream are built
+    separately and diverge.
+    """
+    out = _write_panel(tmp_path / "arms")
+    for label in ("gptq_4b", "awq_4b", "gptq_3b", "awq_3b"):
+        _set_linearization(out, label, {"banks_before": 22, "banks_after": 0})
+
+    printed = _run(table, out, "--json")
+    payload = json.loads(printed[printed.index("{") :])
+    block = printed.split("head to head, at matched bytes")[1].split("what each method cost")[0]
+    marked = {
+        _question(line)
+        for line in block.splitlines()
+        if line[:2] in {"4b", "3b"} and line.rstrip().endswith("!")
+    }
+    assert marked == {
+        "4b  DynQuant vs GPTQ",
+        "4b  DynQuant vs AWQ",
+        "3b  DynQuant vs GPTQ",
+        "3b  DynQuant vs AWQ",
+    }, "the four rows pairing an unrecorded DynQuant arm against a recovered baseline"
+
+    entries = {entry["question"].strip(): entry for entry in payload["head_to_head"]}
+    assert set(entries) == {q for _, _, q in table.HEAD_TO_HEAD}
+    assert {q for q, e in entries.items() if not e["same_arithmetic"]} == marked
+
+    dest = tmp_path / "table.json"
+    _run(table, out, "--json-out", str(dest))
+    assert json.loads(dest.read_text(encoding="utf-8")) == payload
+
+
 def test_the_per_source_columns_show_a_collapse_the_headline_hides(
     table: Any, tmp_path: Path
 ) -> None:

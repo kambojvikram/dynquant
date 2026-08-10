@@ -874,13 +874,24 @@ def print_source_blocks(
 
 
 def as_json(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The computed comparisons, serialised for a reader that is not this terminal.
+
+    ``question`` and ``same_arithmetic`` are carried, not dropped. The printed block shows
+    both -- the question is the row label and ``same_arithmetic`` is the trailing ``!`` --
+    so a serialisation that omits them hands a downstream consumer a delta and a verdict
+    with no way to know the row was flagged. On this model the two expert dispatches
+    disagree on 1.24% of teacher-forced tokens, 0.29x the effect being measured, and a
+    model card generated from this json is exactly the artifact that must not lose it.
+    """
     return [
         {
             "left": entry["left"],
             "right": entry["right"],
+            "question": entry["question"],
             **entry["paired"].as_dict(),
             "p_adjusted": entry["p_adjusted"],
             "separated": entry["separated"],
+            "same_arithmetic": entry["same_arithmetic"],
         }
         for entry in entries
     ]
@@ -890,6 +901,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="assemble the phase-4 panel table")
     parser.add_argument("--arms", required=True, help="the --out directory arms_lfm2 run wrote")
     parser.add_argument("--json", action="store_true", help="emit the assembled table as json")
+    parser.add_argument(
+        "--json-out",
+        help=(
+            "also write the assembled table to this path. The same payload --json prints, "
+            "in a file a downstream tool can read without having to find where the human "
+            "output stopped"
+        ),
+    )
     parser.add_argument(
         "--sources",
         help="json list of per-item source labels; defaults to sources.json beside the arms",
@@ -945,26 +964,26 @@ def main(argv: list[str] | None = None) -> int:
     ):
         print(line)
 
+    # Built once and sent to however many destinations were asked for. A second
+    # construction for the file would be a second copy of the table, and the whole
+    # reason a downstream card reads this rather than the records is that there is
+    # exactly one place the panel's numbers are assembled.
+    payload = {
+        "model": manifest.get("model"),
+        "anchors": anchors,
+        "params": params,
+        "pairable": pairable is None,
+        "pairing_error": pairable,
+        "arms": built,
+        "head_to_head": as_json(head),
+        "head_to_head_by_source": {name: as_json(entries) for name, entries in blocks.items()},
+        "against_ceiling": as_json(ceiling),
+    }
+    serialised = json.dumps(payload, indent=2, default=str)
     if args.json:
-        print(
-            json.dumps(
-                {
-                    "model": manifest.get("model"),
-                    "anchors": anchors,
-                    "params": params,
-                    "pairable": pairable is None,
-                    "pairing_error": pairable,
-                    "arms": built,
-                    "head_to_head": as_json(head),
-                    "head_to_head_by_source": {
-                        name: as_json(entries) for name, entries in blocks.items()
-                    },
-                    "against_ceiling": as_json(ceiling),
-                },
-                indent=2,
-                default=str,
-            )
-        )
+        print(serialised)
+    if args.json_out:
+        Path(args.json_out).write_text(serialised + "\n", encoding="utf-8")
     return 0
 
 
