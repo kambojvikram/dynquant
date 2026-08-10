@@ -42,12 +42,32 @@ fi
 grep -q -- '--experts-impl' "$CLONE/experiments/phase4/arms_lfm2.py" \
   || die "$CLONE predates --experts-impl. Sync arms_lfm2.py, panel_table.py and
           dynquant/commands/evaluate.py into it first, then re-run this."
-for needed in dispatch_delta.py probe_dispatch_agreement.py; do
+for needed in dispatch_delta.py probe_dispatch_agreement.py rate_profile.py; do
   [ -f "$CLONE/experiments/phase4/$needed" ] \
     || die "$CLONE has no experiments/phase4/$needed. Sync the clone first."
 done
 
-# 4. Cheap, and it has to come first: it wants a free card, and the re-score takes the card
+# 4. Snapshot the sampler's log before anything else appends to it. `/workspace/rate.sh` stamps
+#    every 800-item progress line, which is the only length evidence this campaign has -- the eval
+#    records keep no proxy for how many decode steps an arm took. The re-score adds three more arms
+#    to that same log, and the box is not a volume, so the copy has to happen here rather than in
+#    someone's memory. The profile is best-effort: naming the arms is positional and a resumed or
+#    restarted arm changes the count, in which case `rate_profile.py` refuses rather than mislabel.
+#    The refusal must not take the re-score down with it -- the raw log is the artifact that matters
+#    and it is already copied by then.
+RATE=${RATE:-/workspace/rate.log}
+if [ -f "$RATE" ]; then
+  cp -a "$RATE" "$RUN/rate.panel.log"
+  say "snapshot: $(wc -l < "$RUN/rate.panel.log") stamped line(s) -> $RUN/rate.panel.log"
+  "$PY" "$CLONE/experiments/phase4/rate_profile.py" "$RUN/rate.panel.log" \
+    --arms "${RATE_ARMS:-awq_4b,dq_4b,gptq_3b,awq_3b,dq_3b}" \
+    --out "$RUN/rate_profile.json" >/dev/null \
+    || say "the profile refused. The snapshot is safe; re-run it by hand with the right --arms."
+else
+  say "no $RATE -- the sampler was not running, so this panel has no length evidence"
+fi
+
+# 5. Cheap, and it has to come first: it wants a free card, and the re-score takes the card
 #    for eight to fifteen hours. It also answers the question the re-scored table will
 #    rest on -- whether the linearised loop and eager are one class on a real 8B model,
 #    which four places in the package assert from a four-layer CPU fp32 run. It gates

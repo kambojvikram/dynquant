@@ -151,6 +151,29 @@ def test_arms_with_no_shared_block_are_refused_rather_than_compared(profile: Any
     assert "fixed_cost_ceiling" not in row and "blocks" not in row
 
 
+def test_a_wrong_number_of_arm_names_refuses_instead_of_labelling_by_position(
+    profile: Any, tmp_path: Path
+) -> None:
+    """Naming the arms is positional, so a miscount silently renames every row.
+
+    ``rescore_eager.sh`` calls this with a hard-coded arm list and treats a failure as
+    non-fatal, which is only safe while the failure is a refusal. A resumed panel, a
+    restarted arm or a sampler launched late all change the arm count, and the version of
+    this that zipped the shorter of the two would report ``dq_4b``'s blocks under
+    ``gptq_3b``'s name and hand the report a ratio between two models that were never
+    compared.
+
+    Turns red when: the name list is zipped against the arms instead of checked.
+    """
+    log = tmp_path / "rate.log"
+    log.write_text(_log([(0, 800), (100, 1600), (200, 800), (300, 1600)]), encoding="utf-8")
+    with pytest.raises(SystemExit) as caught:
+        profile.main([str(log), "--arms", "a,b,c"])
+    assert "2 arm(s)" in str(caught.value) and "3 name(s)" in str(caught.value)
+
+    assert profile.main([str(log), "--arms", "a,b"]) == 0
+
+
 def test_a_short_final_block_divides_by_its_own_item_count(profile: Any) -> None:
     """12,000 is not a multiple of 800 in every campaign, and the tail must not be scaled.
 
