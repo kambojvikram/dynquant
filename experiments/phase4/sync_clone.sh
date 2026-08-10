@@ -70,6 +70,15 @@ say "clone is at $HEAD_NOW"
           is describing a different tree than this one."
 
 say "fetching $(basename "$BUNDLE") into $CLONE"
+# Detached first, because the previous run left the clone standing on the branch this fetch
+# writes and git refuses to fetch into a checked-out ref. That refusal is correct and it makes
+# the script single-use, which is backwards: the sync that carries a fix found by running the
+# code is always the second one. The tree is already known clean -- guard 2 above refuses a dirty
+# one -- so detaching moves nothing and loses nothing.
+git -C "$CLONE" checkout --quiet --detach
+# Not forced. A bundle whose HEAD is not a descendant of what is already here means the local
+# history was rewritten under a campaign whose records are attributed to its commits, and the
+# fetch refusing is the correct end of that.
 git -C "$CLONE" fetch --no-tags "$BUNDLE" 'HEAD:refs/heads/s4-sync'
 git -C "$CLONE" checkout --quiet s4-sync
 
