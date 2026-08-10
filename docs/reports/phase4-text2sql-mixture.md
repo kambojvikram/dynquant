@@ -1909,9 +1909,9 @@ So the honest state of the six, before any accuracy number is in:
 |---|---|---|---|
 | `gptq_4b`, `awq_4b` | compressed-tensors | yes, 4.0 bits exactly | no -- the expert names are dropped on reload |
 | `gptq_3b`, `awq_3b` | writable but 3.2 bits | no, 6.7% over | no -- 205 words vs 192 |
-| `dq_4b`, `dq_3b` | DynQuant packed, byte-exact | yes, both widths | yes -- packed bank, not yet run on the 8B |
+| `dq_4b`, `dq_3b` | DynQuant packed, byte-exact | yes, both widths | yes -- bit-exact on a real `Lfm2MoeForCausalLM`, four layers not 24 |
 
-Two of six are publishable today and they are the DynQuant pair, pending the 8B run; two are
+Two of six are publishable today and they are the DynQuant pair, pending the 8B run for scale; two are
 blocked on an ecosystem gap that is not ours to close; and two -- the pair this sentence used to
 count as the safe ones -- write a directory that loads without complaint and is not the model
 that was quantized. The accuracy panel is unaffected by all of
@@ -2064,16 +2064,68 @@ so there is no index at which a module could stand and no grouped kernel that ch
 message says that rather than promising a future path, and points at `--map-apply encode`, which
 reaches it today.
 
-The honest limit on all of this: it is verified against a synthetic MoE whose `forward` is the
-`Lfm2MoeExperts` loop copied verbatim, not against the 8B. Ten tests cover it -- the bank's output
-matches the in-place encoder to under 1e-3 while sitting more than 20x further from fp16 than that,
-the per-expert slice is asserted to *share storage* rather than copy, the keys `dynquant export`
-writes are asserted equal to the buffers the packed module registers (values included), and a bank
-exported to disk is loaded back through the real `_process_model_before_weight_loading`. Five
-deliberate mutations were introduced and all five turned tests red. But the real model has not been
-loaded through this path, because the box's clone is pinned at the panel's commit and moving it
-while seven arms score against it would invalidate the panel. That run is queued behind it, and
-until it happens the table above says "not yet run on the 8B" rather than "yes".
+Ten tests cover this -- the bank's output matches the in-place encoder to under 1e-3 while sitting
+more than 20x further from fp16 than that, the per-expert slice is asserted to *share storage*
+rather than copy, the keys `dynquant export` writes are asserted equal to the buffers the packed
+module registers (values included), and a bank exported to disk is loaded back through the real
+`_process_model_before_weight_loading`. Five deliberate mutations were introduced and all five
+turned tests red. But every one of them ran against a **synthetic** MoE whose `forward` is the
+`Lfm2MoeExperts` loop copied verbatim, and a copy of a loop is not the class: it shares no config
+plumbing, no registered checkpoint conversion, no `from_pretrained` path, and none of the names
+transformers folds into banks at load.
+
+`experiments/phase4/probe_packed_lfm2.py` closes that. It builds a four-layer
+`Lfm2MoeForCausalLM` -- the class the 8B is, from `Lfm2MoeConfig`, two conv layers and one
+attention layer and three MoE layers -- runs both `dynquant export` and `dynquant quantize` over
+it, loads both directories through `from_pretrained`, and compares them module by module against
+the exporter's own list of what it packed. At 4 bits and again at 3:
+
+| | 4 bits | 3 bits |
+|---|---|---|
+| modules the export claims | 23 | 23 |
+| modules compared | 23 | 23 |
+| banks held packed after load | 6 | 6 |
+| dense 3-D expert parameters left over | 0 | 0 |
+| worst weight delta vs. the in-place encoding | **0.0** | **0.0** |
+| what the encoding itself cost (rel. Frobenius) | 2.43e-2 | 5.00e-2 |
+
+Bit for bit, over 13 `DynQuantLinear`, 6 `DynQuantExpertBank`, 1 `DynQuantEmbedding` and the 3
+`Lfm2MoeTopKRouter`s the loader restores dense. Not "close" -- identical.
+
+Two things had to be got right before that number meant anything, and both were got wrong first.
+
+**`import dynquant` does not register the quantizer.** `dynquant.register_hf_quantizer()` is a
+required second line, a deliberate trade documented at `hf_quantizer.py:52` (0.06 s of import
+against 9.8 s). Without it `from_pretrained` logs *"Unknown quantization type... we will skip the
+quantization"* and hands back a **randomly initialised model without raising**. The probe's first
+run did exactly that and reported a catastrophe that was entirely its own. `dynquant export` now
+prints both lines on the way out, and `test_the_line_the_exporter_prints_is_the_line_that_works`
+reads the function's `__name__` so a rename cannot leave a dead instruction behind.
+
+**A logit comparison through a top-2 router is the wrong instrument.** The second run reported a
+gap of 1.35e-2 against a quantization gap of 9.89e-2 -- only 7x -- and read as a real container
+defect. It was not. The two directories store at different precisions: `quantize` copies an fp32
+reconstruction into a bf16 parameter, `export` keeps exact int words and decodes them at load. The
+probe was loading both at fp32, which spares the packed side a rounding the in-place side already
+paid to disk; the residue was 2.44e-4 in weight space, and a discontinuous top-2 route amplified it
+55x by flipping which expert a token reached. Reading the weights, at the dtype each directory
+records, the gap is zero. The lesson is not about MoE: *a comparison downstream of a discrete
+decision cannot bound an upstream numerical difference,* and the fix was to measure upstream of the
+router rather than to loosen the threshold.
+
+The probe reports one real asymmetry rather than folding it into a verdict: **`export` and
+`quantize` do not reach the same modules.** Quantizing in place rewrites a tensor and needs nothing
+standing in front of it; packing has to put a module where the weight was, so a depthwise
+`nn.Conv1d` kernel owned by a torch builtin is rewritten by one command and left at full precision
+by the other -- `model.layers.{0,2,3}.conv.conv.weight` here, 18 kernels of `[2048, 1, 3]` and
+about 110 K parameters out of 8.47 B on the 8B. In the safe direction, below the resolution of the
+byte accounting, and now printed rather than discovered.
+
+What is still open is scale, not class. The 8B has not been loaded through this path, because the
+box's clone is pinned at the panel's commit and moving it while seven arms score against it would
+invalidate the panel. Four layers exercise every code path -- dense feed-forward, MoE bank, router
+restore, tied embedding, conv projections -- but they do not exercise 22 banks of 336 MiB, and the
+table above says "four layers not 24" rather than "yes" until they do.
 
 ### And the "yes" in the first row was doing more work than it could support
 

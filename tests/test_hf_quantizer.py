@@ -683,6 +683,33 @@ def test_the_two_lines_in_the_model_card_are_the_two_lines_that_work() -> None:
     assert "register_hf_quantizer" in dynquant.__all__
 
 
+def test_the_line_the_exporter_prints_is_the_line_that_works() -> None:
+    """The model card is the only defence, and this is where its author gets the text.
+
+    ``dynquant export`` is the last thing run before somebody writes a card, and the
+    directory it just wrote loads into transformers only if the reader registers the
+    quantizer first -- otherwise the quantization is skipped and a randomly
+    initialised model comes back without an exception. The test above pins that the
+    exported name is the real one; this pins that the exporter is telling people
+    about it at all.
+
+    Turns red when: the registration function is renamed without the message
+    following, or the transformers half of the message is dropped and only
+    ``vllm serve`` survives -- which is everything it said until banks became
+    loadable and made the directory worth publishing.
+    """
+    from pathlib import Path
+
+    from dynquant.commands.export import _how_to_load
+
+    text = _how_to_load(Path("qwen3-dynquant-3bit"))
+
+    assert f"dynquant.{hf_quantizer.register_hf_quantizer.__name__}()" in text
+    assert "from_pretrained" in text
+    assert "vllm serve qwen3-dynquant-3bit" in text
+    assert "randomly initialised" in text
+
+
 def test_the_config_object_defers_to_the_serving_schema(tmp_path) -> None:
     """One format, one parser -- the vLLM and SGLang plugins read the same object.
 

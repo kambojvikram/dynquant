@@ -1,10 +1,21 @@
 """``dynquant export`` -- write the packed checkpoint that servers actually load.
 
-The difference from ``dynquant quantize`` is the container, not the arithmetic.
-Both encode with the same clipping search at the same widths, so the values are
-identical; ``quantize`` decodes them back into a bf16 tensor so plain transformers
-can read the directory, and this writes the packed form -- one ``qweight`` /
-``scales`` / ``offsets`` triple per module, at the width the allocator chose.
+The difference from ``dynquant quantize`` is the container and the reach, not the
+arithmetic. Both encode with the same clipping search at the same widths, and the values
+come back identical -- bit for bit, module by module, through ``from_pretrained`` on a
+real ``Lfm2MoeForCausalLM`` at 4 bits and at 3. ``quantize`` decodes them back into a
+bf16 tensor so plain transformers can read the directory; this writes the packed form --
+one ``qweight`` / ``scales`` / ``offsets`` triple per module, at the width the allocator
+chose.
+
+Reach is where they part. Rewriting a tensor in place needs nothing standing in front of
+it, while packing has to put a module where the weight was, so a depthwise ``nn.Conv1d``
+kernel owned by a torch builtin is reachable by one command and not the other:
+``quantize`` rewrites it, ``export`` leaves it at full precision. On LFM2.5-8B-A1B that
+is 18 kernels of ``[2048, 1, 3]`` -- roughly 110 K parameters out of 8.47 B, in the safe
+direction, and below the resolution of the byte accounting. It still means the directory
+published from ``export`` is not quite the artifact ``quantize`` scored, which is worth
+saying here rather than leaving to be found.
 
     dynquant export Qwen/Qwen3-1.7B --map maps.json -o qwen3-dynquant-3bit
     vllm serve qwen3-dynquant-3bit
@@ -14,6 +25,13 @@ quantization method through vLLM's plugin entry point, and ``config.json`` in th
 exported directory names it. See
 :mod:`dynquant.integration.vllm_plugin` for what happens on the vLLM side and
 :mod:`dynquant.quant.checkpoint` for the format.
+
+``transformers`` is the asymmetry, and the command says so on the way out.
+It has no entry-point discovery, so the directory needs
+``dynquant.register_hf_quantizer()`` called before ``from_pretrained`` and returns a
+randomly initialised model without raising if it is not -- see
+:mod:`dynquant.integration.hf_quantizer`, which concedes that the model card is the
+only defence. This is where the person writing that card finds the line to put in it.
 
 Widths come from the same three places ``quantize`` takes them from -- ``--map``,
 ``--uniform``, or ``--stats`` plus a target -- and that resolution is shared code,
@@ -126,9 +144,7 @@ def run(args: argparse.Namespace) -> int:
                 flush=True,
             )
     print(
-        f"-> wrote {out} ({directory_bytes / 2**30:.3f} GiB on disk)\n"
-        f"   Serve it with `vllm serve {out}` -- the plugin registers itself, so no "
-        f"flag and no vLLM patch.",
+        f"-> wrote {out} ({directory_bytes / 2**30:.3f} GiB on disk)\n{_how_to_load(out)}",
         flush=True,
     )
 
@@ -169,6 +185,36 @@ _UNITS = {
     "GIB": 1024**3,
     "TIB": 1024**4,
 }
+
+
+def _how_to_load(out: Path) -> str:
+    """The two runtimes and what each of them needs, printed where a publisher looks.
+
+    Asymmetric on purpose, because the runtimes are. vLLM resolves the method through
+    a plugin entry point and needs nothing said about it. ``transformers`` resolves
+    ``quant_method`` through a process-global mapping with no entry-point discovery,
+    so a reader who omits the registration call gets every packed tensor reported as
+    an unused key and a randomly initialised model back, with no exception and no
+    non-zero exit. :mod:`dynquant.integration.hf_quantizer` documents that at length
+    and concedes the only defences are the model card and the two lines appearing in
+    it -- and the person writing that card has just run this command.
+
+    The call is named off the function object rather than spelled out, so a rename
+    cannot leave this printing an instruction that no longer works. Importing it here
+    is free: ``hf_quantizer`` pulls in torch, which the export it just finished has
+    long since loaded, and reaches ``transformers`` only through a lazy guard.
+    """
+    from dynquant.integration.hf_quantizer import register_hf_quantizer
+
+    return (
+        f"   Serve it with `vllm serve {out}` -- the plugin registers itself, so no "
+        f"flag and no vLLM patch.\n"
+        f"   In transformers it takes two lines, and both are needed:\n"
+        f"     import dynquant; dynquant.{register_hf_quantizer.__name__}()\n"
+        f'     AutoModelForCausalLM.from_pretrained("{out}")\n'
+        f"   Without the first, transformers skips the quantization it does not "
+        f"recognise and hands back a randomly initialised model without raising."
+    )
 
 
 def _parse_size(text: str | None) -> int:

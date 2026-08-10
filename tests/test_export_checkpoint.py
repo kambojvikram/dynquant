@@ -585,18 +585,57 @@ def test_a_packed_bank_dequantizes_back_to_rank_three(exported_bank):
 
 
 def test_the_bank_caveat_travels_with_the_directory(exported_bank):
-    """Size-honest and loadable are two facts, and the folder outlives the report.
+    """Size-honest and fast are two facts, and the folder outlives the report.
 
     Whoever uploads this to a Hub next week has the directory and not the
     ``ExportReport``, so the manifest has to carry the caveat too.
+
+    The caveat is now asserted next to the thing it is a caveat about, which is the
+    lesson of the version this replaces. That one pinned "cannot load them back" --
+    true the day it was written, and still asserted two commits after
+    ``DynQuantExpertBank`` made it false, because a string in a test file has no way
+    to notice that the runtime learned something. The load assertion below is what
+    ties them: break bank loading and this test fails on the behaviour and the
+    sentence together.
+
+    The other clause has a home already: "one expert per routing hit" is exactly what
+    ``test_one_expert_is_dequantized_at_a_time_and_addressed_without_a_copy`` holds,
+    structurally, over in ``test_expert_bank.py``. So the sentence is backed at both
+    ends, and the grouped GEMM landing turns *that* test red -- which is the moment
+    this wording has to change with it.
     """
+    from safetensors.torch import load_file
+
+    from dynquant.quant.tensor import QuantTensor
+    from dynquant.runtime.linear import DynQuantExpertBank
+
     _model, report = exported_bank
     summary = report.summary()
     assert "batched expert banks" in summary
-    assert "cannot load them back" in summary
+    assert "one expert per routing hit" in summary
 
     manifest = json.loads((report.output_dir / MANIFEST_FILENAME).read_text())
     assert manifest["expert_banks"] == [BANK]
+
+    tensors = load_file(report.output_dir / HF_WEIGHTS_FILENAME)
+    meta = report.layers[BANK]
+    experts, out_features, in_features = meta["logical_shape"]
+    bank = DynQuantExpertBank(
+        QuantTensor(
+            packed=tensors[f"{BANK}.qweight"],
+            scales=tensors[f"{BANK}.scales"],
+            offsets=tensors[f"{BANK}.offsets"],
+            bits=4,
+            group_size=meta["group_size"],
+            in_features=meta["in_features"],
+            logical_shape=(experts, out_features, in_features),
+        )
+    )
+    assert len(bank) == experts
+    assert tuple(bank[0].shape) == (out_features, in_features)
+    # And the bank it was indexed out of is still the packed words, not a dense
+    # tensor left behind by the first hit.
+    assert bank.get_buffer("qweight").shape == tensors[f"{BANK}.qweight"].shape
 
 
 def test_a_directory_without_banks_makes_no_claim_about_them(exported):

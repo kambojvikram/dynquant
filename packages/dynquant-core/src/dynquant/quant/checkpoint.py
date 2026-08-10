@@ -87,12 +87,32 @@ class ExportReport:
     banks: tuple[str, ...] = ()
     """Entries written from a bare parameter rather than a module.
 
-    Batched MoE expert banks. They pack, they account for their bytes, and the
-    packed runtime cannot load them back -- it swaps ``Linear`` and ``Embedding``
-    modules and a bank is neither. So a directory with any of these is size-honest
-    and not yet loadable, which is two different facts about one artifact and the
-    reason this is a field rather than a log line: a caller publishing to a Hub has
-    to be able to read the caveat off the report it already has.
+    Batched MoE expert banks. They pack, they account for their bytes, and they load
+    back: :class:`~dynquant.runtime.linear.DynQuantExpertBank` registers under the 3-D
+    parameter's own name, so an untouched parent's ``bank[expert]`` reaches it and gets
+    that one expert dense. Measured through ``from_pretrained`` on a four-layer
+    ``Lfm2MoeForCausalLM`` at 4 bits and at 3, the packed directory reproduces the same
+    weights encoded in place *bit for bit*, across all 23 modules the export claims --
+    six banks among them -- with no dense 3-D expert parameter left behind.
+
+    Compared in weight space, at the dtype each directory records. Both of those are
+    load-bearing. The two containers store at different precisions -- in place copies an
+    fp32 reconstruction into a bf16 parameter, packed keeps exact int words it decodes at
+    load -- so reading them both at fp32 charges the packed side for a rounding the other
+    already paid to disk, and a top-2 router then amplifies that artifact to 7x *past*
+    what the quantization itself cost. Which is how this docstring first came to carry
+    three numbers that described the instrument rather than the container.
+
+    What the caveat became is a speed limit rather than a correctness one. A token
+    routed to k experts costs k slice dequantizations, because the grouped GEMM that
+    would read them packed is P8 and is not written; one expert of an LFM2.5-8B-A1B
+    bank is 10.5 MiB out of 336 MiB. Size and accuracy hold today, decode does not.
+
+    Still two facts about one artifact, which is why this stayed a field through that
+    change rather than collapsing into a log line: a caller publishing to a Hub has to
+    be able to read the caveat off the report it already has. Its first wording --
+    "the packed runtime cannot load them back" -- outlived the runtime that could,
+    because the test covering it asserted the sentence instead of the property.
     """
 
     @property
@@ -110,7 +130,8 @@ class ExportReport:
         tied = f", {len(self.tied)} tied module(s) sharing a table" if self.tied else ""
         banks = (
             f". {len(self.banks)} of the packed modules are batched expert banks: "
-            f"the size is real, the packed runtime cannot load them back yet"
+            f"they load back packed and dequantize one expert per routing hit, "
+            f"until the grouped kernel lands"
             if self.banks
             else ""
         )

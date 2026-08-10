@@ -33,17 +33,33 @@ through ``row_geometry`` -- the same resolver the encoder used. The shells hold
 ``torch.empty`` and not zeros, so a tensor the loader fails to fill decodes to garbage
 instead of to a plausible-looking model.
 
-What it does not do yet
------------------------
-Batched MoE expert banks and routers that own a bare weight are refused by name, with
-the reason and the alternative. A bank is a 3-D ``nn.Parameter`` its parent indexes
-directly; a router runs top-k rather than a plain matmul. Neither has a forward this
-can replace -- literally the same boundary :func:`dynquant.runtime.linear.pack_model`
-draws, so it is drawn by the same function: ``resolve_target``, called here with
-``source="quantization_config"`` and there with a bit map. A second copy of that
-resolver has already been the cause of two wrong refusals in this project, and this
-module briefly held a third. On an MoE checkpoint the refusal is now a hard error at
-load time, which is the whole improvement over the silent random model above.
+What a bank and a router each become
+------------------------------------
+Neither is a ``Linear``, they are unlike each other, and the loader does a different
+thing with each. Which one is ``resolve_target``'s decision -- literally the same
+boundary :func:`dynquant.runtime.linear.pack_model` draws, so it is drawn by the same
+function, called here with ``source="quantization_config"`` and there with a bit map.
+A second copy of that resolver has already been the cause of two wrong refusals in
+this project, and this module briefly held a third.
+
+A batched expert bank stays packed. It is a 3-D ``nn.Parameter`` its parent indexes
+directly, so it is swapped for a :class:`~dynquant.runtime.linear.DynQuantExpertBank`
+registered under the parameter's own name, and the parent's untouched
+``bank[expert]`` reaches ``__getitem__``. No parent is edited and no architecture is
+enumerated. The grouped GEMM is still P8, so k routed experts cost k slice
+dequantizations -- a speed limit, not a correctness one.
+
+A router is not that shape one rank down. An ``Lfm2MoeTopKRouter`` holds
+``[num_experts, hidden]`` as its own parameter and hands it *whole* to ``F.linear``,
+so there is no index at which a module could stand. Those are restored instead: the
+packed buffers are filled by name like any other, dequantized once after the state
+dict lands, and the module's forward reads a dense weight it never learns was
+quantized. Disk is saved, VRAM is not, and on LFM2.5-8B-A1B that is 22 tensors of
+``[32, 2048]``. Refusing them here instead wrote 22 routers into a checkpoint that
+``from_pretrained`` then declined to read.
+
+Both of these were refused by name when this module was written, and both sentences
+saying so outlived the code by two commits.
 
 The registration gap that remains
 ---------------------------------
