@@ -100,6 +100,10 @@ AGAINST_CEILING: tuple[tuple[str, str, str], ...] = (
     ("dq_3b", "bf16", "3b  DynQuant vs bf16"),
 )
 
+#: The arm the fidelity block asks about agreement with: the unquantized model every
+#: quantized arm in the panel was built from.
+CEILING = "bf16"
+
 FP16_BYTES_PER_PARAM = 2
 
 
@@ -1076,6 +1080,130 @@ def print_heterogeneity(
     return computed
 
 
+def agreement_records(
+    records: dict[str, dict[str, Any]], ceiling: str = CEILING
+) -> dict[str, dict[str, Any]]:
+    """Every arm's record with ``hits`` replaced by "answered the way the ceiling did".
+
+    Everything but ``hits`` is carried through untouched, so the derived records pair under
+    the same rules the real ones do and can go straight to `print_comparisons`. That is the
+    point of deriving records rather than writing a second comparison path: the question,
+    the family, the Holm correction and the mixed-arithmetic mark are all the same, and only
+    the indicator differs.
+    """
+    base = records.get(ceiling)
+    if not base or not base.get("hits"):
+        return {}
+    derived: dict[str, dict[str, Any]] = {}
+    for label, record in records.items():
+        # An arm agrees with itself on every item by construction, and a row of 100.00% in
+        # a fidelity table reads like a result rather than like a tautology.
+        if label == ceiling:
+            continue
+        hits = record.get("hits")
+        if not hits or len(hits) != len(base["hits"]):
+            continue
+        derived[label] = {
+            **record,
+            "hits": [bool(hit) == bool(fact) for hit, fact in zip(hits, base["hits"], strict=True)],
+        }
+    return derived
+
+
+def _percent(value: float | None) -> str:
+    return "--" if value is None else f"{value * 100:.2f}%"
+
+
+def print_fidelity(
+    built: list[dict[str, Any]],
+    records: dict[str, dict[str, Any]],
+    ceiling: str = CEILING,
+) -> list[dict[str, Any]]:
+    """How often each arm answered the way the model it was built from did.
+
+    A quantized arm either matches the ceiling on an item or flips it -- a hit is a boolean
+    and there is no third case -- so accuracy is an exact function of two fidelities and the
+    ceiling's own accuracy ``c``::
+
+        accuracy = c * agree_where_right + (1 - c) * (1 - agree_where_wrong)
+
+    which is why this is a block rather than a footnote. The two columns pull in opposite
+    directions: tracking the ceiling more closely wins the items it got right and loses the
+    items it got wrong. A method whose advantage is really fidelity therefore appears in the
+    accuracy table as a margin that changes sign with the difficulty of the subset, and gets
+    read as a margin that is unstable. On this panel it is +1.18 points where bf16 is right
+    and -2.22 where it is wrong -- two rows, one cause.
+
+    Reported per arm and not only head-to-head because the levels carry their own meaning:
+    two arms can separate on fidelity while both sit far enough below the ceiling that the
+    difference between them is not what limits either.
+    """
+    base = records.get(ceiling)
+    if not base or not base.get("hits"):
+        print(f"fidelity: no {ceiling} arm with per-item hits, so there is nothing to agree with")
+        return []
+    truth = [bool(hit) for hit in base["hits"]]
+    right = [index for index, hit in enumerate(truth) if hit]
+    wrong = [index for index, hit in enumerate(truth) if not hit]
+    print(
+        f"fidelity: how often each arm answered the way {ceiling} did "
+        f"({len(right):,} it got right, {len(wrong):,} it got wrong)"
+    )
+    header = (
+        f"{'arm':10s} {'accuracy':>9s} {'agrees':>8s} {'where right':>12s} {'where wrong':>12s}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    computed: list[dict[str, Any]] = []
+    for row in built:
+        label = row["label"]
+        if label == ceiling:
+            continue
+        hits = records.get(label, {}).get("hits")
+        if not hits or len(hits) != len(truth):
+            print(f"{label:10s} {'not run' if not hits else 'not pairable':>9s}")
+            continue
+        agree = [bool(hit) == fact for hit, fact in zip(hits, truth, strict=True)]
+        entry = {
+            "label": label,
+            "ceiling": ceiling,
+            "accuracy": row["accuracy"],
+            "agreement": sum(agree) / len(agree),
+            "agreement_where_ceiling_right": (
+                sum(agree[index] for index in right) / len(right) if right else None
+            ),
+            "agreement_where_ceiling_wrong": (
+                sum(agree[index] for index in wrong) / len(wrong) if wrong else None
+            ),
+            "ceiling_accuracy": len(right) / len(truth),
+        }
+        computed.append(entry)
+        accuracy = _percent(entry["accuracy"])
+        print(
+            f"{label:10s} {accuracy:>9s} {entry['agreement'] * 100:7.2f}% "
+            f"{_percent(entry['agreement_where_ceiling_right']):>12s} "
+            f"{_percent(entry['agreement_where_ceiling_wrong']):>12s}"
+        )
+    if computed:
+        share = len(right) / len(truth)
+        print()
+        print(
+            f"  A hit either matches {ceiling} or flips it, so accuracy = c * (where right) + "
+            f"(1 - c) * (1 -"
+        )
+        print(
+            f"  (where wrong)) exactly, with c = {100.0 * share:.2f}% the ceiling's own "
+            f"accuracy. The two columns"
+        )
+        print(
+            "  trade against each other, and a fidelity gain is worth more where the ceiling "
+            "is higher:"
+        )
+        print(f"  one point of it moves accuracy by 2c - 1 = {2.0 * share - 1.0:.2f} points here.")
+    return computed
+
+
 def as_json(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The computed comparisons, serialised for a reader that is not this terminal.
 
@@ -1156,6 +1284,20 @@ def main(argv: list[str] | None = None) -> int:
     spread = print_heterogeneity(blocks)
     ceiling = print_comparisons("what each method cost", AGAINST_CEILING, records, arithmetic)
     print()
+    fidelity = print_fidelity(built, records)
+    print()
+    # The same family the head-to-head block ran, on the indicator above. Worth its own
+    # rows because the two can disagree: a pair can separate on accuracy and not on
+    # fidelity, which would say the arms differ in *which* items they get right rather
+    # than in how closely either tracks the model they were both built from.
+    fidelity_head = print_comparisons(
+        f"the same comparisons, on agreement with {CEILING} instead of accuracy",
+        HEAD_TO_HEAD,
+        agreement_records(records),
+        arithmetic,
+        explain_arithmetic=False,
+    )
+    print()
     for line in (
         "delta = left minus right, percentage points, on the same problems in the same order.",
         "CI and p are McNemar exact over the discordant pairs; flips = only-left-right /",
@@ -1188,6 +1330,11 @@ def main(argv: list[str] | None = None) -> int:
         # comparisons in the same table.
         "source_heterogeneity": spread,
         "against_ceiling": as_json(ceiling),
+        # Carried because a card that reads only the accuracy delta cannot tell a method
+        # that is more accurate from one that is more faithful to the model it was built
+        # from -- and on this panel that distinction is the finding, not a nuance.
+        "fidelity": fidelity,
+        "fidelity_head_to_head": as_json(fidelity_head),
     }
     serialised = json.dumps(payload, indent=2, default=str)
     if args.json:

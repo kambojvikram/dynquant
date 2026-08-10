@@ -503,14 +503,15 @@ def test_an_arm_that_did_not_run_is_a_missing_row_and_not_a_missing_comparison(
     assert any(
         line.startswith("awq_3b") and line.endswith("not run") for line in printed.splitlines()
     )
-    # Two head-to-head rows name awq_3b, and one ceiling row does.
-    assert printed.count("(needs both arms)") == 3
+    # Two head-to-head rows name awq_3b, one ceiling row does, and the fidelity family
+    # re-asks the head-to-head questions, so it names it twice more.
+    assert printed.count("(needs both arms)") == 5
     assert "3/7 arms scored" not in printed and "6/7 arms scored" in printed
     assert "Holm-adjusted over 4 of 6 comparisons" in printed, "the head family shrinks with it"
     assert "Holm-adjusted over 5 of 6 comparisons" in printed, "and so does the ceiling family"
     # A short family is corrected less than the finished panel will be, so an adjusted
     # p read mid-run can only move the unfavourable way. The count does not say that.
-    assert printed.count("a short family, so these adjusted p are weaker") == 2
+    assert printed.count("a short family, so these adjusted p are weaker") == 3
 
 
 def test_a_block_reads_in_the_families_declared_order_however_much_of_it_ran(
@@ -1046,9 +1047,16 @@ def _stack_the_flips(out: Path) -> list[str]:
 
 
 def _heterogeneity_rows(printed: str) -> dict[str, str]:
-    """The rows of the heterogeneity block, keyed by the comparison they name."""
+    """The rows of the heterogeneity block, keyed by the comparison they name.
+
+    Bounded at both ends. Three blocks in this table print rows that begin with the same
+    comparison names -- the head-to-head, this one, and the fidelity family -- so a parser
+    that only located the header would return whichever of them came last, and would go on
+    returning rows after the block under test had stopped printing any.
+    """
     assert "is the margin the same on every source?" in printed, printed
     block = printed.split("is the margin the same on every source?")[1]
+    block = block.split("what each method cost")[0]
     rows = {}
     for line in block.splitlines():
         for _, _, question in _load("_dq_ht", SCRIPT).HEAD_TO_HEAD:
@@ -1412,3 +1420,169 @@ def test_the_table_runs_with_nothing_already_on_the_path(tmp_path: Path) -> None
     for label in ("bf16", "gptq_4b", "dq_4b"):
         assert label in result.stdout, result.stdout
     assert "head to head" in result.stdout, result.stdout
+
+
+def test_the_fidelity_columns_reconstruct_the_accuracy_column(table: Any, tmp_path: Path) -> None:
+    """A hit either matches the ceiling or flips it, so this is an identity, not a model.
+
+    accuracy = c * (where right) + (1 - c) * (1 - (where wrong))
+
+    Asserted exactly rather than approximately because there is no estimation anywhere in
+    it: the three quantities are counts over one partition of one problem set. Any slip in
+    which partition a column is counted over, or in which direction it is counted, breaks
+    it -- and every one of those slips still prints four plausible percentages.
+
+    Turns red when: the strata are swapped; either column is computed as P(arm right) in
+    its stratum rather than P(arm agrees); the partition is taken from an arm's hits rather
+    than the ceiling's; or ``ceiling_accuracy`` is read off the wrong arm.
+    """
+    out = _write_panel(tmp_path / "arms")
+    manifest, records = table.load_panel(out)
+    built = table.rows(out, manifest, records, PARAMS)
+    with redirect_stdout(StringIO()):
+        entries = table.print_fidelity(built, records)
+
+    assert entries, "the panel has six quantized arms and none were measured"
+    for entry in entries:
+        c = entry["ceiling_accuracy"]
+        reconstructed = c * entry["agreement_where_ceiling_right"] + (1.0 - c) * (
+            1.0 - entry["agreement_where_ceiling_wrong"]
+        )
+        assert reconstructed == pytest.approx(entry["accuracy"], abs=1e-12), entry["label"]
+
+
+def test_an_arm_that_never_flips_the_ceiling_scores_the_ceiling(table: Any, tmp_path: Path) -> None:
+    """The identity's fixed point, which pins the sense of both columns at once.
+
+    An arm that reproduces bf16 item for item must land on bf16's accuracy -- not above it,
+    which is what reading "where wrong" as P(arm right | ceiling wrong) would produce, and
+    not at 100%, which is what dropping the ``1 -`` would produce.
+    """
+    out = _write_panel(tmp_path / "arms")
+    manifest, records = table.load_panel(out)
+    # Every scored field together, not just the hits. `print_fidelity` reads accuracy
+    # off the record and the two fidelity columns off the hits, so a record carrying one
+    # arm's vector under another's accuracy is a state no run produces and the identity
+    # is not claimed to hold for it.
+    for field in ("hits", "accuracy", "correct"):
+        records["dq_4b"][field] = records["bf16"][field]
+    built = table.rows(out, manifest, records, PARAMS)
+    with redirect_stdout(StringIO()):
+        entries = table.print_fidelity(built, records)
+
+    clone = next(entry for entry in entries if entry["label"] == "dq_4b")
+    assert clone["agreement"] == 1.0
+    assert clone["agreement_where_ceiling_right"] == 1.0
+    assert clone["agreement_where_ceiling_wrong"] == 1.0
+    assert clone["accuracy"] == pytest.approx(clone["ceiling_accuracy"])
+
+
+def test_the_ceiling_is_not_given_a_row_agreeing_with_itself(table: Any, tmp_path: Path) -> None:
+    """100.00% is the only number bf16 could print here and it is not a measurement.
+
+    Turns red when: the ceiling stops being skipped, in the table or in the derived records
+    -- which would also put a self-comparison into any family that included it.
+    """
+    out = _write_panel(tmp_path / "arms")
+    _, records = table.load_panel(out)
+    assert table.CEILING not in table.agreement_records(records)
+
+
+def test_agreement_records_change_the_indicator_and_nothing_else(
+    table: Any, tmp_path: Path
+) -> None:
+    """The derived records have to pair, or the fidelity family silently prints nothing.
+
+    Every field except ``hits`` is what decides comparability -- the task, the split, the
+    limit, the decode budget. Carrying them through is not tidiness: `print_comparisons`
+    refuses any pair whose comparability fields differ, so a derivation that rebuilt the
+    record from scratch would produce a block of "(not comparable)" rows rather than a
+    wrong number, and only on a panel with real records.
+
+    Turns red when: the derived record is built fresh instead of copied, or the indicator
+    stops being elementwise equality with the ceiling.
+    """
+    out = _write_panel(tmp_path / "arms")
+    _, records = table.load_panel(out)
+    derived = table.agreement_records(records)
+
+    truth = records["bf16"]["hits"]
+    for label, record in derived.items():
+        assert record["hits"] == [
+            bool(hit) == bool(fact) for hit, fact in zip(records[label]["hits"], truth, strict=True)
+        ], label
+        for field, value in records[label].items():
+            if field != "hits":
+                assert record[field] == value, (label, field)
+
+
+def _fidelity_rows(printed: str) -> dict[str, str]:
+    """Rows of the fidelity family, keyed by the comparison they name.
+
+    Bounded at both ends, like `_heterogeneity_rows` and for the same reason: this is the
+    third block in the table to print rows beginning with these names.
+    """
+    assert "on agreement with" in printed, printed
+    block = printed.split("on agreement with")[1].split("delta = left minus right")[0]
+    rows = {}
+    for line in block.splitlines():
+        for _, _, question in _load("_dq_ht", SCRIPT).HEAD_TO_HEAD:
+            if line.startswith(question):
+                rows[question.strip()] = line
+    return rows
+
+
+def test_the_printed_fidelity_family_is_computed_on_agreement_not_on_accuracy(
+    table: Any, tmp_path: Path
+) -> None:
+    """The wiring, not the function. Both halves had a test and the line joining them did not.
+
+    Handing that call ``records`` rather than the derived ones prints the *accuracy* family
+    under a fidelity heading: six rows, every one of them a real number, and nothing that
+    reads only the functions can tell. So this reads what the table printed.
+
+    The reason the two families can be told apart at all is that they disagree, and on the
+    real 4-bit arms they disagree in the direction that matters -- DynQuant leads GPTQ by
+    +0.64 on accuracy and +1.34 on agreement with bf16, and it is the second number that
+    explains why the first changes sign with difficulty.
+
+    Turns red when: the fidelity family is handed ``records``, or the block stops being
+    printed, or its rows stop carrying the deltas the derived records produce.
+    """
+    out = _write_panel(tmp_path / "arms")
+    printed = _run(table, out)
+    _, records = table.load_panel(out)
+    arithmetic = dict.fromkeys(records, "grouped")
+    with redirect_stdout(StringIO()):
+        fidelity = table.print_comparisons(
+            "fid", table.HEAD_TO_HEAD, table.agreement_records(records), arithmetic
+        )
+        accuracy = table.print_comparisons("acc", table.HEAD_TO_HEAD, records, arithmetic)
+
+    rows = _fidelity_rows(printed)
+    assert len(rows) == len(table.HEAD_TO_HEAD), rows
+    for entry in fidelity:
+        assert f"{entry['paired'].delta_points:+.2f}" in rows[entry["question"].strip()]
+
+    # And the fixture can actually tell them apart -- otherwise the loop above would pass
+    # against either set of records and this test would be pinning nothing.
+    by_question = {entry["question"]: entry["paired"].delta_points for entry in accuracy}
+    assert any(
+        entry["paired"].delta_points != by_question[entry["question"]] for entry in fidelity
+    ), "every fidelity delta equalled its accuracy delta, so the fixture cannot discriminate"
+
+
+def test_a_panel_with_no_ceiling_says_so_rather_than_dividing_by_it(
+    table: Any, tmp_path: Path
+) -> None:
+    """Half the panel's blocks survive a missing bf16 arm; this one cannot, and the run it
+    would abort is a seven-hour one. Named and skipped, not raised.
+    """
+    out = _write_panel(tmp_path / "arms", omit=("bf16",))
+    manifest, records = table.load_panel(out)
+    built = table.rows(out, manifest, records, PARAMS)
+    buffer = StringIO()
+    with redirect_stdout(buffer):
+        assert table.print_fidelity(built, records) == []
+    assert "nothing to agree with" in buffer.getvalue()
+    assert table.agreement_records(records) == {}
