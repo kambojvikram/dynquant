@@ -1387,6 +1387,79 @@ asymmetry is deliberate and is the whole difference between a coverage gap and a
 the *record* does not carry is a gap; a field the record carries and this pass did not produce is
 a disagreement.
 
+### The last document, and the only one anyone reads before downloading 4 GB
+
+Everything above produces directories. What a reader meets first is the README above one of them,
+and that file is the last place in this pipeline where a number can drift without anything going
+red. The panel is re-run every time an arm lands — five times so far, over a day and a half — so a
+card written by hand in between is correct on the afternoon it is typed and wrong afterwards,
+silently, because a README that says 73.75% looks exactly as authoritative as one that says 82.07%.
+
+`experiments/phase4/model_cards.py` therefore types no number. Each card is assembled from two
+files the runs themselves produced:
+
+| input | what it supplies |
+|---|---|
+| `panel_table.py --json-out` | every arm's size, bits per parameter and execution match; every head-to-head with its Holm-adjusted p, its CI and its verdict; the per-source split |
+| `s2_finetune.json` | base model, the three training datasets, the regime, step count, loss, commit |
+
+Reading the **table** rather than the seven records is the whole point of the split.
+`panel_table.py` already decides which arms are comparable, corrects a family of six with Holm
+step-down, and marks the comparisons whose two arms are not known to have run the same expert
+arithmetic. A card that re-derived any of that from `panel/*.json` would be a second
+implementation of the statistics — the failure this campaign has now found in eight places — and
+this one would agree with the table until the first panel where it did not, with the disagreement
+surfacing on the Hub rather than in a terminal.
+
+#### The caveats are generated, not remembered
+
+Three of them are load-bearing here, and each is emitted because of something on the arm's row
+rather than because it is on a checklist:
+
+- **`apply == "encode"` → the accuracy was not measured from this directory.** A DynQuant arm is
+  scored by encoding its allocated widths back into bf16, because 91.5% of this model's parameters
+  are batched expert banks and the scoring path applies widths in memory rather than writing a
+  17 GB decoded copy per arm. Same encoder, same widths, same values — but the packed container
+  was not separately scored, and the card says so on the arm this campaign is arguing for.
+- **`kind != "dq"` → this directory is about 2.3% larger than the size in its own results table.**
+  The recipe's integer codes are carried across exactly into a container that spends a full bf16
+  zero per group where compressed-tensors packs the zero to the weight width.
+- **a flagged comparison → `[^1]` and the number that earns it.** The two expert dispatches
+  available for this architecture disagree on **1.24%** of teacher-forced tokens, **0.29x** the
+  effect of quantizing to 4 bits. A flagged row's delta carries a term that is not the
+  quantization method, so the verdict is what the stored per-item hits say and not yet a statement
+  about quantization alone.
+
+Putting all three on every card would be the easy way never to be wrong, and would tell a DynQuant
+reader their directory is oversized and a GPTQ reader their accuracy was measured somewhere else.
+Both false. The conditions are the content.
+
+#### What writing the generator found
+
+`as_json` was dropping two fields on the way out: `question`, the row label, and
+`same_arithmetic`, which the printed table shows as a trailing `!`. That was survivable while the
+only consumer was a person reading a terminal — the flag was two blocks up in the dispatch census.
+It is not survivable once six Hub READMEs are built from the payload, because the card would then
+publish `separated` with its confound stripped off. Both fields are carried now, and `--json-out`
+writes the same payload `--json` prints, constructed once: a second construction for the file
+would be a second copy of the table, which is the thing the split exists to prevent.
+
+The generator refuses three things rather than describing them: the `bf16` ceiling (a card for it
+would describe a model this campaign did not make), an arm with no accuracy (mid-panel that is
+four arms for a day, and a card is a claim about a measurement), and a label the table does not
+carry. It writes into directories that already hold weights and names the ones it skipped — a
+README with no weights under it is a published model that does not exist.
+
+Ten tests, in `tests/test_model_cards.py` and one addition to `tests/test_panel_table.py`, reusing
+the panel fixture rather than copying it so the two ends of the pipeline cannot drift apart. The
+ones that carry weight: mutating a number in the table changes the card; each arm carries its own
+container caveat and never the other kind's; the flag survives into the card **and clears** when
+every arm is re-scored onto one dispatch; a comparison reads identically on both of its cards with
+the sign not flipped; and the usage snippet's `dynquant.register_hf_quantizer` is resolved against
+the installed package — `import dynquant` deliberately does not register, so that line is
+load-bearing, and renaming it would leave six published READMEs quietly wrong with no failing
+build anywhere.
+
 ### Status, stated as what is not yet true
 
 - All six arms — `rtn`, `gptq` and `awq` at 4 and 3 bits — publish and reload within **0.068 code
@@ -1413,6 +1486,10 @@ a disagreement.
   not claimed. What is restored is that the weights a person downloads are the weights that were
   scored — provided `--scored` is given the arm's record. Without it the directory is published on
   the strength of matching flags, which is a claim about the inputs and not about the weights.
+- The cards are generated and have **never been generated from a real table**. `model_cards.py`
+  is exercised against a synthetic seven-arm panel; the landed panel is five arms and its
+  `table.json` does not exist yet, because two arms are still scoring. Nothing uploads, and the
+  Hub push is a separate decision and a separate command.
 - The publish path now carries **nineteen** mutations, each with the test it is expected to redden.
   Five of them are the scored check: running the recipe before reading the record, accepting the
   flag without acting on it, skipping a field this pass did not produce, counting coverage over
