@@ -680,6 +680,16 @@ the banked arms' own seconds: 10,308 for `bf16` and 10,011 for `dq_4b` with `dq_
 which puts the ceiling near **15 hours** and the floor unchanged at 8.5. The floor is still the end
 with no argument behind it.
 
+**And the re-score can now check that bracket rather than merely spend it.** The box's sampler
+resolves its target with `ls -t` once, outside its loop, so it is pinned to the panel's log and
+would not have followed the re-score — the run with the most to say about dispatch cost would have
+produced no length evidence at all. `rescore_eager.sh` therefore stamps its own lines as they
+arrive instead of polling one, which is strictly the better instrument here: `progress_printer`
+flushes, so the stamp is the line's own time and the 15-second slop the panel's profile carries is
+simply absent. What comes back is not another bound. Length is held fixed by construction on both
+sides, so the per-block ratio *is* the fixed multiplier, measured against the same 800 questions —
+the number 1.82 is currently a ceiling for.
+
 **The general form.** A measurement whose conclusion holds at one scale and fails at another is not
 a wrong measurement, and calling it one hides the actual failure. `1.79e-07` was true of a one-layer
 model. What made it load-bearing was carrying it into a docstring, a remedy string, two reports and
