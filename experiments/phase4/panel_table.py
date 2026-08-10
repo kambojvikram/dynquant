@@ -946,7 +946,10 @@ def print_source_blocks(
     return blocks
 
 
-def print_heterogeneity(blocks: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+def print_heterogeneity(
+    blocks: dict[str, list[dict[str, Any]]],
+    family: tuple[tuple[str, str, str], ...] = HEAD_TO_HEAD,
+) -> list[dict[str, Any]]:
     """Whether each comparison's per-source deltas differ by more than their own noise.
 
     The block above prints two intervals per comparison and leaves the reader to compare
@@ -1040,6 +1043,22 @@ def print_heterogeneity(blocks: dict[str, list[dict[str, Any]]]) -> list[dict[st
         print("  source. Consistent is not the same as equal, and these subsets are small")
         print("  enough that a real difference the size of the aggregate would often fail")
         print("  to show here.")
+    if computed and len(computed) < len(family):
+        # The same warning the block above carries, and it bites harder here. Holm's
+        # multiplier is the number of comparisons actually corrected, so a row that clears
+        # 0.05 over a half-run family can fail over the finished one -- on this panel's
+        # five arms the single heterogeneous row is 0.0359 over three comparisons and
+        # 0.0717 over six. That is not a small movement near the boundary; it is the
+        # verdict. A reader glancing at a running panel has no way to see it from the row.
+        print(
+            f"  Holm-adjusted over {len(computed)} of {len(family)} comparisons -- a short "
+            f"family. A verdict"
+        )
+        print(
+            "  here is provisional in one direction: finishing the panel can only raise "
+            "these adjusted"
+        )
+        print("  p, so a row that reads HETEROGENEOUS now may read consistent then.")
     if any(not entry["same_arithmetic"] for entry in computed):
         print("  ! flags carry down from the block above: both halves of a flagged comparison")
         print("    carry the same unpriced dispatch term, so its spread does too.")

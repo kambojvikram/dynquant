@@ -1352,3 +1352,30 @@ def test_a_source_with_no_flips_is_skipped_by_name_and_not_weighted(
     payload = json.loads(destination.read_text(encoding="utf-8"))
     questions = {entry["question"].strip() for entry in payload["source_heterogeneity"]}
     assert "4b  DynQuant vs GPTQ" not in questions
+
+
+def test_a_heterogeneity_verdict_on_a_half_run_panel_says_it_is_provisional(
+    table: Any, tmp_path: Path
+) -> None:
+    """Holm's multiplier is the family that ran, so a mid-run verdict can only get worse.
+
+    Not a general caution: on the panel this was written against, the single heterogeneous
+    row sits at 0.0359 over three comparisons and 0.0717 over six. Finishing the run flips
+    the word. The block above carries this warning and this one did not, which left the
+    reader most likely to be misled -- someone glancing at a running panel -- with a
+    verdict and no way to see that it was about how much of the panel had run.
+
+    Turns red when: the warning goes away, or starts appearing on a complete family, where
+    it would train a reader to ignore it.
+    """
+    out = _write_panel(tmp_path / "arms", omit=("dq_3b", "awq_3b"))
+    _stack_the_flips(out)
+    printed = _run(table, out)
+    short = printed.split("is the margin the same on every source?")[1]
+    assert "Holm-adjusted over 3 of 6 comparisons -- a short family" in short, short
+    assert "may read consistent then" in short
+
+    whole = _write_panel(tmp_path / "full")
+    _stack_the_flips(whole)
+    complete = _run(table, whole).split("is the margin the same on every source?")[1]
+    assert "short family" not in complete, complete
