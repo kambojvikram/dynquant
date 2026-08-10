@@ -1,0 +1,42 @@
+{
+  "banks_linearized": 3,
+  "rules": [
+    {
+      "linear": "model.layers.{}.feed_forward.experts.{}.down_proj",
+      "bank": "model.layers.{}.feed_forward.experts.down_proj",
+      "orientation": "as_stored",
+      "splits": 1,
+      "part": 0
+    },
+    {
+      "linear": "model.layers.{}.feed_forward.experts.{}.gate_proj",
+      "bank": "model.layers.{}.feed_forward.experts.gate_up_proj",
+      "orientation": "as_stored",
+      "splits": 2,
+      "part": 0
+    },
+    {
+      "linear": "model.layers.{}.feed_forward.experts.{}.up_proj",
+      "bank": "model.layers.{}.feed_forward.experts.gate_up_proj",
+      "orientation": "as_stored",
+      "splits": 2,
+      "part": 1
+    }
+  ],
+  "round_trip": {
+    "keys_before": 41,
+    "keys_after": 41,
+    "missing": [],
+    "extra": [],
+    "shape_mismatch": {},
+    "differing": [],
+    "identical": true
+  },
+  "reload": {
+    "strict": true,
+    "missing_keys": [],
+    "unexpected_keys": [],
+    "logits_finite": true
+  },
+  "verdict": "all 41 tensors survive linearize -> delinearize bit-identically, and the result loads into the banked architecture under strict=True with finite logits: the inverse is exact and the names are the ones the architecture expects"
+}

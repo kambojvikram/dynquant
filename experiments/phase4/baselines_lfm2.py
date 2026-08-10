@@ -792,6 +792,109 @@ def do_save(args: argparse.Namespace) -> int:
     return 0
 
 
+def expert_rules() -> list[dict[str, Any]]:
+    """How ``linearize_moe`` slices a bank, measured on the installed llm-compressor.
+
+    Derived rather than declared. The two facts an inverse needs -- whether a bank is
+    stored ``[E, in, out]`` or ``[E, out, in]``, and whether ``gate`` is the first or the
+    second half of the fused projection -- both fail as a silent transpose, and a constant
+    written here would be a second copy of llm-compressor's layout that agrees with it right
+    up until a release moves one of them. ``probe_linearize_mapping`` answers both by
+    building a tiny ``lfm2_moe``, linearizing it, and finding the bank slice whose values
+    *are* each produced ``Linear``'s weight. Seconds of CPU, and it describes the library
+    that is actually imported.
+    """
+    import tempfile
+
+    from probe_linearize_mapping import derive
+    from probe_linearized_save import build_tiny
+
+    with tempfile.TemporaryDirectory() as work:
+        source = Path(work) / "source"
+        # Rectangular, so orientation is pinned by shape as well as by value.
+        build_tiny(source, moe_intermediate_size=24)
+        payload = derive(source)
+
+    if payload["unmatched"] or payload["rule_conflicts"] or payload["unclaimed_elements"]:
+        raise SystemExit(
+            "linearize_moe is not a pure permutation of the banks on this llm-compressor: "
+            f"{len(payload['unmatched'])} unmatched module(s), "
+            f"{len(payload['rule_conflicts'])} rule conflict(s), "
+            f"{len(payload['unclaimed_elements'])} bank(s) with unclaimed elements. "
+            "The inverse below would silently write a wrong checkpoint, so it refuses "
+            "instead. Re-run probe_linearize_mapping.py to see which assumption moved"
+        )
+    rules: list[dict[str, Any]] = payload["rules"]
+    return rules
+
+
+def delinearize_state_dict(model: Any, rules: list[dict[str, Any]]) -> dict[str, Any]:
+    """The banked state dict a linearized model would have had, by the derived rules.
+
+    Reconstructing a *state dict* rather than performing the module surgery in reverse. The
+    surgery replaced each bank ``Parameter`` with a ``ModuleList``, so undoing it in place
+    would mean rebuilding module objects; loading a correctly-keyed state dict into a fresh
+    ``from_config`` model reaches the same place through an operation that is checkable, and
+    the check is that the key set and every shape match the model that was linearized.
+
+    No geometry constants. Bank widths come from concatenating the parts in the order the
+    rules give, and the expert count from the indices observed -- so a release that changed
+    ``2 * moe_intermediate`` to a different fusion would change the derived rules and this
+    would follow, rather than quietly padding.
+    """
+    import re
+
+    import torch
+
+    by_linear = {rule["linear"]: rule for rule in rules}
+    passthrough: dict[str, Any] = {}
+    parts: dict[tuple[str, int, int], Any] = {}
+    orientation: dict[str, str] = {}
+    experts_seen: dict[str, set[int]] = {}
+    split_count: dict[str, int] = {}
+
+    for key, tensor in model.state_dict().items():
+        module, _, leaf = key.rpartition(".")
+        numbers = [int(n) for n in re.findall(r"\.(\d+)\.", f".{module}.")]
+        rule = by_linear.get(re.sub(r"\.(\d+)\.", ".{}.", f".{module}.")[1:-1])
+        if rule is None:
+            passthrough[key] = tensor
+            continue
+        if leaf != "weight":
+            # Not a passthrough: a linearized-name key surviving into the output is exactly
+            # the failure this whole exercise exists to prevent, and it would survive
+            # silently. lfm2_moe's experts carry no bias, so reaching here means the
+            # architecture grew a tensor the rules do not describe.
+            raise SystemExit(
+                f"{key!r} hangs off a linearized expert module but is not its weight, and "
+                "the derived rules say nothing about where it belongs in a bank. Writing it "
+                "through under its linearized name is what makes a checkpoint that loads "
+                "and is wrong"
+            )
+        wanted = rule["bank"].count("{}")
+        assert len(numbers) >= wanted + 1, f"{key} has too few indices for {rule['bank']}"
+        bank = rule["bank"].format(*numbers[:wanted])
+        expert = numbers[-1]
+        parts[(bank, expert, rule["part"])] = tensor
+        orientation[bank] = rule["orientation"]
+        split_count[bank] = rule["splits"]
+        experts_seen.setdefault(bank, set()).add(expert)
+
+    for bank, experts in experts_seen.items():
+        assert experts == set(range(len(experts))), f"{bank} has gaps in its expert indices"
+        slices = []
+        for expert in range(len(experts)):
+            pieces = [parts[(bank, expert, part)] for part in range(split_count[bank])]
+            merged = torch.cat(pieces, dim=0) if len(pieces) > 1 else pieces[0]
+            slices.append(merged.t() if orientation[bank] == "transposed" else merged)
+        # The bank is a bare Parameter on the experts module, so its state-dict key is the
+        # parameter name itself with no ".weight" leaf -- which is what the probe reported
+        # and what `from_config` will be looking for.
+        passthrough[bank] = torch.stack(slices)
+
+    return passthrough
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="stage", required=True)
