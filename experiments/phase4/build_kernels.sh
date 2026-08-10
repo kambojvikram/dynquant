@@ -76,10 +76,22 @@ DYNQUANT_CUDA_ARCHS="$ARCHS" CMAKE_BUILD_PARALLEL_LEVEL="$JOBS" \
 #    compares three *source* declarations so it can run on a CPU box; it is satisfied by three
 #    files agreeing and says nothing about what was compiled. A stale build directory that
 #    relinked an old object would pass it and fail here.
-"$PY" - <<'PY'
+# The clone is passed in rather than assumed from the working directory. This step
+# compares the freshly built binary against core's declaration of the ABI it expects,
+# so which core answers decides what the comparison means -- and `dynquant` is not
+# installed in this venv at all, so without the path the step dies on an import error
+# after the compile has already cost ten minutes.
+"$PY" - "$CLONE" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "packages" / "dynquant-core" / "src"))
+
 import torch
 import dynquant_kernels
 from dynquant._version import KERNEL_ABI_VERSION
+
+print("core:", Path(__import__("dynquant").__file__).resolve())
 
 assert dynquant_kernels.is_available(), dynquant_kernels.diagnostics()
 built = torch.ops.dynquant.abi_version()

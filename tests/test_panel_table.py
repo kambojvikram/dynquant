@@ -24,6 +24,8 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 from contextlib import redirect_stdout
 from io import StringIO
@@ -1379,3 +1381,34 @@ def test_a_heterogeneity_verdict_on_a_half_run_panel_says_it_is_provisional(
     _stack_the_flips(whole)
     complete = _run(table, whole).split("is the margin the same on every source?")[1]
     assert "short family" not in complete, complete
+
+
+def test_the_table_runs_with_nothing_already_on_the_path(tmp_path: Path) -> None:
+    """A subprocess, because in-process this test cannot fail.
+
+    Every other test here calls `main` after conftest has put the core package source on
+    `sys.path`, and the shell I run the suite from exports PYTHONPATH as well. The script
+    imports core inside three functions, so a missing bootstrap does not break collection
+    or `--help` -- it waits for a reader who runs the table on real records, on the box,
+    where nothing installs `dynquant` and no conftest is involved.
+
+    Run from `tmp_path` rather than the repo root so that a bootstrap resolved against the
+    working directory instead of the file would fail here too.
+
+    Turns red when: the `CORE_SRC` insert is dropped, or rewritten relative to cwd.
+    """
+    out = _write_panel(tmp_path / "arms")
+    stripped = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--arms", str(out)],
+        capture_output=True,
+        text=True,
+        cwd=str(tmp_path),
+        env=stripped,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ModuleNotFoundError" not in result.stderr, result.stderr
+    # And it did the work, rather than exiting cleanly with an empty table.
+    for label in ("bf16", "gptq_4b", "dq_4b"):
+        assert label in result.stdout, result.stdout
+    assert "head to head" in result.stdout, result.stdout

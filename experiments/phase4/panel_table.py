@@ -70,6 +70,16 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# The same bootstrap `dispatch_delta.py` and `probe_dispatch_agreement.py` carry, and
+# for the same reason: nothing installs `dynquant` on the box that runs these, so a
+# script that imports core and inserts nothing works only where something else already
+# put the source on the path. Under pytest that something is conftest, which is why the
+# suite could not have caught this. The imports here are inside functions, so the
+# failure waits until the table is asked for real records -- `--help` succeeds.
+CORE_SRC = Path(__file__).resolve().parents[2] / "packages" / "dynquant-core" / "src"
+if str(CORE_SRC) not in sys.path:  # pragma: no cover - import bootstrap
+    sys.path.insert(0, str(CORE_SRC))
+
 #: Head-to-head at matched bytes. This is the claim, and the family it is corrected in.
 HEAD_TO_HEAD: tuple[tuple[str, str, str], ...] = (
     ("dq_4b", "gptq_4b", "4b  DynQuant vs GPTQ"),
