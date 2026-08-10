@@ -2,7 +2,10 @@
 
 Every experiment run on DynQuant since the package was built, what it measured, and where the
 full record lives. Nothing here is taken from the paper; everything is measured on this
-repository's own code, all of it on a single NVIDIA A100 80GB PCIe.
+repository's own code. Questions 1–6 were measured on a single NVIDIA A100 80GB PCIe;
+from question 7 the box is one NVIDIA RTX PRO 6000 Blackwell Workstation Edition (97 887 MiB,
+driver 580.159.03). Nothing is measured across the two — every comparison in a given campaign
+was run on one machine.
 
 There are fourteen campaigns. They answer twenty questions, in this order — phase 4
 answers seven of them, because whether a benchmark can read damage, whether the model has
