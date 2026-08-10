@@ -58,7 +58,7 @@ GROUP = 32
 question is about names, and a group size does not have an opinion about names."""
 
 
-def build_tiny(where: Path) -> Any:
+def build_tiny(where: Path, **overrides: Any) -> Any:
     """A four-layer ``lfm2_moe`` with three MoE layers, built from config and saved.
 
     Small on purpose. Linearization is module surgery over weights it never reads, so
@@ -69,26 +69,37 @@ def build_tiny(where: Path) -> Any:
     unseeded initialization moves it. Two runs of the same code gave 14 and 13 on the
     dynquant side before this line existed -- both well under the 16 that answers the
     question, but a number that drifts is a number nobody can quote in a report.
+
+    ``overrides`` exist for callers asking a different question of the same architecture.
+    The defaults are load-bearing *here* -- they are the geometry the distinct-value counts
+    in the report were measured at -- so they are not to be changed, but they are also
+    accidentally square: ``hidden_size`` is 64 and ``2 * moe_intermediate_size`` is 64, so a
+    fused expert bank comes out ``[E, 64, 64]`` and its two ends cannot be told apart by
+    shape. ``probe_linearize_mapping.py`` passes a rectangular geometry for exactly that
+    reason. A second copy of this builder would have been the alternative, and this project
+    has been bitten four times by second copies.
     """
     import torch
     from transformers import AutoModelForCausalLM, Lfm2MoeConfig
 
     torch.manual_seed(0)
 
-    config = Lfm2MoeConfig(
-        vocab_size=256,
-        hidden_size=64,
-        intermediate_size=128,
-        moe_intermediate_size=32,
-        num_hidden_layers=4,
-        num_dense_layers=1,
-        num_attention_heads=4,
-        num_key_value_heads=2,
-        num_experts=4,
-        num_experts_per_tok=2,
-        layer_types=["conv", "full_attention", "conv", "conv"],
-        tie_word_embeddings=True,
-    )
+    settings: dict[str, Any] = {
+        "vocab_size": 256,
+        "hidden_size": 64,
+        "intermediate_size": 128,
+        "moe_intermediate_size": 32,
+        "num_hidden_layers": 4,
+        "num_dense_layers": 1,
+        "num_attention_heads": 4,
+        "num_key_value_heads": 2,
+        "num_experts": 4,
+        "num_experts_per_tok": 2,
+        "layer_types": ["conv", "full_attention", "conv", "conv"],
+        "tie_word_embeddings": True,
+    }
+    settings.update(overrides)
+    config = Lfm2MoeConfig(**settings)
     model = AutoModelForCausalLM.from_config(config)
     model.save_pretrained(str(where))
     return config

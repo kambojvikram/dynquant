@@ -1,0 +1,73 @@
+{
+  "banks_before": 3,
+  "banks_after": 0,
+  "bank_parameters": {
+    "model.layers.1.feed_forward.experts.gate_up_proj": [
+      4,
+      48,
+      64
+    ],
+    "model.layers.1.feed_forward.experts.down_proj": [
+      4,
+      64,
+      24
+    ],
+    "model.layers.2.feed_forward.experts.gate_up_proj": [
+      4,
+      48,
+      64
+    ],
+    "model.layers.2.feed_forward.experts.down_proj": [
+      4,
+      64,
+      24
+    ],
+    "model.layers.3.feed_forward.experts.gate_up_proj": [
+      4,
+      48,
+      64
+    ],
+    "model.layers.3.feed_forward.experts.down_proj": [
+      4,
+      64,
+      24
+    ]
+  },
+  "linears_produced": 36,
+  "linears_matched": 36,
+  "unmatched": [],
+  "rules": [
+    {
+      "linear": "model.layers.{}.feed_forward.experts.{}.down_proj",
+      "bank": "model.layers.{}.feed_forward.experts.down_proj",
+      "orientation": "as_stored",
+      "splits": 1,
+      "part": 0
+    },
+    {
+      "linear": "model.layers.{}.feed_forward.experts.{}.gate_proj",
+      "bank": "model.layers.{}.feed_forward.experts.gate_up_proj",
+      "orientation": "as_stored",
+      "splits": 2,
+      "part": 0
+    },
+    {
+      "linear": "model.layers.{}.feed_forward.experts.{}.up_proj",
+      "bank": "model.layers.{}.feed_forward.experts.gate_up_proj",
+      "orientation": "as_stored",
+      "splits": 2,
+      "part": 1
+    }
+  ],
+  "rule_conflicts": [],
+  "unclaimed_elements": {},
+  "example": {
+    "bank": "model.layers.1.feed_forward.experts.down_proj",
+    "expert": 0,
+    "orientation": "as_stored",
+    "splits": 1,
+    "part": 0,
+    "linear": "model.layers.1.feed_forward.experts.0.down_proj"
+  },
+  "verdict": "all 36 linearized modules are exact slices of the banks (as_stored), every bank element is claimed exactly once, and 3 structural rule(s) cover every layer and expert: the inverse is well defined"
+}

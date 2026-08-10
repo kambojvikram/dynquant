@@ -97,21 +97,30 @@ say "$(find "$KEEP" -name '*.json' | wc -l) json file(s) preserved"
 RESCORE_LOG="$RUN/rescore.log"
 stamp() { while IFS= read -r line; do printf '%s   %s\n' "$(date -u +%FT%TZ)" "$line"; done; }
 
-say "re-scoring bf16, dq_4b, dq_3b on eager -- stamped to $RESCORE_LOG"
+# The order is dq_4b, dq_3b, bf16, and it is neither alphabetical nor incidental. `/workspace` on
+# this box is not a volume, so a recycle at hour nine keeps whatever finished and loses the rest --
+# and the three arms are not worth the same. `dq_4b` on eager is the headline: it is what turns the
+# two comparisons the panel table currently flags -- DynQuant vs GPTQ and vs AWQ at 4 bits, the ones
+# mixing expert arithmetic -- into same-dispatch comparisons, and it lands about three hours in
+# rather than nine. `dq_3b` is the same comparison at 3 bits. `bf16` goes last because it is a
+# ceiling: everything is compared against it, but no quantizer claim rests on it, and re-scoring it
+# *measures* the dispatch effect rather than removing it from a margin. Losing bf16 to a recycle
+# costs a measurement; losing dq_4b costs the result.
+say "re-scoring dq_4b, dq_3b, bf16 on eager -- stamped to $RESCORE_LOG"
 cd "$CLONE"
 "$PY" experiments/phase4/arms_lfm2.py run \
   --model "$RUN/lfm25-8b-a1b.text2sql/merged" \
   --stats "$RUN/lfm25-8b-a1b.text2sql/stats/dynquant_stats.json" \
   --moments "$RUN/lfm25-8b-a1b.text2sql/stats/dynquant_moments.safetensors" \
   --out "$PANEL" --device cuda --limit 12000 --batch-size 32 \
-  --resume --rescore bf16,dq_4b,dq_3b --experts-impl eager 2>&1 | stamp | tee "$RESCORE_LOG"
+  --resume --rescore dq_4b,dq_3b,bf16 --experts-impl eager 2>&1 | stamp | tee "$RESCORE_LOG"
 
 # 7. Best-effort for the same reason step 4 is: the arm names are positional. A resumed re-score,
 #    or a `--rescore` list edited without editing RESCORE_ARMS, changes the arm count, and the
 #    profile refuses rather than filing dq_3b's blocks under bf16's name. The stamped log is the
 #    artifact; the json is a convenience over it.
 "$PY" experiments/phase4/rate_profile.py "$RESCORE_LOG" \
-  --arms "${RESCORE_ARMS:-bf16,dq_4b,dq_3b}" \
+  --arms "${RESCORE_ARMS:-dq_4b,dq_3b,bf16}" \
   --out "$RUN/rate_profile.rescore.json" >/dev/null \
   || say "the re-score profile refused. $RESCORE_LOG is intact; re-run it by hand with --arms."
 
