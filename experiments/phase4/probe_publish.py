@@ -71,6 +71,7 @@ from baselines_lfm2 import (
     delinearize_state_dict,
     expert_rules,
     recipe_weights,
+    resolve_awq_mappings,
     tie_report,
     under_the_input_table,
 )
@@ -173,13 +174,25 @@ def quantized_reference(
             "max_seq_length": CALIB_LEN,
             "pipeline": "basic",
         }
+    # The stock AWQ mappings look for an `input_layernorm` before q/k/v. LFM2 names it
+    # `operator_norm`, so `_set_resolved_mappings` finds q, k and v, finds no norm to smooth
+    # them against, and raises on the incomplete set. The driver already carries the
+    # architecture's own mappings and a resolver that checks them against the tree before
+    # the calibration pass; using anything else here would calibrate a different arm from
+    # the one the panel scored.
+    smoothing = None
+    recipe_mappings = None
+    if method == "awq":
+        recipe_mappings, smoothing = resolve_awq_mappings(model)
     oneshot(
         model=model,
-        recipe=build_recipe(method, bits, GROUP_SIZE, ignore=[]),
+        recipe=build_recipe(method, bits, GROUP_SIZE, ignore=[], mappings=recipe_mappings),
         **kwargs,
     )
     applied = materialize_quantization(model)
     applied["banks_linearized"] = banks_before
+    if smoothing is not None:
+        applied["smoothing"] = smoothing
     # Not the model's own state dict: a quantized module also holds the scales it was
     # fitted with, and those hang off linearized expert names the bank rules do not
     # describe. This probe is how that was found -- the first run refused here.

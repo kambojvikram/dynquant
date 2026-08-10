@@ -1083,8 +1083,11 @@ def carried_grids(model: Any, *, group_size: int) -> dict[str, dict[str, Any]]:
     ``fake_quantize(weight)``, that check has exactly one degree of freedom -- whether this
     file's idea of the convention matches the library's -- which is the disagreement that
     has cost this project four times, and it fails loudly here instead of silently on disk.
+    It cost it a fifth time on the asymmetric AWQ arm, so the one piece of the convention
+    that is not recomputed-and-checked -- the code range -- is now imported outright.
     """
     import torch
+    from compressed_tensors.quantization.utils import calculate_range
     from compressed_tensors.utils import align_module_device
 
     grids: dict[str, dict[str, Any]] = {}
@@ -1108,11 +1111,16 @@ def carried_grids(model: Any, *, group_size: int) -> dict[str, dict[str, Any]]:
                 )
 
             bits = int(scheme.num_bits)
-            qmin, qmax = 0, (1 << bits) - 1
-            if getattr(scheme, "symmetric", False):
-                # A signed band. The format has no integer zero point, so the shift is
-                # folded into the offset below and no level moves.
-                qmin, qmax = -(1 << (bits - 1)), (1 << (bits - 1)) - 1
+            # Asked of the library instead of derived here. compressed-tensors puts every
+            # integer scheme on a *signed* band -- [-2^(b-1), 2^(b-1)-1] -- whether or not
+            # it is symmetric; an asymmetric scheme rides that same band with a signed zero
+            # point rather than moving to an unsigned code. Deriving it instead gave
+            # [0, 2^b - 1] for the asymmetric case, which agrees with the library on every
+            # symmetric arm and clamped 60% of an AWQ weight onto the bottom rail. The
+            # format has no signed code, so the band is folded into the offset below and no
+            # level moves.
+            low, high = calculate_range(scheme, weight.device)
+            qmin, qmax = int(low.item()), int(high.item())
 
             wide_scale = scale.repeat_interleave(group_size, dim=1)[:, :in_features]
             wide_zero = zero.repeat_interleave(group_size, dim=1)[:, :in_features]

@@ -1095,33 +1095,58 @@ def test_the_mappings_reach_the_modifier_and_only_on_the_awq_arm(driver: Any) ->
 
 
 @contextlib.contextmanager
-def _offload_shim() -> Any:
-    """Stand in for ``compressed_tensors.utils.align_module_device``.
+def _offload_shim(*, band: Any = None) -> Any:
+    """Stand in for the two pieces of compressed-tensors the carrier imports.
 
-    The real one moves an offloaded module's weights onto the execution device. Nothing in
-    these tests is offloaded, so the behaviour under test is what the driver does with the
-    numbers, not where they live -- and importing compressed-tensors to get a context
-    manager would put a GPU-era dependency on CPU CI for no assertion.
+    ``align_module_device`` moves an offloaded module's weights onto the execution device.
+    Nothing here is offloaded, so what is under test is what the driver does with the
+    numbers, not where they live -- and importing compressed-tensors for a context manager
+    would put a GPU-era dependency on CPU CI for no assertion.
+
+    ``calculate_range`` is the other one, and it is stubbed for the same reason and with a
+    caveat. Its default here mirrors the library: every *integer* scheme, symmetric or not,
+    lives on the signed band ``[-2^(b-1), 2^(b-1)-1]``. That mirror is a claim about another
+    package, so it is not checked here -- ``experiments/phase4/probe_publish.py`` runs the
+    real library and is what would catch it drifting. Pass ``band`` to make the stub return
+    something else, which is how a test can tell "asked the library" from "worked it out".
     """
     import types
 
-    made_parent = "compressed_tensors" not in sys.modules
-    if made_parent:
-        sys.modules["compressed_tensors"] = types.ModuleType("compressed_tensors")
-    name = "compressed_tensors.utils"
-    saved = sys.modules.get(name)
-    sys.modules[name] = types.SimpleNamespace(  # type: ignore[assignment]
-        align_module_device=lambda _m: contextlib.nullcontext()
-    )
+    import torch
+
+    def _range(args: Any, device: Any) -> Any:
+        if band is not None:
+            low, high = band
+        else:
+            bits = int(args.num_bits)
+            low, high = -(2 ** (bits - 1)), 2 ** (bits - 1) - 1
+        return torch.tensor(float(low), device=device), torch.tensor(float(high), device=device)
+
+    stubs = {
+        "compressed_tensors.utils": types.SimpleNamespace(
+            align_module_device=lambda _m: contextlib.nullcontext()
+        ),
+        "compressed_tensors.quantization.utils": types.SimpleNamespace(calculate_range=_range),
+    }
+    parents = [
+        parent
+        for parent in ("compressed_tensors", "compressed_tensors.quantization")
+        if parent not in sys.modules
+    ]
+    for parent in parents:
+        sys.modules[parent] = types.ModuleType(parent)
+    saved = {name: sys.modules.get(name) for name in stubs}
+    sys.modules.update(stubs)  # type: ignore[arg-type]
     try:
         yield
     finally:
-        if saved is None:
-            del sys.modules[name]
-        else:
-            sys.modules[name] = saved
-        if made_parent:
-            del sys.modules["compressed_tensors"]
+        for name, module in saved.items():
+            if module is None:
+                del sys.modules[name]
+            else:
+                sys.modules[name] = module
+        for parent in parents:
+            del sys.modules[parent]
 
 
 def _on_a_grid(
@@ -1129,10 +1154,15 @@ def _on_a_grid(
 ) -> Any:
     """A weight that *is* ``scale * (q - zero)``, with codes confined to ``band``.
 
-    The band is the point. A recipe that leaves every group spanning ``[0, qmax]`` cannot
-    tell a carried grid from a re-fitted one -- min/max recovers the same step either way.
-    GPTQ's compensation and AWQ's clipping search leave groups that do not span, and a
-    narrow band is what those look like, so it is what the fixture builds.
+    The band is the point, twice over. A recipe that leaves every group spanning the full
+    width cannot tell a carried grid from a re-fitted one -- min/max recovers the same step
+    either way. GPTQ's compensation and AWQ's clipping search leave groups that do not span,
+    and a narrow band is what those look like, so it is what the fixture builds.
+
+    It is also *signed*, and has to be: compressed-tensors puts an asymmetric scheme on the
+    same ``[-2^(b-1), 2^(b-1)-1]`` band as a symmetric one and rides it with a signed zero
+    point. A band drawn from ``[0, 2^b - 1]`` instead would agree with a reader that had
+    worked the range out for itself, which is the reader this fixture used to have.
     """
     import torch
 
@@ -1178,14 +1208,15 @@ def _holding(**modules: Any) -> Any:
 def test_the_recipes_own_codes_are_carried_not_refitted_from_the_weights(driver: Any) -> None:
     """The whole reason this path exists, stated as the thing a refit would destroy.
 
-    The weights handed over are on a grid whose groups occupy codes 5 through 9 of the 16 a
-    4-bit width offers. Fitting a fresh grid to them -- which is what
-    ``export_packed_checkpoint`` does unaided -- recovers a step four times narrower and
-    puts the original levels between the new ones. Carrying the grid keeps the codes the
-    recipe chose, and the test for that is that they are still 5 through 9.
+    The weights handed over are on a grid whose groups occupy codes -5 through 2 of the
+    signed 16 a 4-bit width offers. Fitting a fresh grid to them -- which is what
+    ``export_packed_checkpoint`` does unaided -- recovers a step twice as narrow and puts
+    the original levels between the new ones. Carrying the grid keeps the codes the recipe
+    chose, and the test for that is that they are still -5 through 2, shifted onto the
+    unsigned code this format stores by the same 8 the offset absorbs.
     """
     codes, scale, zero, weight = _on_a_grid(
-        rows=4, in_features=64, group_size=32, bits=4, band=(5, 9)
+        rows=4, in_features=64, group_size=32, bits=4, band=(-5, 2)
     )
     model = _holding(proj=_quantized(weight, scale, zero, bits=4))
     with _offload_shim():
@@ -1196,11 +1227,11 @@ def test_the_recipes_own_codes_are_carried_not_refitted_from_the_weights(driver:
     grid = grids["proj"]
     assert set(grids) == {"proj"}
     assert grid["bits"] == 4
-    assert torch.equal(grid["codes"], codes.to(torch.uint8)), "the carried codes moved"
-    assert (int(grid["codes"].min()), int(grid["codes"].max())) == (5, 9), (
+    assert torch.equal(grid["codes"], (codes + 8).to(torch.uint8)), "the carried codes moved"
+    assert (int(grid["codes"].min()), int(grid["codes"].max())) == (3, 10), (
         "codes spanning the full width mean a grid was fitted here, not carried"
     )
-    assert torch.equal(grid["offsets"], -scale * 3.0)
+    assert torch.equal(grid["offsets"], -scale * 11.0)
 
 
 def test_a_carried_grid_reconstructs_the_weight_the_arm_was_scored_on(driver: Any) -> None:
@@ -1216,7 +1247,7 @@ def test_a_carried_grid_reconstructs_the_weight_the_arm_was_scored_on(driver: An
     from dynquant.quant.tensor import QuantTensor
 
     _codes, scale, zero, weight = _on_a_grid(
-        rows=4, in_features=64, group_size=32, bits=4, band=(5, 9)
+        rows=4, in_features=64, group_size=32, bits=4, band=(-5, 2)
     )
     model = _holding(proj=_quantized(weight, scale, zero, bits=4))
     with _offload_shim():
@@ -1260,6 +1291,37 @@ def test_a_signed_band_is_carried_as_an_unsigned_code_and_an_offset(driver: Any)
     assert torch.allclose(reconstructed + grid["offsets"].repeat_interleave(32, dim=1), weight)
 
 
+def test_the_code_range_comes_from_the_library_and_is_not_worked_out_here(driver: Any) -> None:
+    """The one part of the convention that is imported rather than recomputed-and-checked.
+
+    Everything else in ``carried_grids`` is derived and then verified against the
+    materialized weight, so a wrong derivation announces itself. The code range cannot be:
+    it is an input to the derivation, and getting it wrong produces codes that clamp,
+    a reconstruction that misses, and a refusal that names the weight rather than the
+    reader. That is what happened -- an asymmetric AWQ arm on compressed-tensors' signed
+    band, read as if asymmetric meant unsigned, put 60% of a weight on the bottom rail.
+
+    So the test is not "the range is [-8, 7]" -- that is the library's business, and
+    ``probe_publish.py`` is what checks it against the installed one. The test is that the
+    reader *uses what it is given*: told an unsigned band, it carries an unsigned band, and
+    the same fixture under the signed default is refused rather than silently clamped.
+    """
+    import torch
+
+    codes, scale, _zero, weight = _on_a_grid(
+        rows=4, in_features=64, group_size=32, bits=4, band=(4, 12)
+    )
+    model = _holding(proj=_quantized(weight, scale, torch.full((4, 2), 3.0), bits=4))
+
+    with _offload_shim(band=(0, 15)):
+        grid = driver.carried_grids(model, group_size=32)["proj"]
+    assert torch.equal(grid["codes"], codes.to(torch.uint8))
+    assert torch.equal(grid["offsets"], -scale * 3.0)
+
+    with _offload_shim(), pytest.raises(SystemExit, match="does not reproduce"):
+        driver.carried_grids(model, group_size=32)
+
+
 def test_a_weight_that_is_not_on_its_own_grid_refuses_to_be_carried(driver: Any) -> None:
     """The check that catches a convention disagreement instead of publishing one.
 
@@ -1270,7 +1332,7 @@ def test_a_weight_that_is_not_on_its_own_grid_refuses_to_be_carried(driver: Any)
     scale, or the wrong sign of a zero point, would produce.
     """
     _codes, scale, zero, weight = _on_a_grid(
-        rows=4, in_features=64, group_size=32, bits=4, band=(5, 9)
+        rows=4, in_features=64, group_size=32, bits=4, band=(-5, 2)
     )
     weight = weight.clone()
     weight[2, 3] += 0.3 * scale[2, 0]
@@ -1284,7 +1346,7 @@ def test_a_scale_that_is_not_per_group_along_the_input_is_refused(driver: Any) -
     import torch
 
     _codes, scale, _zero, weight = _on_a_grid(
-        rows=4, in_features=64, group_size=32, bits=4, band=(5, 9)
+        rows=4, in_features=64, group_size=32, bits=4, band=(-5, 2)
     )
     model = _holding(proj=_quantized(weight, scale[:, :1].contiguous(), torch.zeros(4, 1), bits=4))
     with _offload_shim(), pytest.raises(SystemExit, match="per-group scales"):
@@ -1409,7 +1471,7 @@ def test_a_recipe_that_used_two_widths_has_no_entry_for_the_bank_it_fills(driver
 def _carryable(driver: Any) -> Any:
     """A one-module banked grid plus the weight it is supposed to reconstruct."""
     _codes, scale, zero, weight = _on_a_grid(
-        rows=4, in_features=64, group_size=32, bits=4, band=(5, 9)
+        rows=4, in_features=64, group_size=32, bits=4, band=(-5, 2)
     )
     model = _holding(proj=_quantized(weight, scale, zero, bits=4))
     with _offload_shim():
