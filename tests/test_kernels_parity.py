@@ -351,3 +351,210 @@ def test_mismatched_scales_are_rejected_rather_than_reinterpreted(device):
             geom.effective_group,
             256,
         )
+
+
+# ---------------------------------------------------------------------------
+# moe_grouped_gemv
+#
+# The oracle is different here, and deliberately so. Everywhere above, the
+# reference is `QuantTensor.dequantize`, because the question was whether the
+# kernel reads the layout correctly. That question is already answered by the time
+# a grouped launch happens: this kernel decodes with the same `nbit::` primitives
+# and reduces with the same warp tree as `dynquant::gemv`. What is new is only
+# *which rows* each block reads and which activations it pairs them with.
+#
+# So the oracle is `dynquant::gemv` itself, applied band by band, and the assertion
+# is exact equality. A tolerance would let a band-addressing bug through whenever
+# the wrong expert's weights happened to produce a nearby number, which at these
+# scales is most of the time.
+# ---------------------------------------------------------------------------
+
+GROUPED_CASES = [
+    # (num_experts, out_features, in_features, group_size, counts per expert)
+    (4, 128, 512, 128, [3, 0, 1, 4]),  # an empty expert, and a band of one
+    (3, 70, 2048, 128, [1, 1, 1]),  # ragged rows, multi-iteration chunk loop
+    (2, 64, 320, 128, [5, 3]),  # in_features not a multiple of the group
+    (8, 16, 128, 32, [1, 0, 0, 0, 0, 0, 0, 2]),  # mostly empty, smallest group
+]
+
+
+def _segments(counts: list[int], device: str) -> torch.Tensor:
+    offsets = [0]
+    for c in counts:
+        offsets.append(offsets[-1] + c)
+    return torch.tensor(offsets, dtype=torch.int32, device=device)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("bits", [2, 3, 4, 8])
+@pytest.mark.parametrize(
+    ("num_experts", "out_features", "in_features", "group_size", "counts"), GROUPED_CASES
+)
+def test_grouped_gemv_matches_the_ungrouped_one_band_for_band(
+    device, bits, num_experts, out_features, in_features, group_size, counts
+):
+    """Exact equality against ``dynquant::gemv`` on each expert's own band.
+
+    Every case carries an expert with an empty band, which is the one shape the two
+    kernels cannot share code for: the loop version skips it on the host and this one
+    has to discover it from two loads and return. An off-by-one in that comparison
+    reads the next expert's first row and produces a finite, plausible number.
+    """
+    quantized, _ = _quantized(
+        num_experts * out_features, in_features, group_size, bits, device, torch.float16
+    )
+    geom = quantized.geometry
+    total = sum(counts)
+    torch.manual_seed(bits + total)
+    x = torch.randn(total, in_features, dtype=torch.float16, device=device)
+    seg = _segments(counts, device)
+
+    got = torch.ops.dynquant.moe_grouped_gemv(
+        x,
+        quantized.packed,
+        quantized.scales,
+        quantized.offsets,
+        seg,
+        bits,
+        geom.effective_group,
+        in_features,
+        out_features,
+    )
+
+    assert got.shape == (total, out_features)
+    assert got.dtype == torch.float16
+
+    bounds = seg.tolist()
+    for expert in range(num_experts):
+        start, stop = bounds[expert], bounds[expert + 1]
+        if start == stop:
+            continue
+        band = quantized.rows(expert * out_features, (expert + 1) * out_features)
+        want = torch.ops.dynquant.gemv(
+            x[start:stop].contiguous(),
+            band.packed,
+            band.scales,
+            band.offsets,
+            bits,
+            geom.effective_group,
+            in_features,
+        )
+        torch.testing.assert_close(got[start:stop], want, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_grouped_gemv_zeroes_the_rows_past_the_last_offset(device):
+    """Expert-parallel sentinel rows come back zero, not uninitialised.
+
+    ``grouped_mm`` upstream leaves them to a later mask; this cannot, because the
+    output feeds a second projection before any mask is applied and one NaN there
+    survives a mask that only covers the last one. The output is allocated zeroed and
+    no block writes past ``seg[-1]``.
+    """
+    quantized, _ = _quantized(2 * 32, 256, 128, 4, device, torch.float16)
+    geom = quantized.geometry
+    x = torch.randn(6, 256, dtype=torch.float16, device=device)
+    # Four real rows, two sentinels -- the table stops short of the activation.
+    seg = torch.tensor([0, 3, 4], dtype=torch.int32, device=device)
+
+    got = torch.ops.dynquant.moe_grouped_gemv(
+        x,
+        quantized.packed,
+        quantized.scales,
+        quantized.offsets,
+        seg,
+        4,
+        geom.effective_group,
+        256,
+        32,
+    )
+
+    assert got.shape == (6, 32)
+    assert torch.count_nonzero(got[4:]) == 0
+    # And the rows that were addressed are not zero, or the assertion above would
+    # hold for a kernel that wrote nothing at all.
+    assert torch.count_nonzero(got[:4]) > 0
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_grouped_gemv_rejects_a_table_that_describes_a_different_bank(device):
+    """``packed.size(0)`` must be ``num_experts * out_features``, and it is checked.
+
+    This is the one argument error that cannot be caught by shape inference at the
+    call site: ``[E * out, in]`` is a 2-D buffer and ``E`` is only recoverable by
+    dividing, so a caller that passes the wrong ``out_features`` describes a bank with
+    a different expert count and every band lands somewhere real.
+    """
+    quantized, _ = _quantized(4 * 32, 256, 128, 4, device, torch.float16)
+    geom = quantized.geometry
+    x = torch.randn(4, 256, dtype=torch.float16, device=device)
+    seg = torch.tensor([0, 1, 2, 3, 4], dtype=torch.int32, device=device)
+
+    with pytest.raises(RuntimeError, match="different models"):
+        torch.ops.dynquant.moe_grouped_gemv(
+            x,
+            quantized.packed,
+            quantized.scales,
+            quantized.offsets,
+            seg,
+            4,
+            geom.effective_group,
+            256,
+            48,  # 4 x 48 != 128 rows
+        )
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_grouped_gemv_rejects_an_int64_segment_table(device):
+    """int32, because the device side reads it as int32 and would read halves.
+
+    ``torch.bincount`` returns int64, so the natural way to build this table is the
+    wrong one -- which is exactly why it is rejected rather than silently converted:
+    a cast here would hide a per-layer host round trip in the middle of the path whose
+    entire purpose is not to have one.
+    """
+    quantized, _ = _quantized(2 * 32, 256, 128, 4, device, torch.float16)
+    geom = quantized.geometry
+    x = torch.randn(4, 256, dtype=torch.float16, device=device)
+    seg = torch.tensor([0, 2, 4], dtype=torch.int64, device=device)
+
+    with pytest.raises(RuntimeError, match="int32"):
+        torch.ops.dynquant.moe_grouped_gemv(
+            x,
+            quantized.packed,
+            quantized.scales,
+            quantized.offsets,
+            seg,
+            4,
+            geom.effective_group,
+            256,
+            32,
+        )
+
+
+def test_the_cpu_reference_validates_the_table_the_gpu_can_only_clamp():
+    """A malformed table raises on CPU and is clamped on CUDA, and that is deliberate.
+
+    The device side reads two int32s per block and has no way to check that the table
+    is monotone without a reduction it would then have to synchronize on -- the one
+    thing this path exists to avoid. So it clamps, which keeps a malformed table from
+    reading out of bounds but does not report it. The CPU reference, which is the
+    composition the CUDA path replaces, has the whole table in hand and refuses.
+
+    Asserting it here rather than leaving it implicit, because "the two
+    implementations of the same op disagree about what they accept" is how a bug
+    reaches production having passed CPU CI.
+    """
+    quantized, _ = _quantized(2 * 32, 256, 128, 4, "cpu", torch.float16)
+    geom = quantized.geometry
+    x = torch.randn(4, 256, dtype=torch.float16)
+    args = (quantized.packed, quantized.scales, quantized.offsets)
+
+    for bad, expected in [
+        ([1, 2, 4], "must start at 0"),
+        ([0, 3, 2], "runs backwards"),
+        ([0, 2, 9], "but x has only"),
+    ]:
+        seg = torch.tensor(bad, dtype=torch.int32)
+        with pytest.raises(RuntimeError, match=expected):
+            torch.ops.dynquant.moe_grouped_gemv(x, *args, seg, 4, geom.effective_group, 256, 32)

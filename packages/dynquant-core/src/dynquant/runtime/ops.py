@@ -40,15 +40,17 @@ __all__ = [
     "dequantize",
     "embedding_lookup",
     "gemv_max_rows",
+    "grouped_quantized_matmul",
+    "has_grouped_gemv",
     "quantized_matmul",
     "uses_compiled_kernels",
     "warm_dispatch",
 ]
 
-# Two process-wide constants, cached in module globals rather than behind
+# Three process-wide constants, cached in module globals rather than behind
 # `lru_cache`, and the difference is `torch.compile`.
 #
-# Both are decided by probing: which shared object imported, what the driver
+# All are decided by probing: which shared object imported, what the driver
 # says, what number the binary was compiled with. Neither can change during a
 # run. But `quantized_matmul` reads them on every call, and every call happens
 # inside the model's forward -- so under `torch.compile` they are read while
@@ -67,6 +69,7 @@ __all__ = [
 # break, which under `fullgraph` is still an error.
 _ACTIVE_BACKEND: Backend | None = None
 _GEMV_MAX_ROWS: int | None = None
+_HAS_GROUPED_GEMV: bool | None = None
 
 
 def warm_dispatch() -> Backend:
@@ -85,6 +88,10 @@ def warm_dispatch() -> Backend:
     """
     backend = active_backend()
     gemv_max_rows()
+    # Same reason, one step further: the grouped path's probe touches the op table,
+    # which dynamo cannot trace either, and an expert bank is constructed on the same
+    # load pass as a linear -- so the answer is settled before the first forward.
+    has_grouped_gemv()
     return backend
 
 
@@ -229,6 +236,80 @@ def quantized_matmul(
         )
         out = torch.nn.functional.linear(flat, weight.to(x.dtype), bias)
     return out.reshape(*lead, qt.num_rows)
+
+
+def has_grouped_gemv() -> bool:
+    """Whether the loaded binary carries ``moe_grouped_gemv``.
+
+    Asked of the op table, not of the ABI number. ``moe_grouped_gemv`` arrived in
+    ABI 3 and ``MIN_KERNEL_ABI_VERSION`` was deliberately *not* raised to match: an
+    ABI-2 wheel serves every model it served before, just with the Python expert
+    loop. Refusing to load it would trade a working slower path for no path at all.
+    So the runtime asks the question whose answer it can act on -- does this
+    operation exist -- rather than the one that only correlates with it.
+    """
+    global _HAS_GROUPED_GEMV
+    if _HAS_GROUPED_GEMV is None:
+        _HAS_GROUPED_GEMV = _probe_grouped_gemv()
+    return _HAS_GROUPED_GEMV
+
+
+def _probe_grouped_gemv() -> bool:
+    if active_backend() is not Backend.CUDA:
+        return False
+    try:
+        return torch.ops.dynquant.moe_grouped_gemv is not None
+    except (AttributeError, RuntimeError):
+        return False
+
+
+def grouped_quantized_matmul(
+    x: torch.Tensor,
+    qt: QuantTensor,
+    seg_offsets: torch.Tensor,
+    *,
+    out_features: int,
+    bias: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """``x[s:e] @ bank[e].T`` for every expert band, in one launch.
+
+    ``x`` is the expert-sorted activation matrix and ``seg_offsets`` is an ``[E + 1]``
+    int32 tensor **on device** giving each expert's band. That the offsets stay on
+    device is the entire point, and it is not a micro-optimisation: the Python loop
+    this replaces has to know its bounds on the host, which costs a ``bincount`` ->
+    ``.tolist()`` synchronization per bank per layer -- 44 per token on a 22-layer,
+    two-bank model -- and makes ``torch.compile(fullgraph=True)`` and CUDA-graph
+    capture impossible. The launch geometry here is derived from *shapes* alone, so
+    an empty expert costs a two-int block launch instead of a sync to discover it is
+    empty.
+
+    The arithmetic is not the win. Each expert's GEMV is the same work either way,
+    and this is deliberately not a tensor-core GEMM -- prefill still dequantizes and
+    calls cuBLASLt, exactly as :func:`quantized_matmul` does above its row threshold.
+
+    Rows past ``seg_offsets[-1]`` are the expert-parallel sentinels. They are left at
+    zero because the output is allocated zeroed, which matches what the reference
+    path writes and not what ``grouped_mm`` writes -- the grouped kernel leaves them
+    uninitialised and relies on a later mask, and one NaN reaching the next
+    projection survives a mask that only covers the last one.
+    """
+    if x.shape[-1] != qt.in_features:
+        raise ValueError(
+            f"activation has {x.shape[-1]} input features but the bank expects {qt.in_features}"
+        )
+    packed, scales, offsets, bits, group_values, in_features = _kernel_args(qt)
+    out: torch.Tensor = torch.ops.dynquant.moe_grouped_gemv(
+        x.contiguous(),
+        packed,
+        scales,
+        offsets,
+        seg_offsets,
+        bits,
+        group_values,
+        in_features,
+        out_features,
+    )
+    return out if bias is None else out + bias
 
 
 def embedding_lookup(qt: QuantTensor, ids: torch.Tensor) -> torch.Tensor:

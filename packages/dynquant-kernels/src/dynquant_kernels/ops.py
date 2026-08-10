@@ -120,3 +120,39 @@ def _gemv_fake(
     # kernel before the call, so a traced graph only ever reaches this op with a
     # shape the kernel accepts.
     return x.new_empty((x.shape[0], packed.shape[0]))
+
+
+@torch.library.register_fake("dynquant::moe_grouped_gemv")
+def _moe_grouped_gemv_fake(
+    x: torch.Tensor,
+    packed: torch.Tensor,
+    scales: torch.Tensor,
+    offsets: torch.Tensor | None,
+    seg_offsets: torch.Tensor,
+    bits: int,
+    group_values: int,
+    in_features: int,
+    out_features: int,
+) -> torch.Tensor:
+    # The shape rule reads `seg_offsets.shape`, never its values. That is not a
+    # convenience -- it is the property the whole op is designed around. A grouped
+    # MoE forward is traceable exactly to the extent that nothing downstream needs
+    # to know where the router sent anything, and a meta kernel that had to read
+    # the table would prove the op could not be traced.
+    _check(x.dim() == 2, lambda: f"moe_grouped_gemv: x must be 2-D, got {tuple(x.shape)}")
+    _check(
+        x.shape[1] == in_features,
+        lambda: f"moe_grouped_gemv: x has {x.shape[1]} columns but in_features is {in_features}",
+    )
+    _check(
+        seg_offsets.dim() == 1,
+        lambda: f"moe_grouped_gemv: seg_offsets must be 1-D, got {tuple(seg_offsets.shape)}",
+    )
+    _check(
+        packed.shape[0] == (seg_offsets.shape[0] - 1) * out_features,
+        lambda: (
+            f"moe_grouped_gemv: a bank of {packed.shape[0]} rows is not "
+            f"{seg_offsets.shape[0] - 1} experts of {out_features}"
+        ),
+    )
+    return x.new_empty((x.shape[0], out_features))

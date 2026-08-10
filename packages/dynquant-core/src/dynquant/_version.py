@@ -33,18 +33,27 @@ __all__ = [
 
 __version__ = "0.3.0"
 
-KERNEL_ABI_VERSION = 2
+KERNEL_ABI_VERSION = 3
 """Current kernel ABI the Python side speaks.
 
-2 added ``dequant`` and ``gemv`` -- the ops the packed runtime calls on every
-forward. 1 shipped only the build-pipeline probes.
+3 added ``moe_grouped_gemv``, the packed MoE decode path. 2 added ``dequant`` and
+``gemv`` -- the ops the packed runtime calls on every forward. 1 shipped only the
+build-pipeline probes.
 """
 
 MIN_KERNEL_ABI_VERSION = 2
 """Oldest kernel ABI this core still accepts. Raise to drop old wheels.
 
-Raised to 2 with the ops above: an ABI-1 wheel loads fine and then fails on the
-first quantized Linear, so refusing it at import is strictly better.
+Raised to 2 with ``dequant`` and ``gemv``: an ABI-1 wheel loads fine and then
+fails on the first quantized Linear, so refusing it at import is strictly better.
+
+Deliberately *not* raised to 3. ``moe_grouped_gemv`` is additive -- an ABI-2 wheel
+serves every model it served before, just with the Python expert loop instead of
+one launch -- so the runtime asks whether the op exists rather than making the
+whole wheel invalid. The rule the two versions encode is different: bump
+``KERNEL_ABI_VERSION`` when the binary gains or changes a schema, and raise this
+only when an older binary would produce a *failure or a wrong number* rather than
+a slower correct one.
 """
 
 CHECKPOINT_FORMAT_VERSION = 2

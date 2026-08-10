@@ -234,7 +234,8 @@ if(DYNQUANT_WITH_CUDA)
        csrc/probe/probe_cuda.cu
        csrc/probe/probe_cublaslt.cpp
        csrc/quant/dequant.cu
-       csrc/gemv/gemv.cu)
+       csrc/gemv/gemv.cu
+       csrc/moe/grouped_gemv.cu)
 endif()
 
 Python_add_library(_C MODULE WITH_SOABI ${_dq_sources})

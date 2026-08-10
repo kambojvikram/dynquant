@@ -70,17 +70,26 @@ class _Experts(nn.Module):
         has_gate: bool = False,
         is_transposed: bool = False,
         num_experts: int | None = None,
+        up_bias: torch.Tensor | None = None,
+        down_bias: torch.Tensor | None = None,
     ) -> None:
         super().__init__()
         self.num_experts = int(num_experts if num_experts is not None else up.shape[0])
         self.has_gate = has_gate
-        self.has_bias = False
+        # Per-expert, ``[E, out]``, gathered to per-row by the dispatch. LFM2 has none;
+        # GPT-OSS does, and it is the one argument to the fused op that has no analogue
+        # in the loop's per-expert slicing -- so a fixture that never sets it leaves the
+        # fused path's only unshared line untested.
+        self.has_bias = up_bias is not None
         self.is_transposed = is_transposed
         if has_gate:
             self.gate_up_proj = up
+            self.gate_up_proj_bias = up_bias
         else:
             self.up_proj = up
+            self.up_proj_bias = up_bias
         self.down_proj = down
+        self.down_proj_bias = down_bias
 
     def act_fn(self, hidden: torch.Tensor) -> torch.Tensor:
         return hidden
@@ -441,3 +450,290 @@ def test_the_pack_report_names_the_dispatch_it_landed_on() -> None:
 
     report.experts_dispatch = "eager"
     assert "moved from 'grouped_mm' to 'eager'" in report.summary()
+
+
+# ---------------------------------------------------------------------------
+# The fused grouped path (P8)
+#
+# What these can and cannot reach. The kernel itself is CUDA and its numerical
+# parity belongs in ``tests/test_kernels_parity.py``, which skips without a built
+# wheel. What is testable here -- and what actually broke twice while it was being
+# written -- is everything between the dispatch and the launch: what the segment
+# table is, which calls are allowed to take it, and whether the caller still
+# synchronizes. A kernel that is bit-perfect and reached with the wrong band is a
+# silently wrong model, and none of that failure lives in the ``.cu`` file.
+# ---------------------------------------------------------------------------
+
+
+def test_the_segment_table_is_device_resident_int32_with_sentinels_dropped() -> None:
+    """``[E + 1]`` int32, and nothing in it was read on the host.
+
+    Three properties, each load-bearing for a different reason. **int32** because the
+    kernel does two ``__ldg`` loads per block against that type and a wider table would
+    read halves of neighbouring entries. **A tensor, not a list**, because the whole
+    saving of the fused path is that this never leaves the device. And **sentinels
+    dropped**, which is older than P8 but is now the thing a device table has to keep
+    getting right unassisted: an expert-parallel id lands past the end and the
+    ``[:num_experts]`` slice discards it, so the last offset counts the pairs this rank
+    holds and every sentinel row sits beyond it.
+
+    Turns red when: the table goes back to a list (the annotation would still say
+    Tensor), widens to int64 to match ``bincount``, or starts counting clamped ids --
+    which would widen one band and displace every band after it.
+    """
+    from dynquant.runtime.experts import _segment_offsets
+
+    # Four real experts and two sentinels at 4 and 5, already sorted as the dispatch
+    # sorts them.
+    ids = torch.tensor([0, 0, 0, 1, 3, 3, 4, 5])
+    seg = _segment_offsets(ids, num_experts=4)
+
+    assert isinstance(seg, torch.Tensor)
+    assert seg.dtype is torch.int32
+    assert seg.shape == (5,)
+    # 3 in expert 0, 1 in expert 1, none in 2, 2 in 3, and the two sentinels excluded.
+    assert seg.tolist() == [0, 3, 4, 4, 6]
+
+
+def test_each_thing_the_kernel_cannot_do_falls_back_instead_of_raising() -> None:
+    """Four refusals, and every one of them is a supported configuration.
+
+    This is the test that keeps the fused path from becoming a requirement. A dense
+    bank in a partly-packed model, a transposed bank, an ABI-2 wheel, and an fp32 model
+    over fp16 scales all reach ``_grouped_linear_packed``, and each has a correct answer
+    that is not the kernel's. ``_fusable`` returning ``None`` is how they get it.
+
+    Turns red when: any of the four starts returning the tensor -- for the transposed
+    case that is not a crash but a silent read of the wrong expert's rows, at the right
+    shape.
+    """
+    from dynquant.quant.device import quantize_tensor
+    from dynquant.runtime import ops as ops_module
+    from dynquant.runtime.experts import _fusable
+    from dynquant.runtime.linear import DynQuantExpertBank
+
+    torch.manual_seed(0)
+    bank = DynQuantExpertBank(
+        quantize_tensor(torch.randn(3, 16, 8).half() * 0.05, bits=4, device=None)[0],
+        out_dtype=torch.float16,
+    )
+    x = torch.zeros(5, 8, dtype=torch.float16)
+
+    saved = (ops_module.has_grouped_gemv, ops_module.uses_compiled_kernels)
+    ops_module.has_grouped_gemv = lambda: True  # type: ignore[assignment]
+    ops_module.uses_compiled_kernels = lambda _t: True  # type: ignore[assignment]
+    try:
+        # The configuration everything else is a deviation from. Compared by buffer
+        # address: `weight_qt` rebuilds its view from the module's buffers on every
+        # read, so two calls are equal and never identical.
+        fused = _fusable(x, bank, is_transposed=False)
+        assert fused is not None
+        assert fused.packed.data_ptr() == bank.weight_qt.packed.data_ptr()
+
+        # 1. transposed: the flattening the row arithmetic assumes is the other one.
+        assert _fusable(x, bank, is_transposed=True) is None
+
+        # 2. a dense bank in a mixed model: nothing packed to point at.
+        dense = nn.Parameter(torch.randn(3, 16, 8).half(), requires_grad=False)
+        assert _fusable(x, dense, is_transposed=False) is None
+
+        # 3. fp32 activations over fp16 scales: one scalar type, both operands.
+        assert _fusable(x.float(), bank, is_transposed=False) is None
+
+        # 4. an ABI-2 wheel, which is a wheel this runtime deliberately still loads.
+        ops_module.has_grouped_gemv = lambda: False  # type: ignore[assignment]
+        assert _fusable(x, bank, is_transposed=False) is None
+    finally:
+        ops_module.has_grouped_gemv, ops_module.uses_compiled_kernels = saved
+
+
+class _StandInGroupedGemv:
+    """The compiled op's contract, in torch, checking what it was handed.
+
+    Not a mock. It asserts that every buffer it received is the one the bank actually
+    holds -- by address, not by value -- and then computes the documented answer. So a
+    test built on it fails both when the arithmetic is wrong and when the marshalling
+    is: passing ``scales`` where ``offsets`` belongs, or the flattened row count where
+    ``out_features`` belongs, produces the right shape and the wrong model, and neither
+    would be visible from the output alone at these tolerances.
+
+    Reading ``seg`` with ``.tolist()`` here is not the sync the fused path exists to
+    remove. This stands in for a device kernel that reads the same two values with two
+    loads; what matters is that the *caller* did not read them, which is what
+    :func:`test_the_fused_path_agrees_with_the_loop_and_stops_synchronizing` counts.
+    """
+
+    def __init__(self, qt: Any, out_features: int) -> None:
+        self.qt = qt
+        self.out_features = out_features
+        self.calls = 0
+
+    def __call__(
+        self,
+        x: torch.Tensor,
+        packed: torch.Tensor,
+        scales: torch.Tensor,
+        offsets: torch.Tensor | None,
+        seg: torch.Tensor,
+        bits: int,
+        group_values: int,
+        in_features: int,
+        out_features: int,
+    ) -> torch.Tensor:
+        assert packed.data_ptr() == self.qt.packed.data_ptr()
+        assert scales.data_ptr() == self.qt.scales.data_ptr()
+        if self.qt.offsets is None:
+            assert offsets is None
+        else:
+            # By address. An earlier version asserted only that it was non-None, and a
+            # mutation passing `scales` in this slot survived: same shape, same dtype,
+            # plausible numbers, a different model.
+            assert offsets is not None
+            assert offsets.data_ptr() == self.qt.offsets.data_ptr()
+        assert bits == self.qt.bits
+        assert in_features == self.qt.in_features
+        assert out_features == self.out_features
+        assert seg.dtype is torch.int32 and seg.device == packed.device
+        assert packed.shape[0] == (seg.numel() - 1) * out_features
+        self.calls += 1
+
+        # Flattened, because that is how the kernel addresses it: a bank is one
+        # ``[E * out, in]`` buffer and expert e is a row band of it.
+        dense = self.qt.dequantize(dtype=x.dtype).reshape(-1, in_features)
+        out = x.new_zeros((x.shape[0], out_features))
+        bounds = seg.tolist()
+        for expert in range(len(bounds) - 1):
+            start, stop = bounds[expert], bounds[expert + 1]
+            if start == stop:
+                continue
+            band = dense[expert * out_features : (expert + 1) * out_features]
+            out[start:stop] = F.linear(x[start:stop], band)
+        return out
+
+
+def test_the_fused_path_agrees_with_the_loop_and_stops_synchronizing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same tokens, same answer, and two host reads per layer become none.
+
+    The agreement half is what makes the fused path shippable: a packed LFM2 scored
+    through the loop and served through the kernel has to be one model, or the panel's
+    accuracy numbers describe something nobody can download. It is asserted as exact
+    equality, not a tolerance -- both paths dequantize the same codes with the same
+    scales and call the same ``F.linear``, so any difference at all is a difference in
+    *which* codes, not in rounding.
+
+    The banks carry biases, which is the one line the two paths do not share: the loop
+    adds it in place after walking the experts and the fused path adds it to the kernel's
+    return. Without a biased fixture that addition can be deleted outright and every
+    other assertion here still holds.
+
+    The counting half is what the path is *for*. ``.tolist()`` on the segment table is a
+    device synchronization, and the loop takes one per bank per layer -- 44 per token on
+    the 22-layer, two-bank model this campaign quantized. Counting them is the only way
+    to state that as a property rather than a hope, because removing the sync changes no
+    output: a version that computed the list and then ignored it would pass every other
+    test in this file.
+
+    Turns red when: the caller goes back to building the host list eagerly, the two
+    banks stop sharing one table, or the fused branch stops being taken at all -- the
+    call counter catches the last one, which an agreement test alone cannot, since a
+    fused path that silently never runs agrees with the loop perfectly.
+    """
+    from dynquant.quant.device import quantize_tensor
+    from dynquant.runtime import ops as ops_module
+    from dynquant.runtime.linear import DynQuantExpertBank
+
+    torch.manual_seed(0)
+    up = torch.randn(4, 48, 32).half() * 0.05
+    down = torch.randn(4, 32, 48).half() * 0.05
+    up_bank = DynQuantExpertBank(
+        quantize_tensor(up, bits=4, device=None)[0], out_dtype=torch.float16
+    )
+    down_bank = DynQuantExpertBank(
+        quantize_tensor(down, bits=4, device=None)[0], out_dtype=torch.float16
+    )
+    experts = _Experts(
+        up_bank,
+        down_bank,
+        up_bias=torch.randn(4, 48).half() * 0.1,
+        down_bias=torch.randn(4, 32).half() * 0.1,
+    )
+
+    hidden = (torch.randn(6, 32) * 0.1).half()
+    # Two shapes the bands have to survive, both present on purpose. **Expert 2 is
+    # unreached** -- the band whose start equals its stop, where the loop skips and the
+    # kernel's block returns immediately. And **ids 4 and 5 are expert-parallel
+    # sentinels**, which sort to the tail and must be counted out of every band rather
+    # than folded into one: fold them into a low bin and the bands, being offsets into a
+    # sorted array, displace every real row after it.
+    index = torch.tensor([[0, 3], [1, 4], [3, 3], [0, 0], [1, 5], [0, 3]])
+    weights = torch.full((6, 2), 0.5, dtype=torch.float16)
+
+    original_tolist = torch.Tensor.tolist
+    seen: list[int] = []
+
+    def counting_tolist(self: torch.Tensor) -> Any:
+        # Only the segment table is of interest; the stand-in's own read is one of
+        # these, so it is subtracted by construction -- it is not installed yet.
+        if self.dtype is torch.int32 and self.ndim == 1:
+            seen.append(self.numel())
+        return original_tolist(self)
+
+    monkeypatch.setattr(torch.Tensor, "tolist", counting_tolist)
+
+    want = dynquant_experts_forward(experts, hidden, index, weights)
+    assert seen == [5, 5], f"the loop should read the table once per bank, got {seen}"
+    assert torch.isfinite(want).all()
+
+    seen.clear()
+    up_op = _StandInGroupedGemv(up_bank.weight_qt, 48)
+    down_op = _StandInGroupedGemv(down_bank.weight_qt, 32)
+    dispatch = {
+        up_bank.weight_qt.packed.data_ptr(): up_op,
+        down_bank.weight_qt.packed.data_ptr(): down_op,
+    }
+
+    def route(x: torch.Tensor, packed: torch.Tensor, *rest: Any) -> torch.Tensor:
+        return dispatch[packed.data_ptr()](x, packed, *rest)
+
+    monkeypatch.setattr(ops_module, "has_grouped_gemv", lambda: True)
+    monkeypatch.setattr(ops_module, "uses_compiled_kernels", lambda _t: True)
+    monkeypatch.setattr(torch.ops.dynquant, "moe_grouped_gemv", route, raising=False)
+
+    got = dynquant_experts_forward(experts, hidden, index, weights)
+
+    assert up_op.calls == 1 and down_op.calls == 1
+    # The stand-in's own reads are the only ones left, and it reads the table it was
+    # handed -- so two, not four. The caller took none.
+    assert seen == [5, 5], f"the fused path added a host read of the table: {seen}"
+    assert torch.equal(got, want)
+
+
+def test_a_sentinel_never_widens_a_band_it_sorts_after() -> None:
+    """The bands index a sorted array, so one over-wide band steals the next one's rows.
+
+    Distinct from :func:`test_routing_past_the_expert_count_contributes_nothing`, which
+    checks that a sentinel *contributes* nothing -- it is masked twice over, so that
+    holds even when the table is wrong. This checks the second thing a sentinel must not
+    do: occupy a slot. Fold one into a low bin and the cumulative sum shifts every band
+    after it, and the rows it displaces are real tokens that then get some other expert's
+    weight, at the right shape and with no mask to catch them.
+
+    Three experts and one sentinel is the smallest fixture that can show it. Ids
+    ``[0, 1, 2, 4]`` sort with the sentinel last; fold it in anywhere below expert 2 and
+    expert 2's single row moves into the band before it. Token 1 is then multiplied by
+    3.0 instead of 5.0 -- finite, plausible, and wrong.
+
+    Turns red when: the segment table is built from clamped, wrapped, or otherwise
+    in-range-forced ids instead of the raw ones the ``[:num_experts]`` slice discards.
+    An A/B between the fused and loop paths cannot see this, because both read the same
+    table; only a known answer can.
+    """
+    experts = _scalar_experts([2.0, 3.0, 5.0], torch.float32)
+    hidden = torch.ones(2, 1)
+    index = torch.tensor([[0, 1], [2, 4]])
+
+    out = dynquant_experts_forward(experts, hidden, index, torch.ones(2, 2))
+
+    assert torch.equal(out.reshape(-1), torch.tensor([5.0, 5.0]))

@@ -131,4 +131,41 @@ inline nbit::RowGeometry resolve_geometry(const char* op, const at::Tensor& pack
   return geom;
 }
 
+// The extra contract a grouped MoE call has on top of one packed tensor.
+//
+// Separate from `resolve_geometry` because it is about a *bank*: the relation
+// between the segment table, the number of experts, and the fact that the packed
+// rows are E banks of `out_features` stacked, not one matrix. Shared by the CPU
+// reference and the CUDA kernel so that the two cannot come to disagree about what
+// they accept -- the failure this campaign has now found in nine places, where a
+// second copy of a rule agrees with the first until the case that separates them.
+inline void check_grouped(const at::Tensor& x, const at::Tensor& packed, const at::Tensor& scales,
+                          const at::Tensor& seg_offsets, int64_t in_features,
+                          int64_t out_features) {
+  const char* op = "moe_grouped_gemv";
+  TORCH_CHECK(x.dim() == 2, op, ": x must be 2-D [total_rows, in_features], got ", x.sizes());
+  TORCH_CHECK(x.size(1) == in_features, op, ": x has ", x.size(1),
+              " columns but in_features is ", in_features);
+  TORCH_CHECK(x.is_contiguous(), op, ": x must be contiguous");
+  TORCH_CHECK(x.scalar_type() == scales.scalar_type(), op, ": x dtype ", x.scalar_type(),
+              " != scales dtype ", scales.scalar_type());
+  TORCH_CHECK(out_features > 0, op, ": out_features must be positive, got ", out_features);
+  TORCH_CHECK(seg_offsets.dim() == 1, op, ": seg_offsets must be 1-D [num_experts + 1], got ",
+              seg_offsets.sizes());
+  TORCH_CHECK(seg_offsets.size(0) >= 2, op, ": seg_offsets needs at least [0, n]; got ",
+              seg_offsets.size(0), " entries");
+  // int32 and not int64. The kernel reads two of these per block and the values are
+  // token counts, which cannot exceed a batch; carrying them as int64 would double
+  // the loads for a range no model reaches.
+  TORCH_CHECK(seg_offsets.scalar_type() == at::kInt, op, ": seg_offsets must be int32, got ",
+              seg_offsets.scalar_type());
+  const int64_t num_experts = seg_offsets.size(0) - 1;
+  TORCH_CHECK(packed.size(0) == num_experts * out_features, op, ": the bank has ", packed.size(0),
+              " rows, which is not ", num_experts, " experts of ", out_features,
+              ". The segment table and the packed bank describe different models.");
+  TORCH_CHECK(x.device() == packed.device() && seg_offsets.device() == packed.device(), op,
+              ": x is on ", x.device(), ", seg_offsets on ", seg_offsets.device(),
+              ", and the bank on ", packed.device());
+}
+
 }  // namespace dynquant

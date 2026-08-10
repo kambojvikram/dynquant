@@ -29,7 +29,7 @@ __all__ = [
     "unavailable_reason",
 ]
 
-ABI_VERSION: int = 2
+ABI_VERSION: int = 3
 """ABI this shell expects, mirroring ``dynquant._version.KERNEL_ABI_VERSION``.
 
 Repeated here rather than imported so this package stays independent of

@@ -20,7 +20,12 @@
 // core would reach for `torch.ops.dynquant.gemv` and get an AttributeError deep
 // inside a forward pass; MIN_KERNEL_ABI_VERSION was raised to 2 alongside so the
 // mismatch is caught at import with a message naming the wheel to install.
-#define DYNQUANT_ABI_VERSION 2
+// 2 -> 3: added `moe_grouped_gemv`. Unlike the 1 -> 2 step this does NOT raise
+// MIN_KERNEL_ABI_VERSION. An ABI-2 wheel is missing the op and nothing else, and
+// the grouped MoE path is an optimisation over a Python loop that still works --
+// so core feature-detects the op and falls back, rather than refusing to load a
+// wheel that can serve every model it could serve yesterday.
+#define DYNQUANT_ABI_VERSION 3
 
 // Bit-widths every kernel is templated over. Kept in sync with
 // `dynquant.constants.BIT_OPTIONS` by the same test.

@@ -49,6 +49,11 @@ from typing import TYPE_CHECKING, Any, Protocol
 import torch
 import torch.nn.functional as F
 
+from dynquant.quant.tensor import QuantLayout, QuantTensor
+
+from . import ops
+from .linear import DynQuantExpertBank
+
 if TYPE_CHECKING:
     from torch import nn
 
@@ -104,10 +109,41 @@ def _expert_weight(bank: Any, expert: int, dtype: torch.dtype) -> torch.Tensor:
     return weight.to(dtype)
 
 
+def _fusable(x: torch.Tensor, bank: Any, *, is_transposed: bool) -> QuantTensor | None:
+    """The bank's packed tensor if one grouped launch can serve this call, else ``None``.
+
+    Four conditions, and each is a thing the kernel cannot do rather than a thing it has
+    not been tuned for:
+
+    * **the bank is packed.** A ``--map`` can leave one layer dense while packing
+      another, and a 16-bit band is never packed at all, so a mixed model reaches here
+      and the dense half has no packed buffer to read.
+    * **it is not transposed.** The kernel addresses expert ``e`` as rows
+      ``[e * out_features, (e + 1) * out_features)`` of an ``[E * out, in]`` buffer, which
+      is what ``F.linear`` orientation flattens to. An ``[E, in, out]`` bank flattens the
+      other way and the same arithmetic would read a different expert's rows -- silently,
+      and with the right shape.
+    * **the op exists and the tensor is on the GPU.** ``moe_grouped_gemv`` arrived in ABI
+      3 and the minimum was deliberately not raised with it, so an older wheel is a
+      supported configuration and it lands on the loop below.
+    * **the scales share the activation's dtype.** The kernel is templated on one scalar
+      type for both; the reference path instead casts each expert's weight to ``x.dtype``,
+      so it serves the mismatch the kernel would reject.
+    """
+    if is_transposed or not isinstance(bank, DynQuantExpertBank):
+        return None
+    if not ops.has_grouped_gemv():
+        return None
+    qt = bank.weight_qt
+    if not ops.uses_compiled_kernels(qt) or qt.layout is not QuantLayout.LINEAR:
+        return None
+    return qt if qt.scales.dtype == x.dtype else None
+
+
 def _grouped_linear_packed(
     x: torch.Tensor,
     bank: Any,
-    offsets: list[int],
+    seg: torch.Tensor,
     *,
     bias: torch.Tensor | None,
     is_transposed: bool,
@@ -115,16 +151,31 @@ def _grouped_linear_packed(
 ) -> torch.Tensor:
     """``_grouped_linear`` over segments, taking each segment's weight from ``bank[e]``.
 
-    ``offsets[e]`` to ``offsets[e + 1]`` is expert ``e``'s band of the sorted rows, so an
-    expert no token reached costs nothing: it is skipped, never dequantized. That is the
-    difference from ``grouped_mm``, which passes the whole bank and lets the kernel's
-    offsets select -- it can afford to, having no per-expert decode to skip.
+    ``seg[e]`` to ``seg[e + 1]`` is expert ``e``'s band of the sorted rows. Two
+    implementations answer that, and which one runs is the whole of P8.
 
-    Rows past ``offsets[-1]`` are the EP sentinels. The grouped kernel leaves them
-    uninitialised and relies on a post-mask; this zeroes them, because a Python loop that
-    skipped them would otherwise hand ``torch.empty``'s contents to the next projection,
-    and one NaN there survives the mask that only covers the last one.
+    The **fused** path hands ``seg`` to the kernel still on device and gets one launch.
+    The **loop** path has to read the same numbers on the host, and the ``.tolist()``
+    below is where that costs a synchronization -- once per bank per layer, 44 per token
+    on a 22-layer two-bank model. It is taken here rather than by the caller precisely so
+    the fused path does not pay for it: a caller that built the list eagerly would have
+    synchronized before knowing whether anything needed the answer.
+
+    An expert no token reached costs nothing either way -- skipped by the loop, an
+    immediate return by the kernel's block. That is the difference from ``grouped_mm``,
+    which passes the whole bank and lets the kernel's offsets select; it can afford to,
+    having no per-expert decode to skip.
+
+    Rows past ``seg[-1]`` are the EP sentinels, and both paths leave them zero. The
+    grouped kernel upstream leaves them uninitialised and relies on a post-mask; a
+    ``torch.empty`` handed to the next projection puts one NaN past a mask that only
+    covers the last one.
     """
+    qt = _fusable(x, bank, is_transposed=is_transposed)
+    if qt is not None:
+        return ops.grouped_quantized_matmul(x, qt, seg, out_features=out_features, bias=bias)
+
+    offsets = seg.tolist()
     out = x.new_zeros((x.size(0), out_features))
     for expert in range(len(offsets) - 1):
         start, stop = offsets[expert], offsets[expert + 1]
@@ -138,8 +189,8 @@ def _grouped_linear_packed(
     return out
 
 
-def _segment_offsets(sorted_expert_ids: torch.Tensor, num_experts: int) -> list[int]:
-    """Where each expert's band starts, as Python ints, plus the end of the last one.
+def _segment_offsets(sorted_expert_ids: torch.Tensor, num_experts: int) -> torch.Tensor:
+    """Where each expert's band starts, plus the end of the last one. ``[E + 1]`` int32.
 
     Takes the ids *unclamped*, and the ``[:num_experts]`` slice is what makes that safe:
     an expert-parallel sentinel lands in a bin past the end and is dropped, so the last
@@ -148,13 +199,14 @@ def _segment_offsets(sorted_expert_ids: torch.Tensor, num_experts: int) -> list[
     whichever expert they were clamped to, and since the bands index a sorted array, one
     over-wide band displaces all the ones after it.
 
-    Python ints and not a tensor: the loop above indexes with them, and keeping them on
-    device would sync once per expert instead of once per layer. The single
-    ``.tolist()`` is the data-dependent step this implementation cannot avoid and the
-    fused kernel does not have to take.
+    Stays on device, and int32 because that is what the kernel's two loads per block
+    read -- these are token counts, and a bank that overflowed int32 would have
+    overflowed the activation first. Nothing here reads a value: ``bincount`` and
+    ``cumsum`` are both shape-determined, so the whole function traces. The host read is
+    :func:`_grouped_linear_packed`'s, taken only when the loop is what runs.
     """
     counts = torch.bincount(sorted_expert_ids, minlength=num_experts)[:num_experts]
-    return [0, *torch.cumsum(counts, dim=0).tolist()]
+    return torch.cat([counts.new_zeros(1), counts.cumsum(dim=0)]).to(torch.int32)
 
 
 def dynquant_experts_forward(
@@ -191,7 +243,7 @@ def dynquant_experts_forward(
     # sit at the tail shifts every later band off its own rows. A two-expert test with
     # one sentinel per token returned expert 0's answer for both.
     sentinel_mask = (expert_ids_g >= num_experts).unsqueeze(-1)
-    offsets = _segment_offsets(expert_ids_g, num_experts)
+    seg = _segment_offsets(expert_ids_g, num_experts)
     # Clamped only so the bias gather below stays in range; the bands are already fixed.
     expert_ids_g = expert_ids_g.clamp(max=num_experts - 1)
 
@@ -205,7 +257,7 @@ def dynquant_experts_forward(
     proj_out = _grouped_linear_packed(
         selected_hidden_states_g,
         weights,
-        offsets,
+        seg,
         bias=None if biases is None else biases[expert_ids_g],
         is_transposed=self.is_transposed,
         out_features=_out_features(weights, is_transposed=self.is_transposed),
@@ -217,7 +269,7 @@ def dynquant_experts_forward(
     proj_out = _grouped_linear_packed(
         proj_out,
         down,
-        offsets,
+        seg,
         bias=None if not self.has_bias else self.down_proj_bias[expert_ids_g],
         is_transposed=self.is_transposed,
         out_features=hidden_dim,

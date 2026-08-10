@@ -179,6 +179,66 @@ at::Tensor gemv_cpu(const at::Tensor& x, const at::Tensor& packed, const at::Ten
   return at::matmul(x.to(at::kFloat), weight.to(at::kFloat).t()).to(x.scalar_type());
 }
 
+
+// --- moe_grouped_gemv ------------------------------------------------------
+//
+// Per expert: take that expert's band of the bank, dequantize it, matmul its
+// segment of the activation. Which is exactly what
+// `dynquant.runtime.experts._grouped_linear_packed` does in Python, and that is
+// the point -- the CUDA kernel's claim is that it computes the same thing without
+// the host round-trip, so the reference has to be the thing it replaces rather
+// than a re-derivation of it.
+//
+// This side also *validates the segment table*, which the CUDA side structurally
+// cannot: the table is device data, and a kernel that read it back would reinstate
+// the synchronization the kernel exists to remove. So the contract is that a
+// malformed table raises here and is merely clamped there, and the tests exercise
+// the CPU path to pin it.
+at::Tensor moe_grouped_gemv_cpu(const at::Tensor& x, const at::Tensor& packed,
+                                const at::Tensor& scales, const std::optional<at::Tensor>& offsets,
+                                const at::Tensor& seg_offsets, int64_t bits, int64_t group_values,
+                                int64_t in_features, int64_t out_features) {
+  resolve_geometry("moe_grouped_gemv", packed, scales, offsets, bits, group_values, in_features);
+  check_grouped(x, packed, scales, seg_offsets, in_features, out_features);
+
+  const int64_t total_rows = x.size(0);
+  const int64_t num_experts = seg_offsets.size(0) - 1;
+  // Zeros, not empty: rows past the last segment are the expert-parallel sentinels
+  // that no expert owns, and handing `torch.empty`'s contents to the next
+  // projection is how one NaN becomes the whole layer.
+  auto out = at::zeros({total_rows, out_features}, x.options());
+  if (total_rows == 0) {
+    return out;
+  }
+
+  const auto table = seg_offsets.to(at::kCPU).contiguous();
+  const auto* bound = table.const_data_ptr<int32_t>();
+  TORCH_CHECK(bound[0] == 0, "moe_grouped_gemv: seg_offsets must start at 0, got ", bound[0]);
+  for (int64_t e = 0; e < num_experts; ++e) {
+    const int64_t start = bound[e];
+    const int64_t stop = bound[e + 1];
+    TORCH_CHECK(start <= stop, "moe_grouped_gemv: expert ", e, " spans [", start, ", ", stop,
+                "), which runs backwards; seg_offsets must be non-decreasing");
+    TORCH_CHECK(stop <= total_rows, "moe_grouped_gemv: expert ", e, " ends at ", stop,
+                " but x has only ", total_rows, " rows");
+    if (start == stop) {
+      continue;
+    }
+    const int64_t band = e * out_features;
+    const auto band_packed = packed.narrow(0, band, out_features);
+    const auto band_scales = scales.narrow(0, band, out_features);
+    const std::optional<at::Tensor> band_offsets =
+        offsets.has_value() ? std::optional<at::Tensor>(offsets->narrow(0, band, out_features))
+                            : std::nullopt;
+    const auto weight =
+        dequant_cpu(band_packed, band_scales, band_offsets, bits, group_values, in_features);
+    const auto rows = x.narrow(0, start, stop - start);
+    out.narrow(0, start, stop - start)
+        .copy_(at::matmul(rows.to(at::kFloat), weight.to(at::kFloat).t()).to(x.scalar_type()));
+  }
+  return out;
+}
+
 }  // namespace
 
 TORCH_LIBRARY(dynquant, m) {
@@ -212,6 +272,17 @@ TORCH_LIBRARY(dynquant, m) {
   m.def(
       "gemv(Tensor x, Tensor packed, Tensor scales, Tensor? offsets, int bits, "
       "int group_values, int in_features) -> Tensor");
+
+  // The grouped MoE path. `seg_offsets` is [num_experts + 1] int32 on the same
+  // device as the activation: it stays a tensor precisely so the caller never has
+  // to read it, which is the difference between this and the Python loop it
+  // replaces. `out_features` is explicit for the same reason `group_values` is --
+  // the bank arrives flattened to [num_experts * out_features, ...], and a meta
+  // kernel has that product but no way to factor it.
+  m.def(
+      "moe_grouped_gemv(Tensor x, Tensor packed, Tensor scales, Tensor? offsets, "
+      "Tensor seg_offsets, int bits, int group_values, int in_features, "
+      "int out_features) -> Tensor");
 }
 
 TORCH_LIBRARY_IMPL(dynquant, CPU, m) {
@@ -220,6 +291,7 @@ TORCH_LIBRARY_IMPL(dynquant, CPU, m) {
   m.impl("probe_gemm", TORCH_FN(probe_gemm_cpu));
   m.impl("dequant", TORCH_FN(dequant_cpu));
   m.impl("gemv", TORCH_FN(gemv_cpu));
+  m.impl("moe_grouped_gemv", TORCH_FN(moe_grouped_gemv_cpu));
 }
 
 }  // namespace dynquant
