@@ -4,10 +4,12 @@ Every experiment run on DynQuant since the package was built, what it measured, 
 full record lives. Nothing here is taken from the paper; everything is measured on this
 repository's own code, all of it on a single NVIDIA A100 80GB PCIe.
 
-There are fourteen campaigns. They answer eighteen questions, in this order — phase 4
-answers five of them, because whether a benchmark can read damage, whether the model has
+There are fourteen campaigns. They answer twenty questions, in this order — phase 4
+answers seven of them, because whether a benchmark can read damage, whether the model has
 already seen its answers, whose bytes “matched bytes” means, which of two prices chose the
-widths, and whether the driver that runs the arms runs at all are five separate failures:
+widths, whether the driver that runs the arms runs at all, how many of its variants can be
+published, and whether the model it scores is the one a person would download are seven
+separate failures:
 
 | # | question | verdict | full record |
 |---|---|---|---|
