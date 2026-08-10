@@ -84,14 +84,36 @@ say "copying the grouped_mm side aside: $PANEL -> $KEEP"
 cp -a "$PANEL" "$KEEP"
 say "$(find "$KEEP" -name '*.json' | wc -l) json file(s) preserved"
 
-say "re-scoring bf16, dq_4b, dq_3b on eager"
+# 6. Stamp the re-score's own progress lines as they arrive, rather than polling a file the way
+#    `/workspace/rate.sh` does. Two reasons it has to happen here and not afterwards. The sampler
+#    resolves its target with `ls -t` *once*, outside its loop, so it is pinned to the panel's log
+#    and will not follow this run -- without this, the re-score produces no length evidence at all.
+#    And this is the run where length evidence is worth most: the same weights are scored on both
+#    dispatches, so length is held fixed by construction and a per-block ratio measures the
+#    dispatch multiplier directly, where the panel's profile could only bound it at 1.82.
+#    `progress_printer` passes `flush=True`, so a stamp taken as the line arrives is the line's own
+#    time and not a flush boundary -- this profile has none of the 15-second poll slop the panel's
+#    carries.
+RESCORE_LOG="$RUN/rescore.log"
+stamp() { while IFS= read -r line; do printf '%s   %s\n' "$(date -u +%FT%TZ)" "$line"; done; }
+
+say "re-scoring bf16, dq_4b, dq_3b on eager -- stamped to $RESCORE_LOG"
 cd "$CLONE"
 "$PY" experiments/phase4/arms_lfm2.py run \
   --model "$RUN/lfm25-8b-a1b.text2sql/merged" \
   --stats "$RUN/lfm25-8b-a1b.text2sql/stats/dynquant_stats.json" \
   --moments "$RUN/lfm25-8b-a1b.text2sql/stats/dynquant_moments.safetensors" \
   --out "$PANEL" --device cuda --limit 12000 --batch-size 32 \
-  --resume --rescore bf16,dq_4b,dq_3b --experts-impl eager
+  --resume --rescore bf16,dq_4b,dq_3b --experts-impl eager 2>&1 | stamp | tee "$RESCORE_LOG"
+
+# 7. Best-effort for the same reason step 4 is: the arm names are positional. A resumed re-score,
+#    or a `--rescore` list edited without editing RESCORE_ARMS, changes the arm count, and the
+#    profile refuses rather than filing dq_3b's blocks under bf16's name. The stamped log is the
+#    artifact; the json is a convenience over it.
+"$PY" experiments/phase4/rate_profile.py "$RESCORE_LOG" \
+  --arms "${RESCORE_ARMS:-bf16,dq_4b,dq_3b}" \
+  --out "$RUN/rate_profile.rescore.json" >/dev/null \
+  || say "the re-score profile refused. $RESCORE_LOG is intact; re-run it by hand with --arms."
 
 say "the measurement the re-score paid for:"
 "$PY" experiments/phase4/dispatch_delta.py --before "$KEEP" --after "$PANEL"

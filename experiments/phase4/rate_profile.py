@@ -34,6 +34,12 @@ at 15 s, so every stamp is up to 15 s late; against blocks of 465-4636 s that is
 and largely cancels between adjacent stamps. And the first stamp of an arm opens no
 interval -- the gap before it contains a model load and a quantization, which is not eval
 time and must never be divided by 800.
+
+The same parser reads a second kind of log. ``rescore_eager.sh`` pipes the driver through
+a stamper that timestamps each line as it arrives, which has no poll slop at all -- the
+progress printer flushes, so the stamp is the line's own time. What it does have is a
+one-second floor, and a run short enough to put two progress lines in one second yields a
+zero-length block. Those are dropped from the ratios and counted, never divided by.
 """
 
 from __future__ import annotations
@@ -136,14 +142,26 @@ def compare(
     *fixed* excess only while the side never takes fewer decode steps than the other. A
     ceiling under 1.0 is that condition failing on some block, in which case there is no
     positive fixed cost left to bound -- which is a finding, not a missing number.
+
+    A block the clock could not separate from its neighbour is dropped rather than divided
+    by. The panel's blocks run 18 minutes so it never arises there, but the re-score stamps
+    lines as they arrive and a short ``--limit`` puts two of them in the same second.
     """
-    pairs = align(left, right)
+    joined = align(left, right)
+    pairs = [row for row in joined if row[1].seconds > 0 and row[2].seconds > 0]
+    dropped = len(joined) - len(pairs)
     if not pairs:
         return {
             "pair": f"{name_left} vs {name_right}",
             "refused": (
                 "the two arms share no block boundary, so there is nothing to divide "
                 "that would be the same 800 items on both sides"
+            )
+            if not joined
+            else (
+                f"all {dropped} shared block(s) took under one second on one side, which is "
+                "the stamp resolution. A ratio between two numbers the clock could not "
+                "separate is not a measurement"
             ),
         }
     rows = [
@@ -161,6 +179,7 @@ def compare(
     return {
         "pair": f"{name_left} vs {name_right}",
         "blocks": rows,
+        "blocks_dropped_below_clock_resolution": dropped,
         "ratio_min": round(low, 3),
         "ratio_max": round(high, 3),
         "ratio_spread": round(high / low, 3) if low else None,

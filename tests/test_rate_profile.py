@@ -174,6 +174,32 @@ def test_a_wrong_number_of_arm_names_refuses_instead_of_labelling_by_position(
     assert profile.main([str(log), "--arms", "a,b"]) == 0
 
 
+def test_a_block_the_clock_could_not_separate_is_dropped_and_counted(profile: Any) -> None:
+    """Zero seconds is a resolution failure, and dividing by it is a crash, not a refusal.
+
+    ``rescore_eager.sh`` stamps the driver's lines as they arrive rather than polling, so
+    two progress lines emitted inside one second carry the same stamp -- which a short
+    ``--limit`` smoke run produces on the first try. The caller treats a non-zero exit as
+    "refused, re-run by hand", so a traceback there is a wrong message as well as an ugly
+    one, and a surviving block that silently loses a same-second neighbour is worse: the
+    aggregate would be over fewer blocks than the row count claims.
+
+    Turns red when: the ratio divides before filtering, or the dropped count stops being
+    reported alongside the blocks that survived.
+    """
+    left = _blocks(profile, [(0, 800), (0, 1600), (1000, 2400)])
+    right = _blocks(profile, [(0, 800), (100, 1600), (600, 2400)])
+    row = profile.compare("left", left, "right", right)
+    assert [block["block_end"] for block in row["blocks"]] == [2400]
+    assert row["blocks_dropped_below_clock_resolution"] == 1
+    assert row["ratio_min"] == pytest.approx(2.0)
+
+    every_block = profile.compare("left", left[:1], "right", right[:1])
+    assert "blocks" not in every_block
+    assert "under one second" in every_block["refused"]
+    assert "share no block boundary" not in every_block["refused"]
+
+
 def test_a_short_final_block_divides_by_its_own_item_count(profile: Any) -> None:
     """12,000 is not a multiple of 800 in every campaign, and the tail must not be scaled.
 
