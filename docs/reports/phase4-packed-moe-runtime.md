@@ -1460,6 +1460,17 @@ the installed package — `import dynquant` deliberately does not register, so t
 load-bearing, and renaming it would leave six published READMEs quietly wrong with no failing
 build anywhere.
 
+None of that would have found the two defects that a real table did. Running the generator
+against the five arms that have actually landed -- rather than only against the synthetic
+fixture the tests use -- produced a card whose headline sentence counted "a seven-arm panel"
+as a **typed literal**, the one thing this file exists to forbid, and whose results table
+silently **dropped the two arms still scoring**: five rows under a sentence claiming seven,
+with nothing to tell a reader the others exist. A fixture cannot reach either, because a
+fixture is written complete. Mid-panel is not an edge case here -- the expensive arms publish
+first while the cheap ones are still running, so it is the state most of these cards would
+have been written in. The count is derived from the table now, and an unscored arm keeps its
+row and says what it is.
+
 ### Status, stated as what is not yet true
 
 - All six arms — `rtn`, `gptq` and `awq` at 4 and 3 bits — publish and reload within **0.068 code
