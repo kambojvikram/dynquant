@@ -17,6 +17,13 @@ PY=${PY:-/workspace/venv-llmc/bin/python}
 PANEL="$RUN/panel"
 KEEP="$RUN/panel_grouped_mm"
 
+# `dynquant` is not installed into the venv -- every caller runs it from the clone's source
+# tree, and `s4_panel.sh` is where that got exported for the panel. Inheriting it from the
+# launching shell worked for as long as one person launched both from the same shell; from
+# `ssh host bash rescore_eager.sh` there is no such shell. Derived from $CLONE so it cannot
+# point at a different tree than the one every other line here reads.
+export PYTHONPATH="$CLONE/packages/dynquant-core/src${PYTHONPATH:+:$PYTHONPATH}"
+
 say() { printf '%s\n' "$*" >&2; }
 die() { printf 'refused: %s\n' "$*" >&2; exit 1; }
 
@@ -46,6 +53,17 @@ for needed in dispatch_delta.py probe_dispatch_agreement.py rate_profile.py; do
   [ -f "$CLONE/experiments/phase4/$needed" ] \
     || die "$CLONE has no experiments/phase4/$needed. Run sync_clone.sh first."
 done
+
+# 3b. The driver shells out to `python -m dynquant eval` once per arm and reports a failed import
+#     the same way it reports a failed arm: exit 1, and on to the next one. Three arms fail in
+#     under a second, the script runs to completion, and the only evidence is three "exit 1 after
+#     0.0s" lines inside a log named for a fifteen-hour job. Worse, it fails *after* step 5 copies
+#     the panel aside, so the retry then hits the `$KEEP already exists` guard and the operator
+#     has to decide whether a copy they did not make is safe to delete. One import, checked here.
+"$PY" -c 'import dynquant' 2>/dev/null \
+  || die "\`$PY\` cannot import dynquant, and the driver shells out to \`python -m dynquant eval\`
+          for every arm. PYTHONPATH is $PYTHONPATH -- check that $CLONE/packages/dynquant-core/src
+          is a tree and not a stale path."
 
 # 4. Snapshot the sampler's log before anything else appends to it. `/workspace/rate.sh` stamps
 #    every 800-item progress line, which is the only length evidence this campaign has -- the eval
@@ -106,14 +124,27 @@ stamp() { while IFS= read -r line; do printf '%s   %s\n' "$(date -u +%FT%TZ)" "$
 # ceiling: everything is compared against it, but no quantizer claim rests on it, and re-scoring it
 # *measures* the dispatch effect rather than removing it from a margin. Losing bf16 to a recycle
 # costs a measurement; losing dq_4b costs the result.
+#
+# Two invocations, because one cannot express that. `--rescore` is parsed into a frozenset and used
+# as a membership test while the driver walks `plan_arms()`, whose order is fixed and opens with the
+# ceiling -- so a single `--rescore dq_4b,dq_3b,bf16` runs bf16 first and spends the first three
+# hours on the arm the paragraph above argues to run last. The list is not an order and writing it
+# in the intended one does not make it one. Splitting the call is the whole fix: each invocation
+# filters to arms the driver reaches in the order this campaign wants, `--resume` makes the second
+# one skip what the first finished, and neither the driver nor the panel's semantics change during
+# a re-score they are the subject of.
+run_arms() {
+  "$PY" experiments/phase4/arms_lfm2.py run \
+    --model "$RUN/lfm25-8b-a1b.text2sql/merged" \
+    --stats "$RUN/lfm25-8b-a1b.text2sql/stats/dynquant_stats.json" \
+    --moments "$RUN/lfm25-8b-a1b.text2sql/stats/dynquant_moments.safetensors" \
+    --out "$PANEL" --device cuda --limit 12000 --batch-size 32 \
+    --resume --rescore "$1" --experts-impl eager 2>&1
+}
+
 say "re-scoring dq_4b, dq_3b, bf16 on eager -- stamped to $RESCORE_LOG"
 cd "$CLONE"
-"$PY" experiments/phase4/arms_lfm2.py run \
-  --model "$RUN/lfm25-8b-a1b.text2sql/merged" \
-  --stats "$RUN/lfm25-8b-a1b.text2sql/stats/dynquant_stats.json" \
-  --moments "$RUN/lfm25-8b-a1b.text2sql/stats/dynquant_moments.safetensors" \
-  --out "$PANEL" --device cuda --limit 12000 --batch-size 32 \
-  --resume --rescore dq_4b,dq_3b,bf16 --experts-impl eager 2>&1 | stamp | tee "$RESCORE_LOG"
+{ run_arms dq_4b,dq_3b; run_arms bf16; } | stamp | tee "$RESCORE_LOG"
 
 # 7. Best-effort for the same reason step 4 is: the arm names are positional. A resumed re-score,
 #    or a `--rescore` list edited without editing RESCORE_ARMS, changes the arm count, and the
