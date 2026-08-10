@@ -40,11 +40,11 @@ fi
 #    arms a second time on the same dispatch, burns eight to fifteen hours of a rented card,
 #    and produces the zero `dispatch_delta.py` exists to refuse.
 grep -q -- '--experts-impl' "$CLONE/experiments/phase4/arms_lfm2.py" \
-  || die "$CLONE predates --experts-impl. Sync arms_lfm2.py, panel_table.py and
-          dynquant/commands/evaluate.py into it first, then re-run this."
+  || die "$CLONE predates --experts-impl. Run sync_clone.sh against a bundle of the commits
+          since the pin, then re-run this."
 for needed in dispatch_delta.py probe_dispatch_agreement.py rate_profile.py; do
   [ -f "$CLONE/experiments/phase4/$needed" ] \
-    || die "$CLONE has no experiments/phase4/$needed. Sync the clone first."
+    || die "$CLONE has no experiments/phase4/$needed. Run sync_clone.sh first."
 done
 
 # 4. Snapshot the sampler's log before anything else appends to it. `/workspace/rate.sh` stamps
