@@ -422,6 +422,114 @@ class QuantTensor:
             symmetric=symmetric,
         )
 
+    @classmethod
+    def from_codes(
+        cls,
+        codes: torch.Tensor,
+        scales: torch.Tensor,
+        offsets: torch.Tensor,
+        *,
+        bits: int,
+        group_size: int = DEFAULT_GROUP_SIZE,
+        symmetric: bool = False,
+        compute_dtype: torch.dtype | None = None,
+        row_offset: int = 0,
+        logical_shape: tuple[int, ...] | None = None,
+    ) -> QuantTensor:
+        """Adopt a grid someone else fitted, instead of fitting one.
+
+        :meth:`from_dense` takes float weights and chooses the affine map. This takes
+        the map as given and only packs. The difference matters when the weights being
+        imported are *already* on a grid -- a GPTQ or AWQ checkpoint, or anything else
+        whose scales were fitted by a different algorithm -- because re-deriving the map
+        from the dequantized values is not the identity. Min/max recovers the original
+        scale only when a group still occupies both ends of its code range, and after
+        GPTQ's error compensation or AWQ's clipping search many groups do not. Where they
+        do not, the re-fitted step is narrower than the original, the original levels fall
+        between the new ones, and the weights move. Not by much -- a fraction of a step --
+        but enough that the published checkpoint is no longer the one that was scored,
+        which is the single thing a published baseline has to be.
+
+        Importing a zero-point convention: the ecosystem's ``scale * (q - zero)`` is this
+        format's ``scale * code + offset`` with ``code = q`` and ``offset = -scale * zero``.
+        The translation belongs at the call site, so that the one place that knows about a
+        foreign convention is the one reading the foreign checkpoint. It preserves the grid
+        exactly -- same codes, same levels -- but not the last bit of the reconstruction,
+        because ``s * q + (-s * z)`` and ``s * (q - z)`` round differently. That gap is
+        ~1e-7 relative, orders below both the quantization step and the storage rounding.
+
+        Args:
+            codes: Integer codes in ``[0, 2**bits - 1]``, shaped like the dense tensor
+                they encode (rank >= 2, leading dims fold into rows). Unpadded.
+            scales: ``[num_rows, num_groups]``. A zero scale is the constant-group
+                encoding and is preserved, not repaired.
+            offsets: ``[num_rows, num_groups]``, the additive term.
+            logical_shape: Overrides the shape recorded in the result. Only for callers
+                whose codes arrive already folded to 2-D but which describe a stacked
+                expert bank; the folded row count must agree.
+        """
+        if bits not in BIT_OPTIONS:
+            raise PackingError(f"bits={bits} not supported; expected one of {list(BIT_OPTIONS)}")
+        if codes.ndim < 2:
+            raise PackingError(f"expected codes of rank >= 2, got shape {tuple(codes.shape)}")
+        if not torch.is_floating_point(codes):
+            code_min, code_max = int(codes.min()), int(codes.max())
+        else:
+            raise PackingError(
+                f"codes must be an integer tensor, got {codes.dtype}. Rounding them here "
+                "would hide a caller that passed dequantized weights by mistake"
+            )
+        qmax = (1 << bits) - 1
+        if code_min < 0 or code_max > qmax:
+            raise PackingError(
+                f"codes span [{code_min}, {code_max}], outside the {bits}-bit range "
+                f"[0, {qmax}] -- the grid and the width disagree"
+            )
+
+        shape = tuple(codes.shape) if logical_shape is None else tuple(logical_shape)
+        in_features = shape[-1]
+        if in_features != codes.shape[-1]:
+            raise PackingError(
+                f"logical_shape {shape} ends in {in_features} but codes are {codes.shape[-1]} wide"
+            )
+        geom = row_geometry(bits, group_size, in_features)
+        group_size = geom.group_size  # PER_ROW_GROUP_SIZE stays the sentinel
+        compute_dtype = compute_dtype or storage_dtype(scales)
+
+        rows = codes.reshape(-1, in_features)
+        num_rows, num_groups = rows.shape[0], geom.num_groups
+        if int(codes.numel()) != num_rows * in_features:
+            raise PackingError(f"codes {tuple(codes.shape)} do not fold to rows of {in_features}")
+        expected = (num_rows, num_groups)
+        for name, term in (("scales", scales), ("offsets", offsets)):
+            if tuple(term.shape) != expected:
+                raise PackingError(f"{name} shape {tuple(term.shape)} != expected {expected}")
+
+        padded = geom.padded_in_features
+        if padded != in_features:
+            # The pad value is arbitrary and deliberately recorded as such: unlike
+            # `from_dense`, where the zero fill participates in its group's min/max, the
+            # scales here are the caller's and nothing recomputes them, and the kernel
+            # predicates activation loads past `in_features` to zero so the codes are
+            # never read. A mutation that pads with `qmax` instead reddens no test, and
+            # should not -- zero is chosen only so two encodings of the same tensor
+            # produce the same words.
+            rows = torch.nn.functional.pad(rows, (0, padded - in_features))
+
+        packed = pack_nbit(rows.to(torch.uint8), bits, validate=False)
+        return cls(
+            packed=packed,
+            scales=scales.to(compute_dtype),
+            offsets=offsets.to(compute_dtype),
+            bits=bits,
+            group_size=group_size,
+            in_features=in_features,
+            logical_shape=shape,
+            row_offset=row_offset,
+            layout=QuantLayout.LINEAR,
+            symmetric=symmetric,
+        )
+
     # -- inversion ---------------------------------------------------------
 
     def dequantize(self, *, dtype: torch.dtype | None = None) -> torch.Tensor:

@@ -335,3 +335,191 @@ def test_clip_ratio_is_a_real_knob(weight, bits):
     assert torch.equal(identity.packed, base.packed), "clip_ratio=1.0 must be the identity"
     assert not torch.equal(clipped.packed, base.packed), "clip_ratio had no effect"
     assert clipped.quantization_error(weight)["rel_fro"] < 1.0
+
+
+# -- adopting a foreign grid -------------------------------------------------
+
+
+def _foreign_grid(rows: int, in_features: int, group_size: int, bits: int, *, occupies: tuple):
+    """Codes on a grid whose occupied range is ``occupies``, with per-group scale/offset.
+
+    ``occupies`` is the inclusive code range the values actually use. A foreign quantizer
+    that clipped, or that moved weights after fixing its scale, leaves groups that do not
+    reach both ends -- which is the case this constructor exists for.
+    """
+    import torch
+
+    groups = in_features // group_size
+    low, high = occupies
+    generator = torch.Generator().manual_seed(11)
+    codes = torch.randint(
+        low, high + 1, (rows, in_features), generator=generator, dtype=torch.int64
+    )
+    # Pin the extremes of the occupied band so the band is exactly `occupies`, not a
+    # sample of it -- otherwise the test's premise depends on the seed.
+    codes[:, 0] = low
+    codes[:, 1] = high
+    scales = torch.rand(rows, groups, generator=generator) * 0.02 + 0.01
+    offsets = torch.rand(rows, groups, generator=generator) * 0.5 - 0.25
+    return codes, scales.to(torch.float32), offsets.to(torch.float32)
+
+
+def test_from_codes_reproduces_the_grid_it_was_given():
+    import torch
+
+    bits, group_size, rows, in_features = 4, 32, 6, 128
+    codes, scales, offsets = _foreign_grid(rows, in_features, group_size, bits, occupies=(0, 15))
+    qt = QuantTensor.from_codes(
+        codes, scales, offsets, bits=bits, group_size=group_size, compute_dtype=torch.float32
+    )
+    qt.validate()
+    expected = scales.repeat_interleave(group_size, dim=1) * codes.to(
+        torch.float32
+    ) + offsets.repeat_interleave(group_size, dim=1)
+    assert torch.equal(qt.dequantize(dtype=torch.float32), expected)
+
+
+def test_refitting_a_partly_occupied_grid_moves_the_weights_and_from_codes_does_not():
+    """The whole reason this constructor exists, stated as a test.
+
+    A group that no longer occupies both ends of its code range -- what GPTQ's error
+    compensation and AWQ's clipping search both leave behind -- has a min/max range
+    narrower than the grid that produced it. Re-deriving the map from the dequantized
+    values therefore lands on a *finer* step, the original levels fall between the new
+    ones, and the weights move. ``from_codes`` is exact because it never re-derives.
+
+    If someone replaces ``from_codes`` with a ``from_dense`` call, this goes red.
+    """
+    import torch
+
+    bits, group_size, rows, in_features = 4, 32, 6, 128
+    codes, scales, offsets = _foreign_grid(rows, in_features, group_size, bits, occupies=(3, 12))
+    dense = scales.repeat_interleave(group_size, dim=1) * codes.to(
+        torch.float32
+    ) + offsets.repeat_interleave(group_size, dim=1)
+
+    carried = QuantTensor.from_codes(
+        codes, scales, offsets, bits=bits, group_size=group_size, compute_dtype=torch.float32
+    )
+    refitted = QuantTensor.from_dense(
+        dense, bits=bits, group_size=group_size, compute_dtype=torch.float32
+    )
+
+    assert torch.equal(carried.dequantize(dtype=torch.float32), dense)
+    assert not torch.equal(refitted.dequantize(dtype=torch.float32), dense)
+    # And the drift is real rather than a last-ulp artifact: a partly-occupied 4-bit band
+    # re-fitted onto 16 levels misplaces most of them by a sizeable fraction of a step.
+    step = scales.repeat_interleave(group_size, dim=1)
+    drift = (refitted.dequantize(dtype=torch.float32) - dense).abs() / step
+    assert drift.max() > 0.1, f"expected a visible re-fit drift, got {drift.max():.4f} steps"
+
+
+def test_a_zero_point_convention_translates_onto_the_same_grid():
+    """``scale * (q - zero)`` is ``scale * code + offset`` with ``offset = -scale * zero``.
+
+    Exact as a grid, not as a bit pattern. The codes carried are the codes given -- that is
+    what determines the bytes on disk, and it is checked exactly. The reconstruction differs
+    in the last place because ``s * q + (-s * z)`` and ``s * (q - z)`` round differently in
+    fp32, which is a property of the arithmetic and not of the import: ~1e-7 relative,
+    against a quantization step of ~6e-2 here, and smaller than the bf16 rounding both
+    conventions undergo when the checkpoint is written.
+    """
+    import torch
+
+    bits, group_size, rows, in_features = 4, 32, 4, 64
+    groups = in_features // group_size
+    generator = torch.Generator().manual_seed(5)
+    q = torch.randint(0, 1 << bits, (rows, in_features), generator=generator, dtype=torch.int64)
+    scale = (torch.rand(rows, groups, generator=generator) * 0.02 + 0.01).to(torch.float32)
+    zero = torch.randint(0, 1 << bits, (rows, groups), generator=generator).to(torch.float32)
+
+    qt = QuantTensor.from_codes(
+        q, scale, -scale * zero, bits=bits, group_size=group_size, compute_dtype=torch.float32
+    )
+    foreign = scale.repeat_interleave(group_size, dim=1) * (
+        q.to(torch.float32) - zero.repeat_interleave(group_size, dim=1)
+    )
+    from dynquant.quant.pack import unpack_nbit
+
+    recovered = unpack_nbit(qt.packed, bits, in_features).reshape(rows, in_features)
+    assert torch.equal(recovered.to(torch.int64), q), "the codes on disk are not the codes given"
+
+    got = qt.dequantize(dtype=torch.float32)
+    step = scale.repeat_interleave(group_size, dim=1)
+    assert ((got - foreign).abs() / step).max() < 1e-5
+
+
+def test_from_codes_pads_a_ragged_row_without_touching_the_given_scales():
+    import torch
+
+    bits, group_size, rows, in_features = 4, 32, 3, 100  # 100 is not a multiple of 32
+    groups = -(-in_features // group_size)
+    generator = torch.Generator().manual_seed(7)
+    codes = torch.randint(0, 1 << bits, (rows, in_features), generator=generator, dtype=torch.int64)
+    scales = torch.ones(rows, groups, dtype=torch.float32)
+    offsets = torch.zeros(rows, groups, dtype=torch.float32)
+
+    qt = QuantTensor.from_codes(
+        codes, scales, offsets, bits=bits, group_size=group_size, compute_dtype=torch.float32
+    )
+    qt.validate()
+    assert qt.in_features == in_features
+    assert torch.equal(qt.dequantize(dtype=torch.float32), codes.to(torch.float32))
+
+
+def test_from_codes_records_a_stacked_bank_shape():
+    import torch
+
+    bits, group_size, experts, out_features, in_features = 4, 32, 3, 8, 64
+    codes = torch.zeros(experts, out_features, in_features, dtype=torch.int64)
+    rows, groups = experts * out_features, in_features // group_size
+    qt = QuantTensor.from_codes(
+        codes,
+        torch.ones(rows, groups),
+        torch.zeros(rows, groups),
+        bits=bits,
+        group_size=group_size,
+    )
+    qt.validate()
+    assert qt.logical_shape == (experts, out_features, in_features)
+    assert qt.num_rows == rows
+
+
+def test_from_codes_refuses_codes_outside_the_width():
+    import torch
+
+    with pytest.raises(PackingError, match="outside the 3-bit range"):
+        QuantTensor.from_codes(
+            torch.tensor([[0, 8]], dtype=torch.int64),
+            torch.ones(1, 1),
+            torch.zeros(1, 1),
+            bits=3,
+            group_size=PER_ROW_GROUP_SIZE,
+        )
+
+
+def test_from_codes_refuses_float_codes():
+    """Passing dequantized weights here is the mistake worth an exception, not a round."""
+    import torch
+
+    with pytest.raises(PackingError, match="must be an integer tensor"):
+        QuantTensor.from_codes(
+            torch.tensor([[0.0, 1.0]]),
+            torch.ones(1, 1),
+            torch.zeros(1, 1),
+            bits=4,
+            group_size=PER_ROW_GROUP_SIZE,
+        )
+
+
+def test_from_codes_refuses_scales_that_do_not_match_the_grouping():
+    import torch
+
+    with pytest.raises(PackingError, match="scales shape"):
+        QuantTensor.from_codes(
+            torch.zeros(4, 64, dtype=torch.int64),
+            torch.ones(4, 1),  # 64 wide at group 32 is two groups, not one
+            torch.zeros(4, 2),
+            bits=4,
+            group_size=32,
+        )
