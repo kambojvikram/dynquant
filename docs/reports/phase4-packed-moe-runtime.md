@@ -30,6 +30,11 @@ There is a sixth item, and it is not a defect in this code. It is a claim this r
 own §6 — true of the model it was measured on, false at the scale it was then used to license,
 and copied into five places before anyone re-measured it. §8.
 
+And a seventh, which is the same writer pointed the other way. Four of the six promised variants
+cannot be written in the container their own recipe produced. They can be written in this one,
+because a foreign grid is a grid: the codes carry across unchanged and only the notation for the
+offset differs. §12.
+
 Nothing here changes an arm's score. What it changes is whether the score describes something
 downloadable.
 
@@ -1087,3 +1092,256 @@ is the ordinary case, not the exotic one — `named_modules` missing bare parame
 reconciling byte total that files every quantized tensor under "dense" are the same shape. The check
 that would have caught it is cheap and was available the whole time: build the object, do the
 rewrite, print the field.
+
+---
+
+## 12. The four variants that could not be published, and the container that publishes them
+
+**Measured 2026-08-10.** Row 19 of the [experimental record](README.md) — written up as §12 of
+[`phase4-text2sql-mixture.md`](phase4-text2sql-mixture.md) — ends on a refusal. Four of the six
+promised variants, `gptq_4b`, `awq_4b`, `gptq_3b` and `awq_3b`, cannot be written as
+`compressed-tensors` checkpoints, for two reasons that have nothing to do with each other. The
+recipe reaches 91.5% of this model by **renaming** its expert banks, and `ARCH_TO_2D_MAPPINGS`
+registers the inverse of that rename for `deepseek_v4` and `qwen2_moe` and nothing else;
+`lfm2_moe` linearizes through the generic protocol, so the surgery runs and its inverse does not
+exist. And `compressed-tensors` packs `32 // 3 == 10` three-bit values per word, storing **3.2
+bits against a label of 3** — 6.7% over, ~200 MiB, sixty-seven times the panel's 0.001 match
+tolerance.
+
+Neither is fixable here. The first needs a new upstream conversion mapping authored and merged;
+the second is the storage format itself.
+
+But the refusal was about a *container*, and the panel does not score containers. It scores
+weights. This section is the bridge that takes the weights a baseline arm was scored on and writes
+them into DynQuant's own packed format — bit-for-bit, not re-fitted — and the probe that proves
+the directory holds what the arm held.
+
+Commits `2d1d463`, `77a5fd4`, `7b8293c`, `d69de4c`, `d57c927`, `85077fa`, `87d380c`. Code:
+[`experiments/phase4/baselines_lfm2.py`](../../experiments/phase4/baselines_lfm2.py),
+[`quant/tensor.py`](../../packages/dynquant-core/src/dynquant/quant/tensor.py),
+[`quant/checkpoint.py`](../../packages/dynquant-core/src/dynquant/quant/checkpoint.py). Probe:
+[`experiments/phase4/probe_publish.py`](../../experiments/phase4/probe_publish.py).
+
+### The one thing that makes this possible, and it is an accident of notation
+
+DynQuant stores a group as `scale * code + offset`, with a **float offset and no integer zero
+point**. The ecosystem stores `scale * (q - zero)`. Those are the same set of representable
+values: put `code = q` and `offset = -scale * zero` and the two grids coincide exactly, for every
+group, at every width. Not approximately — the codes are the same integers and the reconstruction
+is the same product plus the same sum.
+
+So the import is a *renaming of parameters*, not a re-quantization. That is the whole reason this
+is worth doing rather than merely possible.
+
+### Why the obvious route is wrong
+
+The obvious route is to hand the recipe's dequantized weights to `dynquant export` and let it fit
+its own grid. It would produce a directory. It would not produce **this** directory.
+
+Min/max fitting recovers a group's original scale only when the group still occupies both ends of
+its code range. A round-to-nearest arm mostly does. GPTQ's error compensation moves weights off
+their own grid on purpose, and AWQ's clipping search deliberately narrows the band — both leave
+groups spanning, say, codes 4 through 11 of a 16-wide range, and re-fitting those recovers a step
+too small and a different set of integers.
+
+The probe runs both, on the same weights, in the same process. The re-fitted export is not a
+strawman — it is the same code path with the carrying encoder swapped out — and it is the control
+that makes the carried column mean something:
+
+| arm | codes carried | codes re-fitted |
+|---|---|---|
+| rtn-4b | **0.0000** | 0.5180 |
+| rtn-3b | **0.0000** | 0.5031 |
+| gptq-4b | **0.0000** | 0.5070 |
+| gptq-3b | **0.0000** | 0.5031 |
+| awq-4b | **0.0681** | 0.4483 |
+| awq-3b | **0.0240** | 0.3987 |
+
+Units are **code steps**: how far the published weight sits from the scored weight, measured in
+the arm's own quantization step. Half a step is as wrong as rounding can be, and the re-fit sits
+near there on every arm — including `rtn`, which was supposed to be the easy case. The carried
+path is not close to the scored weights on the four symmetric arms; it is equal to them.
+
+The two AWQ rows are not zero, and the reason is the format rather than the carry. An asymmetric
+grid's offset is `scale * (qmin - zero)` with `zero` a nonzero integer, and that product is not
+exactly representable in the dtype the offset is stored in — where a symmetric arm's `scale * -8`
+is, being a power of two times the scale. 0.068 of a step is the bf16 rounding of a number up to
+sixteen times the scale; it is a fifth of the `MAX_CARRY_DRIFT = 0.125` budget and a seventh of
+what re-fitting the same weights costs. Storing the offset in fp32 would remove it and would widen
+every group in the container by two bytes, which is not a trade worth making for 7% of a code
+step.
+
+### The four pieces
+
+1. **The inverse of `linearize_moe`** (`2d1d463`, `77a5fd4`) — derived by measurement rather than
+   read off a docstring, because there is no docstring. Both banks are `[E, out, in]` as stored,
+   no transpose; `gate_up_proj[e]` takes `gate_proj` in rows `0:inter` and `up_proj` in rows
+   `inter:2*inter`; `down_proj[e]` takes the whole slice. Proven by a bit-for-bit round trip on a
+   rectangular geometry, chosen so the two ends of a fused bank cannot be confused by shape.
+2. **`QuantTensor.from_codes`** (`7b8293c`) — a constructor that accepts integers and a grid
+   instead of floats and a search.
+3. **An `encoder` seam on `export_packed_checkpoint`** (`d69de4c`), plus `_check_encoder_agrees`,
+   which re-derives what the encoder claimed and refuses a disagreement. The exporter's own
+   accounting, tying, sharding and manifest are unchanged — this is the same writer the DynQuant
+   arms use, which is the point.
+4. **`carried_grids` / `banked_grids` / `carrying_encoder` / `do_publish`** (`d57c927`) — read
+   every quantized module's codes and scales off the recipe, re-stack the linearized experts back
+   into banks by the same rule the weights follow, and hand the exporter a grid per name.
+   `MAX_CARRY_DRIFT` refuses any module whose carried grid does not reconstruct its own weight.
+
+### What the end-to-end probe found that twelve unit tests could not
+
+`do_publish` shipped green: four gates, twelve tests, a mutation sweep. It had three defects. All
+three needed an actual `llm-compressor` run to reach, and
+[`probe_publish.py`](../../experiments/phase4/probe_publish.py) is that run — quantize a
+four-layer `lfm2_moe`, publish it, reload the directory through the real `HfQuantizer`, compare
+against the weights the in-process arm was scored on.
+
+**The recipe's own scratch was being published as model weights.** `delinearize_state_dict` was
+handed `model.state_dict()`, which after a recipe carries `weight_scale`, `weight_zero_point` and,
+on the GPTQ arm, `weight_g_idx`. On a linearized expert those trip the bank assembler's refusal —
+correctly, since the derived rules say where a weight *row* goes and nothing about where a
+per-group scale would. Everywhere else they survive into the output and make the strict load
+reject the model. The fixtures build modules by hand and so never carry scratch; nothing smaller
+than a recipe produces it.
+
+The fix subtracts rather than lists. `recipe_scratch` asks each quantized module what it holds
+beyond a weight and a bias, and drops that. A hard-coded list of `weight_scale`,
+`weight_zero_point` and `weight_g_idx` would have been a second copy of `compressed-tensors`' set
+of artifacts — which is exactly the defect two subsections below. The filter is allowed to be
+liberal because it is not the check: `do_publish` loads the result with `strict=True`, so dropping
+one key too many fails as loudly as keeping one too few.
+
+**The tied table was published under a name the loader does not read.** The DynQuant format stores
+a tied table **once, under the input embedding's name**; `_tie_output_embedding` then replaces the
+head with a `DynQuantLinear` holding no tensors of its own. A recipe targets `Linear`, so the
+module it quantizes is `lm_head`, and a directory keyed that way loads with
+`model.embed_tokens.weight | MISSING`, gets a random re-initialization, and dies in
+`mark_tied_weights_as_initialized` with `AttributeError: DynQuantLinear has no attribute 'weight'`.
+Note the order: the load **reports** the missing table and continues; the exception arrives later,
+from somewhere else, about something else.
+
+The first fix for this did not fire, and the reason is worth more than the fix. It gated on
+`config.tie_word_embeddings`, and **`oneshot` sets that to `False`** while leaving the storage
+shared. Measured identically on every arm:
+
+```
+{'config_says': False, 'input': 'model.embed_tokens', 'output': 'lm_head',
+ 'tied': True, 'shared_storage': True, 'values_equal': True}
+```
+
+The config is not wrong. It is true of a different object — the compressed checkpoint `oneshot`
+would have written, which carries two tables — and false of the model in memory, which carries one
+and is the model being published. `tie_report` now derives the tie from storage and reports the
+flag beside it as `config_says`; `pristine_config` re-reads the checkpoint's own config so the
+export is not built from the recipe's mutated one, which would otherwise also carry a stale
+`quantization_config` describing a format the directory is not in.
+
+This is §11 running backwards. There, a structural rewrite left the configuration behind — the
+modules changed and the config did not. Here the configuration was rewritten to describe an
+artifact nobody was writing, and the modules did not change. Both are the same instrument: build
+the object, do the operation, print the field.
+
+### The third defect, and it is the family this campaign keeps rediscovering
+
+The two arms above are round-to-nearest and GPTQ, and both are **symmetric**. AWQ is not, and the
+first asymmetric arm refused at the carry check:
+
+```
+model.layers.0.conv.in_proj: scale * (q - zero) does not reproduce the materialized weight
+(max |delta| = 6.976e-02)
+```
+
+That message offers two branches — the weights were never rounded, or this reader's idea of the
+convention has diverged from the library's — and, per this campaign's own standing lesson, a
+guard's stated reason for firing is a hypothesis and not a diagnosis. So it was measured. On that
+module, at 4 bits, group 32:
+
+| what was asked of the weight | what came back |
+|---|---|
+| largest fractional part of `weight / scale`, in steps | **0.0377** |
+| elements sitting on the assumed bottom rail `qmin = 0` | **7,443 of 12,288** |
+| range of `weight_zero_point` | **-4 … 3**, 8 distinct |
+
+The first row settles the first branch: the weight *is* on a lattice of its own scale, to within
+4% of a step, so it was rounded and the "never quantized" reading is false. The third row says
+what the second branch was. `compressed-tensors` puts **every** integer scheme on the signed band
+`[-2^(b-1), 2^(b-1)-1]`, whether or not it is symmetric, and lets an asymmetric scheme ride that
+same band with a *signed* zero point — hence a zero point of -4 through 3, which is meaningless on
+an unsigned range. This reader had worked the range out for itself instead, and its rule —
+unsigned `[0, 2^b - 1]`, switching to signed only when the scheme said symmetric — agreed with the
+library on every symmetric arm and clamped 61% of the first asymmetric weight onto the bottom
+rail.
+
+The fix is one line: `calculate_range(scheme, device)` is `compressed-tensors`' own function and
+is now what the carrier calls. The rest of `carried_grids` is derived-and-then-checked — a wrong
+derivation announces itself against the materialized weight — but the range cannot be, because it
+is an *input* to that derivation. It is the one piece that has to be imported rather than
+verified, so it is now imported.
+
+The fixtures had encoded the same wrong convention, which is why twelve tests were green over it.
+They now build codes on the signed band, so every one of them is a guard; and a new test drives an
+unusual range through the stub and asserts the reader honours it, which is the difference between
+"asked the library" and "worked it out and happened to agree". Fourteen mutations of the publish
+path, all caught.
+
+The shape is the one this repository already enumerates six times over — a duplicated task list, a
+duplicated name resolver that narrowed twice, a width list guarding on the wrong criterion, and a
+writer and a reader of one format that each held half a rule. This instance is a step further out.
+It is not a second copy of *our* registry; it is a second copy of a **dependency's arithmetic**,
+which is the hardest kind to notice, because nothing inside this repository is able to contradict
+it. Only the first input the two definitions disagree about can, and that input was the fifth arm
+of the six.
+
+### One more thing the probe found, which is upstream and is not ours
+
+The AWQ arm on this tiny model **is not deterministic**. A randomly initialized `lfm2_moe` in
+bfloat16 produces non-finite activations on random calibration ids; AWQ skips every mapping whose
+parent forward is not finite; and how many it skips moves run to run — 21, 20, 13 and 6 observed
+across four runs of identical code on identical weights. Two failure modes follow from the tail of
+that distribution, both in `llm-compressor`: `_log_error_metrics` divides by the number of
+mappings that survived, so **all skipped** is a `ZeroDivisionError`; and a mapping whose grid
+search finds no finite loss raises outright. The probe retries, and the retry count is the honest
+way to report an arm that is stable in outcome and unstable in getting there.
+
+None of this touches the 8B, whose `awq_4b` and `awq_3b` arms calibrate on real text and ran
+clean. It is a property of calibrating a *random* model, and it is recorded because it cost an
+afternoon to tell apart from a defect in this code. What the same arm did need on the real model
+is unrelated and is a bridge concern: the stock AWQ mappings smooth q/k/v against an
+`input_layernorm`, LFM2 names that `operator_norm`, and `_set_resolved_mappings` raises on the
+incomplete set. The probe therefore takes the driver's own `resolve_awq_mappings` — 6 mappings, 53
+linear modules, 48 smoothed, the 5 unsmoothed named — so the arm it publishes is the arm the panel
+scored rather than a differently-calibrated one.
+
+### What the published directory costs, and it is not the arm's byte count
+
+The container is exactly `bits + 32 / group_size` bits per parameter — an fp16 scale and an fp16
+offset per group and nothing else. Predicted to the byte on all six probe arms: 202,720 B at 4
+bits and 162,176 B at 3, group 32, over the same 324,352 quantized parameters. At the panel's
+group size of 128 that is **4.25 bits at 4 and 3.25 at 3**.
+
+`compressed-tensors` stores 4.15625 at 4 bits — the same codes, an fp16 scale, and a *4-bit* zero
+point where DynQuant carries an fp16 offset. Twenty bits per group of 128 against DynQuant's
+thirty-two. So a republished `gptq_4b` holds the same weights to the code and occupies **0.09375
+bits/param more**: 2.3%, about **99 MB** against this model's 8,467,856,128 parameters. At 3 bits
+it goes the other way — 3.25 against a container whose codes alone cost 3.2 before any scale — so
+the width that could not be published honestly at all is the one where this container is both
+correct and smaller.
+
+A model card for a republished baseline therefore carries two numbers: the bytes the arm was
+scored at, and the bytes of the directory. They are not the same number, and the difference is the
+container, not the model.
+
+### Status, stated as what is not yet true
+
+- All six arms — `rtn`, `gptq` and `awq` at 4 and 3 bits — publish and reload within **0.068 code
+  steps** of the weights the in-process arm was scored on, with six packed expert banks, nothing
+  unmatched, no dense expert parameters left behind, finite logits, and the tie renamed onto
+  `model.embed_tokens`.
+- This is a **four-layer** model. What remains between here and the 8B is scale, not model class —
+  the same architecture, the same linearization, the same banks — but it has not been run, and it
+  cannot be until the panel releases the GPU.
+- The published artifact loads through **DynQuant's** `HfQuantizer`, not through vLLM's native
+  `compressed-tensors` path. Row 19's "yes — vLLM and transformers" is not restored by this and is
+  not claimed. What is restored is that the weights a person downloads are the weights that were
+  scored.
