@@ -985,3 +985,370 @@ def test_two_unrecorded_arms_do_not_count_as_agreeing(table: Any, tmp_path: Path
     out = _write_panel(tmp_path / "arms")
     block = _run(table, out).split("head to head, at matched bytes")[1].split("head to head, on")[0]
     assert "dq_4b = unrecorded, gptq_4b = unrecorded" in block
+
+
+# ---------------------------------------------------------------------------
+# Per-source heterogeneity.
+#
+# The per-source blocks predate any test that reaches them, because `_write_panel`
+# writes no `sources.json` and `load_sources` returns `(None, None)` without one. So
+# these fixtures are the first thing to exercise that path at all, and the labels are
+# not written blind: `load_sources` refuses a vector that disagrees with any arm's own
+# `by_source` tally, so the helper recomputes every record's tally from the labels it
+# just chose. A helper that wrote labels and left the tallies alone would be testing
+# the refusal, on every one of these tests, for the rest of the file's life.
+# ---------------------------------------------------------------------------
+
+
+def _write_sources(out: Path, chooser: Any) -> list[str]:
+    """Label every item, and rewrite each record's ``by_source`` to agree."""
+    labels = [chooser(index) for index in range(TOTAL)]
+    (out / "sources.json").write_text(json.dumps(labels), encoding="utf-8")
+    for record in sorted(out.glob("*.json")):
+        if record.name in {"arms.json", "sources.json"} or record.name.endswith(".quant.json"):
+            continue
+        payload = json.loads(record.read_text(encoding="utf-8"))
+        hits = payload.get("hits")
+        if not hits:
+            continue
+        payload["detail"]["by_source"] = {
+            name: [
+                sum(1 for hit, src in zip(hits, labels, strict=True) if src == name and hit),
+                sum(1 for src in labels if src == name),
+            ]
+            for name in sorted(set(labels))
+        }
+        record.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return labels
+
+
+def _stack_the_flips(out: Path) -> list[str]:
+    """Every dq-over-gptq flip into gretel, every gptq-over-dq flip into wikisql.
+
+    The extreme the test needs and one no real mixture produces: the same 14/4 the
+    aggregate sees, arranged so one source holds all of the wins and the other all of the
+    losses. The concordant items alternate, so the two subsets stay near the same size and
+    the spread is the effect rather than a difference in how much each source weighs.
+    """
+    dq = json.loads((out / "dq_4b.json").read_text(encoding="utf-8"))["hits"]
+    gptq = json.loads((out / "gptq_4b.json").read_text(encoding="utf-8"))["hits"]
+
+    def chooser(index: int) -> str:
+        if dq[index] and not gptq[index]:
+            return "gretel"
+        if gptq[index] and not dq[index]:
+            return "wikisql"
+        return "gretel" if index % 2 else "wikisql"
+
+    return _write_sources(out, chooser)
+
+
+def _heterogeneity_rows(printed: str) -> dict[str, str]:
+    """The rows of the heterogeneity block, keyed by the comparison they name."""
+    assert "is the margin the same on every source?" in printed, printed
+    block = printed.split("is the margin the same on every source?")[1]
+    rows = {}
+    for line in block.splitlines():
+        for _, _, question in _load("_dq_ht", SCRIPT).HEAD_TO_HEAD:
+            if line.startswith(question):
+                rows[question.strip()] = line
+    return rows
+
+
+def test_the_chi_square_tail_matches_its_textbook_values(table: Any) -> None:
+    """Both branches of the incomplete gamma, against numbers that are not this code's.
+
+    The series and the continued fraction are separate implementations of the same
+    function and the input decides which one runs, so a table of critical values that
+    only spanned one branch would leave the other free to return anything. df=1 at
+    Q=3.841 takes the continued fraction; df=3 at Q=0.35 takes the series.
+
+    Turns red when: either branch is transcribed wrong, or the transition test flips and
+    sends inputs to the branch that does not converge there.
+    """
+    for statistic, df, want in [
+        (3.841, 1, 0.05),
+        (6.635, 1, 0.01),
+        (5.991, 2, 0.05),
+        (9.210, 2, 0.01),
+        (7.815, 3, 0.05),
+        (11.345, 3, 0.01),
+        (0.35, 3, 0.9505),
+        (0.10, 1, 0.7518),
+        # The small-Q corner, which is the only region where the two branches disagree
+        # -- the continued fraction returns 0.863 at Q=0.001 where the answer is 0.975 --
+        # and it is exactly what two sources in close agreement produce. Independently
+        # checkable without a table: at df=1 the tail is 2 * (1 - Phi(sqrt(Q))).
+        (0.001, 1, 0.974773),
+        (0.010, 1, 0.920344),
+    ]:
+        got = table.chi_square_sf(statistic, df)
+        assert abs(got - want) < 1e-3, f"sf({statistic}, df={df}) = {got}, want {want}"
+    assert table.chi_square_sf(0.0, 1) == 1.0
+    assert table.chi_square_sf(-1.0, 1) == 1.0
+    assert table.chi_square_sf(100.0, 1) < 1e-20
+    with pytest.raises(ValueError, match="df must be at least 1"):
+        table.chi_square_sf(1.0, 0)
+
+
+def test_cochran_q_is_zero_on_agreement_and_pools_by_precision(table: Any) -> None:
+    """Q measures spread around the pooled centre, and the centre is not the mean.
+
+    Both halves matter and they fail differently. Equal-weighted pooling still gives Q=0
+    when the estimates agree, so the first assertion alone would not notice it; the second
+    pins the weighting by using estimates whose precisions differ by 4x, where the mean
+    (+2.00) and the inverse-variance pool (+1.40) are far apart.
+    """
+    pooled, q, p_value = table.cochran_q([1.0, 1.0, 1.0], [0.5, 0.25, 1.0])
+    assert pooled == pytest.approx(1.0)
+    assert q == pytest.approx(0.0)
+    assert p_value == pytest.approx(1.0)
+
+    pooled, q, p_value = table.cochran_q([1.0, 3.0], [0.5, 1.0])
+    assert pooled == pytest.approx(1.4)  # not 2.0
+    assert q == pytest.approx((1.0 - 1.4) ** 2 / 0.25 + (3.0 - 1.4) ** 2 / 1.0)
+    assert 0.05 < p_value < 0.20
+
+
+def test_cochran_q_refuses_the_inputs_that_would_decide_the_answer_alone(table: Any) -> None:
+    """A zero standard error carries infinite weight, and would set the pooled estimate.
+
+    Reachable, not hypothetical: a source on which two arms never disagree has a delta of
+    exactly zero with no width. The block skips that row and says so; this pins that the
+    function underneath refuses rather than returning a nan a caller might print.
+    """
+    with pytest.raises(ValueError, match="infinite weight"):
+        table.cochran_q([1.0, 2.0], [0.5, 0.0])
+    with pytest.raises(ValueError, match="at least two"):
+        table.cochran_q([1.0], [0.5])
+    with pytest.raises(ValueError, match="same length"):
+        table.cochran_q([1.0, 2.0], [0.5])
+
+
+def test_a_margin_that_lives_in_one_source_is_called_heterogeneous(
+    table: Any, tmp_path: Path
+) -> None:
+    """The finding the aggregate cannot express, and the reason this block exists.
+
+    On the real panel the 4-bit DynQuant-over-GPTQ margin is +1.03 on one dataset and
+    -0.49 on the other, and the aggregate reports +0.64 with no indication that the number
+    is an average of two different things. Here the same 14/4 is arranged to the extreme.
+    Reading the two intervals side by side is not a substitute -- that is what the block
+    above already offers and what this one exists because it cannot do.
+
+    Turns red when: the deltas stop being tested against each other, or the block loses
+    the Holm correction and starts promoting rows on the raw p.
+    """
+    out = _write_panel(tmp_path / "arms")
+    _stack_the_flips(out)
+    printed = _run(table, out)
+
+    row = _heterogeneity_rows(printed)["4b  DynQuant vs GPTQ"]
+    assert "HETEROGENEOUS" in row, row
+    # The spread is printed in the header's source order, and it has to carry the signs:
+    # a row that prints two magnitudes hides that the sources disagree about direction.
+    assert "+6.83" in row and "-2.05" in row, row
+    assert "consistent" not in row
+
+
+def test_a_margin_that_holds_on_both_sources_is_called_consistent(
+    table: Any, tmp_path: Path
+) -> None:
+    """The control, and it is the load-bearing half.
+
+    Any test whose only case is a positive is satisfied by a block that always separates.
+    Same arms, same 14/4, same subset sizes -- the flips split evenly instead of stacking,
+    and the verdict has to flip with them.
+    """
+    out = _write_panel(tmp_path / "arms")
+    _write_sources(out, lambda index: "gretel" if index % 2 else "wikisql")
+    printed = _run(table, out)
+
+    row = _heterogeneity_rows(printed)["4b  DynQuant vs GPTQ"]
+    assert "consistent" in row, row
+    assert "HETEROGENEOUS" not in row
+    assert "No row separates" in printed
+    # Consistent is a failure to reject, and the block has to say so rather than let a
+    # reader take it for a demonstration that the margins are equal.
+    assert "Consistent is not the same as equal" in printed
+
+
+def test_the_heterogeneity_row_inherits_the_mark_it_cannot_re_derive(
+    table: Any, tmp_path: Path
+) -> None:
+    """A flagged comparison stays flagged when it is re-partitioned and re-tested.
+
+    The dispatch confound is a property of which two arms are being compared, so it
+    survives every slicing of the items -- both halves of a flagged comparison carry it,
+    and so does a statistic computed from the two halves. The mark is inherited from the
+    entry rather than re-derived from the arithmetic map, and this pins the two to agree:
+    a row marked in the block above and unmarked here would read as a spread that is
+    cleaner than the deltas it came from.
+    """
+    out = _write_panel(tmp_path / "arms")
+    _stack_the_flips(out)
+    printed = _run(table, out)
+
+    source_block = printed.split("head to head, on gretel alone")[1].split("head to head, on w")[0]
+    for _, _, question in table.HEAD_TO_HEAD:
+        per_source = next(
+            (line for line in source_block.splitlines() if line.startswith(question)), None
+        )
+        if per_source is None or "needs both arms" in per_source:
+            continue
+        row = _heterogeneity_rows(printed).get(question.strip())
+        assert row is not None, question
+        assert row.rstrip().endswith("!") == per_source.rstrip().endswith("!"), (
+            f"{question}: per-source {per_source!r} vs heterogeneity {row!r}"
+        )
+
+
+def test_one_source_is_not_a_mixture_and_prints_no_block(table: Any, tmp_path: Path) -> None:
+    """Nothing to compare against, so no header with an empty table under it.
+
+    Cochran's Q needs two estimates. A panel evaluated on a single dataset is the ordinary
+    case for every other model in this campaign, and it must not print a heading promising
+    an answer it cannot give.
+    """
+    out = _write_panel(tmp_path / "arms")
+    _write_sources(out, lambda index: "wikisql")
+    printed = _run(table, out)
+    assert "head to head, on wikisql alone" in printed
+    assert "is the margin the same on every source?" not in printed
+
+
+def test_the_json_carries_the_spread_the_table_printed(table: Any, tmp_path: Path) -> None:
+    """A consumer reading only the aggregate cannot tell a broad win from a narrow one.
+
+    The model card is generated from this payload, so a heterogeneous margin that appears
+    in the terminal and not in the file is a margin the card will state as one number.
+    Every field the row prints is asserted present, because a serialisation that carries
+    the verdict and drops the spread is the one that reads as complete.
+    """
+    out = _write_panel(tmp_path / "arms")
+    _stack_the_flips(out)
+    destination = tmp_path / "table.json"
+    printed = _run(table, out, "--json-out", str(destination))
+
+    payload = json.loads(destination.read_text(encoding="utf-8"))
+    spread = {entry["question"].strip(): entry for entry in payload["source_heterogeneity"]}
+    entry = spread["4b  DynQuant vs GPTQ"]
+    assert entry["heterogeneous"] is True
+    assert entry["df"] == 1
+    assert set(entry["sources"]) == {"gretel", "wikisql"}
+    assert entry["sources"]["gretel"] > 0 > entry["sources"]["wikisql"]
+    assert entry["p_adjusted"] >= entry["p_value"]
+    assert entry["same_arithmetic"] == (
+        not _heterogeneity_rows(printed)["4b  DynQuant vs GPTQ"].rstrip().endswith("!")
+    )
+
+
+def _stack_every_flip_into_one_source(out: Path) -> list[str]:
+    """All 18 dq-vs-gptq discordant pairs into gretel, leaving wikisql with none.
+
+    The degenerate input the block has to survive rather than divide by: a source on
+    which two arms never disagree has a delta of exactly zero and a standard error of
+    exactly zero, so its inverse-variance weight is infinite and it would decide the
+    pooled estimate on its own.
+    """
+    dq = json.loads((out / "dq_4b.json").read_text(encoding="utf-8"))["hits"]
+    gptq = json.loads((out / "gptq_4b.json").read_text(encoding="utf-8"))["hits"]
+
+    def chooser(index: int) -> str:
+        if dq[index] != gptq[index]:
+            return "gretel"
+        return "gretel" if index % 2 else "wikisql"
+
+    return _write_sources(out, chooser)
+
+
+class _StandInPaired:
+    """Just the two fields the heterogeneity block reads off a comparison.
+
+    A real :class:`PairedComparison` is built from hit vectors, and hit vectors that
+    produce three chosen p-values to two significant figures are a puzzle rather than a
+    fixture. The block reads a delta and a standard error; this supplies them directly.
+    """
+
+    def __init__(self, delta: float, error: float) -> None:
+        self.delta_points = delta
+        self.standard_error_points = error
+
+
+def _blocks(cases: dict[str, list[tuple[float, float]]]) -> dict[str, list[dict[str, Any]]]:
+    """``{question: [(delta, se) per source]}`` in the shape print_source_blocks returns."""
+    sources = ["gretel", "wikisql"]
+    return {
+        source: [
+            {
+                "left": f"left_{index}",
+                "right": f"right_{index}",
+                "question": question,
+                "paired": _StandInPaired(*pairs[position]),
+                "same_arithmetic": True,
+            }
+            for index, (question, pairs) in enumerate(cases.items())
+        ]
+        for position, source in enumerate(sources)
+    }
+
+
+def test_a_row_that_separates_only_before_correction_does_not_separate(
+    table: Any, capsys: Any
+) -> None:
+    """The verdict follows the Holm-adjusted p, and one row exists to prove it.
+
+    Asking this question of every comparison in a panel makes a family, and the block says
+    so. The claim is untestable on the real fixture -- its spreads are far from the
+    boundary either way -- so the deltas are supplied directly and chosen to straddle it:
+    three comparisons, the middle one significant raw and not after being multiplied by
+    two.
+
+    Turns red when: the block drops the correction, or applies it and then reads the raw p
+    when deciding the verdict.
+    """
+    computed = table.print_heterogeneity(
+        _blocks(
+            {
+                "wide apart": [(0.0, 0.5), (2.4, 0.5)],
+                "just inside": [(0.0, 0.5), (1.55, 0.5)],
+                "together": [(0.0, 0.5), (0.6, 0.5)],
+            }
+        )
+    )
+    printed = capsys.readouterr().out
+
+    straddling = [entry for entry in computed if entry["p_value"] < 0.05 <= entry["p_adjusted"]]
+    assert straddling, [(e["question"], e["p_value"], e["p_adjusted"]) for e in computed]
+    for entry in straddling:
+        assert entry["heterogeneous"] is False
+        row = next(line for line in printed.splitlines() if line.startswith(entry["question"]))
+        assert "consistent" in row and "HETEROGENEOUS" not in row, row
+    # And the block still finds the one that clears correction, or the test above would be
+    # satisfied by a version that never separates anything.
+    assert any(entry["heterogeneous"] for entry in computed)
+
+
+def test_a_source_with_no_flips_is_skipped_by_name_and_not_weighted(
+    table: Any, tmp_path: Path
+) -> None:
+    """Zero flips is zero width, and an infinite weight would decide the pooled estimate.
+
+    Reachable on a real panel, not a constructed edge: two arms that differ on a handful
+    of items can easily agree completely on the smaller dataset. The row is dropped and
+    said out loud rather than printed as a spread of one number, and it must not reach the
+    json either -- a consumer cannot tell a dropped comparison from one that was never run
+    if the only difference is a line of terminal output.
+    """
+    out = _write_panel(tmp_path / "arms")
+    _stack_every_flip_into_one_source(out)
+    destination = tmp_path / "table.json"
+    printed = _run(table, out, "--json-out", str(destination))
+
+    block = printed.split("is the margin the same on every source?")[1]
+    skipped = [line for line in block.splitlines() if "no flips at all" in line]
+    assert any(line.startswith("4b  DynQuant vs GPTQ") for line in skipped), block
+
+    payload = json.loads(destination.read_text(encoding="utf-8"))
+    questions = {entry["question"].strip() for entry in payload["source_heterogeneity"]}
+    assert "4b  DynQuant vs GPTQ" not in questions

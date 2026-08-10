@@ -115,6 +115,79 @@ def standard_error(accuracy: float, total: int) -> float:
     return math.sqrt(accuracy * (1.0 - accuracy) / total) * 100.0 if total else 0.0
 
 
+def chi_square_sf(statistic: float, df: int) -> float:
+    """Upper tail of a chi-square, without pulling scipy in for one number.
+
+    This file's neighbours already refuse that dependency -- ``compare_paired`` sums an
+    exact binomial tail with :func:`math.comb` rather than calling a library -- and the
+    reason holds here: the script runs on whatever interpreter is beside a results
+    directory, including one on a box that has torch and nothing else.
+
+    Regularised incomplete gamma by series below the transition and continued fraction
+    above it, which is the standard split and is accurate to well past the precision any
+    p-value here is quoted at. ``df`` is small by construction: it is one less than the
+    number of datasets in the eval mixture.
+    """
+    if df < 1:
+        raise ValueError(f"df must be at least 1, got {df}")
+    if statistic <= 0:
+        return 1.0
+    a, x = df / 2.0, statistic / 2.0
+    log_gamma = math.lgamma(a)
+    if x < a + 1.0:
+        # Series for the *lower* tail, subtracted. Converges fast when x is left of the peak.
+        term = total = 1.0 / a
+        for i in range(1, 1000):
+            term *= x / (a + i)
+            total += term
+            if abs(term) < abs(total) * 1e-16:
+                break
+        return max(0.0, 1.0 - total * math.exp(-x + a * math.log(x) - log_gamma))
+    # Continued fraction for the upper tail directly (Lentz), which is the stable side here.
+    tiny = 1e-300
+    b, c, d = x + 1.0 - a, 1.0 / tiny, 1.0 / (x + 1.0 - a)
+    result = d
+    for i in range(1, 1000):
+        an = -i * (i - a)
+        b += 2.0
+        d = an * d + b
+        if abs(d) < tiny:
+            d = tiny
+        c = b + an / c
+        if abs(c) < tiny:
+            c = tiny
+        d = 1.0 / d
+        delta = d * c
+        result *= delta
+        if abs(delta - 1.0) < 1e-16:
+            break
+    return min(1.0, max(0.0, math.exp(-x + a * math.log(x) - log_gamma) * result))
+
+
+def cochran_q(deltas: list[float], errors: list[float]) -> tuple[float, float, float]:
+    """Heterogeneity across independent estimates of the same quantity.
+
+    Returns ``(pooled, q, p)``. The pooled estimate is inverse-variance weighted, which is
+    *not* the same as the whole-panel delta and is not offered as a replacement for it --
+    the panel's own number weights items equally, this one weights sources by precision.
+    It is here because Q is a spread around a centre and the centre has to be named.
+
+    Independence is the caller's to guarantee and is real here: the subsets partition the
+    eval set, so no item contributes to two of them. Running this over overlapping slices
+    would understate Q, and understating Q is the direction that manufactures agreement.
+    """
+    if len(deltas) != len(errors):
+        raise ValueError("deltas and errors must be the same length")
+    if len(deltas) < 2:
+        raise ValueError("heterogeneity needs at least two estimates")
+    if any(error <= 0 for error in errors):
+        raise ValueError("a zero standard error would carry infinite weight")
+    weights = [1.0 / error**2 for error in errors]
+    pooled = sum(w * d for w, d in zip(weights, deltas, strict=True)) / sum(weights)
+    q = sum(w * (d - pooled) ** 2 for w, d in zip(weights, deltas, strict=True))
+    return pooled, q, chi_square_sf(q, len(deltas) - 1)
+
+
 def holm(p_values: list[float]) -> list[float]:
     """Holm-Bonferroni adjusted p-values, in the order given.
 
@@ -873,6 +946,107 @@ def print_source_blocks(
     return blocks
 
 
+def print_heterogeneity(blocks: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """Whether each comparison's per-source deltas differ by more than their own noise.
+
+    The block above prints two intervals per comparison and leaves the reader to compare
+    them by eye, which is the one thing overlapping intervals are known not to support.
+    This is the test: independent per-source deltas, inverse-variance pooled, Cochran's Q
+    on the spread.
+
+    What a significant row licenses is narrow. It says the method's margin is not the same
+    on both datasets -- not that the aggregate is wrong, and not that either per-source
+    number is the "real" one. The aggregate stays the panel's claim because it is the one
+    the arms were run to answer; this says where that claim's margin comes from.
+
+    The family is corrected within itself, and it is a family: one test per comparison,
+    asked only because the panel already ran. A row that separates here at an uncorrected p
+    and not at the adjusted one is a row that did not separate.
+    """
+    if len(blocks) < 2:
+        # One source is not a mixture, and the caller printing zero blocks has already said
+        # why. Silence rather than a header with nothing under it.
+        return []
+    questions: dict[str, str] = {}
+    gathered: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    for source, entries in blocks.items():
+        for entry in entries:
+            key = (entry["left"], entry["right"])
+            questions[repr(key)] = entry["question"]
+            gathered.setdefault(repr(key), []).append((source, entry))
+
+    usable = {key: found for key, found in gathered.items() if len(found) == len(blocks)}
+    if not usable:
+        return []
+
+    print(f"is the margin the same on every source? ({', '.join(sorted(blocks))})")
+    header = (
+        f"{'comparison':28s} {'pooled':>7s} {'spread':>15s} {'Q':>7s} "
+        f"{'p':>10s} {'p (Holm)':>10s}  verdict"
+    )
+    print(header)
+    print("-" * len(header))
+
+    computed: list[dict[str, Any]] = []
+    for key, found in usable.items():
+        found = sorted(found, key=lambda pair: pair[0])
+        deltas = [entry["paired"].delta_points for _, entry in found]
+        errors = [entry["paired"].standard_error_points for _, entry in found]
+        if any(error <= 0 for error in errors):
+            # No flips on a source: the delta is exactly zero with no width, and a weight of
+            # infinity would decide the pooled estimate by itself. Skipped and named, which
+            # is what the row would otherwise silently be.
+            print(f"{questions[key]:28s} (a source produced no flips at all)")
+            continue
+        pooled, q, p_value = cochran_q(deltas, errors)
+        computed.append(
+            {
+                "left": found[0][1]["left"],
+                "right": found[0][1]["right"],
+                "question": questions[key],
+                "sources": {source: entry["paired"].delta_points for source, entry in found},
+                "pooled_points": pooled,
+                "q": q,
+                "df": len(found) - 1,
+                "p_value": p_value,
+                # Inherited, not re-derived. The comparison is the same comparison; if its
+                # arms did not demonstrably run the same expert arithmetic then neither did
+                # the per-source halves, and a heterogeneity row is a statement about two
+                # deltas that each carry the confound.
+                "same_arithmetic": found[0][1]["same_arithmetic"],
+            }
+        )
+
+    for entry, p_adj in zip(computed, holm([e["p_value"] for e in computed]), strict=True):
+        entry["p_adjusted"] = p_adj
+        entry["heterogeneous"] = p_adj < 0.05
+        spread = ", ".join(f"{delta:+.2f}" for _, delta in sorted(entry["sources"].items()))
+        print(
+            f"{entry['question']:28s} {entry['pooled_points']:+6.2f} {spread:>15s} "
+            f"{entry['q']:7.2f} {entry['p_value']:10.3g} {p_adj:10.3g}  "
+            f"{'HETEROGENEOUS' if entry['heterogeneous'] else 'consistent'}"
+            f"{'' if entry['same_arithmetic'] else '  !'}"
+        )
+
+    flagged = [entry for entry in computed if entry["heterogeneous"]]
+    print()
+    if flagged:
+        print("  A heterogeneous row means the margin is not one number. It does not demote the")
+        print("  aggregate, which is what the arms were run to measure -- it says which part of")
+        print("  the mixture that aggregate is coming from, and that a differently weighted")
+        print("  mixture would report a different margin.")
+    else:
+        print("  No row separates: every margin is consistent with being the same on every")
+        print("  source. Consistent is not the same as equal, and these subsets are small")
+        print("  enough that a real difference the size of the aggregate would often fail")
+        print("  to show here.")
+    if any(not entry["same_arithmetic"] for entry in computed):
+        print("  ! flags carry down from the block above: both halves of a flagged comparison")
+        print("    carry the same unpriced dispatch term, so its spread does too.")
+    print()
+    return computed
+
+
 def as_json(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The computed comparisons, serialised for a reader that is not this terminal.
 
@@ -950,6 +1124,7 @@ def main(argv: list[str] | None = None) -> int:
     print()
     labels, why_not = load_sources(out, args.sources, records)
     blocks = print_source_blocks(labels, why_not, records, arithmetic)
+    spread = print_heterogeneity(blocks)
     ceiling = print_comparisons("what each method cost", AGAINST_CEILING, records, arithmetic)
     print()
     for line in (
@@ -977,6 +1152,12 @@ def main(argv: list[str] | None = None) -> int:
         "arms": built,
         "head_to_head": as_json(head),
         "head_to_head_by_source": {name: as_json(entries) for name, entries in blocks.items()},
+        # Already plain values -- no `as_json` pass, because there is no PairedComparison
+        # underneath to flatten. Carried for the same reason the per-source blocks are: a
+        # consumer that reads only the aggregate cannot tell a margin that holds everywhere
+        # from one that lives in a single dataset, and on this panel those are two different
+        # comparisons in the same table.
+        "source_heterogeneity": spread,
         "against_ceiling": as_json(ceiling),
     }
     serialised = json.dumps(payload, indent=2, default=str)
