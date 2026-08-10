@@ -14,6 +14,12 @@ from .backend import (
     backend_report,
     resolve_backend,
 )
+from .experts import (
+    DISPATCH_NAME,
+    dynquant_experts_forward,
+    register_experts_dispatch,
+    use_dynquant_experts,
+)
 from .linear import (
     DynQuantEmbedding,
     DynQuantLinear,
@@ -32,6 +38,7 @@ from .ops import (
 )
 
 __all__ = [
+    "DISPATCH_NAME",
     "Backend",
     "BackendStatus",
     "DynQuantEmbedding",
@@ -41,12 +48,15 @@ __all__ = [
     "available_backends",
     "backend_report",
     "dequantize",
+    "dynquant_experts_forward",
     "embedding_lookup",
     "gemv_max_rows",
     "pack_model",
     "packed_bytes",
     "quantized_matmul",
+    "register_experts_dispatch",
     "resolve_backend",
+    "use_dynquant_experts",
     "uses_compiled_kernels",
     "warm_dispatch",
 ]

@@ -1,0 +1,63 @@
+{
+  "seed": 0,
+  "scale": "wide",
+  "runs": [
+    {
+      "dtype": "bfloat16",
+      "scale": "wide",
+      "prompt_tokens": 256,
+      "geometry": {
+        "hidden_size": 2048,
+        "intermediate_size": 7168,
+        "moe_intermediate_size": 1792,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 8,
+        "num_experts": 32,
+        "num_experts_per_tok": 4
+      },
+      "dispatch_selected": {
+        "grouped_mm": true,
+        "eager": true,
+        "dynquant": true
+      },
+      "max_abs_logit": 4.125,
+      "logit_gap_vs_grouped_mm": {
+        "eager": 0.62109375,
+        "dynquant": 0.0
+      },
+      "token_disagreement_vs_grouped_mm": {
+        "eager": 0.01953125,
+        "dynquant": 0.0
+      }
+    },
+    {
+      "dtype": "float32",
+      "scale": "wide",
+      "prompt_tokens": 256,
+      "geometry": {
+        "hidden_size": 2048,
+        "intermediate_size": 7168,
+        "moe_intermediate_size": 1792,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 8,
+        "num_experts": 32,
+        "num_experts_per_tok": 4
+      },
+      "dispatch_selected": {
+        "grouped_mm": true,
+        "eager": true,
+        "dynquant": true
+      },
+      "max_abs_logit": 4.229373,
+      "logit_gap_vs_grouped_mm": {
+        "eager": 1.2516975402832031e-06,
+        "dynquant": 0.0
+      },
+      "token_disagreement_vs_grouped_mm": {
+        "eager": 0.0,
+        "dynquant": 0.0
+      }
+    }
+  ],
+  "verdict": "at scale 'wide' and bf16, 'dynquant' tracks grouped_mm exactly, bit for bit, where eager does not (0.000e+00 vs 6.211e-01), disagreeing on 0.00% of argmax tokens against eager's 1.95%"
+}

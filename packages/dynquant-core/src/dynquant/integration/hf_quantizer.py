@@ -99,6 +99,7 @@ from dynquant.integration.serving_common.schema import (
     QuantizationConfigSchema,
 )
 from dynquant.quant.tensor import QuantTensor, storage_dtype
+from dynquant.runtime.experts import use_dynquant_experts
 from dynquant.runtime.linear import (
     DynQuantEmbedding,
     DynQuantExpertBank,
@@ -108,7 +109,6 @@ from dynquant.runtime.linear import (
     _PackedModule,
     replace_module,
     resolve_target,
-    use_eager_experts,
 )
 
 __all__ = [
@@ -243,9 +243,11 @@ def build_quantizer_class() -> type:
             self._restored = restored
             # A bank installed here reaches a forward the same way a packed one does,
             # so it needs the same dispatch. `pack_model` does this for the quantize
-            # path; nothing shared runs on this one.
+            # path; nothing shared runs on this one. `use_dynquant_experts` keeps the
+            # default path's reduction order and falls back to `use_eager_experts` on a
+            # transformers with nothing to register into.
             if any(isinstance(shell, DynQuantExpertBank) for shell in shells.values()):
-                use_eager_experts(model)
+                use_dynquant_experts(model)
             _log.info(
                 "prepared %d packed modules for loading%s%s",
                 len(self._packed_names),

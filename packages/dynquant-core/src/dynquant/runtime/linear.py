@@ -495,6 +495,16 @@ class PackReport:
         self.skipped: list[str] = []
         self.experts_implementation: str | None = None
         """The dispatch this model was moved off, if a bank forced the move."""
+        self.experts_dispatch: str | None = None
+        """The dispatch it was moved *to*, which is not always the same answer.
+
+        Two fields rather than one because the destination is negotiated, not fixed:
+        :func:`use_dynquant_experts` prefers ``dynquant`` and settles for ``eager`` on a
+        transformers with no ``ALL_EXPERTS_FUNCTIONS`` to register into. Those two are
+        numerically different models -- ``eager`` disagrees with the default dispatch on
+        1.95% of argmax tokens at this model's MoE geometry -- so a report that named only
+        the origin would leave the reader unable to tell which one they had.
+        """
 
     @property
     def fp16_bytes(self) -> int:
@@ -525,8 +535,8 @@ class PackReport:
             )
         if self.experts_implementation is not None:
             lines.append(
-                f"  experts dispatch moved from {self.experts_implementation!r} to 'eager': "
-                f"a packed bank is indexed one expert at a time"
+                f"  experts dispatch moved from {self.experts_implementation!r} to "
+                f"{self.experts_dispatch!r}: a packed bank is indexed one expert at a time"
             )
         if self.skipped:
             lines.append(f"  {len(self.skipped)} left dense: {', '.join(self.skipped[:5])}")
@@ -638,7 +648,12 @@ def pack_model(
         report.skipped.append(name)
 
     if any(isinstance(model.get_submodule(name), DynQuantExpertBank) for name in report.modules):
-        report.experts_implementation = use_eager_experts(model)
+        from dynquant.runtime.experts import use_dynquant_experts
+
+        report.experts_implementation = use_dynquant_experts(model)
+        if report.experts_implementation is not None:
+            landed = getattr(model.config, "_experts_implementation", None)
+            report.experts_dispatch = str(landed)
 
     _log.info("%s", report.summary())
     return report

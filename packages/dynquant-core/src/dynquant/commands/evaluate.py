@@ -31,13 +31,12 @@ a module -- which on a batched-expert MoE is most of the model. A directory writ
 by ``dynquant quantize`` is the same thing as ``encode``, spelled on disk.
 
 **It pins the experts dispatch.** The two modes hold the same values and do not, on
-a MoE, run the same computation: packing forces ``eager``, because only ``eager``
-indexes a packed bank one expert at a time, while encoding leaves whatever the model
-chose at ``post_init``. On LFM2.5-8B-A1B those two dispatches disagree on 1.24% of
-teacher-forced tokens, 0.29x what quantizing to 4 bits does -- the same order as the
-margins this command exists to measure. So every run is put on ``eager``, which is
-also what a downloaded checkpoint runs, and the record says which dispatch it was.
-See ``--experts-impl``.
+a MoE, run the same computation: packing moves the model off the default dispatch,
+because a packed bank has to be indexed one expert at a time, while encoding leaves
+whatever the model chose at ``post_init``. On LFM2.5-8B-A1B ``eager`` and that default
+disagree on 1.24% of teacher-forced tokens, 0.29x what quantizing to 4 bits does --
+the same order as the margins this command exists to measure. So every run is pinned
+to one dispatch and the record says which one ran. See ``--experts-impl``.
 """
 
 from __future__ import annotations
@@ -674,9 +673,11 @@ def _pin_experts_dispatch(model: Any, args: argparse.Namespace) -> dict[str, str
     """Put every arm of a panel on one experts dispatch, and record which one ran.
 
     Three arms of the same panel arrive here on three different dispatches with nothing
-    on the command line saying so. A ``--map-apply pack`` arm is already on ``eager``,
-    forced there by ``pack_model`` because only ``eager`` indexes a packed bank one expert
-    at a time. A ``--map-apply encode`` arm is on whatever ``post_init`` picked, which in
+    on the command line saying so. A ``--map-apply pack`` arm has already been moved off
+    the default by ``pack_model``, because a packed bank has to be indexed one expert at a
+    time; since :mod:`dynquant.runtime.experts` exists that destination is ``dynquant``
+    rather than ``eager``, on a transformers with an interface to register into. A
+    ``--map-apply encode`` arm is on whatever ``post_init`` picked, which in
     transformers 5.14.1 is ``grouped_mm``. A baseline handed in through ``model=`` has had
     its banks rewritten into per-expert ``Linear`` modules by ``llm-compressor``, so it
     computes the loop whatever the setting says. Only the first of those three was a
@@ -699,19 +700,35 @@ def _pin_experts_dispatch(model: Any, args: argparse.Namespace) -> dict[str, str
     22 layers compound it. A panel that varies dispatch alongside quantizer cannot say
     which of the two moved its margin.
 
-    ``eager`` is the only dispatch every arm can share: a linearised baseline cannot be put
-    on ``grouped_mm``, there is nothing left to dispatch. It is also what a downloaded
-    packed checkpoint runs, which is what makes an encoder-scored number a claim about the
-    artifact rather than about a configuration nobody will reproduce. It is the slower
-    path, and ``--experts-impl auto`` leaves the model's own choice alone for anyone
-    measuring the dispatch itself instead of comparing across arms.
+    ``eager`` is what this pins to, and half the reason has since stopped being true. It
+    was chosen as the only dispatch every arm can share -- a linearised baseline cannot be
+    put on ``grouped_mm``, there is nothing left to dispatch -- and defended as also being
+    what a downloaded packed checkpoint runs, which is what made an encoder-scored number a
+    claim about the artifact. The second half is now false:
+    :func:`dynquant.runtime.experts.use_dynquant_experts` serves a packed bank without
+    leaving the grouped path, so a downloaded checkpoint runs ``dynquant``, which at this
+    model's MoE geometry is bit-identical to ``grouped_mm`` where ``eager`` is not -- 0.00%
+    of argmax tokens against 1.95% (``experiments/phase4/probe_experts_dispatch.py``).
+
+    The pin stays on ``eager`` regardless, and the reason is pairing rather than physics.
+    ``EXPERTS_PAIRING_FIELDS`` is ``("ran",)``, so the dispatch is part of an arm's
+    identity, and the panel's already-scored arms ran on ``eager``. Repointing the default
+    would not make those arms wrong; it would silently stop them pairing with every arm
+    scored afterwards, which is the more expensive failure because it is the quiet one. The
+    pessimism it costs is shared by all seven arms equally, so it moves the level and not
+    the margins. ``--experts-impl auto`` leaves the model's own choice alone, which is what
+    to run for the artifact's own number rather than a cross-arm comparison.
 
     Returns what the dispatch was when this looked and what it was when this returned, or
     ``None`` for a model whose config carries no such attribute -- a dense model, or one on
     a transformers old enough to have no dispatch to pick. Not a linearised baseline: see
     above. ``found`` is not ``post_init``'s choice on a packed arm: packing has already
     moved it by the time this runs, and the honest report is what was there rather than a
-    reconstruction of what would have been.
+    reconstruction of what would have been. Which is why ``found`` on a packed arm now
+    reads ``dynquant`` where it used to read ``eager``, and why that was safe to change:
+    pairing keys on ``ran``, which this still sets to ``eager``. Had both fields been in
+    ``EXPERTS_PAIRING_FIELDS`` the dispatch rewrite would have unpaired five scored arms
+    without altering a number in any of them.
     """
     config = getattr(model, "config", None)
     found = getattr(config, "_experts_implementation", None)
@@ -735,9 +752,11 @@ def _apply_map(model: Any, args: argparse.Namespace) -> dict[str, Any]:
     reconstruction back in the compute dtype -- same values, fp16 size -- and is the only
     one that reaches a weight that is not a module.
 
-    The computation diverges because ``pack_model`` forces the experts dispatch to
-    ``eager`` and the encoder leaves it alone, and the two dispatches are not the same
-    arithmetic on a real model: 1.24% of teacher-forced tokens on LFM2.5-8B-A1B.
+    The computation diverges because ``pack_model`` moves the experts dispatch off the
+    model's default -- to ``dynquant`` where transformers has an interface to register
+    into, ``eager`` where it does not -- and the encoder leaves it alone. Those are not the
+    same arithmetic on a real model: ``eager`` differs from the default on 1.24% of
+    teacher-forced tokens on LFM2.5-8B-A1B, while ``dynquant`` is bit-identical to it.
     :func:`run` pins the dispatch after this returns, which puts both modes back on the
     same footing; a caller reaching this function directly does not get that and has to
     pin its own.
