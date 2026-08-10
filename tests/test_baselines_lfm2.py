@@ -1798,3 +1798,176 @@ def test_the_activation_linearize_moe_reads_is_supplied_without_touching_the_che
 
     declared = _checkpoint(tmp_path / "llama", model_type="llama", hidden_act="gelu")
     assert driver.pristine_config(declared).hidden_act == "gelu"
+
+
+# --------------------------------------------------------------------------------------
+# Whether the directory that gets published is the model the row was scored on.
+#
+# `publish` re-runs the recipe, because the panel never serialized one -- `run` scores in
+# process and writes a record, not a checkpoint. So the weights in a published directory
+# come from a second calibration pass, and until `--scored` the label on the directory was
+# the only thing tying them to the row in the table. These four cover the comparison that
+# replaced the label: what it refuses, when it runs, what it admits it did not check, and
+# why the byte accounting alone could never have done the job.
+# --------------------------------------------------------------------------------------
+
+
+# The two 4-bit arms as the panel actually recorded them, trimmed to the fields the check
+# reads. They are transcribed rather than invented because the point of the fourth test is
+# a coincidence in the real numbers, and a fixture free to differ would not have it.
+SCORED_GPTQ_4B: dict[str, Any] = {
+    "method": "gptq",
+    "bits": 4,
+    "group_size": 128,
+    "ignore": [],
+    "calib_samples": 256,
+    "seq_len": 1024,
+    "source": "/workspace/runs/s4/lfm25-8b-a1b.text2sql/merged",
+    "materialized_modules": 2201,
+    "weights_moved": 0,
+    "max_weight_delta": 0.0,
+    "probe_unique_values_per_row": [5, 143, 167, 161, 145, 187, 181, 195],
+    "accounted_bits": 4.1565,
+    "accounted_bytes": 4399629312,
+    "quantized_params": 8467644416,
+    "banked_params_quantized": 7751073792,
+    "params": 8467856128,
+}
+
+SCORED_AWQ_4B: dict[str, Any] = {
+    **SCORED_GPTQ_4B,
+    "method": "awq",
+    "weights_moved": 2201,
+    "max_weight_delta": 2.890625,
+    "probe_unique_values_per_row": [59, 160, 158, 174, 194, 196, 210, 204],
+}
+
+
+def _record(tmp_path: Any, scored: dict[str, Any], name: str = "arm.quant.json") -> str:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    path = tmp_path / name
+    path.write_text(json.dumps(scored), encoding="utf-8")
+    return str(path)
+
+
+def test_a_pass_that_reproduces_the_scored_arm_publishes_and_one_that_does_not_is_refused(
+    driver: Any,
+) -> None:
+    """The comparison the label used to stand in for.
+
+    Both directions matter. A check that only ever refuses would be satisfied by a constant
+    exception, and a check that only ever passes is the label again under a longer name.
+    The refusal has to say which field moved and to what, because the answer to a
+    disagreement here is a judgement -- republish, or find out what drifted -- and neither
+    is reachable from a bare "did not match".
+    """
+    covered = driver.check_matches_scored(dict(SCORED_GPTQ_4B), SCORED_GPTQ_4B, "arm.json")
+    assert covered == len(driver.SCORED_WEIGHTS)
+
+    drifted = {**SCORED_GPTQ_4B, "max_weight_delta": 0.0001}
+    with pytest.raises(SystemExit) as refusal:
+        driver.check_matches_scored(drifted, SCORED_GPTQ_4B, "arm.json")
+    said = str(refusal.value)
+    assert "not the model that row was scored on" in said
+    assert "max_weight_delta" in said and "0.0001" in said
+
+    # And the asymmetry with the record: a field the record carries and this pass did not
+    # produce is a disagreement, not an absence. It is the coverage count that is allowed
+    # to shrink when a record is old, never the comparison when a pass came back short.
+    absent = {k: v for k, v in SCORED_GPTQ_4B.items() if k != "weights_moved"}
+    with pytest.raises(SystemExit, match="weights_moved"):
+        driver.check_matches_scored(absent, SCORED_GPTQ_4B, "arm.json")
+
+
+def test_the_scored_flags_are_checked_before_the_recipe_runs_and_not_after(
+    driver: Any, tmp_path: Any, monkeypatch: Any
+) -> None:
+    """A width that disagrees with the record has to cost a second, not a calibration pass.
+
+    Everything in ``SCORED_FLAGS`` is readable from the namespace, so there is no reason to
+    learn about a ``--bits`` typo half an hour into a GPTQ pass over 8 B parameters -- and
+    on the box that pass is competing with a panel for the same GPU. This asserts the
+    ordering directly: ``quantize`` is replaced by something that records being called, and
+    the refusal has to arrive with that record still empty.
+    """
+    source = _checkpoint(tmp_path / "src", model_type="gpt2", tie_word_embeddings=True)
+    record = _record(tmp_path, {**SCORED_GPTQ_4B, "source": source})
+
+    # Returns something a later line could use, so that moving the check below the recipe
+    # reddens this on `called`, which is the ordering, rather than on an unpacking error.
+    called: list[Any] = []
+
+    def _quantize(args: Any) -> tuple[Any, dict[str, Any]]:
+        called.append(args)
+        return object(), dict(SCORED_GPTQ_4B)
+
+    monkeypatch.setattr(driver, "quantize", _quantize)
+
+    args = _args(
+        driver,
+        [
+            "publish",
+            "--model",
+            source,
+            "--save-to",
+            str(tmp_path / "out"),
+            "--method",
+            "gptq",
+            "--bits",
+            "3",
+            "--scored",
+            record,
+        ],
+    )
+    with pytest.raises(SystemExit) as refusal:
+        driver.do_publish(args)
+
+    assert called == []
+    said = str(refusal.value)
+    assert "would not reproduce the arm recorded in" in said
+    assert json.loads(said.split(":\n", 1)[1]) == {"bits": {"scored": 4, "asked": 3}}
+
+
+def test_a_field_the_scored_record_does_not_carry_is_counted_and_not_matched(
+    driver: Any,
+) -> None:
+    """An older record is still worth comparing against, but not worth over-claiming.
+
+    A field absent from the record cannot disagree with anything, so it is skipped -- which
+    is right, and is also exactly how a comparison quietly becomes weaker than it reads.
+    The count is the disclosure: ``fields_compared`` beside ``fields_available`` in the
+    published metadata says how much of the fingerprint the record was able to supply, so a
+    directory matched on six fields is not filed as a directory matched on ten.
+    """
+    older = {k: v for k, v in SCORED_GPTQ_4B.items() if k not in ("weights_moved", "params")}
+    republished = {**SCORED_GPTQ_4B, "weights_moved": 999, "params": 1}
+
+    assert driver.scored_weight_disagreements(republished, older) == {}
+    assert driver.check_matches_scored(republished, older, "arm.json") == (
+        len(driver.SCORED_WEIGHTS) - 2
+    )
+
+
+def test_the_byte_accounting_alone_does_not_identify_an_arm(driver: Any, monkeypatch: Any) -> None:
+    """Why the weight fingerprints are in ``SCORED_WEIGHTS`` and not just the sizes.
+
+    ``gptq_4b`` and ``awq_4b`` are the same architecture at the same width and group size,
+    so every number describing how large the result is agrees to the byte: 4.1565 bits,
+    4,399,629,312 of them, the same quantized and banked parameter counts. Publishing one
+    arm's weights under the other's row would leave all of that intact. What separates them
+    is what the recipe did to the weights -- AWQ's smoothing moves all 2201 modules by up to
+    2.89, GPTQ moves none -- and if a later trim of this tuple ever leaves only the
+    accounting behind, the second half of this test is what goes red.
+    """
+    accounting = ("accounted_bits", "accounted_bytes", "quantized_params", "params")
+
+    with pytest.raises(SystemExit) as refusal:
+        driver.check_matches_scored(SCORED_AWQ_4B, SCORED_GPTQ_4B, "gptq_4b.quant.json")
+    assert sorted(json.loads(str(refusal.value).split(":\n", 1)[1])) == [
+        "max_weight_delta",
+        "probe_unique_values_per_row",
+        "weights_moved",
+    ]
+
+    monkeypatch.setattr(driver, "SCORED_WEIGHTS", accounting)
+    assert driver.check_matches_scored(SCORED_AWQ_4B, SCORED_GPTQ_4B, "gptq_4b.quant.json") == 4

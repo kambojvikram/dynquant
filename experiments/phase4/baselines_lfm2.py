@@ -1049,6 +1049,94 @@ def under_the_input_table(model: Any, banked: dict[str, Any]) -> dict[str, Any]:
     return moved
 
 
+SCORED_FLAGS = ("method", "bits", "group_size", "ignore", "seq_len", "source")
+"""What a republished arm has to have *asked* for to be the arm the panel scored.
+
+Readable from the namespace before the recipe runs, which is why they are separate from
+:data:`SCORED_WEIGHTS` below. A calibration pass over 8 B parameters costs the better part
+of an hour, and every one of these is knowable from the command line -- so a
+``--bits 3`` typo against a 4-bit record should cost a second, not a pass.
+"""
+
+SCORED_WEIGHTS = (
+    "calib_samples",
+    "materialized_modules",
+    "weights_moved",
+    "max_weight_delta",
+    "probe_unique_values_per_row",
+    "accounted_bits",
+    "accounted_bytes",
+    "quantized_params",
+    "banked_params_quantized",
+    "params",
+)
+"""What a republished arm has to have *produced* to be the arm the panel scored.
+
+``publish`` re-runs the recipe, because the panel never serialized one -- ``run`` scores in
+process and writes a record, not a checkpoint. So the weights in the published directory
+come from a second calibration pass, and nothing about the label on the directory makes
+them the weights the table's row was measured on. These are what the first pass recorded
+about the weights it produced: how many modules the recipe touched, how far it moved them,
+the per-row distinct-value probe, and the byte accounting the model card would quote.
+
+They are compared exactly. A GPTQ Hessian accumulated in a different order could in
+principle shift one row's distinct-value count by one, and that is not a rounding detail to
+be waived -- it is the finding that the published weights are not the scored weights, which
+is the entire question this check exists to answer. There is deliberately no flag to
+override it: the disagreement is printed field by field, and what to do about it is a
+decision, not a default.
+"""
+
+
+def scored_flag_disagreements(args: Any, scored: dict[str, Any]) -> dict[str, Any]:
+    """Which of :data:`SCORED_FLAGS` this invocation would not reproduce."""
+    asked = {
+        "method": args.method,
+        "bits": int(args.bits),
+        "group_size": int(args.group_size),
+        "ignore": list(IGNORE),
+        "seq_len": int(args.seq_len),
+        "source": str(args.model),
+    }
+    return {
+        field: {"scored": scored[field], "asked": asked[field]}
+        for field in SCORED_FLAGS
+        if field in scored and scored[field] != asked[field]
+    }
+
+
+def scored_weight_disagreements(meta: dict[str, Any], scored: dict[str, Any]) -> dict[str, Any]:
+    """Which of :data:`SCORED_WEIGHTS` the second pass did not reproduce.
+
+    A field the scored record does not carry is skipped rather than treated as a
+    disagreement, and the count of those is what :func:`check_matches_scored` reports
+    beside the result -- a record written before a field existed can still be matched on
+    the fields it has, but nobody should read that as a match on the fields it does not.
+    """
+    return {
+        field: {"scored": scored[field], "republished": meta.get(field)}
+        for field in SCORED_WEIGHTS
+        if field in scored and scored[field] != meta.get(field)
+    }
+
+
+def check_matches_scored(meta: dict[str, Any], scored: dict[str, Any], where: str) -> int:
+    """Refuse a directory whose weights are not the ones the arm was scored on.
+
+    Returns how many of :data:`SCORED_WEIGHTS` the record actually carried, so the caller
+    can publish the coverage rather than only the verdict.
+    """
+    covered = sum(1 for field in SCORED_WEIGHTS if field in scored)
+    moved = scored_weight_disagreements(meta, scored)
+    if moved:
+        raise SystemExit(
+            f"this pass did not reproduce the arm recorded in {where}, so the directory it "
+            f"would write is not the model that row was scored on:\n"
+            f"{json.dumps(moved, indent=2)}"
+        )
+    return covered
+
+
 MAX_CARRY_DRIFT = 0.125
 """How far a carried reconstruction may sit from the one that was scored, in code steps.
 
@@ -1282,6 +1370,13 @@ def do_publish(args: argparse.Namespace) -> int:
     transformers' own checkpoint conversion mapping -- and ``lfm2_moe`` has none, because its
     published checkpoint is already banked. That is upstream work with an upstream release
     cycle. This directory loads through ``dynquant``'s own ``HfQuantizer``.
+
+    And it re-quantizes, because the panel never serialized anything -- ``run`` scores in
+    process and writes a record. So this is a *second* calibration pass, and the label on
+    the directory is the only thing connecting it to the row in the table. ``--scored``
+    replaces that with a measurement: the arm's own record, compared field by field against
+    what this pass produced. Without it the directory is published on the strength of
+    matching flags, which is a claim about the inputs and not about the weights.
     """
     import dataclasses
 
@@ -1296,7 +1391,26 @@ def do_publish(args: argparse.Namespace) -> int:
     # that is being published.
     declared_tie = bool(getattr(pristine_config(args.model), "tie_word_embeddings", False))
 
+    # Before the recipe, not after: every one of these is knowable from the namespace, and
+    # learning that `--bits` disagrees with the record costs a second here and 32 minutes
+    # of calibration below.
+    scored = None
+    if args.scored:
+        scored = json.loads(Path(args.scored).read_text(encoding="utf-8"))
+        asked = scored_flag_disagreements(args, scored)
+        if asked:
+            raise SystemExit(
+                f"these flags would not reproduce the arm recorded in {args.scored}:\n"
+                f"{json.dumps(asked, indent=2)}"
+            )
+
     model, meta = quantize(args)
+    if scored is not None:
+        meta["scored"] = {
+            "record": str(args.scored),
+            "fields_compared": check_matches_scored(meta, scored, args.scored),
+            "fields_available": len(SCORED_WEIGHTS),
+        }
     rules = expert_rules()
     grids = carried_grids(model, group_size=args.group_size)
     banked, width = banked_grids(model, grids, rules)
@@ -1433,6 +1547,10 @@ def build_parser() -> argparse.ArgumentParser:
     # --device because the two happen at different times and the second one is cheap: it is
     # a pack of codes that already exist, not a calibration pass.
     pub.add_argument("--pack-device", default="auto")
+    # The `<label>.quant.json` the scored arm wrote. Optional, because the probe publishes a
+    # model no panel ever scored and has nothing to compare against; supplied for anything
+    # that will carry a panel arm's name.
+    pub.add_argument("--scored", default=None)
     quant_flags(pub)
     pub.set_defaults(func=do_publish)
 
