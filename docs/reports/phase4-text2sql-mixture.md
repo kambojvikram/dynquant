@@ -2262,18 +2262,31 @@ inherits its wrong ones, which loses the other 16%. Two strata, opposite signs, 
 It also explains why the margin is larger where the ceiling is higher: a point of fidelity
 moves accuracy by `2c - 1`, which is 0.77 on wikisql and 0.43 on gretel.
 
-Running the panel's own Cochran Q on the fidelity indicator separates the two baselines:
+Running the panel's own Cochran Q on the fidelity indicator separates the two baselines.
+`panel_table.py` prints both spreads and carries both into the json, because one of them
+without the other supports the opposite reading; verdicts follow the Holm-adjusted *p*
+within each block, and each block is three comparisons wide until the 3-bit arms land.
 
-| comparison | gretel | wikisql | Q | *p* | |
-|---|---:|---:|---:|---:|---|
-| dq vs gptq, accuracy | -0.49 | +1.03 | 6.32 | 0.012 | heterogeneous |
-| dq vs gptq, fidelity | +0.10 | +1.77 | 7.64 | 0.0057 | heterogeneous |
-| dq vs awq, accuracy | +0.36 | +1.14 | 1.53 | 0.216 | consistent |
-| dq vs awq, fidelity | +1.86 | +1.63 | 0.13 | **0.719** | consistent |
+| comparison | gretel | wikisql | Q | *p* | *p* (Holm) | |
+|---|---:|---:|---:|---:|---:|---|
+| dq vs gptq, accuracy | -0.49 | +1.03 | 6.32 | 0.012 | 0.036 | heterogeneous |
+| dq vs gptq, fidelity | +0.10 | +1.77 | 7.64 | 0.0057 | 0.015 | heterogeneous |
+| dq vs awq, accuracy | +0.36 | +1.14 | 1.53 | 0.216 | 0.431 | consistent |
+| dq vs awq, fidelity | +1.86 | +1.63 | 0.13 | **0.719** | **0.719** | consistent |
+| gptq vs awq, accuracy | +0.85 | +0.11 | 1.19 | 0.276 | 0.431 | consistent |
+| gptq vs awq, fidelity | +1.76 | -0.13 | 7.88 | 0.0050 | 0.015 | heterogeneous |
 
 Against AWQ the fidelity edge is flat across sources and the entire variation in the
 *accuracy* margin is the `2c - 1` arithmetic. Against GPTQ the heterogeneity is real and
-lives in fidelity itself. The 3-bit GPTQ arm shows the same instrument reading a collapse:
+lives in fidelity itself.
+
+The last row is the check that the instrument is not simply reporting on whichever arm is
+being singled out. GPTQ and AWQ do not separate from each other on aggregate fidelity at
+all (+0.35, *p*=0.198), and yet their fidelity margin **changes sign** between the two
+sources, +1.76 on gretel against -0.13 on wikisql. Two arms that agree with the ceiling
+equally often, on a mixture, disagree about which half of the mixture they agree with it
+on -- so per-source fidelity structure is a property this panel finds in the baselines
+too, not a signature of the method under test. The 3-bit GPTQ arm shows the same instrument reading a collapse:
 it agrees with bf16 on 87.08% of the items bf16 got **wrong** and only 69.70% of the ones it
 got **right** -- an arm that has stopped tracking the ceiling and "agrees" on the failures
 by being broadly wrong. The identity confirms it, 0.8426 x 0.6970 + 0.1574 x 0.1292 =
@@ -2304,8 +2317,10 @@ forward time. `PreTrainedModel.get_correct_experts_implementation` is where it s
 applicable_experts = "grouped_mm" if requested_experts is None else requested_experts
 ...
 if applicable_experts == "grouped_mm":
-    try: self._grouped_mm_can_dispatch()
-    except (ValueError, ImportError): applicable_experts = "eager"
+    try:
+        self._grouped_mm_can_dispatch()
+    except (ValueError, ImportError):
+        applicable_experts = "eager"
 ```
 
 `None` becomes `grouped_mm` on 5.10.1 exactly as on 5.14.1, and the one escape hatch cannot

@@ -928,34 +928,60 @@ def restrict(
     return subset
 
 
+#: Why the accuracy blocks are worth printing per source.
+ACCURACY_BY_SOURCE_NOTE = (
+    "  The per-source blocks re-partition the same hits the block above tests, so a "
+    "method\n  ahead on one source and behind on the other has produced one result "
+    "with structure,\n  not two results to choose between. Each block is Holm-"
+    "corrected within itself."
+)
+
+#: Why the same partition is worth running again on the fidelity indicator. Not a
+#: restatement: these two blocks answer different questions and can disagree, and it is
+#: the disagreement that carries the finding.
+FIDELITY_BY_SOURCE_NOTE = (
+    "  Accuracy and fidelity re-partitioned the same way answer different questions. A "
+    "point\n  of agreement with the ceiling moves accuracy by 2c-1, and c is not the same "
+    "on both\n  sources here, so an accuracy margin can vary by source while the method's "
+    "own\n  tracking of the ceiling does not. When that happens the spread above is the "
+    "ceiling's\n  arithmetic rather than the method's behaviour, and only this block can "
+    "tell them apart."
+)
+
+
 def print_source_blocks(
     labels: list[str] | None,
     why_not: str | None,
     records: dict[str, dict[str, Any]],
     arithmetic: dict[str, str | None],
+    *,
+    question: str = "head to head",
+    closing: str = ACCURACY_BY_SOURCE_NOTE,
 ) -> dict[str, list[dict[str, Any]]]:
+    """One `print_comparisons` block per source, over whatever indicator ``records`` carry.
+
+    Parameterised on the question rather than duplicated because the partition, the family
+    and the within-block Holm correction are the same work either way -- a second copy of
+    this loop for the fidelity indicator would be a second place for the restriction to be
+    got wrong, and the two would agree right up until one of them was edited.
+    """
     if labels is None:
         if why_not:
-            print(f"per-source head to head: unavailable -- {why_not}")
+            print(f"per-source {question}: unavailable -- {why_not}")
             print()
         return {}
     blocks: dict[str, list[dict[str, Any]]] = {}
     for name in sorted(set(labels)):
         count = sum(1 for src in labels if src == name)
         blocks[name] = print_comparisons(
-            f"head to head, on {name} alone ({count:,} of {len(labels):,} items)",
+            f"{question}, on {name} alone ({count:,} of {len(labels):,} items)",
             HEAD_TO_HEAD,
             restrict(records, labels, name),
             arithmetic,
             explain_arithmetic=False,
         )
         print()
-    print(
-        "  The per-source blocks re-partition the same hits the block above tests, so a "
-        "method\n  ahead on one source and behind on the other has produced one result "
-        "with structure,\n  not two results to choose between. Each block is Holm-"
-        "corrected within itself."
-    )
+    print(closing)
     print()
     return blocks
 
@@ -963,6 +989,8 @@ def print_source_blocks(
 def print_heterogeneity(
     blocks: dict[str, list[dict[str, Any]]],
     family: tuple[tuple[str, str, str], ...] = HEAD_TO_HEAD,
+    *,
+    question: str = "is the margin the same on every source?",
 ) -> list[dict[str, Any]]:
     """Whether each comparison's per-source deltas differ by more than their own noise.
 
@@ -996,7 +1024,7 @@ def print_heterogeneity(
     if not usable:
         return []
 
-    print(f"is the margin the same on every source? ({', '.join(sorted(blocks))})")
+    print(f"{question} ({', '.join(sorted(blocks))})")
     header = (
         f"{'comparison':28s} {'pooled':>7s} {'spread':>15s} {'Q':>7s} "
         f"{'p':>10s} {'p (Holm)':>10s}  verdict"
@@ -1290,14 +1318,30 @@ def main(argv: list[str] | None = None) -> int:
     # rows because the two can disagree: a pair can separate on accuracy and not on
     # fidelity, which would say the arms differ in *which* items they get right rather
     # than in how closely either tracks the model they were both built from.
+    agreed = agreement_records(records)
     fidelity_head = print_comparisons(
         f"the same comparisons, on agreement with {CEILING} instead of accuracy",
         HEAD_TO_HEAD,
-        agreement_records(records),
+        agreed,
         arithmetic,
         explain_arithmetic=False,
     )
     print()
+    # `why_not` is deliberately dropped here: the accuracy call above already printed the
+    # reason there are no source blocks, and printing it a second time would read as a
+    # second failure.
+    fidelity_blocks = print_source_blocks(
+        labels,
+        None,
+        agreed,
+        arithmetic,
+        question=f"agreement with {CEILING}",
+        closing=FIDELITY_BY_SOURCE_NOTE,
+    )
+    fidelity_spread = print_heterogeneity(
+        fidelity_blocks,
+        question="is the fidelity margin the same on every source?",
+    )
     for line in (
         "delta = left minus right, percentage points, on the same problems in the same order.",
         "CI and p are McNemar exact over the discordant pairs; flips = only-left-right /",
@@ -1335,6 +1379,14 @@ def main(argv: list[str] | None = None) -> int:
         # from -- and on this panel that distinction is the finding, not a nuance.
         "fidelity": fidelity,
         "fidelity_head_to_head": as_json(fidelity_head),
+        # The accuracy spread and the fidelity spread are the pair that has to be read
+        # together -- one of them varying while the other does not is a statement about the
+        # ceiling, not about the method -- so a consumer that gets one and not the other
+        # can draw the opposite conclusion from the same panel.
+        "fidelity_head_to_head_by_source": {
+            name: as_json(entries) for name, entries in fidelity_blocks.items()
+        },
+        "fidelity_source_heterogeneity": fidelity_spread,
     }
     serialised = json.dumps(payload, indent=2, default=str)
     if args.json:

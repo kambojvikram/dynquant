@@ -1065,6 +1065,23 @@ def _heterogeneity_rows(printed: str) -> dict[str, str]:
     return rows
 
 
+def _fidelity_heterogeneity_rows(printed: str) -> dict[str, str]:
+    """The rows of the *fidelity* heterogeneity block, keyed by the comparison they name.
+
+    The fourth block in this table to print rows beginning with these names, and the last,
+    so the far bound is the table's closing legend.
+    """
+    header = "is the fidelity margin the same on every source?"
+    assert header in printed, printed
+    block = printed.split(header)[1].split("delta = left minus right")[0]
+    rows = {}
+    for line in block.splitlines():
+        for _, _, question in _load("_dq_fq", SCRIPT).HEAD_TO_HEAD:
+            if line.startswith(question):
+                rows[question.strip()] = line
+    return rows
+
+
 def test_the_chi_square_tail_matches_its_textbook_values(table: Any) -> None:
     """Both branches of the incomplete gamma, against numbers that are not this code's.
 
@@ -1213,6 +1230,98 @@ def test_the_heterogeneity_row_inherits_the_mark_it_cannot_re_derive(
         )
 
 
+def test_the_printed_fidelity_spread_is_cochran_on_agreement_not_on_accuracy(
+    table: Any, tmp_path: Path
+) -> None:
+    """The claim this block exists to support is a *disagreement* between the two spreads.
+
+    On the real panel DynQuant's accuracy margin over GPTQ varies by source and its
+    fidelity margin over AWQ does not, and reading those two rows together is what says
+    the accuracy spread is the ceiling's arithmetic rather than the method's behaviour.
+    Hand this block the accuracy per-source blocks and it prints the accuracy spread under
+    a fidelity heading: three rows, every one of them a real Cochran statistic computed
+    over real deltas, and the conclusion drawn from them is the opposite one.
+
+    So this reads what the table printed and re-derives it from the derived records, and
+    then checks the fixture can actually tell the two apart -- otherwise the loop above
+    would pass against either set of blocks and this test would be pinning nothing.
+
+    Turns red when: the fidelity source blocks are built from ``records``; the spread is
+    computed from the accuracy blocks; or either block stops naming its own indicator, at
+    which point the two headers collide and the parser cannot find the right one.
+    """
+    out = _write_panel(tmp_path / "arms")
+    labels = _stack_the_flips(out)
+    printed = _run(table, out)
+    _, records = table.load_panel(out)
+    arithmetic = dict.fromkeys(records, "grouped")
+
+    def spread_over(source_records: dict[str, Any]) -> list[dict[str, Any]]:
+        blocks = {
+            name: table.print_comparisons(
+                name, table.HEAD_TO_HEAD, table.restrict(source_records, labels, name), arithmetic
+            )
+            for name in sorted(set(labels))
+        }
+        return table.print_heterogeneity(blocks)
+
+    with redirect_stdout(StringIO()):
+        expected = spread_over(table.agreement_records(records))
+        accuracy = spread_over(records)
+
+    assert expected, "the fixture produced no fidelity spread rows to check"
+    rows = _fidelity_heterogeneity_rows(printed)
+    for entry in expected:
+        row = rows[entry["question"].strip()]
+        assert f"{entry['pooled_points']:+.2f}" in row, (entry["question"], row)
+        assert f"{entry['q']:.2f}" in row, (entry["question"], row)
+
+    by_question = {entry["question"]: entry["q"] for entry in accuracy}
+    assert any(entry["q"] != by_question[entry["question"]] for entry in expected), (
+        "every fidelity Q equalled its accuracy Q, so this fixture cannot discriminate"
+    )
+
+
+def test_the_json_carries_the_fidelity_spread_beside_the_accuracy_one(
+    table: Any, tmp_path: Path
+) -> None:
+    """The card reads the payload, and one spread without the other inverts the reading.
+
+    A consumer that gets ``source_heterogeneity`` alone sees a margin that varies by
+    dataset and has no way to ask whether the method varied or the ceiling did. Both keys
+    or neither.
+
+    Turns red when: either key is dropped, or both are filled from the same spread.
+    """
+    out = _write_panel(tmp_path / "arms")
+    _stack_the_flips(out)
+    destination = tmp_path / "table.json"
+    _run(table, out, "--json-out", str(destination))
+    payload = json.loads(destination.read_text(encoding="utf-8"))
+
+    fidelity = payload["fidelity_source_heterogeneity"]
+    assert fidelity, "the table printed a fidelity spread and the payload carries none"
+    for entry in fidelity:
+        assert set(entry["sources"]) == {"gretel", "wikisql"}
+        assert entry["df"] == 1
+
+    # The blocks the spread was computed from, tied to the spread rather than merely
+    # present. Filled from the accuracy blocks they would still carry both sources and six
+    # plausible deltas -- the spread's own per-source values are the only thing in the
+    # payload that says which records they came from.
+    by_source = payload["fidelity_head_to_head_by_source"]
+    assert set(by_source) == {"gretel", "wikisql"}
+    for entry in fidelity:
+        for source, delta in entry["sources"].items():
+            row = next(r for r in by_source[source] if r["question"] == entry["question"])
+            assert row["delta_points"] == delta, (entry["question"], source)
+
+    accuracy = {entry["question"]: entry["q"] for entry in payload["source_heterogeneity"]}
+    assert any(entry["q"] != accuracy[entry["question"]] for entry in fidelity), (
+        "both spread keys carry the same statistics, so one of them was filled from the other"
+    )
+
+
 def test_one_source_is_not_a_mixture_and_prints_no_block(table: Any, tmp_path: Path) -> None:
     """Nothing to compare against, so no header with an empty table under it.
 
@@ -1224,7 +1333,9 @@ def test_one_source_is_not_a_mixture_and_prints_no_block(table: Any, tmp_path: P
     _write_sources(out, lambda index: "wikisql")
     printed = _run(table, out)
     assert "head to head, on wikisql alone" in printed
+    assert "agreement with bf16, on wikisql alone" in printed
     assert "is the margin the same on every source?" not in printed
+    assert "is the fidelity margin the same on every source?" not in printed
 
 
 def test_the_json_carries_the_spread_the_table_printed(table: Any, tmp_path: Path) -> None:
@@ -1524,6 +1635,11 @@ def _fidelity_rows(printed: str) -> dict[str, str]:
     """
     assert "on agreement with" in printed, printed
     block = printed.split("on agreement with")[1].split("delta = left minus right")[0]
+    # And stop at the first per-source fidelity block, which prints the same six
+    # comparison names one partition down. Without this the rows returned are whichever
+    # source printed last, on a panel that has sources -- and every one of them is a real
+    # number, so nothing downstream would notice.
+    block = block.split(" alone (")[0]
     rows = {}
     for line in block.splitlines():
         for _, _, question in _load("_dq_ht", SCRIPT).HEAD_TO_HEAD:
