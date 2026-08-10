@@ -80,7 +80,7 @@ say "$(git -C "$CLONE" rev-list --count "$HEAD_NOW..HEAD") commit(s) applied"
 #    missing any of these, and discovering that after the driver has been killed and the card is
 #    idle is the expensive order to discover it in.
 for needed in arms_lfm2.py panel_table.py dispatch_delta.py probe_dispatch_agreement.py \
-  rate_profile.py rescore_eager.sh; do
+  rate_profile.py rescore_eager.sh build_kernels.sh; do
   if [ -f "$CLONE/experiments/phase4/$needed" ]; then
     say "  ok      experiments/phase4/$needed"
   else
@@ -90,3 +90,13 @@ done
 grep -q -- '--experts-impl' "$CLONE/experiments/phase4/arms_lfm2.py" \
   && say "  ok      arms_lfm2.py carries --experts-impl" \
   || say "  MISSING --experts-impl in arms_lfm2.py -- rescore_eager.sh will refuse"
+
+# And the kernel source, checked here rather than only in build_kernels.sh. That script refuses
+# a clone without it, which is the right refusal in the wrong place: by then the panel is over,
+# the card is idle, and the answer is another bundle from a laptop. A bundle can verify, fetch
+# and check out cleanly and still be a bundle cut before the kernel was written.
+if [ -f "$CLONE/packages/dynquant-kernels/csrc/moe/grouped_gemv.cu" ]; then
+  say "  ok      csrc/moe/grouped_gemv.cu"
+else
+  say "  MISSING csrc/moe/grouped_gemv.cu -- build_kernels.sh will refuse"
+fi
