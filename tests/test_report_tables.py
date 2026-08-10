@@ -42,7 +42,12 @@ def tables() -> Any:
 
 
 def _mcnemar(
-    question: str, delta: float, p: float, counts: tuple[int, int, int, int]
+    question: str,
+    delta: float,
+    p: float,
+    counts: tuple[int, int, int, int],
+    *,
+    same_arithmetic: bool = True,
 ) -> dict[str, Any]:
     both_right, a_only, b_only, both_wrong = counts
     return {
@@ -53,12 +58,22 @@ def _mcnemar(
         "a_only": a_only,
         "b_only": b_only,
         "both_wrong": both_wrong,
+        "same_arithmetic": same_arithmetic,
     }
 
 
 def _spread(
-    question: str, pooled: float, sources: dict[str, float], q: float, df: int, p: float
+    question: str,
+    pooled: float,
+    sources: dict[str, float],
+    q: float,
+    df: int,
+    p: float,
+    *,
+    same_arithmetic: bool = True,
+    family: tuple[int, int] = (6, 6),
 ) -> dict[str, Any]:
+    corrected, declared = family
     return {
         "question": question,
         "pooled_points": pooled,
@@ -67,6 +82,9 @@ def _spread(
         "df": df,
         "p_adjusted": p,
         "heterogeneous": p < 0.05,
+        "same_arithmetic": same_arithmetic,
+        "holm_corrected": corrected,
+        "holm_family": declared,
     }
 
 
@@ -74,13 +92,20 @@ def _spread(
 # fixture whose rows all looked alike would pass a formatter that printed any one of them.
 PAYLOAD: dict[str, Any] = {
     "head_to_head_by_difficulty": {
-        "ceiling-right": [_mcnemar("A vs B", 1.1769, 1.3768e-06, (9373, 360, 241, 137))],
-        "ceiling-wrong": [_mcnemar("A vs B", -2.2234, 0.00966, (0, 402, 444, 1043))],
+        "ceiling-right": [
+            _mcnemar("A vs B", 1.1769, 1.3768e-06, (9373, 360, 241, 137), same_arithmetic=False)
+        ],
+        "ceiling-wrong": [
+            _mcnemar("A vs B", -2.2234, 0.00966, (0, 402, 444, 1043), same_arithmetic=False)
+        ],
     },
     "head_to_head_by_source_and_difficulty": {
         "wikisql/ceiling-right": [_mcnemar("A vs B", 1.5789, 1.26e-09, (7400, 300, 175, 42))],
         "wikisql/ceiling-wrong": [_mcnemar("A vs B", -3.2353, 0.00993, (0, 220, 253, 547))],
     },
+    # The difficulty block is flagged and short; the crossed block is neither. Both conditions
+    # print once per block, so a fixture where every block carried them could not tell a
+    # formatter that reads the payload from one that prints them unconditionally.
     "difficulty_heterogeneity": [
         _spread(
             "A vs B",
@@ -89,6 +114,8 @@ PAYLOAD: dict[str, Any] = {
             15.1686,
             1,
             0.000295,
+            same_arithmetic=False,
+            family=(2, 6),
         ),
         _spread(
             "C vs D",
@@ -97,6 +124,7 @@ PAYLOAD: dict[str, Any] = {
             0.3200,
             1,
             0.570,
+            family=(2, 6),
         ),
     ],
     "source_and_difficulty_heterogeneity": [
@@ -131,6 +159,19 @@ def _run(tables: Any, payload: dict[str, Any], tmp_path: Path, *argv: str) -> st
 
 def _cells(line: str) -> list[str]:
     return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _rows(printed: str, width: int) -> list[list[str]]:
+    """Table rows only, so a legend line under the table cannot be indexed as if it were one."""
+    rows = [_cells(line) for line in printed.splitlines() if line.startswith("| ")]
+    return [row for row in rows if len(row) == width and not row[0].startswith("---")]
+
+
+def _strata_only(printed: str) -> str:
+    """--strata alone also emits every spread block, and those carry a legend of their own."""
+    head, _, _ = printed.partition("Cochran")
+    assert head != printed, "the spread blocks stopped printing, so this split guards nothing"
+    return head
 
 
 def test_every_spread_cell_is_the_payloads_own_number(tables: Any, tmp_path: Path) -> None:
@@ -170,7 +211,77 @@ def test_a_consistent_row_is_not_called_heterogeneous(tables: Any, tmp_path: Pat
         for line in printed.splitlines()
         if line.startswith("| A vs B") or line.startswith("| C vs D")
     }
-    assert verdicts == {"A vs B": "heterogeneous", "C vs D": "consistent"}
+    assert verdicts == {"A vs B": "heterogeneous !", "C vs D": "consistent"}
+
+
+def test_the_confound_flag_survives_into_the_markdown(tables: Any, tmp_path: Path) -> None:
+    """Turns red when: a flagged comparison prints as an unflagged one.
+
+    The rows that carry this flag on the real panel are the headline rows -- bf16 and dq load
+    one checkpoint while gptq and awq load llm-compressor outputs, and the two dispatches
+    disagree with each other on 1.24% of teacher-forced tokens, which is a large fraction of
+    the margin the row reports. A generated table that dropped it would state the finding more
+    confidently than the hand-typed one it replaces, which is the wrong direction for a tool
+    whose entire justification is that generated numbers are more trustworthy.
+    """
+    printed = _run(tables, PAYLOAD, tmp_path, "--spread", "difficulty")
+    flagged = {row[0] for row in _rows(printed, 6) if row[-1].endswith("!")}
+    assert flagged == {"A vs B"}, printed
+    assert "did not demonstrably run the same expert arithmetic" in printed
+
+
+def test_a_block_with_nothing_to_qualify_prints_no_qualifications(
+    tables: Any, tmp_path: Path
+) -> None:
+    """Turns red when: the legend and the family note are printed unconditionally.
+
+    Both are conditions on reading the rows above them. A note under every block is a note a
+    reader stops reading, and "Holm-adjusted over 6 of 6" under a finished panel would say the
+    opposite of what the warning exists to say.
+    """
+    printed = _run(tables, PAYLOAD, tmp_path, "--spread", "crossed")
+    assert "!" not in printed, printed
+    assert "same expert arithmetic" not in printed
+    assert "short family" not in printed
+
+
+def test_a_short_family_says_how_short(tables: Any, tmp_path: Path) -> None:
+    """Turns red when: adjusted p from a half-run panel are pasted with no note of the family.
+
+    Holm's multiplier is the number of comparisons actually corrected, so the same row over
+    three comparisons and over six is two different claims -- on this panel's five-arm run the
+    one heterogeneous row read 0.0359 and 0.0717. That is the verdict, not a decimal place, and
+    a row pasted into a report travels without the block's closing warning.
+    """
+    printed = _run(tables, PAYLOAD, tmp_path, "--spread", "difficulty")
+    entry = PAYLOAD["difficulty_heterogeneity"][0]
+    assert f"over {entry['holm_corrected']} of {entry['holm_family']} comparisons" in printed
+
+
+def test_the_flag_marks_the_strata_that_carry_it_and_not_the_rest(
+    tables: Any, tmp_path: Path
+) -> None:
+    """Turns red when: the strata table flags every row, or none, instead of the flagged ones.
+
+    A per-stratum decomposition can mix them -- the difficulty cut and the crossed cut are read
+    off different blocks -- so a legend under a table whose rows are unmarked, or a mark on
+    every row, both destroy the only information the flag carries.
+    """
+    strata = _strata_only(_run(tables, PAYLOAD, tmp_path, "--strata", "A vs B"))
+    marked = {row[0] for row in _rows(strata, 4) if row[2].endswith("!")}
+    assert marked == {"ceiling-right", "ceiling-wrong"}, strata
+    assert "same expert arithmetic" in strata
+
+    clean = {
+        field: {
+            stratum: [{**entry, "same_arithmetic": True} for entry in entries]
+            for stratum, entries in PAYLOAD[field].items()
+        }
+        for field, _ in tables.BLOCKS
+    }
+    strata = _strata_only(_run(tables, {**PAYLOAD, **clean}, tmp_path, "--strata", "A vs B"))
+    assert "!" not in strata, strata
+    assert "same expert arithmetic" not in strata
 
 
 def test_each_stratum_carries_the_size_it_rests_on(tables: Any, tmp_path: Path) -> None:
@@ -196,6 +307,25 @@ def test_each_stratum_carries_the_size_it_rests_on(tables: Any, tmp_path: Path) 
 
     assert sizes == expected
     assert len(set(sizes.values())) == len(sizes), f"fixture does not discriminate: {sizes}"
+
+
+def test_the_padding_the_panel_prints_with_does_not_reach_the_markdown(
+    tables: Any, tmp_path: Path
+) -> None:
+    """Turns red when: a name prints one way and has to be typed another.
+
+    `panel_table` pads its question strings to a fixed terminal column, so they arrive with
+    interior runs of spaces. Printing them raw puts "4b  DynQuant vs GPTQ" in a cell; matching
+    them raw means --strata only works if the padding is reproduced exactly, which is both
+    invisible in the terminal and impossible to guess from the rendered table.
+    """
+    padded = json.loads(json.dumps(PAYLOAD).replace("A vs B", "4b  A vs B"))
+    printed = _strata_only(_run(tables, padded, tmp_path, "--strata", "4b A vs B"))
+    assert "4b A vs B" in printed
+    assert "4b  A vs B" not in printed
+
+    spread = _run(tables, padded, tmp_path, "--spread", "difficulty")
+    assert "| 4b A vs B |" in spread, spread
 
 
 def test_a_comparison_the_payload_does_not_carry_is_refused(tables: Any, tmp_path: Path) -> None:

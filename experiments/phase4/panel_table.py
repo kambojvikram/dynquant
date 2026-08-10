@@ -1166,6 +1166,13 @@ def print_heterogeneity(
     for entry, p_adj in zip(computed, holm([e["p_value"] for e in computed]), strict=True):
         entry["p_adjusted"] = p_adj
         entry["heterogeneous"] = p_adj < 0.05
+        # The family this p was corrected in, carried on the row rather than left in the
+        # block's closing note. The note is printed once and a serialised row travels alone;
+        # a consumer holding one entry has otherwise no way to tell an adjusted p that stood
+        # against six comparisons from one that stood against three, and the difference is
+        # the verdict rather than a decimal place.
+        entry["holm_corrected"] = len(computed)
+        entry["holm_family"] = len(family)
         spread = ", ".join(f"{delta:+.2f}" for _, delta in sorted(entry["sources"].items()))
         print(
             f"{entry['question']:28s} {entry['pooled_points']:+6.2f} {spread:>{width}s} "

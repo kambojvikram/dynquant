@@ -1632,6 +1632,45 @@ def test_a_partition_wider_than_two_still_lines_its_columns_up(table: Any, tmp_p
     assert columns == {header.index("verdict")}, (columns, header, block)
 
 
+def test_a_spread_row_carries_the_family_its_p_was_corrected_in(table: Any, tmp_path: Path) -> None:
+    """The block warns once about a short family; a serialised row travels alone.
+
+    Holm's multiplier is the number of comparisons actually corrected, so the same row over
+    three comparisons and over six is two different claims -- on this panel's five-arm run
+    that moved the one heterogeneous row from 0.0359 to 0.0717, which is the verdict rather
+    than a decimal place. A consumer holding the row has no other way to see it.
+
+    Turns red when: either field is dropped, or the corrected count stops counting the rows
+    Holm actually ran over -- which is what it is, not the family that was declared, because
+    a comparison whose subset produced no flips at all is named and skipped.
+    """
+    out = _write_panel(tmp_path / "arms", omit=("dq_3b", "awq_3b"))
+    _stack_the_flips(out)
+    _write_sources(out, lambda index: "gretel" if index % 3 else "wikisql")
+    destination = tmp_path / "table.json"
+    _run(table, out, "--json-out", str(destination))
+    payload = json.loads(destination.read_text(encoding="utf-8"))
+
+    spread = payload["source_heterogeneity"]
+    assert spread, "the table printed a spread and the payload carries none"
+    declared = len(table.HEAD_TO_HEAD)
+    for entry in spread:
+        assert entry["holm_corrected"] == len(spread), entry["question"]
+        assert entry["holm_family"] == declared, entry["question"]
+    assert len(spread) < declared, (
+        f"this fixture corrects all {declared} comparisons, so it cannot tell a count of the "
+        f"rows Holm ran over from a count of the family that was declared"
+    )
+
+    whole = _write_panel(tmp_path / "full")
+    _stack_the_flips(whole)
+    _write_sources(whole, lambda index: "gretel" if index % 3 else "wikisql")
+    finished = tmp_path / "full.json"
+    _run(table, whole, "--json-out", str(finished))
+    rows = json.loads(finished.read_text(encoding="utf-8"))["source_heterogeneity"]
+    assert {entry["holm_corrected"] for entry in rows} == {declared}
+
+
 def test_the_json_carries_the_difficulty_blocks_and_their_spread(
     table: Any, tmp_path: Path
 ) -> None:

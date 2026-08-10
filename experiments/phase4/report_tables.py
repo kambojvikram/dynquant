@@ -34,6 +34,28 @@ BLOCKS = (
 )
 
 
+def label(question: str) -> str:
+    """One comparison name, whitespace collapsed, for printing and for matching alike.
+
+    The panel pads its question strings to a fixed column, so they arrive carrying interior
+    runs of spaces that a markdown cell should not show and that nobody typing `--strata`
+    would reproduce. Both uses go through this, so a name that prints is a name that matches.
+    """
+    return " ".join(question.split())
+
+
+def marker(entry: dict[str, Any]) -> str:
+    """The terminal block's trailing `!`, which the markdown must not quietly drop.
+
+    It flags a comparison whose two arms did not demonstrably run the same expert arithmetic.
+    On this panel the two dispatches disagree with each other on 1.24% of teacher-forced
+    tokens, which is a large fraction of the margin being reported -- and the rows carrying
+    the flag are the headline rows. A generated table that omitted it would present them as
+    unconfounded, and would do so more convincingly than the hand-typed table it replaces.
+    """
+    return "" if entry["same_arithmetic"] else " !"
+
+
 def signed(value: float) -> str:
     return f"{value:+.2f}"
 
@@ -48,6 +70,30 @@ def probability(value: float) -> str:
     return f"{value:.3g}"
 
 
+def notes(entries: list[dict[str, Any]]) -> str:
+    """What a block says beneath itself: the confound legend, and how short the family was.
+
+    Holm's multiplier is the number of comparisons actually corrected, so an adjusted p that
+    stood against three is not the same claim as one that stood against six -- on this panel's
+    own five-arm run that difference moved a row from 0.0359 to 0.0717, which is the verdict
+    rather than a decimal place. `panel_table` prints the warning once under the block; a row
+    pasted into a report travels alone.
+    """
+    lines = []
+    if any(not entry["same_arithmetic"] for entry in entries):
+        lines.append(
+            "`!` -- the two arms did not demonstrably run the same expert arithmetic, so "
+            "the margin carries the dispatch difference as well as the method."
+        )
+    corrected, declared = entries[0]["holm_corrected"], entries[0]["holm_family"]
+    if corrected < declared:
+        lines.append(
+            f"Holm-adjusted over {corrected} of {declared} comparisons -- a short family, "
+            f"so these adjusted *p* are weaker than the finished panel's."
+        )
+    return "\n\n" + "\n\n".join(lines) if lines else ""
+
+
 def spread_table(entries: list[dict[str, Any]], caption: str) -> str:
     """One Cochran block: pooled margin, the per-subset spread, Q and the adjusted p."""
     subsets = sorted({name for entry in entries for name in entry["sources"]})
@@ -60,10 +106,12 @@ def spread_table(entries: list[dict[str, Any]], caption: str) -> str:
         cells = " / ".join(signed(entry["sources"][name]) for name in subsets)
         verdict = "heterogeneous" if entry["heterogeneous"] else "consistent"
         lines.append(
-            f"| {entry['question'].strip()} | {signed(entry['pooled_points'])} | {cells} "
-            f"| {entry['q']:.2f} | {probability(entry['p_adjusted'])} | {verdict} |"
+            f"| {label(entry['question'])} | {signed(entry['pooled_points'])} | {cells} "
+            f"| {entry['q']:.2f} | {probability(entry['p_adjusted'])} "
+            f"| {verdict}{marker(entry)} |"
         )
-    return f"Cochran's Q {caption}, df={entries[0]['df']}:\n\n" + "\n".join(lines)
+    head = f"Cochran's Q {caption}, df={entries[0]['df']}:"
+    return head + "\n\n" + "\n".join(lines) + notes(entries)
 
 
 def strata_table(payload: dict[str, Any], question: str) -> str:
@@ -75,25 +123,35 @@ def strata_table(payload: dict[str, Any], question: str) -> str:
     otherwise.
     """
     lines = [
-        f"| stratum | n | {question} | *p* |",
+        f"| stratum | n | {label(question)} | *p* |",
         "|---|---:|---:|---:|",
     ]
     found = False
+    flagged = False
     for field, _ in BLOCKS:
         for stratum, entries in (payload.get(field) or {}).items():
             for entry in entries:
-                if entry["question"].strip() != question:
+                if label(entry["question"]) != label(question):
                     continue
                 found = True
                 total = (
                     entry["both_right"] + entry["a_only"] + entry["b_only"] + entry["both_wrong"]
                 )
+                flagged = flagged or not entry["same_arithmetic"]
                 lines.append(
-                    f"| {stratum} | {total:,} | {signed(entry['delta_points'])} "
-                    f"| {probability(entry['p_value'])} |"
+                    f"| {stratum} | {total:,} | {signed(entry['delta_points'])}"
+                    f"{marker(entry)} | {probability(entry['p_value'])} |"
                 )
     if not found:
         raise SystemExit(f"no stratified rows for {question!r} in this payload")
+    if flagged:
+        # The legend, and only the legend: these p are McNemar's own and uncorrected, because
+        # a stratum table decomposes one comparison rather than assembling a family of them.
+        lines.append("")
+        lines.append(
+            "`!` -- the two arms did not demonstrably run the same expert arithmetic, so "
+            "the margin carries the dispatch difference as well as the method."
+        )
     return "\n".join(lines)
 
 
