@@ -1492,3 +1492,247 @@ def test_publish_takes_the_same_recipe_flags_the_scored_arm_ran(driver: Any) -> 
     assert [getattr(published, f) for f in shared if f != "bits"] == [
         getattr(scored, f) for f in shared if f != "bits"
     ]
+
+
+# --------------------------------------------------------------------------------------
+# What the recipe leaves behind, and which name a tied table is published under.
+#
+# Both of these were found by running an actual llm-compressor recipe end to end
+# (`experiments/phase4/probe_publish.py`) after the publish path had already shipped with
+# thirteen green unit tests. Neither was reachable from the fixtures above: the first
+# because a hand-built module never carries recipe scratch, the second because it takes
+# `oneshot` mutating a live config to produce it.
+# --------------------------------------------------------------------------------------
+
+
+def _recipe_module(*, bias: bool = True) -> Any:
+    """A module shaped like one a recipe has finished with, scratch tensors and all.
+
+    ``weight_g_idx`` is GPTQ's column permutation and rides along with the other two on
+    that arm. It is here so the filter is exercised against something it was not told
+    about by name -- which is the whole point of subtracting rather than listing.
+    """
+    import types
+
+    import torch
+
+    module = torch.nn.Linear(8, 4, bias=bias)
+    module.register_buffer("weight_scale", torch.ones(4, 1))
+    module.register_buffer("weight_zero_point", torch.zeros(4, 1))
+    module.register_buffer("weight_g_idx", torch.zeros(8, dtype=torch.int32))
+    module.quantization_scheme = types.SimpleNamespace(
+        weights=types.SimpleNamespace(num_bits=4, symmetric=False)
+    )
+    return module
+
+
+def test_the_recipes_own_scales_are_not_published_as_model_weights(driver: Any) -> None:
+    """The tensors compressed-tensors fitted with belong to neither side of the export.
+
+    They are not merely extra. One hanging off a linearized expert trips the bank
+    assembler's refusal -- correctly, since the derived rules say where a weight row goes
+    and nothing about where a per-group scale would -- and one hanging off anything else
+    survives into the output and makes ``load_state_dict(strict=True)`` reject the model.
+    A weight and a bias are what a ``Linear`` owns; everything else arrived with the recipe.
+    """
+    model = _holding(q=_recipe_module(), plain=__import__("torch").nn.Linear(4, 4))
+
+    assert driver.recipe_scratch(model) == {
+        "q.weight_scale",
+        "q.weight_zero_point",
+        "q.weight_g_idx",
+    }
+    assert set(driver.recipe_weights(model)) == {
+        "q.weight",
+        "q.bias",
+        "plain.weight",
+        "plain.bias",
+    }
+
+
+def test_a_module_the_recipe_never_quantized_keeps_every_tensor_it_holds(driver: Any) -> None:
+    """The filter asks the module whether a recipe touched it, not the leaf what it is named.
+
+    A rotary cache, a norm's running statistic and an expert bank's routing counter are all
+    non-architectural leaves on modules no recipe went near. Filtering by leaf name alone
+    would take them out of the state dict and the strict load would then say they are
+    missing -- the same failure as the one this helper exists to prevent, one module over.
+    """
+    import torch
+
+    rope = torch.nn.Module()
+    rope.register_buffer("inv_freq", torch.arange(4, dtype=torch.float32))
+    model = _holding(q=_recipe_module(), rope=rope)
+
+    assert "rope.inv_freq" not in driver.recipe_scratch(model)
+    assert "rope.inv_freq" in driver.recipe_weights(model)
+
+
+def _head_and_table(*, config_says: bool, share: bool, equal: bool) -> Any:
+    """A model-shaped object holding an input embedding and an output head.
+
+    The three knobs are independent on purpose, because the case that broke the publish
+    path sets them in a combination no honest model would: a config saying untied over
+    storage that is shared.
+    """
+    import types
+
+    import torch
+
+    class _Model(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.model = torch.nn.Module()
+            self.model.embed_tokens = torch.nn.Embedding(8, 4)
+            self.lm_head = torch.nn.Linear(4, 8, bias=False)
+            self.config = types.SimpleNamespace(tie_word_embeddings=config_says)
+
+        def get_input_embeddings(self) -> Any:
+            return self.model.embed_tokens
+
+        def get_output_embeddings(self) -> Any:
+            return self.lm_head
+
+    model = _Model()
+    if share:
+        model.lm_head.weight = model.model.embed_tokens.weight
+    elif equal:
+        with torch.no_grad():
+            model.lm_head.weight.copy_(model.model.embed_tokens.weight)
+    return model
+
+
+def test_a_tie_the_recipe_cleared_in_the_config_is_still_read_off_the_storage(
+    driver: Any,
+) -> None:
+    """The measured shape of the bug: the flag says untied and the storage says otherwise.
+
+    ``oneshot`` sets ``tie_word_embeddings`` to ``False`` on the live config while leaving
+    ``lm_head`` and ``model.embed_tokens`` sharing one storage. It is describing the
+    compressed checkpoint it would write, which carries two tables -- not the model in
+    memory, which carries one, and which is the model being published. Reading the flag
+    skips the rename, publishes the table under the head's name, and produces a directory
+    whose embedding transformers reports missing, re-initializes at random, and then dies
+    on in ``mark_tied_weights_as_initialized``.
+    """
+    report = driver.tie_report(_head_and_table(config_says=False, share=True, equal=False))
+
+    assert report["tied"] is True
+    assert report["config_says"] is False
+    assert report["shared_storage"] is True
+    assert (report["input"], report["output"]) == ("model.embed_tokens", "lm_head")
+
+
+def test_two_storages_holding_the_same_numbers_are_as_tied_as_one(driver: Any) -> None:
+    """Everything downstream is written from a state dict, where equal numbers are one table.
+
+    A recipe that re-materializes the head as its own parameter and writes the same values
+    back has not changed what gets published. Requiring a shared ``data_ptr`` here would
+    refuse that model, and refusing it means the arm cannot be published at all.
+    """
+    report = driver.tie_report(_head_and_table(config_says=True, share=False, equal=True))
+
+    assert (report["tied"], report["shared_storage"], report["values_equal"]) == (
+        True,
+        False,
+        True,
+    )
+
+
+def test_a_head_holding_different_numbers_from_its_table_is_not_reported_tied(
+    driver: Any,
+) -> None:
+    """The failure the ``declared_tie`` guard in ``do_publish`` is watching for.
+
+    A checkpoint that declares its head tied and comes out of the recipe with two tables
+    holding different weights was scored as a model 27% larger than its own byte accounting
+    describes, with a table at a precision its label does not mention. Neither name is
+    publishable, so ``do_publish`` refuses rather than picking one.
+    """
+    report = driver.tie_report(_head_and_table(config_says=True, share=False, equal=False))
+
+    assert report["tied"] is False
+    assert report["values_equal"] is False
+
+
+def test_a_tied_table_is_published_under_the_name_the_loader_reads(driver: Any) -> None:
+    """A recipe can only produce ``lm_head``; the format only reads ``model.embed_tokens``.
+
+    llm-compressor targets ``Linear``, so the module it quantizes on a tied model is the
+    head. The DynQuant format stores a tied table once, under the *input* embedding's name,
+    and ``_tie_output_embedding`` then hands the head a view of it. A rename and not a
+    second entry -- writing the table twice costs a quarter of a tied model for bytes the
+    loader discards -- and the grid travels unchanged, because the two names are one tensor.
+    """
+    grid = {"codes": object()}
+    moved = driver.under_the_input_table(
+        _head_and_table(config_says=False, share=True, equal=False),
+        {"lm_head": grid, "model.layers.0.mlp.up_proj": "other"},
+    )
+
+    assert set(moved) == {"model.embed_tokens", "model.layers.0.mlp.up_proj"}
+    assert moved["model.embed_tokens"] is grid
+
+
+def test_one_tied_table_carrying_two_grids_is_refused_rather_than_picked(driver: Any) -> None:
+    """Two entries for one tensor is a question about which the export cannot answer."""
+    with pytest.raises(SystemExit, match="two names for one tied"):
+        driver.under_the_input_table(
+            _head_and_table(config_says=False, share=True, equal=False),
+            {"lm_head": {}, "model.embed_tokens": {}},
+        )
+
+
+def test_an_untied_head_keeps_the_name_it_was_quantized_under(driver: Any) -> None:
+    """A model with two real tables publishes two, and the rename must not fire on it."""
+    banked = {"lm_head": {}}
+    assert (
+        driver.under_the_input_table(
+            _head_and_table(config_says=False, share=False, equal=False), banked
+        )
+        == banked
+    )
+
+
+def _checkpoint(tmp_path: Any, **fields: Any) -> str:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "config.json").write_text(json.dumps(fields), encoding="utf-8")
+    return str(tmp_path)
+
+
+def test_the_export_reads_the_checkpoints_config_and_not_the_recipes(
+    driver: Any, tmp_path: Any
+) -> None:
+    """``model.config`` after a recipe is a description of a checkpoint nobody is writing.
+
+    ``oneshot`` attaches a compressed-tensors ``quantization_config`` to it and clears
+    ``tie_word_embeddings``. Handing that object to the model the publish path exports from
+    produces two untied tables and a directory claiming a quantization format it is not in.
+    The checkpoint on disk still says what the architecture actually is, so it is re-read.
+    """
+    source = _checkpoint(tmp_path, model_type="gpt2", tie_word_embeddings=True)
+
+    config = driver.pristine_config(source)
+
+    assert config.tie_word_embeddings is True
+    assert getattr(config, "quantization_config", None) is None
+
+
+def test_the_activation_linearize_moe_reads_is_supplied_without_touching_the_checkpoint(
+    driver: Any, tmp_path: Any
+) -> None:
+    """LFM2's config omits ``hidden_act``; the expert modules built from it read one.
+
+    Writing the field into the checkpoint would edit a directory five other arms load their
+    weights from, so it is set on the in-memory object and nowhere else. The second half
+    matters as much as the first: an architecture that *does* declare an activation must
+    keep the one it declared rather than silently be rebuilt as SiLU.
+    """
+    source = _checkpoint(tmp_path, model_type="gpt2", tie_word_embeddings=True)
+    before = (tmp_path / "config.json").read_bytes()
+
+    assert driver.pristine_config(source).hidden_act == "silu"
+    assert (tmp_path / "config.json").read_bytes() == before
+
+    declared = _checkpoint(tmp_path / "llama", model_type="llama", hidden_act="gelu")
+    assert driver.pristine_config(declared).hidden_act == "gelu"

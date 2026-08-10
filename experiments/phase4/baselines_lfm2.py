@@ -916,6 +916,139 @@ def delinearize_state_dict(
     return passthrough
 
 
+def recipe_scratch(model: Any) -> set[str]:
+    """State-dict keys compressed-tensors added, found by asking the modules that hold them.
+
+    A quantized module carries a ``weight_scale``, and depending on the recipe a zero point
+    and a column permutation beside it. Those are the recipe's working state, not the
+    model's: the published container writes its own scales, and the banked architecture
+    these weights are loaded back into has no parameter to receive them.
+
+    Left in, they are not merely extra. Every one that hangs off a *linearized expert* trips
+    :func:`delinearize_state_dict`'s refusal -- correctly, since the derived rules describe
+    where a bank's weight rows go and say nothing about where a per-group scale would --
+    and every one that hangs off anything else survives into the output and makes
+    ``load_state_dict(strict=True)`` reject the model. Which is how this was found: the
+    publish path was written against an unquantized state dict and never ran against a real
+    recipe until :mod:`probe_publish` ran one.
+
+    Derived by subtraction rather than by listing ``weight_scale``, ``weight_zero_point``,
+    ``weight_g_idx``: a list here would be a copy of compressed-tensors' own set of
+    artifacts, and this project has now been wrong four times in exactly that way. What a
+    ``Linear`` legitimately owns is a weight and a bias; anything else a quantized one is
+    holding arrived with the recipe. The filter is allowed to be liberal because it is not
+    the check -- ``do_publish`` loads the result with ``strict=True``, so dropping one key
+    too many fails as loudly as keeping one too few.
+    """
+    architectural = {"weight", "bias"}
+    scratch: set[str] = set()
+    for name, module in model.named_modules():
+        if getattr(getattr(module, "quantization_scheme", None), "weights", None) is None:
+            continue
+        for leaf in module.state_dict():
+            if leaf.split(".")[0] not in architectural:
+                scratch.add(f"{name}.{leaf}" if name else leaf)
+    return scratch
+
+
+def recipe_weights(model: Any) -> dict[str, Any]:
+    """The model's state dict with the recipe's own tensors taken back out."""
+    scratch = recipe_scratch(model)
+    return {key: value for key, value in model.state_dict().items() if key not in scratch}
+
+
+def pristine_config(source: str) -> Any:
+    """The checkpoint's own config, re-read, with the field ``linearize_moe`` needs.
+
+    Re-read rather than reused, because ``model.config`` is not the checkpoint's config
+    after a recipe has run: ``oneshot`` attaches a ``quantization_config`` describing
+    compressed-tensors' format and clears ``tie_word_embeddings``. Handing that object to
+    the model the publish path exports would write a directory claiming two quantization
+    formats and holding two embedding tables.
+
+    ``hidden_act`` is the one field this adds, and for the same reason
+    :func:`load_linearized` adds it: LFM2's config omits it and ``linearize_moe`` reads it.
+    Writing it into the checkpoint would mutate a directory the other arms load from.
+    """
+    from transformers import AutoConfig
+
+    config = AutoConfig.from_pretrained(source)
+    if not hasattr(config, "hidden_act"):
+        config.hidden_act = EXPERT_ACT
+    return config
+
+
+def tie_report(model: Any) -> dict[str, Any]:
+    """Does this model still hold one table for two names, and do the two names agree?
+
+    Answered from storage, with ``config.tie_word_embeddings`` reported beside it as a
+    separate fact rather than used as the answer -- because on this path the two disagree.
+    Running a recipe over a tied LFM2 leaves ``lm_head`` and ``model.embed_tokens`` sharing
+    one storage and holding identical numbers, and sets the config flag to ``False``:
+    compressed-tensors is describing the checkpoint it intends to write, which carries two
+    tables, not the model in memory, which carries one. Believing the flag skips the rename
+    below, publishes the table under the head's name, and produces a directory whose
+    embedding transformers reports missing and re-initializes at random.
+
+    Both halves of the storage question are kept because they fail differently. Two
+    distinct storages holding identical numbers are as good as one for anything written
+    from a state dict. Two holding *different* numbers mean the recipe replaced the head's
+    parameter and left the embedding behind at full precision -- a scored arm larger than
+    its own byte accounting says, with an unquantized table the label does not mention.
+    """
+    import torch
+
+    output, table = model.get_output_embeddings(), model.get_input_embeddings()
+    names = {id(module): name for name, module in model.named_modules()}
+    report: dict[str, Any] = {
+        "config_says": bool(getattr(model.config, "tie_word_embeddings", False)),
+        "input": names.get(id(table)),
+        "output": names.get(id(output)),
+        "tied": False,
+    }
+    if output is None or table is None:
+        return report
+    head, entries = output.weight, table.weight
+    report["shared_storage"] = head.data_ptr() == entries.data_ptr()
+    report["values_equal"] = bool(
+        head.shape == entries.shape and torch.equal(head.detach(), entries.detach())
+    )
+    report["tied"] = report["shared_storage"] or report["values_equal"]
+    return report
+
+
+def under_the_input_table(model: Any, banked: dict[str, Any]) -> dict[str, Any]:
+    """Move a tied head's entry onto the input embedding, which is where the loader looks.
+
+    A tied checkpoint holds one table, and this format stores it under the *input*
+    embedding's name: ``_tie_output_embedding`` then replaces the head with a
+    ``DynQuantLinear`` that registers no tensors of its own and reads the embedding's. A
+    recipe cannot produce that name on its own -- it targets ``Linear``, so what it
+    quantizes is ``lm_head``, and an export keyed by that name writes the table under a
+    name the loader does not look for. transformers then reports the embedding missing,
+    initializes it randomly, and dies in ``mark_tied_weights_as_initialized`` calling
+    ``get_parameter`` on a packed head. The 27% is on disk either way; this decides whether
+    the directory opens.
+
+    A rename and not a second entry, for the reason ``_tie_output_embedding``'s docstring
+    gives: writing the table twice costs a quarter of a tied model for bytes the loader
+    discards. The grid moves with it unchanged, because the two names address one tensor.
+    """
+    pair = tie_report(model)
+    head, table = pair["output"], pair["input"]
+    if not pair["tied"] or head is None or table is None or head not in banked:
+        return banked
+    if table in banked:
+        raise SystemExit(
+            f"both {table!r} and {head!r} carry a grid, but they are two names for one tied "
+            "table and the format has one entry for it. Publishing both would write the "
+            "table twice and leave the loader to pick"
+        )
+    moved = dict(banked)
+    moved[table] = moved.pop(head)
+    return moved
+
+
 MAX_CARRY_DRIFT = 0.125
 """How far a carried reconstruction may sit from the one that was scored, in code steps.
 
@@ -1149,12 +1282,31 @@ def do_publish(args: argparse.Namespace) -> int:
 
     from dynquant.quant.checkpoint import export_packed_checkpoint
 
+    # Read before the recipe runs, because the recipe rewrites it. `oneshot` sets
+    # `tie_word_embeddings` to False on the live config -- true of the compressed checkpoint
+    # it would have written, false of the model in memory -- and it is the model in memory
+    # that is being published.
+    declared_tie = bool(getattr(pristine_config(args.model), "tie_word_embeddings", False))
+
     model, meta = quantize(args)
     rules = expert_rules()
     grids = carried_grids(model, group_size=args.group_size)
     banked, width = banked_grids(model, grids, rules)
-    weights = delinearize_state_dict(model, rules)
-    config, source = model.config, args.model
+    tie = tie_report(model)
+    if declared_tie and not tie["tied"]:
+        raise SystemExit(
+            f"{args.model} declares its head tied to its embedding, and after the recipe "
+            f"{tie['output']} and {tie['input']} hold different weights. This arm was scored "
+            "with two tables and its byte accounting describes one, so either name published "
+            "would be a model that was not evaluated"
+        )
+    banked = under_the_input_table(model, banked)
+    meta["tie"] = tie
+    # Not `model.state_dict()`: after a recipe runs, every quantized module also holds
+    # the scales and zero points it was fitted with, and those belong to neither the
+    # bank assembler nor the architecture being loaded. See :func:`recipe_scratch`.
+    weights = delinearize_state_dict(model, rules, recipe_weights(model))
+    source = args.model
     del model, grids
 
     # Reloaded from disk rather than built with `from_config`: the banked tree is what the
@@ -1164,7 +1316,7 @@ def do_publish(args: argparse.Namespace) -> int:
     # distinct tensors and the exporter, which detects tying by identity, would write it
     # twice.
     fresh = AutoModelForCausalLM.from_pretrained(
-        source, config=config, dtype=getattr(torch, args.dtype), device_map="cpu"
+        source, config=pristine_config(source), dtype=getattr(torch, args.dtype), device_map="cpu"
     )
     fresh.load_state_dict(weights, strict=True)
     fresh.tie_weights()
