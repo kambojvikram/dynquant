@@ -2110,7 +2110,7 @@ trusting anything the loader says:
 | directory | names on disk | distinct values per 32-value group | 4-bit allows |
 |---|---|---|---|
 | `baselines_lfm2.py save` | `experts.<i>.gate_proj` | **32, 32** | 16 |
-| `dynquant quantize` | `experts.<i>.w1/w2/w3` | **13, 12** | 16 |
+| `dynquant quantize` | `experts.<i>.w1/w2/w3` | **13, 13** | 16 |
 
 32 out of 32 is not a quantized tensor. On LFM2.5-8B-A1B that is 91.5% of the weights randomly
 initialized behind a checkpoint that loads, generates, and reports its own `quantization_config`.
@@ -2134,7 +2134,10 @@ editing the reason it gives. Five tests cover it, including that a dense checkpo
 about mappings it does not need and that the panel's `run` path is not gated by an artifact it never
 writes. `experiments/phase4/probe_linearized_save.py` is the measurement as a script: it builds a
 four-layer `lfm2_moe`, saves it both ways, and derives its verdict from the two counts rather than
-asserting one.
+asserting one. It seeds the initialization, because the output is a count and an unseeded one
+moves -- two runs gave 14 and 13 on the DynQuant side before the seed existed, both under the 16
+that answers the question and neither of them quotable. The numbers above are byte-identical
+across two runs of the committed script against HEAD's package source.
 
 **One process note, because it nearly reversed the conclusion the other way.** The first reading of
 the DynQuant column came from the box, where `dynquant export` refused the batched bank outright --

@@ -64,8 +64,16 @@ def build_tiny(where: Path) -> Any:
     Small on purpose. Linearization is module surgery over weights it never reads, so
     every name this produces is the name the 8B produces, and the 8B costs a download
     and 17 GB to say the same thing.
+
+    Seeded, because the output of this probe is a *count* of distinct values and an
+    unseeded initialization moves it. Two runs of the same code gave 14 and 13 on the
+    dynquant side before this line existed -- both well under the 16 that answers the
+    question, but a number that drifts is a number nobody can quote in a report.
     """
+    import torch
     from transformers import AutoModelForCausalLM, Lfm2MoeConfig
+
+    torch.manual_seed(0)
 
     config = Lfm2MoeConfig(
         vocab_size=256,
