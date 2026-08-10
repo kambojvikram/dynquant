@@ -1508,3 +1508,151 @@ row and says what it is.
   Five of them are the scored check: running the recipe before reading the record, accepting the
   flag without acting on it, skipping a field this pass did not produce, counting coverage over
   the wrong side of the comparison, and trimming the fingerprint down to the byte accounting.
+
+---
+
+## 13. One launch per bank, and the fence that was never the arithmetic
+
+**Written 2026-08-10.** Code:
+[`csrc/moe/grouped_gemv.cu`](../../packages/dynquant-kernels/csrc/moe/grouped_gemv.cu),
+[`csrc/bindings.cpp`](../../packages/dynquant-kernels/csrc/bindings.cpp),
+[`runtime/ops.py`](../../packages/dynquant-core/src/dynquant/runtime/ops.py),
+[`runtime/experts.py`](../../packages/dynquant-core/src/dynquant/runtime/experts.py).
+Tests: [`tests/test_experts_dispatch.py`](../../tests/test_experts_dispatch.py) (14),
+[`tests/test_kernels_parity.py`](../../tests/test_kernels_parity.py) (+5, GPU).
+Commit `bc8d4a4`.
+
+§8 closed by retiring its own premise: `dynquant_experts_forward` indexes a packed bank from
+inside the grouped path and measures **bit-identical** to `grouped_mm`, so nothing about the
+panel's numbers depends on which dispatch runs. That settles correctness and leaves the other
+half untouched. The loop is correct and it is a loop: thirty-two `F.linear` calls per bank where
+the dense model issues one `grouped_mm`.
+
+What this section adds is one launch per bank instead of one per expert. What it does **not** add
+is different arithmetic, and that is worth stating first because it is the thing that makes the
+change testable. Each expert's band is the same GEMV either way — the CPU reference is literally
+the two lines `gemv_cpu` runs, `dequant_cpu` then `at::matmul` in fp32, applied per band. If the
+grouped path ever disagrees with the ungrouped one on a band, it is addressing the wrong rows,
+not rounding differently. So the parity oracle is `dynquant::gemv` itself and the assertion is
+**exact equality**. A tolerance there would let a band-addressing bug through every time the
+wrong expert's weights happened to produce a nearby number, which at these scales is most of the
+time.
+
+### The cost was a fence, not a kernel
+
+`_segment_offsets` returned a Python list. Building one calls `.tolist()` on a device tensor,
+which is a device-to-host copy, which is a synchronization. This model has 24 layers of which
+`num_dense_layers: 2` are dense, so **22 MoE layers**, and each holds two banks — `gate_up_proj`
+and `down_proj`. **44 fences per token.**
+
+The copy itself is nanoseconds. What it costs is everything queued behind it, and two properties
+that are not recoverable by making it faster: a forward containing a host read cannot be captured
+as a CUDA graph, and it cannot be traced under `fullgraph=True`. Those are the two things the
+packed runtime needs next, and neither is reachable from a loop that asks the host what shape to
+be.
+
+So the table stays on device. `_segment_offsets` now returns an `[E + 1]` **int32 tensor** built
+from `bincount` and `cumsum` — both shape-determined, so the whole function traces — and
+`grouped_quantized_matmul` hands it to the op unread. The kernel's grid is
+`(ceil_div(out_features, 16), num_experts)`, derived from `seg_offsets.shape`; the values are read
+by two `__ldg` loads inside the block that needs them. int32 rather than `bincount`'s native int64
+because the device side reads that width and a wider table would hand it halves of neighbouring
+entries — and rejected rather than silently cast, because a cast here would reintroduce the host
+round trip in the middle of the path whose entire purpose is not to have one.
+
+### Asserting the absence of something
+
+Removing a synchronization changes no output. Every equality test in the file passes on a version
+that computes the list and then ignores it, which means the property this work exists for is not
+in reach of an A/B on results.
+
+It is asserted by counting. `torch.Tensor.tolist` is monkeypatched to record every call on a 1-D
+int32 tensor, and the same fixture runs twice:
+
+| path | reads of the segment table | by whom |
+|---|---|---|
+| loop | `[5, 5]` | the caller, once per bank |
+| fused | `[5, 5]` | the stand-in kernel, standing in for the device's own two loads |
+
+Two either way, and that is the point: on the fused path the **caller** takes none. The stand-in
+is not a mock — it asserts that every buffer it received is the one the bank actually holds, by
+`data_ptr()` rather than by value, and only then computes the documented answer. Passing `scales`
+where `offsets` belongs, or the flattened row count where `out_features` belongs, produces the
+right shape and a different model, and neither is visible from the output at these tolerances.
+The call counter is there for the failure an agreement test cannot see at all: a fused path that
+silently never runs agrees with the loop perfectly.
+
+### The mutation that survived, and why it was the informative one
+
+Nine mutations of the wiring, each with the test expected to redden. Three rounds. Two of the
+first-round survivors were real gaps — the stand-in checked only that `offsets` was non-`None`, so
+passing `scales` twice satisfied it; and the fixture hardcoded `has_bias = False`, so the one line
+the two paths do not share could be deleted outright. Two others were **equivalent mutations** and
+were replaced rather than fixed: clamping a sentinel id to the last expert only widens the final
+band, which sits past every real row and is masked anyway, and `_out_features(down_proj)` is
+`hidden_dim` by definition.
+
+The replacement for the first of those — sentinels wrapped into expert 0, `expert_ids % num_experts`
+— then survived a third round, and the reason is structural rather than a missing assertion. Both
+the fused and the loop path read the *same* segment table. An equality assertion between two
+consumers of one input cannot see that the input is wrong. No amount of A/B coverage reaches it.
+
+It needed a known answer instead. Three experts weighting 2.0, 3.0, 5.0, one routing id past the
+expert count, and `[[0, 1], [2, 4]]`: the sentinel sorts last, so folding it in anywhere below
+expert 2 shifts every band after it and expert 2's single row moves into the band before it. Token
+1 comes back multiplied by 3.0 where the answer is 5.0. Finite, plausible, wrong — the same shape
+of failure §8's own probe was blind to, and the same fix.
+
+Final run: **9 of 9 killed, survivors none.**
+
+### ABI 3 is additive on purpose
+
+`KERNEL_ABI_VERSION` goes to 3. `MIN_KERNEL_ABI_VERSION` stays at **2**, and the runtime asks the
+op table — `has_grouped_gemv()` — rather than the version number. An ABI-2 wheel is missing
+`moe_grouped_gemv` and serves every model it served yesterday; refusing it would trade a slower
+correct answer for no answer. The rule is written down in `_version.py` now rather than inferred
+per release: bump `KERNEL_ABI_VERSION` when the binary gains or changes a schema, raise the
+minimum only when an older binary would produce a *failure or a wrong number* rather than a slower
+correct one.
+
+`_fusable` is the other half of the same posture. Four supported configurations reach
+`_grouped_linear_packed` and have a correct answer that is not the kernel's — a dense bank in a
+partly-packed model, a transposed bank, an ABI-2 wheel, and fp32 activations over fp16 scales —
+and each gets `None` and the loop, not an exception. The transposed case is the one that matters
+most and is the least visible: the flattening the row arithmetic assumes is the other one, so
+fusing it anyway is not a crash but a silent read of the wrong expert's rows at the right shape.
+
+The third declaration of the ABI number was found the way it was meant to be. `tests/test_abi.py`
+holds `abi.h`, `dynquant._version` and `dynquant_kernels/__init__.py` equal, and it went red at
+`assert 2 == 3` — the last of the three is read from *source text* rather than imported, so it
+lints on a CPU runner with no wheel.
+
+### What CPU checks and CUDA does not
+
+The CPU reference validates the segment table: starts at 0, non-decreasing, last bound within
+`x.size(0)`. The CUDA path clamps instead.
+
+That is deliberate and it is now asserted rather than left implicit, because "the two
+implementations of one op disagree about what they accept" is how a defect reaches production
+having passed CPU CI. Checking monotonicity on device is a reduction, and a reduction whose result
+changes control flow is a synchronization — the one thing this path exists to remove. Clamping
+keeps a malformed table from reading out of bounds without reporting it; the CPU side, which has
+the whole table in hand and is the composition the CUDA path replaces, refuses.
+
+### Status, stated as what is not yet true
+
+- The Python half is landed and green on all four gates: **2063 passed / 14 skipped**, 14 tests in
+  `test_experts_dispatch.py`, and the 9-mutation run at zero survivors.
+- **`grouped_gemv.cu` has never been compiled.** Everything above is the dispatch, the marshalling
+  and the contract; none of it is evidence about the kernel. The five parity tests are written and
+  skip locally behind `importorskip("dynquant_kernels")`.
+- The `.cu` header claims numerical identity with `dynquant::gemv` band for band. On CPU that holds
+  by construction — same `dequant_cpu`, same fp32 `matmul`. On CUDA it is **a claim, not a
+  measurement**: `gemv` has a vectorized fast path for geometries whose groups tile `in_features`
+  and whose words tile a 128-bit load, and the grouped kernel does not implement it. Either the
+  parity assertion relaxes on CUDA or the docstring is wrong, and which one is not yet known.
+- No speedup is claimed. The ≥3× decode target in P8's gate is unmeasured, and the sync-removal
+  property — the reason to build this — is a structural claim backed by a counter, not a clock.
+- Nothing here touches an arm. The panel scores the encoder, `dynquant_experts_forward` already
+  measured bit-identical to `grouped_mm`, and this changes when a launch happens rather than what
+  it computes.
