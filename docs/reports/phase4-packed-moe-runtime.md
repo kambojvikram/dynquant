@@ -1332,6 +1332,61 @@ A model card for a republished baseline therefore carries two numbers: the bytes
 scored at, and the bytes of the directory. They are not the same number, and the difference is the
 container, not the model.
 
+### The gap the carry check does not close, and the label that was standing in for it
+
+The carry check compares the codes written to disk against the codes held by the model in memory.
+It proves the *export* is faithful. It says nothing about where that model came from — and where
+it came from is a second calibration pass, because the panel never serialized a first one. `run`
+loads the checkpoint, applies the recipe, scores the result in process, and writes a JSON record.
+There is no checkpoint at the end of an arm. So `publish` re-runs the recipe, and the only thing
+connecting the directory it writes to the row in the table was the label on the directory.
+
+That is not a small gap on this campaign. A GPTQ pass over 8 B parameters takes 32 minutes and an
+AWQ pass 47; both were run on a box whose GPU is shared with a panel, over days, from a shell.
+A directory named `gptq_4b` that came out of a pass with `--calib-samples 128` instead of 256, or
+against a `--model` one directory over, is an ordinary artifact of a long campaign and an
+extraordinary thing to notice by reading a filename.
+
+`publish --scored <arm>.quant.json` replaces the label with a comparison against the arm's own
+record. It runs in two halves, and the split is the point:
+
+- **Before the recipe:** `method`, `bits`, `group_size`, `ignore`, `seq_len`, `source`. Every one
+  is readable from the namespace before anything loads, so learning that `--bits` disagrees with
+  the record costs a second rather than half an hour of a contended GPU.
+- **After the recipe:** `calib_samples`, `materialized_modules`, `weights_moved`,
+  `max_weight_delta`, `probe_unique_values_per_row`, `accounted_bits`, `accounted_bytes`,
+  `quantized_params`, `banked_params_quantized`, `params`. Compared exactly. There is no tolerance
+  and no override flag — a disagreement here is the finding that the published weights are not the
+  scored weights, and what to do about that is a decision, not a default.
+
+**The byte accounting alone could never have done this**, and the two 4-bit arms already on record
+are the proof:
+
+| field | `gptq_4b` | `awq_4b` |
+|---|---|---|
+| `accounted_bits` | 4.1565 | 4.1565 |
+| `accounted_bytes` | 4,399,629,312 | 4,399,629,312 |
+| `quantized_params` | 8,467,644,416 | 8,467,644,416 |
+| `banked_params_quantized` | 7,751,073,792 | 7,751,073,792 |
+| `materialized_modules` | 2,201 | 2,201 |
+| `weights_moved` | **0** | **2,201** |
+| `max_weight_delta` | **0.0** | **2.890625** |
+
+Every number describing how large the result is agrees to the byte, because both are the same
+architecture at the same width and the same group size. Publishing one arm's weights under the
+other's row would leave all of it intact, and a size check would pass. What separates them is what
+the recipe *did* to the weights: AWQ's smoothing moves all 2,201 modules by up to 2.89 before
+quantizing, GPTQ moves none. So the three fingerprint fields are load-bearing rather than
+decorative, and a test says so directly — trim `SCORED_WEIGHTS` down to the accounting and that
+test goes red.
+
+A record written before a field existed is still worth comparing against, so an absent field is
+skipped — and counted. The published metadata carries `fields_compared` beside `fields_available`,
+because a directory matched on six fields should not be filed as a directory matched on ten. The
+asymmetry is deliberate and is the whole difference between a coverage gap and a defect: a field
+the *record* does not carry is a gap; a field the record carries and this pass did not produce is
+a disagreement.
+
 ### Status, stated as what is not yet true
 
 - All six arms — `rtn`, `gptq` and `awq` at 4 and 3 bits — publish and reload within **0.068 code
@@ -1344,4 +1399,9 @@ container, not the model.
 - The published artifact loads through **DynQuant's** `HfQuantizer`, not through vLLM's native
   `compressed-tensors` path. Row 19's "yes — vLLM and transformers" is not restored by this and is
   not claimed. What is restored is that the weights a person downloads are the weights that were
-  scored.
+  scored — provided `--scored` is given the arm's record. Without it the directory is published on
+  the strength of matching flags, which is a claim about the inputs and not about the weights.
+- The publish path now carries **nineteen** mutations, each with the test it is expected to redden.
+  Five of them are the scored check: running the recipe before reading the record, accepting the
+  flag without acting on it, skipping a field this pass did not produce, counting coverage over
+  the wrong side of the comparison, and trimming the fingerprint down to the byte accounting.
