@@ -333,6 +333,24 @@ def _question(line: str) -> str:
     return line[:28].strip()
 
 
+def _aggregate_block(printed: str) -> str:
+    """The head-to-head block alone, bounded at the first partition block's title.
+
+    Every block below it prints rows beginning with the same six comparison names, so a
+    parser that stops at a landmark further down the table silently returns some of theirs.
+    Four of the copies this replaced were bounded at ``"head to head, on"``, which is a
+    title the table only prints when it was given sources -- so on the panels that had none
+    they bounded nothing at all, and passed until a block that does not need sources was
+    added between them and their landmark.
+
+    Every partition block titles itself ``... on <subset> alone (n of m items)`` and the
+    aggregate does not, which makes `" alone ("` the one bound that stays correct when a
+    fourth partition arrives.
+    """
+    assert "head to head, at matched bytes" in printed, printed
+    return printed.split("head to head, at matched bytes")[1].split(" alone (")[0]
+
+
 def test_the_verdict_follows_the_corrected_p_and_not_the_raw_one(
     table: Any, tmp_path: Path
 ) -> None:
@@ -444,7 +462,7 @@ def test_records_scored_under_different_settings_are_not_paired(table: Any, tmp_
     record.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     printed = _run(table, out)
-    block = printed.split("head to head, at matched bytes")[1].split("head to head, on")[0]
+    block = _aggregate_block(printed)
     rows = {_question(line): line for line in block.splitlines() if line.startswith("4b ")}
     assert "NOT PAIRED" in printed
     assert "not comparable: decode.max_new_tokens" in rows["4b  DynQuant vs GPTQ"]
@@ -503,15 +521,18 @@ def test_an_arm_that_did_not_run_is_a_missing_row_and_not_a_missing_comparison(
     assert any(
         line.startswith("awq_3b") and line.endswith("not run") for line in printed.splitlines()
     )
-    # Two head-to-head rows name awq_3b, one ceiling row does, and the fidelity family
-    # re-asks the head-to-head questions, so it names it twice more.
-    assert printed.count("(needs both arms)") == 5
+    # Four blocks ask the head-to-head family on this panel -- the aggregate, the two
+    # difficulty strata, and the fidelity family -- and two of its six comparisons name
+    # awq_3b, so eight rows do. The ceiling family names it once more. The per-source and
+    # source-by-difficulty blocks do not run here: `_write_panel` writes no sources.json.
+    assert printed.count("(needs both arms)") == 9
     assert "3/7 arms scored" not in printed and "6/7 arms scored" in printed
     assert "Holm-adjusted over 4 of 6 comparisons" in printed, "the head family shrinks with it"
     assert "Holm-adjusted over 5 of 6 comparisons" in printed, "and so does the ceiling family"
     # A short family is corrected less than the finished panel will be, so an adjusted
-    # p read mid-run can only move the unfavourable way. The count does not say that.
-    assert printed.count("a short family, so these adjusted p are weaker") == 3
+    # p read mid-run can only move the unfavourable way. The count does not say that. Once
+    # per block that ran short: the four above plus the ceiling family at five of six.
+    assert printed.count("a short family, so these adjusted p are weaker") == 5
 
 
 def test_a_block_reads_in_the_families_declared_order_however_much_of_it_ran(
@@ -531,11 +552,7 @@ def test_a_block_reads_in_the_families_declared_order_however_much_of_it_ran(
     out = _write_panel(tmp_path / "arms", omit=("awq_3b",))
     printed = _run(table, out)
 
-    block = (
-        printed.split("head to head, at matched bytes")[1]
-        .split("what each method cost")[0]
-        .splitlines()
-    )
+    block = _aggregate_block(printed).splitlines()
     rows = [line for line in block if line[:2] in {"4b", "3b"}]
     assert [line[:28].rstrip() for line in rows] == [q for _, _, q in table.HEAD_TO_HEAD], (
         "every row is present and in the family's order, computed or not"
@@ -647,7 +664,7 @@ def test_the_json_carries_the_mark_and_the_file_is_what_the_flag_printed(
 
     printed = _run(table, out, "--json")
     payload = json.loads(printed[printed.index("{") :])
-    block = printed.split("head to head, at matched bytes")[1].split("what each method cost")[0]
+    block = _aggregate_block(printed)
     marked = {
         _question(line)
         for line in block.splitlines()
@@ -821,7 +838,7 @@ def test_a_recorded_dispatch_is_priced_on_the_row_and_does_not_refuse_it(
     _set_experts(out, "dq_4b", {"found": "grouped_mm", "ran": "eager"})
 
     printed = _run(table, out)
-    block = printed.split("head to head, at matched bytes")[1].split("head to head, on")[0]
+    block = _aggregate_block(printed)
     rows = {_question(line): line for line in block.splitlines() if line.startswith("4b ")}
     assert "eager (from grouped_mm)" in printed.split("experts dispatch")[1]
     assert "NOT PAIRED" not in printed, "the dispatch is not a problem-set difference"
@@ -923,7 +940,7 @@ def test_a_verdict_on_two_dispatches_is_marked_and_the_reason_is_priced(
     for label in ("gptq_4b", "awq_4b", "gptq_3b", "awq_3b"):
         _set_linearization(out, label, {"banks_before": 22, "banks_after": 0})
 
-    block = _run(table, out).split("head to head, at matched bytes")[1].split("head to head, on")[0]
+    block = _aggregate_block(_run(table, out))
     rows = {
         _question(line): line
         for line in block.splitlines()
@@ -986,7 +1003,7 @@ def test_two_unrecorded_arms_do_not_count_as_agreeing(table: Any, tmp_path: Path
     Turns red when: the check becomes an inequality test and two `None`s compare equal.
     """
     out = _write_panel(tmp_path / "arms")
-    block = _run(table, out).split("head to head, at matched bytes")[1].split("head to head, on")[0]
+    block = _aggregate_block(_run(table, out))
     assert "dq_4b = unrecorded, gptq_4b = unrecorded" in block
 
 
@@ -1025,6 +1042,77 @@ def _write_sources(out: Path, chooser: Any) -> list[str]:
     return labels
 
 
+def _rewrite_hits(out: Path, label: str, hits: list[bool]) -> None:
+    """Replace one arm's hit vector, keeping the counts it wrote about itself in step.
+
+    A record whose ``hits`` disagree with its own ``correct`` is a record no run produces,
+    and `load_sources` checks every arm against its stored per-source totals -- so a fixture
+    that edited only the vector would be rejected, for a reason that has nothing to do with
+    what it was written to test.
+    """
+    path = out / f"{label}.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    correct = sum(1 for hit in hits if hit)
+    payload["hits"] = hits
+    payload["correct"] = correct
+    payload["accuracy"] = correct / len(hits)
+    payload["detail"]["exact"] = correct - 20
+    payload["detail"]["by_source"] = {
+        "gretel": [correct // 2, TOTAL // 2],
+        "wikisql": [correct - correct // 2, TOTAL // 2],
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _split_the_flips(out: Path) -> list[bool]:
+    """Rewrite the ceiling so the two difficulty strata hold flips of opposite sign.
+
+    `_write_panel` lays its joint patterns out in contiguous blocks and makes the ceiling a
+    prefix of the item order, so every discordant 4-bit pair falls in one stratum and the
+    other has none at all. The block under test would still print, with real numbers in it,
+    and would pin nothing.
+
+    This is the shape the real panel has: DynQuant leads by +1.18 where the ceiling is right
+    and trails by -2.22 where it is wrong. Every dq-over-gptq flip goes to ceiling-right and
+    every gptq-over-dq flip to ceiling-wrong, which is that sign change at its extreme; the
+    concordant items alternate, so neither stratum is a handful of items.
+
+    Must run before `_write_sources`, which recomputes every record's ``by_source`` from its
+    own hits -- including the one this rewrites.
+    """
+    dq = json.loads((out / "dq_4b.json").read_text(encoding="utf-8"))["hits"]
+    gptq = json.loads((out / "gptq_4b.json").read_text(encoding="utf-8"))["hits"]
+    hits = []
+    for index, (left, right) in enumerate(zip(dq, gptq, strict=True)):
+        if left and not right:
+            hits.append(True)
+        elif right and not left:
+            hits.append(False)
+        else:
+            hits.append(index % 2 == 0)
+    _rewrite_hits(out, "bf16", hits)
+    return hits
+
+
+def _difficulty_rows(printed: str, stratum: str) -> dict[str, str]:
+    """The rows of one difficulty block, keyed by the comparison they name.
+
+    The near bound is the title's whole ``on <stratum> alone (`` and not the bare stratum
+    name, because the crossed blocks below title themselves ``on wikisql/ceiling-wrong
+    alone (`` and a parser looking for the name alone would find those too.
+    """
+    head = f"on {stratum} alone ("
+    assert head in printed, printed
+    block = printed.split(head)[1].split("is the margin the same at both difficulties?")[0]
+    block = block.split(" alone (")[0]
+    rows = {}
+    for line in block.splitlines():
+        for _, _, question in _load("_dq_ds", SCRIPT).HEAD_TO_HEAD:
+            if line.startswith(question):
+                rows[question.strip()] = line
+    return rows
+
+
 def _stack_the_flips(out: Path) -> list[str]:
     """Every dq-over-gptq flip into gretel, every gptq-over-dq flip into wikisql.
 
@@ -1049,14 +1137,19 @@ def _stack_the_flips(out: Path) -> list[str]:
 def _heterogeneity_rows(printed: str) -> dict[str, str]:
     """The rows of the heterogeneity block, keyed by the comparison they name.
 
-    Bounded at both ends. Three blocks in this table print rows that begin with the same
-    comparison names -- the head-to-head, this one, and the fidelity family -- so a parser
-    that only located the header would return whichever of them came last, and would go on
-    returning rows after the block under test had stopped printing any.
+    Bounded at both ends. Seven blocks in this table print rows that begin with the same
+    comparison names -- the head-to-head, the three partitions and their spreads, and the
+    fidelity family -- so a parser that only located the header would return whichever of
+    them came last, and would go on returning rows after the block under test had stopped
+    printing any.
+
+    The far bound is the next block's title rather than a landmark further down the table,
+    because the two blocks between this one and `what each method cost` were added after
+    this parser was written and it went on returning real rows from the wrong one.
     """
     assert "is the margin the same on every source?" in printed, printed
     block = printed.split("is the margin the same on every source?")[1]
-    block = block.split("what each method cost")[0]
+    block = block.split("head to head, by difficulty")[0]
     rows = {}
     for line in block.splitlines():
         for _, _, question in _load("_dq_ht", SCRIPT).HEAD_TO_HEAD:
@@ -1322,6 +1415,277 @@ def test_the_json_carries_the_fidelity_spread_beside_the_accuracy_one(
     )
 
 
+def _deltas(
+    table: Any, records: Any, labels: list[str], name: str, arithmetic: Any
+) -> dict[str, float]:
+    """``{question: delta}`` for one subset, derived the way the block under test derives it."""
+    with redirect_stdout(StringIO()):
+        entries = table.print_comparisons(
+            name, table.HEAD_TO_HEAD, table.restrict(records, labels, name), arithmetic
+        )
+    return {entry["question"].strip(): entry["paired"].delta_points for entry in entries}
+
+
+def test_the_difficulty_blocks_split_on_the_ceiling_and_not_on_anything_else(
+    table: Any, tmp_path: Path
+) -> None:
+    """The rows section 13 opens with, which until now came from a script in a scratch dir.
+
+    Two ways for this block to be wrong while printing six believable rows in each half:
+    split on something other than the ceiling's own hits, or restrict nothing and print the
+    aggregate twice under two headings. Both are caught by deriving the labels from the
+    ceiling's vector, deriving the deltas from those labels, and reading what the table
+    printed -- and then by requiring the fixture to discriminate, because a panel whose two
+    strata agree with each other and with the aggregate would pass against all three.
+
+    Turns red when: the split stops being the ceiling's answer, the restriction is dropped,
+    or the strata stop being printed under their own names.
+    """
+    out = _write_panel(tmp_path / "arms")
+    ceiling = _split_the_flips(out)
+    printed = _run(table, out)
+    _, records = table.load_panel(out)
+    arithmetic = dict.fromkeys(records, "grouped")
+
+    difficulty = table.difficulty_labels(records)
+    off_the_ceiling = [table.CEILING_RIGHT if hit else table.CEILING_WRONG for hit in ceiling]
+    assert difficulty == off_the_ceiling, "the labels are not the ceiling's own answers"
+
+    strata = {
+        name: _deltas(table, records, difficulty, name, arithmetic)
+        for name in (table.CEILING_RIGHT, table.CEILING_WRONG)
+    }
+    for name, expected in strata.items():
+        rows = _difficulty_rows(printed, name)
+        assert set(rows) == set(expected), (name, sorted(rows), sorted(expected))
+        for question, delta in expected.items():
+            assert f"{delta:+6.2f}" in rows[question], (name, question, rows[question])
+
+    aggregate = _deltas(table, records, [""] * len(ceiling), "", arithmetic)
+    right, wrong = strata[table.CEILING_RIGHT], strata[table.CEILING_WRONG]
+    assert any(right[q] > 0 > wrong[q] or wrong[q] > 0 > right[q] for q in right), (
+        "no comparison changes sign between the strata, so this fixture cannot tell a "
+        "difficulty split from two copies of the aggregate"
+    )
+    assert any(right[q] != aggregate[q] for q in right), "a stratum reproduced the aggregate"
+
+
+def test_the_ceiling_wrong_stratum_is_the_fidelity_margin_with_its_sign_flipped(
+    table: Any, tmp_path: Path
+) -> None:
+    """The two rows are one finding, and the block's closing note says so. This is why.
+
+    Inside ceiling-right a hit *is* agreement with the ceiling; inside ceiling-wrong a hit
+    is disagreement with it. So the second stratum's accuracy margin is the same arms'
+    fidelity margin negated -- exactly, down to the two discordant counts swapping and the
+    exact McNemar p being the same number. A method that tracks the ceiling more closely has
+    to win the first row and lose the second, which is what makes the sign change an
+    identity rather than a second result the panel went out and found.
+
+    Asserted because the note tells a reader to read the block that way and a note is not a
+    mechanism: if the strata ever stopped being cut on the same arm the fidelity indicator
+    is measured against, the note would go false while every number under it stayed real.
+
+    Turns red when: the split stops being the ceiling's, or the fidelity indicator stops
+    being agreement with the arm the strata are cut on.
+    """
+    out = _write_panel(tmp_path / "arms")
+    _split_the_flips(out)
+    _, records = table.load_panel(out)
+    arithmetic = dict.fromkeys(records, "grouped")
+    difficulty = table.difficulty_labels(records)
+
+    with redirect_stdout(StringIO()):
+        accuracy = table.print_comparisons(
+            "acc",
+            table.HEAD_TO_HEAD,
+            table.restrict(records, difficulty, table.CEILING_WRONG),
+            arithmetic,
+        )
+        fidelity = table.print_comparisons(
+            "fid",
+            table.HEAD_TO_HEAD,
+            table.restrict(table.agreement_records(records), difficulty, table.CEILING_WRONG),
+            arithmetic,
+        )
+
+    assert accuracy, "the fixture produced no comparisons in the ceiling-wrong stratum"
+    mirrored = {entry["question"]: entry["paired"] for entry in fidelity}
+    moved = 0
+    for entry in accuracy:
+        theirs, mine = mirrored[entry["question"]], entry["paired"]
+        assert mine.delta_points == pytest.approx(-theirs.delta_points), entry["question"]
+        assert mine.p_value == pytest.approx(theirs.p_value), entry["question"]
+        assert (mine.a_only, mine.b_only) == (theirs.b_only, theirs.a_only), entry["question"]
+        moved += mine.delta_points != 0
+    assert moved, "every delta was zero, so the negation asserted nothing"
+
+
+def test_stratifying_a_family_that_compares_the_ceiling_is_refused(table: Any) -> None:
+    """`AGAINST_CEILING` is a family in the same file, one keyword argument away.
+
+    Split the ceiling-vs-arm comparisons on the ceiling's own hits and the halves separate
+    by construction: ceiling-right is the set of items the ceiling got right, so it scores
+    100% there and no arm can match it. The rows would be large, significant, and entirely
+    an artifact of the split, and nothing about them would look wrong.
+
+    Turns red when: the guard is dropped, or narrowed to the default family it was written
+    against rather than the family it is handed.
+    """
+    records = {"bf16": {"hits": [True, False]}, "dq_4b": {"hits": [True, True]}}
+    with pytest.raises(ValueError, match="conditions on the outcome"):
+        table.difficulty_labels(records, family=table.AGAINST_CEILING)
+    assert table.difficulty_labels(records) == [table.CEILING_RIGHT, table.CEILING_WRONG]
+
+
+def test_the_cross_is_printed_only_when_it_is_two_axes(table: Any, tmp_path: Path) -> None:
+    """Crossing an axis with a constant reprints the other axis under a heading naming two.
+
+    On a single-source panel the four cells collapse to the two difficulty strata already
+    printed above, and a reader has no way to see that the second block is the first one
+    again -- every number in it agrees, which reads as corroboration.
+
+    Turns red when: the cross stops being suppressed on one axis, stops being printed on
+    two, or is printed over the wrong labels.
+    """
+    assert table.crossed(["a", "a"], ["x", "y"]) is None
+    assert table.crossed(["a", "b"], ["x", "x"]) is None
+    assert table.crossed(["a", "b"], ["x", "y"]) == ["a/x", "b/y"]
+    assert table.crossed(None, ["x", "y"]) is None
+    assert table.crossed(["a", "b"], ["x", "y", "z"]) is None
+
+    out = _write_panel(tmp_path / "arms")
+    _split_the_flips(out)
+    labels = _write_sources(out, lambda index: "gretel" if index % 3 else "wikisql")
+    printed = _run(table, out)
+    _, records = table.load_panel(out)
+    arithmetic = dict.fromkeys(records, "grouped")
+
+    both = table.crossed(labels, table.difficulty_labels(records))
+    assert both is not None
+    for cell in sorted(set(both)):
+        title = f"by source and difficulty, on {cell} alone"
+        assert title in printed, cell
+        block = printed.split(title)[1].split(" alone (")[0]
+        expected = _deltas(table, records, both, cell, arithmetic)
+        assert expected, cell
+        for question, delta in expected.items():
+            row = next(line for line in block.splitlines() if line.startswith(question))
+            assert f"{delta:+6.2f}" in row, (cell, question, row)
+
+    lonely = _write_panel(tmp_path / "lonely")
+    _split_the_flips(lonely)
+    _write_sources(lonely, lambda index: "wikisql")
+    alone = _run(table, lonely)
+    assert "by difficulty, on ceiling-right alone" in alone, "the axis that needs no sources"
+    assert "by source and difficulty" not in alone
+
+
+def test_a_partition_wider_than_two_still_lines_its_columns_up(table: Any, tmp_path: Path) -> None:
+    """Four cells print a spread string of 26 characters into a field sized for two.
+
+    Nothing about the statistics changes -- pooled, Q and both p stay exactly right -- and
+    the row simply pushes every column to its right out of position. This is the one block
+    in the table a reader is meant to scan down rather than across, comparing four cells of
+    the same comparison against each other, so a misaligned Q column is the failure that
+    matters most and is the one no assertion on a value would catch.
+
+    Turns red when: the spread field goes back to a constant width, or a wider partition is
+    added without the field following it.
+    """
+    out = _write_panel(tmp_path / "arms")
+    _split_the_flips(out)
+    _write_sources(out, lambda index: "gretel" if index % 3 else "wikisql")
+    destination = tmp_path / "table.json"
+    printed = _run(table, out, "--json-out", str(destination))
+    payload = json.loads(destination.read_text(encoding="utf-8"))
+
+    # Two ways for this block to come out ragged and only one of them is the new code. The
+    # rows can disagree with each other, which is what a fixed-width spread field does to a
+    # four-cell partition; or they can agree with each other and not with their own heading,
+    # which is what this table did in both of its blocks until the field widths were made to
+    # match. Both are checked, because fixing either one alone still leaves the column a
+    # reader is scanning under the wrong name.
+    widths = {
+        len(", ".join(f"{delta:+.2f}" for _, delta in sorted(entry["sources"].items())))
+        for entry in payload["source_and_difficulty_heterogeneity"]
+    }
+    assert len(widths) > 1, (
+        f"every cell rendered {widths} characters of spread, so this block would line up "
+        f"with or without a partition-sized column"
+    )
+
+    # Bounded at the next block, as everything in this file that reads a block has to be.
+    # The fidelity spread further down prints HETEROGENEOUS rows too, over a two-subset
+    # spread of its own width, and an unbounded read collects those as disagreement.
+    block = printed.split("is the margin the same in every source-difficulty cell?")[1]
+    block = block.split("what each method cost")[0]
+    questions = [question for _, _, question in _load("_dq_wq", SCRIPT).HEAD_TO_HEAD]
+    columns = set()
+    for line in block.splitlines():
+        if not any(line.startswith(question) for question in questions):
+            continue
+        verdict = "HETEROGENEOUS" if "HETEROGENEOUS" in line else "consistent"
+        if verdict in line:
+            columns.add(line.index(verdict))
+    header = next(line for line in block.splitlines() if line.startswith("comparison"))
+    assert columns == {header.index("verdict")}, (columns, header, block)
+
+
+def test_the_json_carries_the_difficulty_blocks_and_their_spread(
+    table: Any, tmp_path: Path
+) -> None:
+    """The model cards read this payload, and section 13 opens with these six rows.
+
+    A consumer holding ``source_heterogeneity`` alone has the question -- the margin is not
+    one number -- and nothing to answer it with, because on this panel the source axis and
+    the difficulty axis are confounded and only one of them is carried. Both, or the
+    heterogeneous row means whichever of the two the reader already believed.
+
+    Turns red when: any of the four keys is dropped, filled from the source blocks, or
+    filled with deltas other than the ones the table printed.
+    """
+    out = _write_panel(tmp_path / "arms")
+    _split_the_flips(out)
+    _write_sources(out, lambda index: "gretel" if index % 3 else "wikisql")
+    destination = tmp_path / "table.json"
+    printed = _run(table, out, "--json-out", str(destination))
+    payload = json.loads(destination.read_text(encoding="utf-8"))
+
+    by_difficulty = payload["head_to_head_by_difficulty"]
+    assert set(by_difficulty) == {table.CEILING_RIGHT, table.CEILING_WRONG}
+    for name, entries in by_difficulty.items():
+        rows = _difficulty_rows(printed, name)
+        assert entries, name
+        for entry in entries:
+            assert f"{entry['delta_points']:+6.2f}" in rows[entry["question"].strip()]
+
+    spread = payload["difficulty_heterogeneity"]
+    assert spread, "the table printed a difficulty spread and the payload carries none"
+    for entry in spread:
+        assert set(entry["sources"]) == {table.CEILING_RIGHT, table.CEILING_WRONG}
+        assert entry["df"] == 1
+        for name, delta in entry["sources"].items():
+            row = next(r for r in by_difficulty[name] if r["question"] == entry["question"])
+            assert row["delta_points"] == delta, (entry["question"], name)
+
+    cells = payload["head_to_head_by_source_and_difficulty"]
+    assert set(cells) == {
+        f"{source}/{stratum}"
+        for source in ("gretel", "wikisql")
+        for stratum in (table.CEILING_RIGHT, table.CEILING_WRONG)
+    }
+    assert all(cells.values()), "a crossed cell carried no comparisons"
+    assert all(entry["df"] == 3 for entry in payload["source_and_difficulty_heterogeneity"])
+
+    source_side = {entry["question"]: entry["q"] for entry in payload["source_heterogeneity"]}
+    shared = [entry for entry in spread if entry["question"] in source_side]
+    assert shared, "no comparison reached both spreads, so this fixture cannot discriminate"
+    assert any(entry["q"] != source_side[entry["question"]] for entry in shared), (
+        "the difficulty spread equals the source spread, so one was filled from the other"
+    )
+
+
 def test_one_source_is_not_a_mixture_and_prints_no_block(table: Any, tmp_path: Path) -> None:
     """Nothing to compare against, so no header with an empty table under it.
 
@@ -1336,6 +1700,7 @@ def test_one_source_is_not_a_mixture_and_prints_no_block(table: Any, tmp_path: P
     assert "agreement with bf16, on wikisql alone" in printed
     assert "is the margin the same on every source?" not in printed
     assert "is the fidelity margin the same on every source?" not in printed
+    assert "is the margin the same in every source-difficulty cell?" not in printed
 
 
 def test_the_json_carries_the_spread_the_table_printed(table: Any, tmp_path: Path) -> None:

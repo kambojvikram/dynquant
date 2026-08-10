@@ -2230,6 +2230,46 @@ inside each half -- and re-run the same paired test.
 The margin does not merely vary, it **changes sign with difficulty**, and it changes sign
 *within wikisql alone*. The source axis cannot produce that.
 
+Those six rows spent two days in a scratch script on one machine, which is the same defect
+one level out from a number typed into a paragraph: not a figure nothing re-derives, but a
+whole tool nothing re-runs. `panel_table.py` now cuts the same six comparisons three ways --
+by source, by the ceiling's own answer, and by both crossed -- prints all three, and carries
+all three into the json the model cards read. The difficulty split needs no `sources.json`:
+the ceiling answered every item, so the label is already on disk.
+
+| comparison | pooled | ceiling right / wrong | Q | *p* (Holm) | |
+|---|---:|---:|---:|---:|---|
+| dq vs gptq, 4b | +0.92 | +1.18 / -2.22 | 15.17 | 0.000295 | heterogeneous |
+| dq vs awq, 4b | +1.31 | +1.56 / -2.38 | 18.56 | 0.000066 | heterogeneous |
+| gptq vs awq, 4b | +0.34 | +0.39 / -0.16 | 0.32 | 0.570 | consistent |
+| gptq vs awq, 3b | +2.47 | +3.48 / -0.58 | 13.81 | 0.000405 | heterogeneous |
+
+The difficulty axis separates far harder than the source axis managed -- dq vs gptq at
+Q=15.17 against Q=6.32 -- which is the answer to the question a source-wise spread on this
+panel can only raise. It is not a second finding, though. §13.1 below shows the second row
+is the *fidelity* margin with its sign flipped, exactly: identical *p*, and the two
+discordant counts swapped. A method that tracks the ceiling more closely has to win the
+first row and lose the second. The Q measures how hard that identity bites here; it is not
+evidence for it.
+
+Crossing the two axes is the only partition that tells them apart.
+
+| comparison | pooled | gretel R / gretel W / wikisql R / wikisql W | Q | *p* (Holm) | |
+|---|---:|---:|---:|---:|---|
+| dq vs gptq, 4b | +1.04 | -0.27 / -1.04 / +1.58 / -3.24 | 24.70 | 5.35e-05 | heterogeneous |
+| dq vs awq, 4b | +1.32 | +1.55 / -2.65 / +1.57 / -2.16 | 18.64 | 0.00065 | heterogeneous |
+| gptq vs awq, 4b | +0.23 | +1.82 / -1.61 / -0.01 / +1.08 | 8.73 | 0.0331 | heterogeneous |
+| gptq vs awq, 3b | +2.10 | -5.06 / +0.58 / +5.85 / -1.57 | 90.96 | 5.44e-19 | heterogeneous |
+
+The third row is the control, and it is the one worth reading twice: GPTQ and AWQ do not
+separate from each other on aggregate accuracy at 4 bits at all (+0.34, *p*=0.272), and
+their margin still moves across the four cells. Cell structure is a property this panel
+finds in the *baselines*, so a heterogeneous row is a statement about the mixture and not a
+signature of the method under test. These cells are small and their intervals are wide, and
+that is not what they are read for: a margin that changes sign between one source's two
+cells held the source fixed while it did so, and no width of interval turns that back into
+a source effect.
+
 ### 13.1 One measurement accounts for both halves
 
 A quantized arm either matches the ceiling on an item or flips it -- a hit is a boolean and

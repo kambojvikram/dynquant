@@ -39,8 +39,8 @@ measurement whose answer is the interval; nobody doubts the sign. Both are corre
 each within its own block, and the block sizes are printed so a reader who disagrees with
 the split can multiply by twelve instead.
 
-Where the per-source block sits
--------------------------------
+Where the decomposition blocks sit
+----------------------------------
 
 ``--sources`` turns the head-to-head family into a per-dataset decomposition. It is a
 decomposition and not a second experiment: the same twelve hits are being re-partitioned,
@@ -53,6 +53,15 @@ The labels are therefore checked, not trusted. A source vector is only accepted 
 every arm, the hits at the positions it calls a given source sum to exactly the
 ``by_source`` count that arm wrote during its own run. Eight integer agreements on this
 panel, and a shuffle reconstructed from the wrong seed would have to reproduce all eight.
+
+Source is not the only axis, and here it is not a clean one. The ceiling is far from equally
+accurate on the two datasets, so "the harder half" and "the gretel half" are one column and
+a source-wise spread cannot say which of the two it found. The second decomposition splits
+on the ceiling's own answer instead -- a label neither compared arm contributed to, so each
+half is a subset of items fixed before either arm was looked at and the paired test inside
+it stays a test of the same thing. The third crosses them, which is the only partition that
+tells them apart: a margin that changes sign between one source's two halves held the source
+fixed while it did so. Only the first needs ``--sources``; the ceiling answered every item.
 
 Run::
 
@@ -753,7 +762,10 @@ def print_comparisons(
 
     print(title)
     header = (
-        f"{'comparison':28s} {'delta':>7s} {'95% CI':>18s} {'flips':>11s} "
+        # Six, not seven: the value below is `+6.2f`, and every column to the right of a
+        # heading one wider than its own column is a column whose heading names the one
+        # beside it.
+        f"{'comparison':28s} {'delta':>6s} {'95% CI':>18s} {'flips':>11s} "
         f"{'p':>10s} {'p (Holm)':>10s}  verdict"
     )
     print(header)
@@ -949,7 +961,81 @@ FIDELITY_BY_SOURCE_NOTE = (
 )
 
 
-def print_source_blocks(
+#: The two halves of the difficulty split, named as the subsets they are: these strings
+#: are block titles and they sit in the slot "gretel" and "wikisql" sit in.
+CEILING_RIGHT = "ceiling-right"
+CEILING_WRONG = "ceiling-wrong"
+
+#: Why difficulty is the axis that says what the source spread found, and why its two rows
+#: are one finding rather than two.
+BY_DIFFICULTY_NOTE = (
+    "  The same paired test on the other axis. The by-source accuracy block above prints"
+    "\n  the ceiling's own rate on each source; where those differ a source-wise spread"
+    "\n  cannot say whether it found the dataset or the difficulty, and this split can. It"
+    "\n  splits on the ceiling's own answer, a label neither compared arm contributed to, so"
+    "\n  each half is a subset of items fixed before either arm was looked at and the paired"
+    "\n  test inside it stays a test of the same thing."
+    "\n  The two rows are not independent findings. Inside ceiling-right a hit is agreement"
+    "\n  with the ceiling; inside ceiling-wrong a hit is disagreement with it, so this block"
+    "\n  is the fidelity family below with the second row's sign flipped. A method that"
+    "\n  tracks the ceiling more closely has to win the first row and lose the second, and"
+    "\n  that identity is the sign change -- not a second result."
+)
+
+#: Why the cross is worth four small blocks.
+BY_BOTH_NOTE = (
+    "  Source inside difficulty, the only partition that separates the two axes. The cells"
+    "\n  are small and their intervals are wide, and that is not what they are read for: a"
+    "\n  margin that changes sign between one source's two cells held the source fixed while"
+    "\n  it did so, and no width of interval turns that back into a source effect. Each cell"
+    "\n  is Holm-corrected within itself."
+)
+
+
+def difficulty_labels(
+    records: dict[str, dict[str, Any]],
+    ceiling: str = CEILING,
+    family: tuple[tuple[str, str, str], ...] = HEAD_TO_HEAD,
+) -> list[str] | None:
+    """One label per item: did the ceiling answer it correctly?
+
+    The panel's two sources differ in difficulty as much as in identity, so the source
+    spread has two readings and no way to choose between them. This is the other axis, and
+    it costs nothing -- the ceiling already answered every item.
+
+    Valid to stratify on only because the label is read off an arm that is in none of the
+    compared pairs. Each half is then a subset of items fixed before either arm was looked
+    at, which is what keeps McNemar inside a half a test of the same thing it tests outside
+    it. Split on a *compared* arm's own hits and the halves separate by construction: the
+    ceiling-right half would be the items that arm got right. Hence the refusal below rather
+    than a docstring warning -- `AGAINST_CEILING` is a family in this same file, one
+    argument away, and its rows would look entirely ordinary.
+    """
+    for left, right, question in family:
+        if ceiling in (left, right):
+            raise ValueError(
+                f"{question.strip()!r} compares {ceiling}, so splitting on {ceiling}'s own "
+                f"hits conditions on the outcome and separates the halves by construction"
+            )
+    hits = (records.get(ceiling) or {}).get("hits")
+    if not hits:
+        return None
+    return [CEILING_RIGHT if hit else CEILING_WRONG for hit in hits]
+
+
+def crossed(outer: list[str] | None, inner: list[str] | None) -> list[str] | None:
+    """One label vector from two, so a cell is a source *and* a difficulty."""
+    if outer is None or inner is None or len(outer) != len(inner):
+        return None
+    if len(set(outer)) < 2 or len(set(inner)) < 2:
+        # Crossing with a constant reproduces the other axis exactly. Printing the same
+        # partition a second time under a heading naming two axes invites reading it as
+        # corroboration of the first.
+        return None
+    return [f"{left}/{right}" for left, right in zip(outer, inner, strict=True)]
+
+
+def print_partition_blocks(
     labels: list[str] | None,
     why_not: str | None,
     records: dict[str, dict[str, Any]],
@@ -958,16 +1044,20 @@ def print_source_blocks(
     question: str = "head to head",
     closing: str = ACCURACY_BY_SOURCE_NOTE,
 ) -> dict[str, list[dict[str, Any]]]:
-    """One `print_comparisons` block per source, over whatever indicator ``records`` carry.
+    """One `print_comparisons` block per label, over whatever indicator ``records`` carry.
 
     Parameterised on the question rather than duplicated because the partition, the family
-    and the within-block Holm correction are the same work either way -- a second copy of
-    this loop for the fidelity indicator would be a second place for the restriction to be
-    got wrong, and the two would agree right up until one of them was edited.
+    and the within-block Holm correction are the same work whichever label vector arrives --
+    a second copy of this loop for the fidelity indicator, or for the difficulty axis, would
+    be a second place for the restriction to be got wrong, and the copies would agree right
+    up until one of them was edited.
+
+    Named for the partition rather than for the source because the source vector is now one
+    of three that reach it, and the other two are not datasets.
     """
     if labels is None:
         if why_not:
-            print(f"per-source {question}: unavailable -- {why_not}")
+            print(f"{question}, per subset: unavailable -- {why_not}")
             print()
         return {}
     blocks: dict[str, list[dict[str, Any]]] = {}
@@ -1000,7 +1090,7 @@ def print_heterogeneity(
     on the spread.
 
     What a significant row licenses is narrow. It says the method's margin is not the same
-    on both datasets -- not that the aggregate is wrong, and not that either per-source
+    on every subset -- not that the aggregate is wrong, and not that any one subset's
     number is the "real" one. The aggregate stays the panel's claim because it is the one
     the arms were run to answer; this says where that claim's margin comes from.
 
@@ -1009,8 +1099,8 @@ def print_heterogeneity(
     and not at the adjusted one is a row that did not separate.
     """
     if len(blocks) < 2:
-        # One source is not a mixture, and the caller printing zero blocks has already said
-        # why. Silence rather than a header with nothing under it.
+        # One subset is not a partition, and the caller printing zero blocks has already
+        # said why. Silence rather than a header with nothing under it.
         return []
     questions: dict[str, str] = {}
     gathered: dict[str, list[tuple[str, dict[str, Any]]]] = {}
@@ -1024,9 +1114,20 @@ def print_heterogeneity(
     if not usable:
         return []
 
+    # The spread column holds one delta per subset, so its width is the partition's, not a
+    # constant. Four cells overflowed a field sized for two datasets and every column to the
+    # right of it stopped lining up -- on the one block whose rows a reader is meant to
+    # compare against each other.
+    width = max(
+        15,
+        max(
+            len(", ".join(f"{entry['paired'].delta_points:+.2f}" for _, entry in found))
+            for found in usable.values()
+        ),
+    )
     print(f"{question} ({', '.join(sorted(blocks))})")
     header = (
-        f"{'comparison':28s} {'pooled':>7s} {'spread':>15s} {'Q':>7s} "
+        f"{'comparison':28s} {'pooled':>6s} {'spread':>{width}s} {'Q':>7s} "
         f"{'p':>10s} {'p (Holm)':>10s}  verdict"
     )
     print(header)
@@ -1038,10 +1139,10 @@ def print_heterogeneity(
         deltas = [entry["paired"].delta_points for _, entry in found]
         errors = [entry["paired"].standard_error_points for _, entry in found]
         if any(error <= 0 for error in errors):
-            # No flips on a source: the delta is exactly zero with no width, and a weight of
-            # infinity would decide the pooled estimate by itself. Skipped and named, which
-            # is what the row would otherwise silently be.
-            print(f"{questions[key]:28s} (a source produced no flips at all)")
+            # No flips in a subset: the delta is exactly zero with no width, and a weight
+            # of infinity would decide the pooled estimate by itself. Skipped and named,
+            # which is what the row would otherwise silently be.
+            print(f"{questions[key]:28s} (a subset produced no flips at all)")
             continue
         pooled, q, p_value = cochran_q(deltas, errors)
         computed.append(
@@ -1067,7 +1168,7 @@ def print_heterogeneity(
         entry["heterogeneous"] = p_adj < 0.05
         spread = ", ".join(f"{delta:+.2f}" for _, delta in sorted(entry["sources"].items()))
         print(
-            f"{entry['question']:28s} {entry['pooled_points']:+6.2f} {spread:>15s} "
+            f"{entry['question']:28s} {entry['pooled_points']:+6.2f} {spread:>{width}s} "
             f"{entry['q']:7.2f} {entry['p_value']:10.3g} {p_adj:10.3g}  "
             f"{'HETEROGENEOUS' if entry['heterogeneous'] else 'consistent'}"
             f"{'' if entry['same_arithmetic'] else '  !'}"
@@ -1082,7 +1183,7 @@ def print_heterogeneity(
         print("  mixture would report a different margin.")
     else:
         print("  No row separates: every margin is consistent with being the same on every")
-        print("  source. Consistent is not the same as equal, and these subsets are small")
+        print("  subset. Consistent is not the same as equal, and these subsets are small")
         print("  enough that a real difference the size of the aggregate would often fail")
         print("  to show here.")
     if computed and len(computed) < len(family):
@@ -1308,8 +1409,38 @@ def main(argv: list[str] | None = None) -> int:
     head = print_comparisons("head to head, at matched bytes", HEAD_TO_HEAD, records, arithmetic)
     print()
     labels, why_not = load_sources(out, args.sources, records)
-    blocks = print_source_blocks(labels, why_not, records, arithmetic)
+    blocks = print_partition_blocks(labels, why_not, records, arithmetic)
     spread = print_heterogeneity(blocks)
+    # The row above raises a question it cannot answer: this panel's sources differ in
+    # difficulty as much as in identity, so a heterogeneous margin has two readings. These
+    # two blocks are the same six comparisons on the axis that tells them apart. The first
+    # does not need `--sources` -- it is read off the ceiling's own hits, which every panel
+    # has -- so a run without labels still gets the stratification, just not the cross.
+    difficulty = difficulty_labels(records)
+    difficulty_blocks = print_partition_blocks(
+        difficulty,
+        None,
+        records,
+        arithmetic,
+        question="head to head, by difficulty",
+        closing=BY_DIFFICULTY_NOTE,
+    )
+    difficulty_spread = print_heterogeneity(
+        difficulty_blocks,
+        question="is the margin the same at both difficulties?",
+    )
+    both_blocks = print_partition_blocks(
+        crossed(labels, difficulty),
+        None,
+        records,
+        arithmetic,
+        question="head to head, by source and difficulty",
+        closing=BY_BOTH_NOTE,
+    )
+    both_spread = print_heterogeneity(
+        both_blocks,
+        question="is the margin the same in every source-difficulty cell?",
+    )
     ceiling = print_comparisons("what each method cost", AGAINST_CEILING, records, arithmetic)
     print()
     fidelity = print_fidelity(built, records)
@@ -1330,7 +1461,7 @@ def main(argv: list[str] | None = None) -> int:
     # `why_not` is deliberately dropped here: the accuracy call above already printed the
     # reason there are no source blocks, and printing it a second time would read as a
     # second failure.
-    fidelity_blocks = print_source_blocks(
+    fidelity_blocks = print_partition_blocks(
         labels,
         None,
         agreed,
@@ -1373,6 +1504,19 @@ def main(argv: list[str] | None = None) -> int:
         # from one that lives in a single dataset, and on this panel those are two different
         # comparisons in the same table.
         "source_heterogeneity": spread,
+        # The axis that says what the row above found. Two sources that differ in difficulty
+        # as much as in identity make a source spread two explanations printed as one
+        # number; these are the same six comparisons split on a label neither compared arm
+        # contributed to, and then crossed with the source so the two can be told apart. A
+        # consumer holding only `source_heterogeneity` has the question and not the answer.
+        "head_to_head_by_difficulty": {
+            name: as_json(entries) for name, entries in difficulty_blocks.items()
+        },
+        "difficulty_heterogeneity": difficulty_spread,
+        "head_to_head_by_source_and_difficulty": {
+            name: as_json(entries) for name, entries in both_blocks.items()
+        },
+        "source_and_difficulty_heterogeneity": both_spread,
         "against_ceiling": as_json(ceiling),
         # Carried because a card that reads only the accuracy delta cannot tell a method
         # that is more accurate from one that is more faithful to the model it was built
