@@ -2191,25 +2191,34 @@ def test_the_decomposition_partitions_the_margin_it_decomposes(table: Any, tmp_p
         for row in payload["head_to_head"]
         if (row["left"], row["right"]) == ("dq_3b", "gptq_3b")
     )
-    rows = {(row["left"], row["right"]): row["delta_points"] for row in payload["decomposition"]}
-    for mode in ("shuf", "unif"):
-        label = f"dq_3b_{mode}"
-        signal = rows[("dq_3b", label)]
-        shape = rows[(label, "gptq_3b")]
-        assert round(signal + shape, 2) == round(margin, 2)
-        assert signal > 0 and shape > 0, "the fixture puts each control between the two"
+    pairs = [(row["left"], row["right"]) for row in payload["decomposition"]]
+    # One chain, not one fan per control: the right-hand arm of each row is the left-hand
+    # arm of the next, so the rows visit each arm once and the column adds to the margin
+    # once. Two independent splits would also each sum to the margin -- and the block would
+    # sum to twice it, which is the arithmetic this asserts against.
+    assert pairs == [
+        ("dq_3b", "dq_3b_shuf"),
+        ("dq_3b_shuf", "dq_3b_unif"),
+        ("dq_3b_unif", "gptq_3b"),
+    ]
+    total = sum(row["delta_points"] for row in payload["decomposition"])
+    assert round(total, 2) == round(margin, 2)
+    assert all(row["delta_points"] > 0 for row in payload["decomposition"]), (
+        "the fixture degrades each control further than the one before it"
+    )
 
     block = _decomposition_block(table, printed)
     assert "signal: dq vs shuffle" in block
+    assert "signal: shuffle vs uniform" in block
     assert "shape: uniform vs GPTQ" in block
 
 
 def test_the_decomposition_is_corrected_in_its_own_family(table: Any, tmp_path: Path) -> None:
     """It answers a different question from the head-to-head, so it is a different family.
 
-    Holm's multiplier is the size of the family a comparison is corrected in. Folding four
+    Holm's multiplier is the size of the family a comparison is corrected in. Folding the
     decomposition rows into the six head-to-head rows would inflate every published margin's
-    adjusted p by a factor of 10/6 for having asked a further question about one of them --
+    adjusted p by a factor of 9/6 for having asked a further question about one of them --
     and the further question is not about whether the method won, which is what that block
     is corrected for.
 
@@ -2218,7 +2227,7 @@ def test_the_decomposition_is_corrected_in_its_own_family(table: Any, tmp_path: 
     out = _write_panel(tmp_path / "panel", nulls=("shuffle", "uniform"))
     printed = _run(table, out)
 
-    assert "Holm-adjusted over 4 of 4 comparisons" in _decomposition_block(table, printed)
+    assert "Holm-adjusted over 3 of 3 comparisons" in _decomposition_block(table, printed)
     assert "Holm-adjusted over 6 of 6 comparisons" in _aggregate_block(printed)
 
 
@@ -2270,3 +2279,56 @@ def test_a_control_does_not_print_in_the_same_method_column_as_a_real_arm(
     assert rows["dq_3b"] == "dq"
     assert rows["dq_3b_unif"] == "dq-null"
     assert rows["gptq_3b"] == "gptq" and rows["bf16"] == "ceiling"
+
+
+def test_one_control_ladders_to_the_two_rows_it_always_had(table: Any, tmp_path: Path) -> None:
+    """The chain generalises the two-row block; it must not have replaced it.
+
+    A ladder over one control is `dq -> control -> gptq`, which is the same two rows and the
+    same two labels the block printed before it was a chain -- and every banked panel with a
+    single control was read that way. If this ever printed something else, the change would
+    have been a rewrite of a published block dressed as a generalisation.
+
+    Turns red when: the single-control case stops being the block it was.
+    """
+    out = _write_panel(tmp_path / "panel", nulls=("shuffle",))
+    printed = _run(table, out, "--json-out", str(tmp_path / "panel.json"))
+    payload = json.loads((tmp_path / "panel.json").read_text(encoding="utf-8"))
+
+    assert [(row["left"], row["right"]) for row in payload["decomposition"]] == [
+        ("dq_3b", "dq_3b_shuf"),
+        ("dq_3b_shuf", "gptq_3b"),
+    ]
+    block = _decomposition_block(table, printed)
+    assert "signal: dq vs shuffle" in block
+    assert "shape: shuffle vs GPTQ" in block
+    assert "Holm-adjusted over 2 of 2 comparisons" in block
+
+
+def test_the_ladder_is_ordered_by_the_package_and_not_by_the_manifest(
+    table: Any, tmp_path: Path
+) -> None:
+    """Which control removes more is a property of the mode, and one file owns it.
+
+    `NULL_MODES` is declared in increasing order of how much each mode removes, so the rung
+    between two controls is only interpretable if the chain follows it. Manifest order is
+    the order someone typed on a command line -- here, deliberately the reverse -- and a
+    ladder that followed it would report the rung as what `shuffle` bought over `uniform`
+    while printing it as the other way round. The sum would still be the margin, which is
+    exactly why this needs asserting rather than eyeballing.
+
+    Turns red when: this file starts keeping its own opinion of which null is stronger.
+    """
+    from dynquant.score.null import NULL_MODES
+
+    assert NULL_MODES.index("shuffle") < NULL_MODES.index("uniform")
+
+    out = _write_panel(tmp_path / "panel", nulls=("uniform", "shuffle"))
+    _run(table, out, "--json-out", str(tmp_path / "panel.json"))
+    payload = json.loads((tmp_path / "panel.json").read_text(encoding="utf-8"))
+
+    assert [(row["left"], row["right"]) for row in payload["decomposition"]] == [
+        ("dq_3b", "dq_3b_shuf"),
+        ("dq_3b_shuf", "dq_3b_unif"),
+        ("dq_3b_unif", "gptq_3b"),
+    ]

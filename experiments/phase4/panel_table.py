@@ -117,13 +117,13 @@ CEILING = "bf16"
 DECOMPOSITION_NOTE = (
     "Each control holds the graph, the roles, the floors, the budget, the byte accounting,",
     "the knapsack and the quantizer fixed, and removes only what the fine-tune said about",
-    "which module is which. So the two rows at a width partition that width's",
-    "DynQuant-over-GPTQ margin: the first is the signal's share, the second is what a",
-    "mixed-width map is worth with no signal in it at all. They sum to the head-to-head",
-    "margin exactly, because an accuracy difference is a difference of two means over the",
-    "same items. A control that lands level with the real arm is a finding rather than a",
-    "failure -- it says the structure earned the margin. One that collapses to the baseline",
-    "says the signal did.",
+    "which module is which. The controls are nested -- each one removes everything the",
+    "one before it did and more -- so the rows form a ladder from the real arm down to the",
+    "uniform baseline, and they partition that width's DynQuant-over-GPTQ margin exactly.",
+    "They sum to the head-to-head margin because an accuracy difference is a difference of",
+    "two means over the same items. Each rung is worth what putting that one thing back is",
+    "worth. A rung that lands at zero is a finding rather than a failure: it says the thing",
+    "that rung adds back earned none of the margin, and the rungs below it earned all of it.",
 )
 
 
@@ -136,22 +136,52 @@ def decomposition_family(built: list[dict[str, Any]]) -> tuple[tuple[str, str, s
     ``dq_3b_shuf`` that carries no ``score_null`` block did not have its signal nulled, and
     putting it in this family would report a control that was never run.
 
-    Empty when no control is present, and the caller prints nothing rather than six
-    placeholder rows -- the seven-arm panel does not ask this question and its table should
-    not grow a block saying so.
+    Chained rather than fanned out, because the controls are nested: ``uniform`` removes
+    everything ``shuffle`` removes and the pricing table besides. Two controls compared
+    independently against the same two endpoints give four rows that each partition the
+    same margin, so a reader adding the block up gets twice the margin and no row says what
+    the *second* control bought over the first. Chained, k controls give k+1 rows that
+    partition it once, and the rung between two controls is exactly what the weaker one
+    keeps. With a single control the two are the same block, which is why this generalises
+    rather than replaces.
+
+    The order is the package's, not this file's: :data:`NULL_MODES` is declared in
+    increasing order of how much each mode removes, and a second copy of that ordering here
+    would be a copy that goes stale in the direction of a silently mis-ordered ladder. A
+    mode this package no longer knows sorts last rather than raising -- the sum over the
+    rungs is the margin whatever the order, so a wrong order costs interpretability and not
+    correctness, and it shows up as a negative rung rather than as a wrong total.
+
+    Empty when no control is present, and the caller prints nothing rather than placeholder
+    rows -- the seven-arm panel does not ask this question and its table should not grow a
+    block saying so.
     """
-    family: list[tuple[str, str, str]] = []
+    from itertools import pairwise
+
+    from dynquant.score.null import NULL_MODES
+
+    controls: dict[int, list[tuple[int, str, str]]] = {}
     for row in built:
         spec = row.get("score_null")
         if not spec or not row.get("anchor"):
             continue
-        width, mode = row["anchor"], str(spec.get("mode", "null"))
-        # Both directions are stated left-positive on purpose: the first row asks what the
-        # real arm has *over* the control, the second what the control has over the
-        # baseline. Written the other way round one of the two deltas would be negative and
-        # a reader adding them up would have to work out which.
-        family.append((f"dq_{width}b", row["label"], f"{width}b  signal: dq vs {mode}"))
-        family.append((row["label"], f"gptq_{width}b", f"{width}b  shape: {mode} vs GPTQ"))
+        mode = str(spec.get("mode", "null"))
+        rank = NULL_MODES.index(mode) if mode in NULL_MODES else len(NULL_MODES)
+        controls.setdefault(int(row["anchor"]), []).append((rank, row["label"], mode))
+
+    family: list[tuple[str, str, str]] = []
+    for width in sorted(controls):
+        rungs = sorted(controls[width])
+        # Left-positive throughout, so every row asks what the arm on the left has over the
+        # arm on the right and a reader adding the column down gets the margin. Written the
+        # other way round some rungs would be negative and the sum would still be right,
+        # which is the worst of both.
+        chain = [(f"dq_{width}b", "dq")]
+        chain += [(label, mode) for _, label, mode in rungs]
+        chain.append((f"gptq_{width}b", "GPTQ"))
+        for index, ((left, left_name), (right, right_name)) in enumerate(pairwise(chain)):
+            kind = "shape" if index == len(chain) - 2 else "signal"
+            family.append((left, right, f"{width}b  {kind}: {left_name} vs {right_name}"))
     return tuple(family)
 
 
