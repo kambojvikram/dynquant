@@ -104,6 +104,14 @@ The honest statement is the conditional one: **the signal's share of the margin 
 allocator's structural advantage shrinks**, and any single-campaign figure for it should be
 quoted with its model and dataset attached. The 12 % figure is hereby scoped, not retracted.
 
+Re-checked afterwards, and scoped once more. Both numbers here split `dq` − `rtn` at a
+within-role shuffle, and this campaign ran no arm with the signal removed *and* the allocator
+kept — so the signal term is what a permutation within a role is worth, not what the
+fine-tune-derived quantity is worth. A later campaign that ran both controls found the
+role-granularity rung to be an order of magnitude larger than the within-role one. That does not
+move 56 % or 12 %, which are correct for what they measure; it makes each of them a lower bound,
+short by a rung neither campaign built.
+
 The 4.25-bit row is left undecomposed on purpose. `dq` − `rtn` is +0.74 with every p above
 0.31; the allocator term lands at −0.29, so a naive division prints *"the signal is 139 % of
 the margin"*, which reads as a finding and is an artefact of dividing by noise. `s3_table.py`

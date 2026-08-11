@@ -2613,11 +2613,24 @@ further seeds are now collision-free and would turn a point estimate into a defe
 a control this campaign has named twice and still not built is GPTQ and AWQ handed *DynQuant's*
 bit map, which would price the allocator against the quantizer rather than against itself.
 
-**And one comparison that is not yet a series.** Prior campaigns put the signal's share at 12% on
-Qwen3.5-2B and 56% on Ministral-8B. Those were not measured against this two-control ladder, so
-49.6% here is not a third point beside them until the null each used is re-checked; on the
-evidence of this section, a share measured with a within-role null and a share measured against a
-signal-free allocator are answers to different questions.
+**And one comparison that is not a series, now re-checked.** Prior campaigns put the
+signal's share at 12% on Qwen3.5-2B/CaseHOLD and 56% on Ministral-8B, and both computed it the
+same way: `dq` - `rtn` split into a signal term `dq` - `shuf` and an allocator term `shuf` -
+`rtn`, where `rtn` is a uniform width at the same anchor and `shuf` is the within-role
+permutation. Neither campaign ran a signal-free-allocator arm, so **their signal term is this
+ladder's first rung alone** -- the rung the paragraph above has just shown to be the small half
+by construction. The 49.6% here is the first two rungs. They are not the same quantity, and
+49.6% is not a third point beside them.
+
+Read on the earlier definition this campaign gives **4.0%** -- +0.77 of signal against +18.36 of
+allocator -- and *that* is a third point: 4.0% here, 12% on Qwen, 56% on Ministral. It fits what
+those reports concluded, that the signal's share grows as the allocator's structural advantage
+shrinks; nowhere in this project has that advantage been larger than the +18.36 it is worth on
+this architecture, and nowhere has the one-rung share been smaller. What the second control adds
+is that each point in that series is a **lower bound** on what a fine-tune-derived quantity was
+worth at its anchor, short by whatever a role-granularity rung would have measured -- a quantity
+only a signal-free-allocator arm supplies, and neither campaign ran one. Re-reading either of
+them on this section's definition means running the arm they never ran.
 
 An independent read on the same ordering, from a quantity nothing here computes with: evaluation
 wall clock. The arms took 58, 62, 130, 637 and 740 minutes for `dq_3b`, `dq_3b_shuf`,
