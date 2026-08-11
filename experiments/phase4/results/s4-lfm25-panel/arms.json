@@ -55,16 +55,17 @@
       "kind": "awq",
       "anchor": 3,
       "target_bytes": 3332904576,
-      "nbytes": null,
-      "record": null
+      "nbytes": 3332904576,
+      "record": "/workspace/runs/s4/panel/awq_3b.json"
     },
     {
       "label": "dq_3b",
       "kind": "dq",
       "anchor": 3,
       "target_bytes": 3332904576,
-      "nbytes": null,
-      "record": null
+      "nbytes": 3331526656,
+      "record": "/workspace/runs/s4/panel/dq_3b.json",
+      "map": "/workspace/runs/s4/panel/maps/dq_3b.json"
     }
   ]
 }
