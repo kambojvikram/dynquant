@@ -121,7 +121,7 @@ def plan_arms(
     *,
     nulls: Sequence[str] = (),
     null_anchor: int = 3,
-    null_seed: int = 0,
+    null_seeds: Sequence[int] = (0,),
 ) -> list[Arm]:
     """The panel, in the order it should run.
 
@@ -147,38 +147,54 @@ def plan_arms(
             the margin needing decomposition is: at 4 bits DynQuant is +0.78 over GPTQ and
             a control could not separate from either, while at 3 bits it is +19.13 and the
             question of what earned it is the whole reason for the arm.
+        null_seeds: One control arm per seed, for the modes that read one. Several
+            draws of the same permutation are what turn that rung from a point estimate
+            into one carrying permutation variance, and they have to be planned
+            together: one invocation per seed writes one manifest per seed, each
+            describing only its own arms, and the last one written is the panel.
     """
     arms = [Arm(label="bf16", kind="ceiling", anchor=None, target_bytes=None)]
     for width in ANCHOR_WIDTHS:
         budget = budgets[width]
         for kind in ("gptq", "awq", "dq"):
             arms.append(Arm(label=f"{kind}_{width}b", kind=kind, anchor=width, target_bytes=budget))
-    for mode in nulls:
-        arms.append(
-            Arm(
-                # Ten characters, which is the width of the table's arm column. The mode is
-                # abbreviated and the provenance is not: every artifact this arm writes
-                # carries the allocator string `sensitivity+null:shuffle(seed=0)`, the
-                # manifest carries `score_null`, and the table prints `dq-null` in the
-                # method column. A label is a filename; it is not where a control announces
-                # itself, and a wider one would misalign every row in the panel.
-                #
-                # The seed enters the label only when it distinguishes the arm, which is
-                # the package's question and not this driver's: a stochastic mode at a
-                # second seed is a second draw and needs its own record, and a
-                # deterministic one at a second seed is the same arm and must not get one.
-                # Seed 0 keeps the bare name so the arm already banked under it stays the
-                # arm it was. Without this the second seed writes over the first's record
-                # and map, the manifest lists both, and the table prints two rows that are
-                # one measurement -- which would read as a replication.
-                label=null_label(null_anchor, mode, null_seed),
-                kind="dq",
-                anchor=null_anchor,
-                target_bytes=budgets[null_anchor],
-                null_mode=mode,
-                null_seed=null_seed,
+    # Seeds outside and modes inside, with a deterministic mode planned only on the first
+    # seed. That ordering is what makes a further draw an *append*: asking for seed 1 on
+    # top of a directory that already banked `shuffle,uniform` at seed 0 leaves both of
+    # those arms at the index the manifest already has them at. Modes outside would put
+    # every extra shuffle in front of `dq_3b_unif`, moving a banked arm for a reason that
+    # is not a measurement -- and the manifest order is the order the table prints in.
+    from dynquant.score.null import uses_seed
+
+    for index, seed in enumerate(null_seeds):
+        for mode in nulls:
+            if index and not uses_seed(mode):
+                # A deterministic mode at a second seed is the same arm. Planned twice it
+                # would give two arms one label, one record and one map, and the table
+                # would print a replicate of a measurement that was never repeated.
+                continue
+            arms.append(
+                Arm(
+                    # Ten characters, which is the width of the table's arm column. The
+                    # mode is abbreviated and the provenance is not: every artifact this
+                    # arm writes carries the allocator string
+                    # `sensitivity+null:shuffle(seed=0)`, the manifest carries
+                    # `score_null`, and the table prints `dq-null` in the method column.
+                    # A label is a filename; it is not where a control announces itself,
+                    # and a wider one would misalign every row in the panel.
+                    #
+                    # The seed enters the label only when it distinguishes the arm, which
+                    # is the package's question and not this driver's, and seed 0 keeps
+                    # the bare name so the arm already banked under it stays the arm it
+                    # was.
+                    label=null_label(null_anchor, mode, seed),
+                    kind="dq",
+                    anchor=null_anchor,
+                    target_bytes=budgets[null_anchor],
+                    null_mode=mode,
+                    null_seed=seed,
+                )
             )
-        )
     return arms
 
 
@@ -207,6 +223,73 @@ def check_null_modes(spec: str) -> tuple[str, ...]:
             f"second would overwrite the first's record."
         )
     return wanted
+
+
+def check_null_seeds(spec: str) -> tuple[int, ...]:
+    """Parse ``--null-seed`` into the draws to run, refusing a repeat.
+
+    A list rather than a scalar because permutation variance is a property of the panel and
+    not of a run. Four draws asked for in four invocations write four manifests, each
+    describing the arms of its own invocation and none of them describing the other three,
+    and the last one written is what the table reads: the directory ends up holding four
+    records and the panel naming one. Asking for them together is the only way the panel
+    that answers the question is also the panel that gets banked.
+
+    Repeats are refused for the reason a repeated mode is: two arms would share a label, and
+    the second would overwrite the first's record and map while the manifest listed both --
+    one measurement printed as a replication, which is the exact failure the seeded labels
+    were added to prevent.
+    """
+    try:
+        wanted = tuple(int(part) for part in spec.split(",") if part.strip())
+    except ValueError as bad:
+        raise SystemExit(f"--null-seed takes integers separated by commas, not {spec!r}") from bad
+    if not wanted:
+        raise SystemExit(
+            "--null-seed is empty. It takes at least one seed, and the default is 0 -- "
+            "which is the draw every banked control in this campaign was run at."
+        )
+    if len(set(wanted)) != len(wanted):
+        raise SystemExit(
+            f"--null-seed repeats a seed: {spec!r}. Two draws would share a label and the "
+            f"second would overwrite the first's record."
+        )
+    return wanted
+
+
+def check_no_arm_is_dropped(out: Path, arms: Sequence[Arm]) -> None:
+    """Refuse a run that would write a manifest naming fewer arms than the directory holds.
+
+    ``arms.json`` is not a log of the directory; it is the panel, and ``panel_table`` reads
+    its rows off it rather than off a listing. So an invocation planning a different set of
+    controls rewrites it, and every arm it does not plan stops being part of the panel while
+    its record sits beside the new manifest saying nothing. That is how a nine-arm panel
+    became an eight-arm one naming an arm that had just failed: three invocations, one seed
+    each, and the last one wrote the manifest.
+
+    Charged only against arms whose record still exists, so deleting a record is still how
+    an arm is retired -- one command, and this then agrees the panel is smaller. It runs
+    whether or not the run is resuming, because a run that is not resuming rewrites the
+    manifest too and drops exactly the same arms.
+    """
+    manifest = out / "arms.json"
+    if not manifest.is_file():
+        return
+    planned = {arm.label for arm in arms}
+    previous = json.loads(manifest.read_text(encoding="utf-8"))
+    dropped = [
+        entry["label"]
+        for entry in previous.get("arms", [])
+        if entry["label"] not in planned and (out / (entry["label"] + ".json")).is_file()
+    ]
+    if dropped:
+        raise SystemExit(
+            f"{manifest} names {dropped}, whose records are in {out}, and this run does not "
+            f"plan them. Writing the manifest would leave the records on disk and take the "
+            f"arms out of the panel, which is a smaller panel and not a measurement. Ask "
+            f"for them -- --score-null and --null-seed both take lists -- or delete their "
+            f"records to retire them."
+        )
 
 
 def check_matched(arm: Arm) -> None:
@@ -468,7 +551,7 @@ def do_plan(args: argparse.Namespace) -> int:
         budgets,
         nulls=check_null_modes(args.score_null),
         null_anchor=args.null_anchor,
-        null_seed=args.null_seed,
+        null_seeds=check_null_seeds(args.null_seed),
     )
     print(
         json.dumps(
@@ -776,8 +859,9 @@ def do_run(args: argparse.Namespace) -> int:
         budgets,
         nulls=check_null_modes(args.score_null),
         null_anchor=args.null_anchor,
-        null_seed=args.null_seed,
+        null_seeds=check_null_seeds(args.null_seed),
     )
+    check_no_arm_is_dropped(out, arms)
     rescore = rescored_labels(args.rescore, arms)
     # `--rescore` implies the resume checks and the resume skipping. Naming three arms to
     # score again and having the other four score again too is not a thing anyone means,
@@ -879,7 +963,17 @@ def add_null_flags(parser: argparse.ArgumentParser) -> None:
         choices=ANCHOR_WIDTHS,
         help="which budget the controls run at (default: 3, where the margin is)",
     )
-    parser.add_argument("--null-seed", type=int, default=0, help="seed for `shuffle`")
+    parser.add_argument(
+        "--null-seed",
+        default="0",
+        metavar="SEED[,SEED...]",
+        help=(
+            "seeds for the modes that read one, one control arm per seed (default: 0). "
+            "`uniform` ignores them and is planned once however many are given. More than "
+            "one draw is what turns the shuffle rung from a point estimate into one "
+            "carrying permutation variance"
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

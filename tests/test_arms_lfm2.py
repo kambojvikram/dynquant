@@ -1260,7 +1260,9 @@ def test_the_manifest_says_which_arms_are_controls_and_which_are_not(
     # names would fail on a missing map rather than on anything it is about.
     controls = [
         arm.label
-        for arm in arms.plan_arms(ANCHORS, nulls=("shuffle", "uniform"), null_seed=7)[len(PANEL) :]
+        for arm in arms.plan_arms(ANCHORS, nulls=("shuffle", "uniform"), null_seeds=(7,))[
+            len(PANEL) :
+        ]
     ]
     for label in controls:
         (out / "maps" / f"{label}.json").write_text(
@@ -1295,7 +1297,7 @@ def test_the_control_differs_from_the_arm_it_controls_in_the_allocation_only(
 
     Turns red when: a flag that is not the null differs between the two, in either command.
     """
-    planned = arms.plan_arms(ANCHORS, nulls=("shuffle",), null_anchor=3, null_seed=3)
+    planned = arms.plan_arms(ANCHORS, nulls=("shuffle",), null_anchor=3, null_seeds=(3,))
     real = next(arm for arm in planned if arm.label == "dq_3b")
     control = planned[-1]
     args = _args(arms, [*RUN, "--moments", "/runs/s4/moments.json"])
@@ -1449,7 +1451,96 @@ def test_a_second_seed_is_a_second_arm_and_a_second_uniform_is_not(arms: Any) ->
     assert arms.null_label(3, "uniform", 0) == "dq_3b_unif"
     assert arms.null_label(3, "uniform", 7) == "dq_3b_unif"
 
-    planned = arms.plan_arms(ANCHORS, nulls=("shuffle", "uniform"), null_seed=4)
+    planned = arms.plan_arms(ANCHORS, nulls=("shuffle", "uniform"), null_seeds=(4,))
     labels = [arm.label for arm in planned[len(PANEL) :]]
     assert labels == ["dq_3b_shufs4", "dq_3b_unif"]
     assert len({arm.label for arm in planned}) == len(planned)
+
+
+def test_several_seeds_are_planned_as_several_draws_and_one_uniform(arms: Any) -> None:
+    """A second draw is a second arm; a second seed of a mode that ignores seeds is not.
+
+    Permutation variance needs several draws of `shuffle`, and `uniform` does not move
+    between them -- it consults no table there is a seed for. Planning it once per seed
+    would give three arms one label, one record and one map, and the table would print a
+    replication of a measurement that was taken once.
+
+    The seeds are the outer loop, so a further draw appends. That matters because the two
+    controls at seed 0 are banked: modes outside would put every extra shuffle in front of
+    `dq_3b_unif` and move a banked arm's manifest index for a reason that is not a
+    measurement, and the manifest order is the order the table prints its rows in.
+
+    Turns red when: a deterministic mode gets one arm per seed, or the seeds stop appending.
+    """
+    planned = arms.plan_arms(ANCHORS, nulls=("shuffle", "uniform"), null_seeds=(0, 1, 2))
+    controls = planned[len(PANEL) :]
+
+    assert [arm.label for arm in controls] == [
+        "dq_3b_shuf",
+        "dq_3b_unif",
+        "dq_3b_shufs1",
+        "dq_3b_shufs2",
+    ]
+    assert [arm.null_seed for arm in controls] == [0, 0, 1, 2]
+
+    banked = arms.plan_arms(ANCHORS, nulls=("shuffle", "uniform"))
+    assert [arm.label for arm in planned][: len(banked)] == [arm.label for arm in banked]
+
+
+def test_a_repeated_seed_is_refused_before_two_draws_share_a_record(arms: Any) -> None:
+    """Two arms with one label is the silent version of running one arm, again.
+
+    The same failure a repeated *mode* is refused for, one level down: a record and a map
+    are named by the label, so the second draw at a seed already asked for overwrites the
+    first's while the manifest lists both -- and a rung whose whole purpose is to carry
+    permutation variance would be reporting one permutation twice.
+
+    Turns red when: duplicates are accepted, or silently collapsed to one.
+    """
+    assert arms.check_null_seeds("0") == (0,)
+    assert arms.check_null_seeds("0,1,2") == (0, 1, 2)
+
+    with pytest.raises(SystemExit, match="repeats a seed"):
+        arms.check_null_seeds("1,1")
+    with pytest.raises(SystemExit, match="at least one seed"):
+        arms.check_null_seeds("")
+    with pytest.raises(SystemExit, match="integers separated by commas"):
+        arms.check_null_seeds("first")
+
+
+def test_a_run_refuses_to_take_an_arm_out_of_the_panel_behind_the_manifest(
+    arms: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`arms.json` is the panel, so planning fewer arms quietly makes the panel smaller.
+
+    `panel_table` reads its rows off the manifest and not off a directory listing, so an
+    invocation planning a different set of controls rewrites the panel: the records of the
+    arms it did not plan stay on disk and stop being named by anything. Not hypothetical --
+    a nine-arm panel became an eight-arm one naming an arm that had just failed, because
+    three seeds were asked for in three invocations and the last one wrote the manifest.
+
+    Charged against the record rather than against the label, so retiring an arm is still
+    one command: delete its record and the guard agrees the panel is smaller.
+
+    Turns red when: the manifest can shrink without the run saying so.
+    """
+    banked = (*PANEL, "dq_3b_shuf", "dq_3b_unif")
+    out, spent = _resumable(arms, tmp_path, monkeypatch, {one: _record() for one in banked})
+    for label in ("dq_3b_shuf", "dq_3b_unif"):
+        (out / "maps" / f"{label}.json").write_text(
+            json.dumps({"maps": {str(ANCHORS[3]): {"nbytes": ANCHORS[3], "bits": {}}}}),
+            encoding="utf-8",
+        )
+
+    nine = [*RUN[:-1], str(out), "--resume", "--score-null", "shuffle,uniform"]
+    assert arms.do_run(_args(arms, nine)) == 0
+    manifest = json.loads((out / "arms.json").read_text(encoding="utf-8"))
+    assert [arm["label"] for arm in manifest["arms"]] == list(banked)
+
+    eight = [*RUN[:-1], str(out), "--resume", "--score-null", "shuffle"]
+    with pytest.raises(SystemExit, match="dq_3b_unif"):
+        arms.do_run(_args(arms, eight))
+    assert spent == []
+
+    (out / "dq_3b_unif.json").unlink()
+    assert arms.do_run(_args(arms, eight)) == 0
