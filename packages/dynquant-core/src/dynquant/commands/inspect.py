@@ -326,6 +326,8 @@ def run(args: argparse.Namespace) -> int:
         overrides=_shared.parse_overrides(args.role),
         soft_floors=not args.hard_floors,
         verbose=not quiet,
+        score_null=args.score_null,
+        null_seed=args.null_seed,
     )
     graph = inputs.graph
     scores = dict(inputs.scores)
@@ -336,6 +338,10 @@ def run(args: argparse.Namespace) -> int:
         "model": args.model,
         "stats": args.stats,
         "allocator": inputs.allocator,
+        # Present only on a control arm, so a reader keying into this dict cannot
+        # mistake a real allocation for one whose signal was removed -- and cannot
+        # read the absence of the key as "the null was clean".
+        **({"score_null": inputs.null_report.as_dict()} if inputs.null_report else {}),
         "group_size": args.group_size,
         "model_type": graph.model_type,
         "modules": {
@@ -429,6 +435,7 @@ def run(args: argparse.Namespace) -> int:
             stats=args.stats,
             allocator=inputs.allocator,
             group_size=args.group_size,
+            extra=({"score_null": inputs.null_report.as_dict()} if inputs.null_report else None),
         )
         payload["saved_map"] = str(written)
         if not quiet:

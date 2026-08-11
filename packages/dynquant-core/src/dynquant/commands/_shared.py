@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from dynquant.allocate.knapsack import BitMap
     from dynquant.allocate.policy import AllocationPolicy
     from dynquant.graph.classify import ModelGraph
+    from dynquant.score.null import NullReport
     from dynquant.score.sensitivity import SensitivityTable
 
 __all__ = [
@@ -189,6 +190,7 @@ class AllocationInputs:
         sensitivity: SensitivityTable | None = None,
         score_report: Any = None,
         group_size: int = DEFAULT_GROUP_SIZE,
+        null_report: NullReport | None = None,
     ) -> None:
         self.graph = graph
         self.scores = scores
@@ -196,6 +198,7 @@ class AllocationInputs:
         self.sensitivity = sensitivity
         self.score_report = score_report
         self.group_size = group_size
+        self.null_report = null_report
 
     @property
     def allocator(self) -> str:
@@ -206,8 +209,20 @@ class AllocationInputs:
         the rank-product score and a map from measured sensitivity differ on
         roughly two-thirds of modules at 3.25 bits, and nothing in the map itself
         says which one produced it.
+
+        A null arm appends its label here rather than replacing the quantity,
+        because both halves are load-bearing: which pricing ran, and whether the
+        thing it priced still corresponded to a module. An arm allocated from
+        shuffled scores that reports ``sensitivity`` is a control that will be
+        read as a result the first time someone opens the map without the run
+        log beside it.
         """
-        return "sensitivity" if self.sensitivity is not None else "rank_product"
+        base = "sensitivity" if self.sensitivity is not None else "rank_product"
+        if self.null_report is None:
+            return base
+        if self.null_report.mode == "uniform":
+            return self.null_report.label
+        return f"{base}+{self.null_report.label}"
 
 
 def build_inputs(
@@ -220,8 +235,15 @@ def build_inputs(
     overrides: Mapping[str, str] | None = None,
     soft_floors: bool = True,
     verbose: bool = True,
+    score_null: str | None = None,
+    null_seed: int = 0,
 ) -> AllocationInputs:
-    """Classify, score, and price sensitivity if the moments are there."""
+    """Classify, score, price sensitivity if the moments are there, and null on request.
+
+    ``score_null`` is applied last, after everything the real arm does, so the
+    control differs from it in exactly one step -- see :mod:`dynquant.score.null`
+    for why that ordering is the whole point of the arm.
+    """
     from dynquant.allocate.policy import AllocationPolicy
     from dynquant.graph.classify import classify_model
     from dynquant.score.importance import score_modules
@@ -249,6 +271,16 @@ def build_inputs(
             model, graph, moments, group_size=group_size, symmetric=symmetric, verbose=verbose
         )
 
+    null_report = None
+    if score_null is not None:
+        from dynquant.score.null import apply_null
+
+        scores, table, null_report = apply_null(
+            graph, scores, table, mode=score_null, seed=null_seed
+        )
+        if verbose:
+            print(null_report.summary(), flush=True)
+
     policy = AllocationPolicy(group_size=group_size, symmetric=symmetric, soft_floors=soft_floors)
     return AllocationInputs(
         graph,
@@ -257,6 +289,7 @@ def build_inputs(
         sensitivity=table,
         score_report=report,
         group_size=group_size,
+        null_report=null_report,
     )
 
 

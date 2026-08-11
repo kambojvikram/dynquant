@@ -32,6 +32,11 @@ from ._version import __version__
 from .commands.evaluate import TASKS as EVAL_TASKS
 from .constants import BIT_OPTIONS, COMPUTE_DTYPES, DEFAULT_GROUP_SIZE
 
+# One import of the null modes rather than a second copy of the tuple here: a
+# choices list that drifts from the dispatch it guards rejects a mode the code
+# supports, or accepts one it does not. The module is stdlib-only at import time.
+from .score.null import NULL_MODES
+
 if TYPE_CHECKING:
     # `_SubParsersAction` is generic to type checkers but a plain class at runtime,
     # so subscripting it outside an annotation raises TypeError. The alias lives
@@ -133,6 +138,25 @@ def _add_allocation(parser: argparse.ArgumentParser) -> None:
         action="append",
         metavar="NAME=ROLE",
         help="override the classified role of one module; repeatable",
+    )
+    parser.add_argument(
+        "--score-null",
+        choices=NULL_MODES,
+        metavar="MODE",
+        help=(
+            "allocate a control arm with the fine-tuning signal removed: "
+            "`shuffle` permutes the driving quantity within role, `uniform` "
+            "drops it entirely. Everything else -- roles, floors, budget, "
+            "pricing code -- is unchanged, so the difference from the real arm "
+            "at the same byte anchor is the signal's contribution. The mode is "
+            "recorded in the map's `allocator` field"
+        ),
+    )
+    parser.add_argument(
+        "--null-seed",
+        type=int,
+        default=0,
+        help="seed for `--score-null shuffle` (default: 0)",
     )
 
 

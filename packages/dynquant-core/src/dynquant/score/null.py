@@ -1,0 +1,270 @@
+"""The arm that says how much of a margin belongs to the signal.
+
+A panel row reading "DynQuant 79.89% against a uniform 3-bit recipe's 60.76% at
+matched bytes" is a fact about two checkpoints and a claim about three things at
+once: that role-aware floors matter, that spending the saved bytes by measured
+damage matters, and that the *fine-tuning signal* -- plasticity times saliency,
+and the channel moments the same hook collects -- picked the right modules. The
+first two need no signal at all. A reader is entitled to ask which of the three
+the nineteen points came from, and a bit map cannot answer it: every allocation
+this package emits has a signal in it by construction.
+
+So the answer has to be another arm. Keep the graph, the roles, the floors, the
+budget, the byte accounting, the knapsack and the quantizer exactly as they were,
+remove *only* the correspondence between a module and what the fine-tune said
+about it, and re-run at the same anchor. Whatever the real arm has left over that
+arm is the signal's share; whatever both have over a uniform recipe is the
+allocator's structure.
+
+Two nulls, because they bracket the question from opposite sides
+----------------------------------------------------------------
+
+``shuffle`` permutes the driving quantity **within role**, under a seed. Every
+score and every measured ``dL`` row still exists, still has its magnitude, and is
+still priced by the same code -- it has simply moved to a different module of the
+same role. The population the allocator sees is identical in distribution and
+carries no information about which module it describes. This is the strict null:
+it changes one thing.
+
+Within role and not globally, for a reason that decides whether the arm is fair.
+A global permutation hands an embedding's number to a router, and the roles on
+this architecture differ in shape by three orders of magnitude, so the resulting
+map would be wrecked by a units mismatch that has nothing to do with the signal --
+and the arm would read as a large signal contribution when it is really measuring
+that scores are not transferable across roles. Within a role the members are
+near-identical in shape (twenty-two copies of one projection, one per layer), so
+the swap is between comparable numbers and the only thing destroyed is which
+layer.
+
+``uniform`` gives every module the same score and consults no sensitivity table
+at all. There is no such thing as measured sensitivity without the fine-tune --
+``dL`` is built from ``E[x^2]`` and ``E[delta^2]`` -- so a genuinely signal-free
+arm cannot have one, and dropping it is not a second change smuggled in beside
+the first. What is left is the allocator running on role floors, parameter counts
+and the universal error curve: precisely what a method with no training-time hook
+could compute. It is the weaker null and the more useful floor, because it is the
+honest alternative a reader will propose.
+
+Neither is a *worse* allocator on purpose. ``uniform`` in particular is a real
+strategy that a real person would ship, and if it lands within noise of the full
+arm then that is the finding, stated in the direction the measurement points.
+
+What this refuses to do quietly
+-------------------------------
+
+A null arm that is not labelled as one is worse than no null arm: it is a bit map
+that looks like every other bit map, with provenance saying ``sensitivity``, and
+downstream it becomes a headline. So :class:`NullReport` carries a label that
+travels into the ``allocator`` field of every written map, and the report names
+the roles it could not move -- a role with one member permutes to itself, and
+saying "shuffled" over an arm where forty of a hundred modules kept their own
+number would overstate what was removed.
+"""
+
+from __future__ import annotations
+
+import random
+from collections import defaultdict
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from dynquant.graph.classify import ModelGraph
+    from dynquant.score.sensitivity import SensitivityTable
+
+__all__ = ["NULL_MODES", "NullReport", "apply_null"]
+
+#: The nulls, in increasing order of how much they remove.
+NULL_MODES = ("shuffle", "uniform")
+
+
+@dataclass(frozen=True, slots=True)
+class NullReport:
+    """What the null actually did, in the terms a reader would challenge it on."""
+
+    mode: str
+    seed: int | None
+    modules: int
+    """Quantizable modules the null was applied over."""
+
+    moved: int
+    """Modules whose driving quantity came from a different module.
+
+    The number that says how strong the null is. A permutation with many fixed
+    points has left the signal partly in place, and an arm described as
+    "shuffled" would be overclaiming by exactly that much."""
+
+    fixed: int
+    """Modules a same-role permutation happened to leave alone."""
+
+    singleton_roles: tuple[str, ...]
+    """Roles with one member, which permute to themselves by construction.
+
+    Named rather than counted, because on a tied embedding this is not a rounding
+    detail: it means the arm still holds that module at whatever the signal chose
+    for it, and the role is usually one of the expensive ones."""
+
+    estimability_changed: int
+    """Modules that gained or lost a measured ``dL`` row in the swap.
+
+    Nonzero means a role mixes measured and proxied modules, so the permutation
+    moved a module across the pricing boundary as well as within the role. That
+    is not wrong -- the boundary is a property of the moments, which the null is
+    entitled to scramble -- but it is a second thing changing and it is reported
+    rather than absorbed."""
+
+    @property
+    def label(self) -> str:
+        """The suffix that goes in every artifact's ``allocator`` field."""
+        if self.mode == "uniform":
+            return "null:uniform"
+        return f"null:{self.mode}(seed={self.seed})"
+
+    def summary(self) -> str:
+        if self.mode == "uniform":
+            return (
+                f"null arm: every one of {self.modules} modules scores 1.0 and no "
+                "sensitivity table is consulted. Widths come from role floors, "
+                "parameter counts and the universal error curve -- no fine-tuning "
+                "signal reaches the allocator."
+            )
+        lines = [
+            f"null arm: driving quantity permuted within role, seed {self.seed}. "
+            f"{self.moved}/{self.modules} modules took another module's number, "
+            f"{self.fixed} kept their own."
+        ]
+        if self.singleton_roles:
+            lines.append(
+                f"  {len(self.singleton_roles)} role(s) have a single member and "
+                f"could not be permuted: {', '.join(self.singleton_roles)}"
+            )
+        if self.estimability_changed:
+            lines.append(
+                f"  {self.estimability_changed} module(s) crossed the "
+                "measured/proxied boundary in the swap"
+            )
+        return "\n".join(lines)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "mode": self.mode,
+            "seed": self.seed,
+            "label": self.label,
+            "modules": self.modules,
+            "moved": self.moved,
+            "fixed": self.fixed,
+            "singleton_roles": list(self.singleton_roles),
+            "estimability_changed": self.estimability_changed,
+        }
+
+
+def apply_null(
+    graph: ModelGraph,
+    scores: Mapping[str, float],
+    sensitivity: SensitivityTable | None,
+    *,
+    mode: str,
+    seed: int = 0,
+) -> tuple[dict[str, float], SensitivityTable | None, NullReport]:
+    """Strip the fine-tune's information out of the allocator's inputs.
+
+    Returns the same two objects the allocator takes, so the caller substitutes
+    them and changes nothing else. The graph is read but never modified: roles,
+    floors and shapes are the structure under test and must survive the null
+    intact.
+
+    Args:
+        mode: ``"shuffle"`` to permute within role, ``"uniform"`` to remove the
+            ordering entirely. See the module docstring for which question each
+            one answers.
+        seed: Fixed so the arm is reproducible and so a second seed is a
+            deliberate act. Ignored by ``"uniform"``, which is deterministic.
+    """
+    from dynquant.errors import DynQuantError
+
+    if mode not in NULL_MODES:
+        raise DynQuantError(
+            f"unknown null mode {mode!r}; expected one of {', '.join(NULL_MODES)}. "
+            "`shuffle` permutes the driving quantity within role and `uniform` "
+            "removes it, and they answer different questions -- see "
+            "dynquant.score.null."
+        )
+
+    names = [info.name for info in graph.quantizable()]
+    if mode == "uniform":
+        return (
+            dict.fromkeys(names, 1.0),
+            None,
+            NullReport(
+                mode=mode,
+                seed=None,
+                modules=len(names),
+                moved=len(names),
+                fixed=0,
+                singleton_roles=(),
+                estimability_changed=0,
+            ),
+        )
+
+    by_role: dict[str, list[str]] = defaultdict(list)
+    for info in graph.quantizable():
+        # `.value` rather than the enum, so the report reads in the same vocabulary
+        # as the map's own `violations` block and a reader can match them up.
+        by_role[info.role.value].append(info.name)
+
+    rng = random.Random(seed)
+    donor: dict[str, str] = {}
+    singletons: list[str] = []
+    for role, members in sorted(by_role.items()):
+        if len(members) == 1:
+            singletons.append(role)
+        # Sorted before shuffling: `graph.quantizable()` order is the module tree's,
+        # which is stable today, but seeding a permutation off an order this file
+        # does not own makes the arm reproducible only by accident.
+        ordered = sorted(members)
+        shuffled = list(ordered)
+        rng.shuffle(shuffled)
+        donor.update(zip(ordered, shuffled, strict=True))
+
+    null_scores = {name: float(scores.get(donor[name], 0.0)) for name in names}
+
+    null_table: SensitivityTable | None = None
+    changed = 0
+    if sensitivity is not None:
+        from dataclasses import replace
+
+        values = {
+            name: dict(sensitivity.values[donor[name]])
+            for name in names
+            if donor[name] in sensitivity.values
+        }
+        changed = sum(
+            1
+            for name in names
+            if (name in sensitivity.values) != (donor[name] in sensitivity.values)
+        )
+        # `unestimable` is recomputed rather than permuted: it is the complement of
+        # `values` by definition, and a stale copy would tell the caller to fall
+        # back to a score for a module that now has a row.
+        null_table = replace(
+            sensitivity,
+            values=values,
+            unestimable=tuple(name for name in names if name not in values),
+        )
+
+    fixed = sum(1 for name in names if donor[name] == name)
+    return (
+        null_scores,
+        null_table,
+        NullReport(
+            mode=mode,
+            seed=seed,
+            modules=len(names),
+            moved=len(names) - fixed,
+            fixed=fixed,
+            singleton_roles=tuple(sorted(singletons)),
+            estimability_changed=changed,
+        ),
+    )

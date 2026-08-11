@@ -333,6 +333,8 @@ def _resolve_widths(model: Any, args: argparse.Namespace) -> _Widths:
         overrides=_shared.parse_overrides(args.role),
         soft_floors=not args.hard_floors,
         verbose=not args.quiet,
+        score_null=args.score_null,
+        null_seed=args.null_seed,
     )
     bit_map = _shared.allocate(
         graph_inputs,

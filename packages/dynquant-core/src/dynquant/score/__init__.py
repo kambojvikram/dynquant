@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .importance import ScoreConfig, ScoredModule, score_modules
+    from .null import NULL_MODES, NullReport, apply_null
     from .ranks import percentile_ranks
     from .sensitivity import (
         SensitivityTable,
@@ -38,9 +39,12 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
+    "NULL_MODES",
+    "NullReport",
     "ScoreConfig",
     "ScoredModule",
     "SensitivityTable",
+    "apply_null",
     "estimate_sensitivity",
     "module_weights",
     "percentile_ranks",
@@ -49,6 +53,9 @@ __all__ = [
 ]
 
 _LAZY = {
+    "NULL_MODES": "null",
+    "NullReport": "null",
+    "apply_null": "null",
     "ScoreConfig": "importance",
     "ScoredModule": "importance",
     "score_modules": "importance",
