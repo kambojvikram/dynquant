@@ -2613,24 +2613,44 @@ further seeds are now collision-free and would turn a point estimate into a defe
 a control this campaign has named twice and still not built is GPTQ and AWQ handed *DynQuant's*
 bit map, which would price the allocator against the quantizer rather than against itself.
 
-**And one comparison that is not a series, now re-checked.** Prior campaigns put the
-signal's share at 12% on Qwen3.5-2B/CaseHOLD and 56% on Ministral-8B, and both computed it the
-same way: `dq` - `rtn` split into a signal term `dq` - `shuf` and an allocator term `shuf` -
-`rtn`, where `rtn` is a uniform width at the same anchor and `shuf` is the within-role
-permutation. Neither campaign ran a signal-free-allocator arm, so **their signal term is this
-ladder's first rung alone** -- the rung the paragraph above has just shown to be the small half
-by construction. The 49.6% here is the first two rungs. They are not the same quantity, and
-49.6% is not a third point beside them.
+**And one comparison that is not a series -- re-checked, and the re-check went the other way.**
+Prior campaigns put the signal's share at 12% on Qwen3.5-2B/CaseHOLD and 56% on Ministral-8B, and
+the reports carrying those numbers said the two were computed the same way. They were not. Qwen's
+control is [`stage4_allocate.py`](../../experiments/four_point/stage4_allocate.py)'s
+`uniform = dict.fromkeys(scores, 0.5)` -- every module handed the same constant -- and that
+campaign predates the moments path, so its allocator had no sensitivity table to consult either.
+That is this section's `uniform`, exactly. Ministral's is
+[`s3_maps.py`](../../experiments/phase3/s3_allocation/ministral-8b/s3_maps.py)'s `shuf`, with
+`ARMS = ("rtn", "rank", "shuf", "dq")` split at the within-role permutation. That is this
+section's `shuffle`. **The two earlier figures sit at opposite ends of this ladder, one each**, and
+this campaign is the first to have both.
 
-Read on the earlier definition this campaign gives **4.0%** -- +0.77 of signal against +18.36 of
-allocator -- and *that* is a third point: 4.0% here, 12% on Qwen, 56% on Ministral. It fits what
-those reports concluded, that the signal's share grows as the allocator's structural advantage
-shrinks; nowhere in this project has that advantage been larger than the +18.36 it is worth on
-this architecture, and nowhere has the one-rung share been smaller. What the second control adds
-is that each point in that series is a **lower bound** on what a fine-tune-derived quantity was
-worth at its anchor, short by whatever a role-granularity rung would have measured -- a quantity
-only a signal-free-allocator arm supplies, and neither campaign ran one. Re-reading either of
-them on this section's definition means running the arm they never ran.
+So there are two series of two, not one series of three:
+
+| signal term | earlier point | here |
+|---|---|---|
+| both rungs, `dq` - `uniform` -- placement, ranking and pricing together | **12%** on Qwen, over an allocator worth +22.62 | **49.6%**, over +9.66 |
+| one rung, `dq` - `shuffle` -- placement within role alone | **56%** on Ministral, over +1.91 | **4.0%**, over +18.36 |
+
+Both rows run in the direction those reports predicted, the share growing as the allocator's
+structural advantage shrinks. Two points are monotone in some direction whatever they are, so that
+is consistency rather than evidence, and it is worth noting that the two rows disagree about which
+campaign had the large allocator -- Qwen's is the biggest number in the top row and Ministral's the
+smallest in the bottom, with this campaign at the other extreme of both.
+
+**The denominators do not match, and the mismatch runs against this campaign.** Qwen and Ministral
+both divide by `dq` - `rtn`, uniform-width rounding at the anchor. This panel has no RTN arm: its
+ladder bottoms at `gptq_3b`, which is uniform width *plus* a Hessian sweep. Read the gap the same
+way both times: the signal-free allocator stands 9.66 points above this panel's floor and stood
+22.62 above Qwen's. Whether that is because the allocator is worth less on this architecture or
+because the floor is a stronger method cannot be told apart from these arms, and a smaller
+denominator inflates both shares in the right-hand column either way. What settles it is an RTN
+3-bit arm at 3 332 904 576 B, which has not been run.
+
+And neither earlier campaign can supply the other end of its own ladder. Qwen never permuted;
+Ministral never flattened. So 12% cannot be split into its two rungs and 56% cannot be extended
+past its one, and each remains correct for the arm it ran and unreadable on the other's
+definition without running the arm it did not.
 
 An independent read on the same ordering, from a quantity nothing here computes with: evaluation
 wall clock. The arms took 58, 62, 130, 637 and 740 minutes for `dq_3b`, `dq_3b_shuf`,

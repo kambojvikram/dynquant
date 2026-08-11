@@ -82,7 +82,7 @@ the role floors stop being affordable** — not because it stops trying above th
 because above it the reallocation no longer buys anything. Every map number here comes from
 [`s3_maps.py`](../../experiments/phase3/s3_allocation/ministral-8b/s3_maps.py).
 
-## The signal is 56 % of the margin here — and 12 % on the last model
+## The signal is 56 % of the margin here — and 12 % on the last model, from a different control
 
 The 3.25-bit margin over uniform decomposes cleanly:
 
@@ -91,9 +91,10 @@ The 3.25-bit margin over uniform decomposes cleanly:
 4.25 bits:  dq - rtn = +0.74  =  allocator -0.29  +  signal +1.03   (not decomposable)
 ```
 
-The same decomposition at the same anchor and the same **module** granularity on
-Qwen3.5-2B/CaseHOLD gave 22.62 allocator against 3.16 signal — the signal was **12 %**. Here it
-is more than half, and the allocator term is the small one.
+At the same anchor and the same **module** granularity, Qwen3.5-2B/CaseHOLD gave 22.62 allocator
+against 3.16 signal — the signal was **12 %**. Here it is more than half, and the allocator term
+is the small one. *This paragraph said "the same decomposition" and was corrected later; the two
+controls are different arms. See the re-check below.*
 
 Both numbers are real; what they show is that the split is a property of the *campaign*, not of
 the method. On Qwen the uniform baseline was catastrophically bad and almost any sane
@@ -104,13 +105,28 @@ The honest statement is the conditional one: **the signal's share of the margin 
 allocator's structural advantage shrinks**, and any single-campaign figure for it should be
 quoted with its model and dataset attached. The 12 % figure is hereby scoped, not retracted.
 
-Re-checked afterwards, and scoped once more. Both numbers here split `dq` − `rtn` at a
-within-role shuffle, and this campaign ran no arm with the signal removed *and* the allocator
-kept — so the signal term is what a permutation within a role is worth, not what the
-fine-tune-derived quantity is worth. A later campaign that ran both controls found the
-role-granularity rung to be an order of magnitude larger than the within-role one. That does not
-move 56 % or 12 %, which are correct for what they measure; it makes each of them a lower bound,
-short by a rung neither campaign built.
+**Re-checked afterwards, and the comparison above does not hold as written.** The two shares are
+not two readings of one decomposition; they are two different controls, and the difference is
+larger than the difference between the campaigns. This campaign's `shuf` is the within-role
+permutation — every score still present, still priced, moved to another module of the same role.
+Qwen's control is [`stage4_allocate.py`](../../experiments/four_point/stage4_allocate.py)'s
+`uniform = dict.fromkeys(scores, 0.5)`: every score replaced by one constant, over an allocator
+that predates the moments path and so consults no sensitivity table at all. Permuting a signal and
+deleting it are not the same ablation, and nothing in either report noticed.
+
+A later campaign on LFM2.5-8B-A1B ran **both** controls at one anchor and chained them, which is
+what makes the two readable against each other. On that ladder the within-role rung is +0.77 of a
++19.13 margin and the constant-score rung is a further +8.71 — an order of magnitude apart. So
+**56 % is the first rung alone and 12 % is both**, and the campaigns pair off as two series of
+two: 56 % here against 4.0 % there, over allocator terms of +1.91 and +18.36; 12 % on Qwen
+against 49.6 % there, over +22.62 and +9.66. Both pairs move in the direction this section
+argues — the share grows as the allocator's structural advantage shrinks — which is the part that
+survives, and two points are monotone whatever they are, which is the part that should not be
+oversold.
+
+What that leaves for the number in this section: 56 % is correct for what it measures and is a
+**lower bound** on what the fine-tune-derived quantity was worth here, short by whatever a
+constant-score arm would have added. Nothing converts it without running that arm.
 
 The 4.25-bit row is left undecomposed on purpose. `dq` − `rtn` is +0.74 with every p above
 0.31; the allocator term lands at −0.29, so a naive division prints *"the signal is 139 % of

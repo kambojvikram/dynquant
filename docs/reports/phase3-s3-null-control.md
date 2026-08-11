@@ -107,10 +107,15 @@ What this does not yet say is what the gap is *worth*. 55 modules moving is a st
 about the map, not about accuracy; the quantize-and-eval arms are what turn it into points,
 and they need the GPU that Ministral currently holds.
 
-This is the same shape as the phase-2 finding that the 25.78-point margin at 3.25 b splits
-22.62 allocator / 3.16 signal. That decomposition was only trustworthy because its control
-permuted the thing the allocator was reading *at the time*. Adding the Gauss-Newton estimator
-moved what the allocator reads without moving the control.
+This is the same failure mode as -- but not the same control as -- the phase-2 finding that the
+25.78-point margin at 3.25 b splits 22.62 allocator / 3.16 signal. Phase 2 did not permute
+anything: `stage4_allocate.py` replaces every score with the constant 0.5, over an allocator that
+predates the moments path and therefore reads a score and nothing else. That is why it was
+trustworthy -- its control emptied the allocator's only input, not because it permuted -- and it
+is why it measures a different quantity from `shuf` here, which is worth stating wherever the two
+percentages are compared. What the two share is the dependency: a control is only an ablation of
+what the allocator reads *at the time*, and adding the Gauss-Newton estimator moved what the
+allocator reads without moving the control.
 
 ## The fix
 
