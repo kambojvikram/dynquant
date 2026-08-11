@@ -198,6 +198,7 @@ def _write_panel(
     breach_at_3b: bool = True,
     omit: tuple[str, ...] = (),
     ceiling_correct: int = 320,
+    nulls: tuple[str, ...] = (),
 ) -> Path:
     """A full seven-arm panel on disk, in the shape ``arms_lfm2 run`` writes.
 
@@ -221,6 +222,21 @@ def _write_panel(
         "awq_3b": three[2],
     }
 
+    # A control's hits sit between the arm it controls and the baseline it is measured
+    # against, which is the only shape that makes both of its rows non-degenerate: a
+    # control identical to `dq_3b` gives a zero signal row and a control identical to
+    # `gptq_3b` gives a zero shape row, and either one would let a printer that dropped a
+    # row still pass. Deterministic and index-based rather than sampled, because a fixture
+    # that reseeds is a fixture whose failures do not reproduce.
+    for index, mode in enumerate(nulls):
+        share = 3 + index
+        hits[f"dq_3b_{mode[:4]}"] = [
+            base if (mine and not base and position % share) else mine
+            for position, (mine, base) in enumerate(
+                zip(hits["dq_3b"], hits["gptq_3b"], strict=True)
+            )
+        ]
+
     arms: list[dict[str, Any]] = [
         {"label": "bf16", "kind": "ceiling", "anchor": None, "target_bytes": None, "nbytes": None}
     ]
@@ -240,6 +256,21 @@ def _write_panel(
                 entry["map"] = str(path)
                 _write_map(path, width, entry["nbytes"], breach=width == 3 and breach_at_3b)
             arms.append(entry)
+    for mode in nulls:
+        label = f"dq_3b_{mode[:4]}"
+        path = maps / f"{label}.json"
+        _write_map(path, 3, ANCHORS[3], breach=breach_at_3b)
+        arms.append(
+            {
+                "label": label,
+                "kind": "dq",
+                "anchor": 3,
+                "target_bytes": ANCHORS[3],
+                "nbytes": ANCHORS[3],
+                "map": str(path),
+                "score_null": {"mode": mode, "seed": 0},
+            }
+        )
 
     for arm in arms:
         label = arm["label"]
@@ -273,7 +304,7 @@ def _write_panel(
                 target_bytes=arm["target_bytes"],
                 nbytes=arm["nbytes"],
                 record=arm.get("record"),
-                extra={"map": arm["map"]} if "map" in arm else {},
+                extra={key: arm[key] for key in ("map", "score_null") if key in arm},
             )
             for arm in arms
         ],
@@ -2107,3 +2138,135 @@ def test_a_panel_with_no_ceiling_says_so_rather_than_dividing_by_it(
         assert table.print_fidelity(built, records) == []
     assert "nothing to agree with" in buffer.getvalue()
     assert table.agreement_records(records) == {}
+
+
+def _decomposition_block(table: Any, printed: str) -> str:
+    """The block, from its title through the last line of its own closing note.
+
+    Bounded by the note's own text rather than by the next blank line: the arithmetic
+    marker prints a blank line and four more of its own between the rows and the Holm
+    count, so a slice that stopped at the first gap would cut the block in half and a
+    test asserting on the family size would pass by not reaching it.
+    """
+    start = printed.index("the decomposition:")
+    closing = table.DECOMPOSITION_NOTE[-1]
+    return printed[start : printed.index(closing, start) + len(closing)]
+
+
+def test_a_panel_with_no_control_prints_no_decomposition_block(table: Any, tmp_path: Path) -> None:
+    """The seven-arm panel does not ask this question and must not appear to answer it.
+
+    Six placeholder rows reading "(needs both arms)" would be a block about a control that
+    was never planned, in a table whose every other missing row means an arm that was
+    planned and failed. And the banked tables are committed: a block that appears
+    unconditionally makes every one of them differ from a re-run for a reason that is not
+    a measurement.
+
+    Turns red when: the family stops being built from what the panel actually holds.
+    """
+    printed = _run(table, _write_panel(tmp_path / "panel"))
+
+    assert "the decomposition" not in printed
+    assert "dq-null" not in printed
+
+
+def test_the_decomposition_partitions_the_margin_it_decomposes(table: Any, tmp_path: Path) -> None:
+    """The two rows have to add up, or the block is two comparisons rather than a split.
+
+    An accuracy difference is a difference of two means over the same items, so
+    (dq - control) + (control - gptq) is (dq - gptq) identically -- this asserts the
+    printer put the right two arms on the right two rows in the right two orders, which is
+    the only way the identity can be broken. Asserted to a hundredth because that is the
+    width the table prints, and a reader adding the printed rows should get the printed
+    total.
+
+    Turns red when: a row is reversed, or points at the wrong reference arm.
+    """
+    out = _write_panel(tmp_path / "panel", nulls=("shuffle", "uniform"))
+    printed = _run(table, out, "--json-out", str(tmp_path / "panel.json"))
+    payload = json.loads((tmp_path / "panel.json").read_text(encoding="utf-8"))
+
+    margin = next(
+        row["delta_points"]
+        for row in payload["head_to_head"]
+        if (row["left"], row["right"]) == ("dq_3b", "gptq_3b")
+    )
+    rows = {(row["left"], row["right"]): row["delta_points"] for row in payload["decomposition"]}
+    for mode in ("shuf", "unif"):
+        label = f"dq_3b_{mode}"
+        signal = rows[("dq_3b", label)]
+        shape = rows[(label, "gptq_3b")]
+        assert round(signal + shape, 2) == round(margin, 2)
+        assert signal > 0 and shape > 0, "the fixture puts each control between the two"
+
+    block = _decomposition_block(table, printed)
+    assert "signal: dq vs shuffle" in block
+    assert "shape: uniform vs GPTQ" in block
+
+
+def test_the_decomposition_is_corrected_in_its_own_family(table: Any, tmp_path: Path) -> None:
+    """It answers a different question from the head-to-head, so it is a different family.
+
+    Holm's multiplier is the size of the family a comparison is corrected in. Folding four
+    decomposition rows into the six head-to-head rows would inflate every published margin's
+    adjusted p by a factor of 10/6 for having asked a further question about one of them --
+    and the further question is not about whether the method won, which is what that block
+    is corrected for.
+
+    Turns red when: the block is merged into another family, in either direction.
+    """
+    out = _write_panel(tmp_path / "panel", nulls=("shuffle", "uniform"))
+    printed = _run(table, out)
+
+    assert "Holm-adjusted over 4 of 4 comparisons" in _decomposition_block(table, printed)
+    assert "Holm-adjusted over 6 of 6 comparisons" in _aggregate_block(printed)
+
+
+def test_a_control_is_read_off_its_provenance_and_not_off_its_name(
+    table: Any, tmp_path: Path
+) -> None:
+    """A label is a filename someone typed; the manifest is what the driver wrote.
+
+    This file already refuses to trust labels for the source vectors, for the same reason.
+    An arm named like a control that carries no `score_null` block did not have its signal
+    nulled -- it is a DynQuant arm with an unusual name -- and putting it in the
+    decomposition would report a control that was never run, at whatever accuracy that arm
+    happens to have.
+
+    Turns red when: the family is discovered by parsing labels.
+    """
+    out = _write_panel(tmp_path / "panel", nulls=("shuffle",))
+    manifest = json.loads((out / "arms.json").read_text(encoding="utf-8"))
+    for arm in manifest["arms"]:
+        arm.pop("score_null", None)
+    (out / "arms.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    printed = _run(table, out)
+
+    assert "dq_3b_shuf" in printed, "the arm is still a row"
+    assert "the decomposition" not in printed
+    assert "dq-null" not in printed
+
+
+def test_a_control_does_not_print_in_the_same_method_column_as_a_real_arm(
+    table: Any, tmp_path: Path
+) -> None:
+    """The size table is where someone scanning the panel decides what each row is.
+
+    A control runs the DynQuant path end to end, so its manifest `kind` is `dq` and has to
+    stay `dq` for the driver to dispatch it -- which in the table would put a signal-free
+    arm in the same column as the arm it is the control for, at the same bytes, one row
+    apart. The one confusion the whole block exists to prevent.
+
+    Turns red when: the method column goes back to printing `kind` unconditionally.
+    """
+    printed = _run(table, _write_panel(tmp_path / "panel", nulls=("uniform",)))
+
+    # The size table alone. Every later block is also keyed by arm label in column one,
+    # and a parse over the whole output reads whichever one came last -- which is how the
+    # first version of this test compared an accuracy against the string "dq".
+    body = printed.split("arm        method", 1)[1].split("\n\n", 1)[0]
+    rows = {line.split()[0]: line.split()[1] for line in body.splitlines() if line[:1].isalnum()}
+    assert rows["dq_3b"] == "dq"
+    assert rows["dq_3b_unif"] == "dq-null"
+    assert rows["gptq_3b"] == "gptq" and rows["bf16"] == "ceiling"

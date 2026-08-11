@@ -44,6 +44,7 @@ import json
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -74,6 +75,19 @@ class Arm:
     record: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
+    null_mode: str | None = None
+    """Which signal-free control this arm is, or ``None`` for a real arm.
+
+    Only ever set on ``kind == "dq"``. GPTQ and AWQ never read the signal file, so there
+    is nothing in them to null; the ceiling is not allocated at all. A dq arm carrying a
+    mode allocates from a permuted or flattened score under the same budget, the same
+    floors and the same knapsack, and is the only thing in the panel that can say how much
+    of a DynQuant margin is the *signal* rather than the shape of the map.
+    """
+
+    null_seed: int = 0
+    """Ignored unless ``null_mode`` is ``"shuffle"``, which is the only stochastic one."""
+
 
 def anchor_bytes(model: str, group_size: int) -> dict[int, int]:
     """The byte budget each width implies, read off the baselines' own format rules.
@@ -88,20 +102,88 @@ def anchor_bytes(model: str, group_size: int) -> dict[int, int]:
     }
 
 
-def plan_arms(budgets: dict[int, int]) -> list[Arm]:
+def plan_arms(
+    budgets: dict[int, int],
+    *,
+    nulls: Sequence[str] = (),
+    null_anchor: int = 3,
+    null_seed: int = 0,
+) -> list[Arm]:
     """The panel, in the order it should run.
 
     The ceiling first: it is the only arm that can fail for a reason that is not about
     quantization, and finding that out after six quantization passes wastes all six. Then
     both widths of each method rather than both methods of each width, so a method that
     cannot be built at all is discovered on its first arm.
+
+    The controls, if any, come last and only when asked for. Two reasons, and the second is
+    the load-bearing one. They are cheap relative to the panel -- an allocation and an eval,
+    no calibration -- so running them at the end costs nothing that running them earlier
+    would save. And the seven-arm panel is banked: ``--resume`` over a directory that
+    already holds it must reuse all seven records unchanged and score only the new arms, and
+    that is only true if appending a control leaves the first seven entries of this list
+    exactly where they were. An arm inserted in the middle would renumber nothing -- the
+    driver keys on labels, not indices -- but it would move the order the manifest is
+    written in, and the manifest is what the table reads its rows off.
+
+    Args:
+        nulls: Modes from :data:`dynquant.score.null.NULL_MODES`, validated by the CLI
+            against that tuple rather than against a copy here.
+        null_anchor: Which budget the controls run at. Defaults to 3 because that is where
+            the margin needing decomposition is: at 4 bits DynQuant is +0.78 over GPTQ and
+            a control could not separate from either, while at 3 bits it is +19.13 and the
+            question of what earned it is the whole reason for the arm.
     """
     arms = [Arm(label="bf16", kind="ceiling", anchor=None, target_bytes=None)]
     for width in ANCHOR_WIDTHS:
         budget = budgets[width]
         for kind in ("gptq", "awq", "dq"):
             arms.append(Arm(label=f"{kind}_{width}b", kind=kind, anchor=width, target_bytes=budget))
+    for mode in nulls:
+        arms.append(
+            Arm(
+                # Ten characters, which is the width of the table's arm column. The mode is
+                # abbreviated and the provenance is not: every artifact this arm writes
+                # carries the allocator string `sensitivity+null:shuffle(seed=0)`, the
+                # manifest carries `score_null`, and the table prints `dq-null` in the
+                # method column. A label is a filename; it is not where a control announces
+                # itself, and a wider one would misalign every row in the panel.
+                label=f"dq_{null_anchor}b_{mode[:4]}",
+                kind="dq",
+                anchor=null_anchor,
+                target_bytes=budgets[null_anchor],
+                null_mode=mode,
+                null_seed=null_seed,
+            )
+        )
     return arms
+
+
+def check_null_modes(spec: str) -> tuple[str, ...]:
+    """Parse ``--score-null`` against the package's own list of modes.
+
+    Read out of ``dynquant.score.null`` rather than restated as ``choices=`` on the parser,
+    which would be a second copy of a registry: a mode added there and not here would be
+    unreachable from the driver, and one removed there would be accepted here and fail an
+    hour in. The import is lazy for the same reason every other ``dynquant`` import in this
+    file is -- ``plan`` runs on machines where only the argument parsing has to work.
+    """
+    from dynquant.score.null import NULL_MODES
+
+    wanted = tuple(part.strip() for part in spec.split(",") if part.strip())
+    if unknown := sorted(set(wanted) - set(NULL_MODES)):
+        raise SystemExit(
+            f"--score-null names {unknown}; this package has {list(NULL_MODES)}. "
+            f"`shuffle` permutes the driving quantity within role and `uniform` removes "
+            f"it, and they bracket the question from opposite sides -- running one is not "
+            f"running the other."
+        )
+    if len(set(wanted)) != len(wanted):
+        raise SystemExit(
+            f"--score-null repeats a mode: {spec!r}. Two arms would share a label and the "
+            f"second would overwrite the first's record."
+        )
+    return wanted
 
 
 def check_matched(arm: Arm) -> None:
@@ -237,6 +319,15 @@ def dq_inspect_cmd(args: argparse.Namespace, arm: Arm, save_map: Path) -> list[s
     ]
     if args.moments:
         cmd += ["--moments", args.moments]
+    # Last, and after `--moments`, because that is the order the allocator applies them in:
+    # the null runs on whatever the scoring and the sensitivity pricing produced, so a
+    # control on a panel that priced from measured `dL` nulls the measured table too. A
+    # null applied before the pricing would leave 8.5% of this checkpoint's parameters
+    # still priced by their own moments and the arm would be a partial control reported as
+    # a whole one. The flags only appear on an arm that asked for them, so the six real
+    # arms' commands are byte-identical to the ones the banked panel ran.
+    if arm.null_mode:
+        cmd += ["--score-null", arm.null_mode, "--null-seed", str(arm.null_seed)]
     if args.trust_remote_code:
         cmd.append("--trust-remote-code")
     return cmd
@@ -350,7 +441,12 @@ def map_nbytes(save_map: Path, key: str) -> int:
 def do_plan(args: argparse.Namespace) -> int:
     """The budgets and the panel, with no weights loaded and no GPU touched."""
     budgets = anchor_bytes(args.model, args.group_size)
-    arms = plan_arms(budgets)
+    arms = plan_arms(
+        budgets,
+        nulls=check_null_modes(args.score_null),
+        null_anchor=args.null_anchor,
+        null_seed=args.null_seed,
+    )
     print(
         json.dumps(
             {
@@ -368,6 +464,11 @@ def do_plan(args: argparse.Namespace) -> int:
                         "kind": arm.kind,
                         "anchor": arm.anchor,
                         "target_bytes": arm.target_bytes,
+                        **(
+                            {"score_null": {"mode": arm.null_mode, "seed": arm.null_seed}}
+                            if arm.null_mode
+                            else {}
+                        ),
                     }
                     for arm in arms
                 ],
@@ -648,7 +749,12 @@ def do_run(args: argparse.Namespace) -> int:
     maps.mkdir(exist_ok=True)
 
     budgets = anchor_bytes(args.model, args.group_size)
-    arms = plan_arms(budgets)
+    arms = plan_arms(
+        budgets,
+        nulls=check_null_modes(args.score_null),
+        null_anchor=args.null_anchor,
+        null_seed=args.null_seed,
+    )
     rescore = rescored_labels(args.rescore, arms)
     # `--rescore` implies the resume checks and the resume skipping. Naming three arms to
     # score again and having the other four score again too is not a thing anyone means,
@@ -695,6 +801,11 @@ def do_run(args: argparse.Namespace) -> int:
             arm.nbytes = map_nbytes(save_map, str(arm.target_bytes))
             check_matched(arm)
             arm.extra["map"] = str(save_map)
+            if arm.null_mode:
+                # In the manifest as well as in the map, because the table reads the
+                # manifest and an arm that is a control has to be one in the row a reader
+                # sees, not only in a file they would have to go and open.
+                arm.extra["score_null"] = {"mode": arm.null_mode, "seed": arm.null_seed}
             if not reused:
                 _run(dq_eval_cmd(args, arm, save_map, record), what=arm.label)
         else:
@@ -719,6 +830,35 @@ def do_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def add_null_flags(parser: argparse.ArgumentParser) -> None:
+    """``--score-null`` on both stages, so ``plan`` shows the panel ``run`` would run.
+
+    Opt-in and empty by default. The controls answer a question the seven-arm panel does
+    not ask, and a driver that ran them unasked would change the shape of every banked
+    manifest and every table built from one.
+    """
+    parser.add_argument(
+        "--score-null",
+        default="",
+        metavar="MODE[,MODE...]",
+        help=(
+            "append a signal-free control arm per mode: same graph, roles, floors, budget, "
+            "byte accounting, knapsack and quantizer, with only the correspondence between "
+            "a module and what the fine-tune said about it removed. `shuffle` permutes the "
+            "driving quantity within role; `uniform` scores every module 1.0 and consults "
+            "no sensitivity table. What the real arm has over these is the signal's share"
+        ),
+    )
+    parser.add_argument(
+        "--null-anchor",
+        type=int,
+        default=3,
+        choices=ANCHOR_WIDTHS,
+        help="which budget the controls run at (default: 3, where the margin is)",
+    )
+    parser.add_argument("--null-seed", type=int, default=0, help="seed for `shuffle`")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="stage", required=True)
@@ -726,6 +866,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan = sub.add_parser("plan", help="the budgets and the panel, no weights")
     plan.add_argument("--model", required=True)
     plan.add_argument("--group-size", type=int, default=128)
+    add_null_flags(plan)
     plan.set_defaults(func=do_plan)
 
     run = sub.add_parser("run", help="every arm, in order, byte-matched")
@@ -774,6 +915,7 @@ def build_parser() -> argparse.ArgumentParser:
     # packed download is forced to `eager` whatever the panel did. `auto` is for measuring
     # the dispatch itself, which is not what a panel does.
     run.add_argument("--experts-impl", default="eager", choices=("eager", "auto"))
+    add_null_flags(run)
     run.set_defaults(func=do_run)
 
     return parser

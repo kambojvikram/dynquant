@@ -113,6 +113,48 @@ AGAINST_CEILING: tuple[tuple[str, str, str], ...] = (
 #: quantized arm in the panel was built from.
 CEILING = "bf16"
 
+#: Printed under the decomposition block, and only when one ran.
+DECOMPOSITION_NOTE = (
+    "Each control holds the graph, the roles, the floors, the budget, the byte accounting,",
+    "the knapsack and the quantizer fixed, and removes only what the fine-tune said about",
+    "which module is which. So the two rows at a width partition that width's",
+    "DynQuant-over-GPTQ margin: the first is the signal's share, the second is what a",
+    "mixed-width map is worth with no signal in it at all. They sum to the head-to-head",
+    "margin exactly, because an accuracy difference is a difference of two means over the",
+    "same items. A control that lands level with the real arm is a finding rather than a",
+    "failure -- it says the structure earned the margin. One that collapses to the baseline",
+    "says the signal did.",
+)
+
+
+def decomposition_family(built: list[dict[str, Any]]) -> tuple[tuple[str, str, str], ...]:
+    """The comparisons a signal-free control makes available, if one ran.
+
+    Discovered from each arm's ``score_null`` provenance rather than from a suffix on its
+    label, for the reason this file already gives about source labels: a label is a
+    filename someone typed and the manifest is what the driver wrote. An arm named
+    ``dq_3b_shuf`` that carries no ``score_null`` block did not have its signal nulled, and
+    putting it in this family would report a control that was never run.
+
+    Empty when no control is present, and the caller prints nothing rather than six
+    placeholder rows -- the seven-arm panel does not ask this question and its table should
+    not grow a block saying so.
+    """
+    family: list[tuple[str, str, str]] = []
+    for row in built:
+        spec = row.get("score_null")
+        if not spec or not row.get("anchor"):
+            continue
+        width, mode = row["anchor"], str(spec.get("mode", "null"))
+        # Both directions are stated left-positive on purpose: the first row asks what the
+        # real arm has *over* the control, the second what the control has over the
+        # baseline. Written the other way round one of the two deltas would be negative and
+        # a reader adding them up would have to work out which.
+        family.append((f"dq_{width}b", row["label"], f"{width}b  signal: dq vs {mode}"))
+        family.append((row["label"], f"gptq_{width}b", f"{width}b  shape: {mode} vs GPTQ"))
+    return tuple(family)
+
+
 FP16_BYTES_PER_PARAM = 2
 
 
@@ -409,6 +451,10 @@ def rows(
                 "label": label,
                 "kind": arm.get("kind"),
                 "anchor": arm.get("anchor"),
+                # `None` on every arm of a seven-arm panel, which is the whole point: a
+                # control announces itself in the manifest the driver wrote, so the table
+                # can tell one from a real arm without parsing its name.
+                "score_null": arm.get("score_null"),
                 "nbytes": nbytes,
                 "target_bytes": target,
                 "drift": (nbytes - target) / target if (nbytes and target) else None,
@@ -454,7 +500,11 @@ def print_sizes(built: list[dict[str, Any]], params: int | None, tolerance: floa
         else:
             drift = f"{row['drift'] * 100:+.4f}%" + ("!" if abs(row["drift"]) > tolerance else "")
         ratio = f"{ceiling / nbytes:.2f}x" if (ceiling and nbytes) else "--"
-        kind = row["kind"] or "--"
+        # A control runs the DynQuant path end to end, so its `kind` is `dq` and has to
+        # stay `dq` for the driver to dispatch it. In the table that would print a signal-
+        # free arm in the same column as the arm it is the control for, which is the one
+        # confusion this whole block exists to prevent.
+        kind = "dq-null" if row["score_null"] else (row["kind"] or "--")
         apply_mode = row["apply"] or "--"
         print(
             f"{row['label']:10s} {kind:8s} {gib:>8s} {bpp:>8s} {drift:>12s} "
@@ -1450,6 +1500,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     ceiling = print_comparisons("what each method cost", AGAINST_CEILING, records, arithmetic)
     print()
+    decomposition: list[dict[str, Any]] = []
+    family = decomposition_family(built)
+    if family:
+        decomposition = print_comparisons(
+            "the decomposition: how much of the margin is the signal",
+            family,
+            records,
+            arithmetic,
+            explain_arithmetic=False,
+        )
+        for line in DECOMPOSITION_NOTE:
+            print(f"  {line}")
+        print()
     fidelity = print_fidelity(built, records)
     print()
     # The same family the head-to-head block ran, on the indicator above. Worth its own
@@ -1525,6 +1588,10 @@ def main(argv: list[str] | None = None) -> int:
         },
         "source_and_difficulty_heterogeneity": both_spread,
         "against_ceiling": as_json(ceiling),
+        # Empty on a panel with no control in it, and empty rather than absent: a consumer
+        # that finds no key cannot tell a panel that did not ask the question from one
+        # written before the key existed, and only one of those is worth re-running.
+        "decomposition": as_json(decomposition),
         # Carried because a card that reads only the accuracy delta cannot tell a method
         # that is more accurate from one that is more faithful to the model it was built
         # from -- and on this panel that distinction is the finding, not a nuance.

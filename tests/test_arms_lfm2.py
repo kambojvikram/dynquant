@@ -1167,3 +1167,249 @@ def test_a_rescored_arm_is_checked_against_its_map_not_its_record(
 
     assert arms.do_run(_args(arms, [*argv, "--resume"])) == 0
     assert spent == [], "the record postdates every input, so a resume has nothing to redo"
+
+
+# --------------------------------------------------------------------------- controls
+#
+# The seven-arm panel says DynQuant beats GPTQ by 19.13 points at 3 bits. It does not say
+# what earned them: a mixed-width map holding routers at 8 bits and expert
+# down-projections at 2 would beat a uniform recipe whether or not the widths were chosen
+# by the fine-tune. A control arm is the only thing that can tell those apart, and the
+# failures worth covering are the ones that would make it look like one without being one.
+
+
+def _completing(arms: Any, monkeypatch: pytest.MonkeyPatch, spent: list[str]) -> None:
+    """`_resumable`'s fake, plus the record an eval would have written.
+
+    Only the eval half writes anything: an allocation is identified by `--save-map` and its
+    output is pre-placed by the caller, since a fake cannot allocate. Keyed on the flag
+    rather than on the arm's kind so it stays right for a command this driver grows later.
+    """
+
+    def spend(cmd: list[str], what: str) -> None:
+        spent.append(what)
+        if "--out" in cmd:
+            Path(cmd[cmd.index("--out") + 1]).write_text(json.dumps(_record()), encoding="utf-8")
+
+    monkeypatch.setattr(arms, "_run", spend)
+
+
+def test_a_panel_that_asked_for_no_control_is_the_panel_that_was_banked(arms: Any) -> None:
+    """Adding the arm must not change the run of anyone who does not want it.
+
+    The seven-arm panel is committed under `experiments/phase4/results/` and every table in
+    the report is built from it. A planner that grew an eighth arm by default would make
+    every one of those a partial panel -- and the driver would spend an hour on an arm
+    nobody asked for on the next resume, into a directory whose manifest would then no
+    longer describe what is banked beside it.
+
+    Turns red when: the controls stop being opt-in.
+    """
+    assert [arm.label for arm in arms.plan_arms(ANCHORS)] == list(PANEL)
+    assert all(arm.null_mode is None for arm in arms.plan_arms(ANCHORS))
+
+
+def test_a_control_is_appended_so_a_resume_scores_only_the_new_arm(
+    arms: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The point of appending rather than inserting, tested through the thing it protects.
+
+    Seven records already on disk and a control added: the run must reuse all seven, spend
+    exactly the new arm's allocation and its eval, and leave the seven rows of the manifest
+    reading what they read before. An arm inserted at its anchor -- next to `dq_3b`, where
+    it belongs conceptually -- would reorder the manifest, and the manifest is the order the
+    table prints its rows in, so every banked table would need regenerating to be compared
+    against a re-run.
+
+    Turns red when: a control lands anywhere but the end, or a resume re-spends a real arm.
+    """
+    out, spent = _resumable(arms, tmp_path, monkeypatch, {one: _record() for one in PANEL})
+    _completing(arms, monkeypatch, spent)
+    # A fake cannot allocate, so the map the control will be weighed against has to be here
+    # already -- the same way `_resumable` pre-writes the two real DynQuant arms' maps.
+    (out / "maps" / "dq_3b_shuf.json").write_text(
+        json.dumps({"maps": {str(ANCHORS[3]): {"nbytes": ANCHORS[3], "bits": {}}}}),
+        encoding="utf-8",
+    )
+
+    argv = [*RUN[:-1], str(out), "--resume", "--score-null", "shuffle"]
+    assert arms.do_run(_args(arms, argv)) == 0
+    assert spent == ["dq_3b_shuf allocation", "dq_3b_shuf"]
+
+    manifest = json.loads((out / "arms.json").read_text(encoding="utf-8"))
+    assert [arm["label"] for arm in manifest["arms"]] == [*PANEL, "dq_3b_shuf"]
+    assert all(arm["record"] for arm in manifest["arms"])
+
+
+def test_the_manifest_says_which_arms_are_controls_and_which_are_not(
+    arms: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A control that is only a control in its filename is the failure this prevents.
+
+    Downstream reads the manifest, not the directory listing. An arm whose signal was
+    nulled and whose manifest entry looks like every other DynQuant arm is a bit map that
+    becomes a headline -- and the reader who would have caught it is looking at a table
+    built from the file that does not say.
+
+    Turns red when: the provenance stops reaching the manifest, or reaches the real arms.
+    """
+    out, spent = _resumable(arms, tmp_path, monkeypatch, {one: _record() for one in PANEL})
+    _completing(arms, monkeypatch, spent)
+    for mode in ("shuf", "unif"):
+        (out / "maps" / f"dq_3b_{mode}.json").write_text(
+            json.dumps({"maps": {str(ANCHORS[3]): {"nbytes": ANCHORS[3], "bits": {}}}}),
+            encoding="utf-8",
+        )
+
+    argv = [*RUN[:-1], str(out), "--resume", "--score-null", "shuffle,uniform", "--null-seed", "7"]
+    assert arms.do_run(_args(arms, argv)) == 0
+
+    manifest = json.loads((out / "arms.json").read_text(encoding="utf-8"))
+    marked = {arm["label"]: arm.get("score_null") for arm in manifest["arms"]}
+    assert marked["dq_3b_shuf"] == {"mode": "shuffle", "seed": 7}
+    assert marked["dq_3b_unif"] == {"mode": "uniform", "seed": 7}
+    assert [label for label, spec in marked.items() if spec] == ["dq_3b_shuf", "dq_3b_unif"]
+
+
+def test_the_control_differs_from_the_arm_it_controls_in_the_allocation_only(
+    arms: Any, tmp_path: Path
+) -> None:
+    """One change, and it is at allocation time.
+
+    A control that also scored differently would answer nothing: the margin against it
+    would carry the signal *and* whatever else moved. So the eval command has to be the
+    real arm's command with a different label and a different map, and the allocation
+    command has to be the real arm's with the null appended -- which is also why the null
+    goes on last, after `--moments`. The allocator applies the null to whatever the scoring
+    and the sensitivity pricing produced; applied earlier it would leave the 8.5% of this
+    checkpoint's parameters that are priced by measured `dL` still priced by their own
+    moments, and the arm would be a partial control reported as a whole one.
+
+    Turns red when: a flag that is not the null differs between the two, in either command.
+    """
+    planned = arms.plan_arms(ANCHORS, nulls=("shuffle",), null_anchor=3, null_seed=3)
+    real = next(arm for arm in planned if arm.label == "dq_3b")
+    control = planned[-1]
+    args = _args(arms, [*RUN, "--moments", "/runs/s4/moments.json"])
+
+    real_alloc = arms.dq_inspect_cmd(args, real, tmp_path / "dq_3b.json")
+    control_alloc = arms.dq_inspect_cmd(args, control, tmp_path / "dq_3b_shuf.json")
+    assert control_alloc[-4:] == ["--score-null", "shuffle", "--null-seed", "3"]
+    assert control_alloc[:-4] == [
+        part.replace("dq_3b.json", "dq_3b_shuf.json") for part in real_alloc
+    ]
+    assert control_alloc.index("--moments") < control_alloc.index("--score-null")
+
+    real_eval = arms.dq_eval_cmd(args, real, tmp_path / "dq_3b.json", tmp_path / "dq_3b.out")
+    control_eval = arms.dq_eval_cmd(
+        args, control, tmp_path / "dq_3b_shuf.json", tmp_path / "dq_3b_shuf.out"
+    )
+    assert "--score-null" not in control_eval
+    renamed = [part.replace("dq_3b", "dq_3b_shuf") for part in real_eval]
+    assert control_eval == renamed
+
+
+def test_a_control_is_planned_at_the_same_anchor_as_the_arm_it_decomposes(arms: Any) -> None:
+    """Matched bytes, or the control is a size comparison wearing a signal's name.
+
+    The whole decomposition is subtraction: the real arm minus the control is the signal's
+    share only if the two spent the same bytes. They are pinned to the same anchor by
+    construction here, and the run still puts both through `check_matched` -- this asserts
+    the plan, and `check_matched` asserts the realisation.
+
+    Turns red when: a control is planned at a budget its reference arm did not run at.
+    """
+    planned = arms.plan_arms(ANCHORS, nulls=("shuffle", "uniform"))
+    at_three = [arm for arm in planned if arm.anchor == 3]
+    assert {arm.target_bytes for arm in at_three} == {ANCHORS[3]}
+    assert [arm.label for arm in at_three] == [
+        "gptq_3b",
+        "awq_3b",
+        "dq_3b",
+        "dq_3b_shuf",
+        "dq_3b_unif",
+    ]
+
+    four = arms.plan_arms(ANCHORS, nulls=("shuffle",), null_anchor=4)[-1]
+    assert (four.label, four.anchor, four.target_bytes) == ("dq_4b_shuf", 4, ANCHORS[4])
+
+
+def test_an_unknown_null_mode_is_refused_against_the_packages_own_list(arms: Any) -> None:
+    """The list of modes lives in one place, and it is not this driver.
+
+    `choices=` on the parser would be a second copy of a registry: a mode added to
+    `dynquant.score.null` and not here is unreachable from the panel, and one removed there
+    is accepted here and fails an hour into a run. So the driver reads `NULL_MODES` and the
+    refusal quotes it, which also means the message stays right when the tuple changes.
+
+    Turns red when: the driver starts keeping its own list of modes.
+    """
+    from dynquant.score.null import NULL_MODES
+
+    with pytest.raises(SystemExit) as caught:
+        arms.check_null_modes("shufle")
+    assert str(list(NULL_MODES)) in str(caught.value)
+    assert arms.check_null_modes(",".join(NULL_MODES)) == tuple(NULL_MODES)
+    assert arms.check_null_modes("") == ()
+
+
+def test_a_repeated_null_mode_is_refused_before_two_arms_share_a_record(arms: Any) -> None:
+    """Two arms with one label is the silent version of running one arm.
+
+    The record is `out/<label>.json` and the map is `out/maps/<label>.json`, so a duplicated
+    mode plans two arms that write to the same two paths. The second overwrites the first,
+    the manifest lists both, and the table prints two identical rows as though the control
+    had been replicated.
+
+    Turns red when: duplicates are accepted, or silently collapsed to one.
+    """
+    with pytest.raises(SystemExit, match="repeats a mode"):
+        arms.check_null_modes("shuffle,shuffle")
+
+
+def test_a_control_is_charged_against_the_stats_file_like_every_other_dynquant_arm(
+    arms: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The staleness guard has to reach the new arm, and it reaches it by kind.
+
+    `check_resumable` charges the stats file against DynQuant arms and not the baselines,
+    because only DynQuant reads it. A control reads it too -- it is the *nulled* signal, not
+    no signal -- so a control map written before the signal file it claims to have nulled is
+    exactly as stale as a real arm's, and for the same reason.
+
+    Turns red when: the guard starts keying on the label, which is where the controls differ.
+    """
+    out, spent = _resumable(arms, tmp_path, monkeypatch, {one: _record() for one in PANEL})
+    control_map = out / "maps" / "dq_3b_shuf.json"
+    control_map.write_text(
+        json.dumps({"maps": {str(ANCHORS[3]): {"nbytes": ANCHORS[3], "bits": {}}}}),
+        encoding="utf-8",
+    )
+    merged = tmp_path / "merged"
+    merged.mkdir()
+    (merged / "config.json").write_text("{}", encoding="utf-8")
+    stats = tmp_path / "dynquant_stats.json"
+    stats.write_text("{}", encoding="utf-8")
+
+    os.utime(merged / "config.json", (500, 500))
+    for label in PANEL:
+        os.utime(out / f"{label}.json", (3000, 3000))
+    (out / "dq_3b_shuf.json").write_text(json.dumps(_record()), encoding="utf-8")
+    os.utime(out / "dq_3b_shuf.json", (1000, 1000))
+    os.utime(stats, (2000, 2000))
+
+    argv = [
+        "run",
+        "--model",
+        str(merged),
+        "--stats",
+        str(stats),
+        "--out",
+        str(out),
+        "--resume",
+        "--score-null",
+        "shuffle",
+    ]
+    with pytest.raises(SystemExit, match=r"dq_3b_shuf\.json predates the stats file"):
+        arms.do_run(_args(arms, argv))
+    assert spent == []
