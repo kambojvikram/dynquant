@@ -30,6 +30,7 @@ import json
 from collections import Counter
 
 import pytest
+import torch
 from test_graph_classify import Qwen3_5ForCausalLM
 
 from dynquant.allocate.budget import Budget
@@ -513,3 +514,136 @@ def test_the_flat_report_says_the_table_survived_the_score(graph, scores, sensit
     assert "scores 1.0" in summary
     assert "permuted within role" in summary
     assert "no sensitivity table" not in summary
+
+
+# --------------------------------------------------------------------------
+# The draw itself, pinned
+# --------------------------------------------------------------------------
+
+
+#: Wide enough that every module pays for its own scales, and no wider.
+#:
+#: ``is_quantizable`` refuses a tensor whose scales and zeros cost more than the weights
+#: they price, so an 8-wide fixture classifies into thirty roles and allocates none of
+#: them -- a graph that looks right and yields nothing to permute.
+_PINNED_HIDDEN, _PINNED_INTERMEDIATE, _PINNED_VOCAB = 128, 256, 512
+
+
+class _PinnedCfg:
+    """Seven roles of four modules each, with names this test owns."""
+
+    model_type = "llama"
+    num_hidden_layers = 4
+    num_attention_heads = 2
+    num_key_value_heads = 2
+    hidden_size = _PINNED_HIDDEN
+    intermediate_size = _PINNED_INTERMEDIATE
+    vocab_size = _PINNED_VOCAB
+    tie_word_embeddings = False
+
+
+class _PinnedModel(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.config = _PinnedCfg()
+        self.model = torch.nn.Module()
+        self.model.embed_tokens = torch.nn.Embedding(_PINNED_VOCAB, _PINNED_HIDDEN)
+        self.model.layers = torch.nn.ModuleList(
+            _PinnedLayer() for _ in range(_PinnedCfg.num_hidden_layers)
+        )
+        self.model.norm = torch.nn.LayerNorm(_PINNED_HIDDEN)
+        self.lm_head = torch.nn.Linear(_PINNED_HIDDEN, _PINNED_VOCAB, bias=False)
+
+
+class LlamaAttention(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        for name in ("q_proj", "k_proj", "v_proj", "o_proj"):
+            setattr(self, name, torch.nn.Linear(_PINNED_HIDDEN, _PINNED_HIDDEN, bias=False))
+
+
+class LlamaMLP(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate_proj = torch.nn.Linear(_PINNED_HIDDEN, _PINNED_INTERMEDIATE, bias=False)
+        self.up_proj = torch.nn.Linear(_PINNED_HIDDEN, _PINNED_INTERMEDIATE, bias=False)
+        self.down_proj = torch.nn.Linear(_PINNED_INTERMEDIATE, _PINNED_HIDDEN, bias=False)
+
+
+class _PinnedLayer(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.self_attn = LlamaAttention()
+        self.mlp = LlamaMLP()
+
+
+#: What ``seed`` draws, recorded once and never recomputed from the code under test.
+#:
+#: Regenerating this dict from a failing run is the one repair that is never right: the
+#: whole point of it is that the mapping is the same today as it was when an arm was
+#: banked, and a golden anyone re-bakes on red asserts only that the code agrees with
+#: itself. If it goes red, either the change is wrong or every banked control arm has to
+#: be re-run and re-labelled.
+PINNED_DRAW_SEED_0 = {
+    "lm_head": "lm_head",
+    "model.embed_tokens": "model.embed_tokens",
+    "model.layers.0.mlp.down_proj": "model.layers.2.mlp.down_proj",
+    "model.layers.0.mlp.gate_proj": "model.layers.3.mlp.gate_proj",
+    "model.layers.0.mlp.up_proj": "model.layers.2.mlp.up_proj",
+    "model.layers.0.self_attn.k_proj": "model.layers.2.self_attn.k_proj",
+    "model.layers.0.self_attn.o_proj": "model.layers.0.self_attn.o_proj",
+    "model.layers.0.self_attn.q_proj": "model.layers.0.self_attn.q_proj",
+    "model.layers.0.self_attn.v_proj": "model.layers.1.self_attn.v_proj",
+    "model.layers.1.mlp.down_proj": "model.layers.0.mlp.down_proj",
+    "model.layers.1.mlp.gate_proj": "model.layers.1.mlp.gate_proj",
+    "model.layers.1.mlp.up_proj": "model.layers.0.mlp.up_proj",
+    "model.layers.1.self_attn.k_proj": "model.layers.0.self_attn.k_proj",
+    "model.layers.1.self_attn.o_proj": "model.layers.1.self_attn.o_proj",
+    "model.layers.1.self_attn.q_proj": "model.layers.2.self_attn.q_proj",
+    "model.layers.1.self_attn.v_proj": "model.layers.0.self_attn.v_proj",
+    "model.layers.2.mlp.down_proj": "model.layers.3.mlp.down_proj",
+    "model.layers.2.mlp.gate_proj": "model.layers.2.mlp.gate_proj",
+    "model.layers.2.mlp.up_proj": "model.layers.3.mlp.up_proj",
+    "model.layers.2.self_attn.k_proj": "model.layers.1.self_attn.k_proj",
+    "model.layers.2.self_attn.o_proj": "model.layers.3.self_attn.o_proj",
+    "model.layers.2.self_attn.q_proj": "model.layers.1.self_attn.q_proj",
+    "model.layers.2.self_attn.v_proj": "model.layers.3.self_attn.v_proj",
+    "model.layers.3.mlp.down_proj": "model.layers.1.mlp.down_proj",
+    "model.layers.3.mlp.gate_proj": "model.layers.0.mlp.gate_proj",
+    "model.layers.3.mlp.up_proj": "model.layers.1.mlp.up_proj",
+    "model.layers.3.self_attn.k_proj": "model.layers.3.self_attn.k_proj",
+    "model.layers.3.self_attn.o_proj": "model.layers.2.self_attn.o_proj",
+    "model.layers.3.self_attn.q_proj": "model.layers.3.self_attn.q_proj",
+    "model.layers.3.self_attn.v_proj": "model.layers.2.self_attn.v_proj",
+}
+
+
+def test_the_permutation_a_seed_draws_is_pinned_across_versions() -> None:
+    """Arms banked weeks apart are one sample only if the draw never moved.
+
+    Every other determinism test here runs both sides in one process, so all of them
+    stay green through a change that alters which module donates to which -- they
+    compare the new code against itself. The property a multi-seed control family needs
+    is stronger and cannot be expressed that way: `dq_3b_shufs1` was allocated under one
+    commit and `shufs2` under another, and if the draw moved in between, the spread over
+    the three is not a permutation spread. Nothing raises when that happens. Both arms
+    allocate, both hit the byte anchor, and the report carries a number with no meaning.
+
+    The graph is built here rather than taken from the shared fixture, so a module added
+    to the campaign's model fixture cannot redden a test about the random number stream.
+
+    Turns red when: the draw at a fixed seed changes -- a different shuffle call, a
+    different sort key, a different grouping, or a different source of the role list.
+    """
+    graph = classify_model(_PinnedModel())
+    names = [info.name for info in graph.quantizable()]
+    module_scores = {name: float(i + 1) for i, name in enumerate(names)}
+    lookup = {value: key for key, value in module_scores.items()}
+
+    null_scores, _, _ = apply_null(graph, module_scores, None, mode="shuffle", seed=0)
+    donors = {name: lookup[value] for name, value in null_scores.items()}
+
+    # The whole map, not a sample of it: a subset would go green on a change that
+    # moved only the modules it happened not to name.
+    assert donors == PINNED_DRAW_SEED_0
+    assert sum(name != donor for name, donor in donors.items()) == 21
