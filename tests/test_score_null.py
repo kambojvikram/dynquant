@@ -37,7 +37,12 @@ from dynquant.allocate.knapsack import allocate_bits
 from dynquant.allocate.policy import AllocationPolicy
 from dynquant.errors import DynQuantError
 from dynquant.graph.classify import classify_model
-from dynquant.score.null import NULL_MODES, apply_null
+from dynquant.score.null import (
+    NULL_MODES,
+    STOCHASTIC_NULL_MODES,
+    apply_null,
+    uses_seed,
+)
 from dynquant.score.sensitivity import SensitivityTable
 
 
@@ -368,3 +373,38 @@ def test_the_allocator_field_says_which_null_over_which_pricing(
         null_report=report,
     )
     assert inputs.allocator == expected
+
+
+def test_a_seed_names_an_arm_only_when_the_mode_actually_draws() -> None:
+    """One function owns "does the seed matter here", and both readers ask it.
+
+    `NullReport.label` decides whether the seed belongs in the allocator string, and a
+    caller planning arms decides whether two seeds are two arms or one arm named twice.
+    Answered independently, the two go out of step in the direction that costs a
+    measurement: a deterministic mode given two seeds plans two arms writing to one
+    record, and a stochastic one given two seeds plans one arm that silently keeps
+    whichever draw ran last.
+
+    Turns red when: a second caller starts answering it with `mode == "uniform"`.
+    """
+    assert set(STOCHASTIC_NULL_MODES) <= set(NULL_MODES)
+    assert [mode for mode in NULL_MODES if uses_seed(mode)] == ["shuffle"]
+
+
+def test_a_deterministic_null_records_no_seed_however_it_was_called(graph, scores) -> None:
+    """`uniform` ignores the seed, so a report carrying one would be reporting a choice.
+
+    The seed reaches `apply_null` from a flag that is shared across every mode in one
+    invocation, so `--score-null uniform --null-seed 7` is not a user asking for a seeded
+    uniform -- it is the shuffle's seed arriving at an arm that has no use for it. A report
+    that stored 7 would put it in the manifest and in the allocator string, and two
+    identical arms would look like two configurations.
+
+    Turns red when: the report starts storing the seed it was passed rather than the seed
+    that applied.
+    """
+    _, table, report = apply_null(graph, scores, None, mode="uniform", seed=7)
+
+    assert table is None
+    assert report.seed is None
+    assert report.label == "null:uniform"

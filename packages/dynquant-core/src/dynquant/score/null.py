@@ -74,10 +74,28 @@ if TYPE_CHECKING:
     from dynquant.graph.classify import ModelGraph
     from dynquant.score.sensitivity import SensitivityTable
 
-__all__ = ["NULL_MODES", "NullReport", "apply_null"]
+__all__ = ["NULL_MODES", "STOCHASTIC_NULL_MODES", "NullReport", "apply_null", "uses_seed"]
 
 #: The nulls, in increasing order of how much they remove.
 NULL_MODES = ("shuffle", "uniform")
+
+#: The subset that draws, so that a seed names a different arm rather than the same one.
+STOCHASTIC_NULL_MODES = ("shuffle",)
+
+
+def uses_seed(mode: str) -> bool:
+    """Whether a seed distinguishes two runs of ``mode``.
+
+    One function answers this for the whole package. ``NullReport`` uses it to decide
+    whether the seed belongs in the allocator string and whether to record one at all;
+    a caller planning arms uses it to decide whether two seeds are two arms or one arm
+    named twice. Every caller that answered it with its own ``mode == "uniform"`` would
+    be another copy of the registry, and the copy that goes stale is the one that names
+    files -- a deterministic mode given two seeds plans two arms that write to one
+    record, and a stochastic one given two seeds plans one arm that silently keeps the
+    second draw.
+    """
+    return mode in STOCHASTIC_NULL_MODES
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,8 +136,8 @@ class NullReport:
     @property
     def label(self) -> str:
         """The suffix that goes in every artifact's ``allocator`` field."""
-        if self.mode == "uniform":
-            return "null:uniform"
+        if not uses_seed(self.mode):
+            return f"null:{self.mode}"
         return f"null:{self.mode}(seed={self.seed})"
 
     def summary(self) -> str:
@@ -199,7 +217,7 @@ def apply_null(
             None,
             NullReport(
                 mode=mode,
-                seed=None,
+                seed=seed if uses_seed(mode) else None,
                 modules=len(names),
                 moved=len(names),
                 fixed=0,
@@ -260,7 +278,7 @@ def apply_null(
         null_table,
         NullReport(
             mode=mode,
-            seed=seed,
+            seed=seed if uses_seed(mode) else None,
             modules=len(names),
             moved=len(names) - fixed,
             fixed=fixed,

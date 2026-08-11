@@ -102,6 +102,20 @@ def anchor_bytes(model: str, group_size: int) -> dict[int, int]:
     }
 
 
+def null_label(anchor: int, mode: str, seed: int) -> str:
+    """Name a control arm, putting the seed in only when it names a different arm.
+
+    Whether a seed distinguishes two runs of a mode is the package's question, so it is
+    asked rather than restated: a stochastic mode at a second seed is a second draw and
+    needs its own record, and a deterministic one at a second seed is the same arm and
+    must not get one. Seed 0 keeps the bare name so the arm already banked under it
+    stays the arm it was.
+    """
+    from dynquant.score.null import uses_seed
+
+    return f"dq_{anchor}b_{mode[:4]}" + (f"s{seed}" if uses_seed(mode) and seed else "")
+
+
 def plan_arms(
     budgets: dict[int, int],
     *,
@@ -148,7 +162,16 @@ def plan_arms(
                 # manifest carries `score_null`, and the table prints `dq-null` in the
                 # method column. A label is a filename; it is not where a control announces
                 # itself, and a wider one would misalign every row in the panel.
-                label=f"dq_{null_anchor}b_{mode[:4]}",
+                #
+                # The seed enters the label only when it distinguishes the arm, which is
+                # the package's question and not this driver's: a stochastic mode at a
+                # second seed is a second draw and needs its own record, and a
+                # deterministic one at a second seed is the same arm and must not get one.
+                # Seed 0 keeps the bare name so the arm already banked under it stays the
+                # arm it was. Without this the second seed writes over the first's record
+                # and map, the manifest lists both, and the table prints two rows that are
+                # one measurement -- which would read as a replication.
+                label=null_label(null_anchor, mode, null_seed),
                 kind="dq",
                 anchor=null_anchor,
                 target_bytes=budgets[null_anchor],
