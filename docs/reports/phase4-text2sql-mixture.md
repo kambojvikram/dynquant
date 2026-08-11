@@ -1819,7 +1819,10 @@ turns a correct guard into an annoying one.
 ### The first two arms: a 2.19-point 4-bit cost, and a 1.92x decode penalty
 
 Two of the seven records are on disk. The ceiling and the first baseline, both at 12 000 items,
-batch 32, 1024 new tokens, two shots at seed 0:
+batch 32, 1024 new tokens, two shots at seed 0. **The `bf16` row here is the record as first
+written, and it is superseded**: §13.2 re-scored the ceiling under the baselines' expert dispatch
+and it reads 84.29%, four items higher. The section is left at the number it was written against,
+because the point it makes is about a gap of 2.19 points and the re-score moves it by 0.03.
 
 | arm | execution match | vs bf16 | Gretel | WikiSQL | exact string | SQL errors | s / item |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -2206,219 +2209,352 @@ the pin predates `b54b108 Export batched expert banks instead of refusing them`.
 real code, just not this code. A measurement carries the tree it ran on, and on this campaign the
 tree that runs is deliberately not the tree that is written.
 
-## 13. The 4-bit margin is a fidelity difference, and so is the confound
+## 13. The 4-bit margin is a fidelity difference, and the confound is measured
 
-The panel reports DynQuant +0.64 points over GPTQ at 4 bits. That number is not one number.
-Split by source it is +1.03 on wikisql and -0.49 on gretel, and Cochran's Q over the two
-calls that heterogeneous (Q=6.32, *p*=0.012). But the sources differ in more than identity:
-the bf16 ceiling is 88.59% on wikisql and 71.63% on gretel, so on this panel "gretel" and
-"hard" are the same column and a source-wise test cannot tell them apart.
+The seven arms, 12 000 items each, batch 32, 1024 new tokens, two shots at seed 0, every arm on the
+same expert arithmetic. Bytes are what the manifest stores, divided by 8 467 856 128 parameters.
 
-**A confound of that shape has a cheap check.** Stratify instead by whether the *ceiling* got
-the item right -- a label that owes nothing to either compared arm, so McNemar stays valid
-inside each half -- and re-run the same paired test.
+| arm | GiB | bits/param | off anchor | execution match | correct | exact string | SQL errors | gretel | wikisql |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `bf16` | 15.773 | 16.0000 | -- | **84.29%** | 10 115 | 8 373 | 90 | 72.0% | 88.5% |
+| `gptq_4b` | 4.097 | 4.1565 | +0.0000% | 82.07% | 9 848 | 8 143 | 187 | 70.3% | 86.1% |
+| `awq_4b` | 4.097 | 4.1565 | +0.0000% | 81.77% | 9 812 | 8 092 | 118 | 69.4% | 86.0% |
+| **`dq_4b`** | 4.096 | 4.1547 | -0.0446% | **82.84%** | 9 941 | 8 158 | 119 | 69.7% | 87.4% |
+| `gptq_3b` | 3.104 | 3.1488 | +0.0000% | 60.76% | 7 291 | 5 127 | 1 008 | 54.0% | 63.1% |
+| `awq_3b` | 3.104 | 3.1488 | +0.0000% | 57.92% | 6 950 | 4 517 | 1 523 | 57.5% | 58.1% |
+| **`dq_3b`** | 3.103 | 3.1475 | -0.0413% | **79.89%** | 9 587 | 7 854 | 213 | 64.4% | 85.2% |
 
-| stratum | n | DynQuant vs GPTQ | *p* |
-|---|---:|---:|---:|
-| ceiling got it right | 10,111 | **+1.18** | 1.38e-06 |
-| ceiling got it wrong | 1,889 | **-2.22** | 0.00966 |
-| wikisql, ceiling right | 7,917 | **+1.58** | 1.26e-09 |
-| wikisql, ceiling wrong | 1,020 | **-3.24** | 0.00993 |
-| gretel, ceiling right | 2,194 | -0.27 | 0.708 |
-| gretel, ceiling wrong | 869 | -1.04 | 0.417 |
+3.85x compression at 4 bits and 5.08x at 3, with the DynQuant arms landing *under* their anchors
+rather than over -- §12 sets the anchor from the baselines' format precisely so that the arm whose
+accuracy is the claim cannot be handed the spare bytes. `unfinished_reasoning` is 0 on every arm, so no
+generation ran to the 1024-token cap without emitting a stop; `no query` is 1 on `gptq_3b` and 0
+elsewhere. There is no wall-clock column here on purpose -- the three re-scored arms ran two days
+after the four baselines and §13.3 explains why those two windows are not comparable. Everything
+below reads this table.
 
-The margin does not merely vary, it **changes sign with difficulty**, and it changes sign
-*within wikisql alone*. The source axis cannot produce that.
+The panel reports DynQuant +0.78 points over GPTQ at 4 bits. That number is not one number.
+Split by source it is +1.24 on wikisql and -0.59 on gretel, and Cochran's Q over the two calls
+that heterogeneous (Q=9.01, Holm *p*=0.00807). But the sources differ in more than identity: the
+bf16 ceiling is 88.50% on wikisql and 72.02% on gretel, so on this panel "gretel" and "hard" are
+the same column and a source-wise test cannot tell them apart.
 
-Those six rows spent two days in a scratch script on one machine, which is the same defect
-one level out from a number typed into a paragraph: not a figure nothing re-derives, but a
-whole tool nothing re-runs. `panel_table.py` now cuts the same six comparisons three ways --
-by source, by the ceiling's own answer, and by both crossed -- prints all three, and carries
-all three into the json the model cards read. The difficulty split needs no `sources.json`:
-the ceiling answered every item, so the label is already on disk.
+**A confound of that shape has a cheap check.** Stratify instead by whether the *ceiling* got the
+item right -- a label that owes nothing to either compared arm, so McNemar stays valid inside each
+half -- and re-run the same paired test. `panel_table.py` cuts all fifteen comparisons three ways
+now, by source, by the ceiling's own answer, and by both crossed, and carries all three into the
+json the model cards read. The difficulty split needs no `sources.json`: the ceiling answered every
+item, so the label is already on disk.
 
-| comparison | pooled | ceiling right / wrong | Q | *p* (Holm) | |
+| comparison | pooled | ceiling-right (10,115) / ceiling-wrong (1,885) | Q | *p* (Holm) | |
 |---|---:|---:|---:|---:|---|
-| dq vs gptq, 4b | +0.92 | +1.18 / -2.22 | 15.17 | 0.000295 | heterogeneous |
-| dq vs awq, 4b | +1.31 | +1.56 / -2.38 | 18.56 | 0.000066 | heterogeneous |
-| gptq vs awq, 4b | +0.34 | +0.39 / -0.16 | 0.32 | 0.570 | consistent |
-| gptq vs awq, 3b | +2.47 | +3.48 / -0.58 | 13.81 | 0.000405 | heterogeneous |
+| 4b DynQuant vs GPTQ | +1.03 | +1.26 / -1.80 | 11.70 | 0.00125 | heterogeneous |
+| 4b DynQuant vs AWQ | +1.42 | +1.65 / -2.02 | 15.68 | 0.0003 | heterogeneous |
+| 4b GPTQ vs AWQ | +0.35 | +0.40 / -0.21 | 0.40 | 0.525 | consistent |
+| 3b DynQuant vs GPTQ | +19.07 | +21.80 / +4.83 | 201.32 | 5.37e-45 | heterogeneous |
+| 3b DynQuant vs AWQ | +21.64 | +25.28 / +4.24 | 303.31 | 3.76e-67 | heterogeneous |
+| 3b GPTQ vs AWQ | +2.48 | +3.48 / -0.58 | 13.70 | 0.000643 | heterogeneous |
 
-The difficulty axis separates far harder than the source axis managed -- dq vs gptq at
-Q=15.17 against Q=6.32 -- which is the answer to the question a source-wise spread on this
-panel can only raise. It is not a second finding, though. §13.1 below shows the second row
-is the *fidelity* margin with its sign flipped, exactly: identical *p*, and the two
-discordant counts swapped. A method that tracks the ceiling more closely has to win the
-first row and lose the second. The Q measures how hard that identity bites here; it is not
-evidence for it.
+The difficulty axis separates harder than the source axis managed -- dq vs gptq at Q=11.70 against
+Q=9.01 -- which is the answer to the question a source-wise spread on this panel can only raise.
 
-Crossing the two axes is the only partition that tells them apart.
+**One qualification the earlier draft of this section did not need, and this one does.** The
+`-1.80` in the first row is a point estimate whose own McNemar does not separate: Holm *p*=0.126,
+interval crossing zero. Under the grouped-dispatch panel that cell read -2.22 at Holm 0.0342 and
+the sentence here was "the margin changes sign with difficulty", carried by the cell. It is now
+carried by the *spread* instead -- Q=11.70 at Holm 0.00125, which is a stronger test of the thing
+actually claimed. What the data supports is that the margin **varies with difficulty far more than
+sampling explains, and its point estimate is negative among the items the ceiling missed**. The
+sign itself is not separated at 4 bits and this section does not lean on it.
 
-| comparison | pooled | gretel R / gretel W / wikisql R / wikisql W | Q | *p* (Holm) | |
+Crossing the two axes is the only partition that tells source and difficulty apart.
+
+| comparison | pooled | gretel R (2,206) / gretel W (857) / wikisql R (7,909) / wikisql W (1,028) | Q | *p* (Holm) | |
 |---|---:|---:|---:|---:|---|
-| dq vs gptq, 4b | +1.04 | -0.27 / -1.04 / +1.58 / -3.24 | 24.70 | 5.35e-05 | heterogeneous |
-| dq vs awq, 4b | +1.32 | +1.55 / -2.65 / +1.57 / -2.16 | 18.64 | 0.00065 | heterogeneous |
-| gptq vs awq, 4b | +0.23 | +1.82 / -1.61 / -0.01 / +1.08 | 8.73 | 0.0331 | heterogeneous |
-| gptq vs awq, 3b | +2.10 | -5.06 / +0.58 / +5.85 / -1.57 | 90.96 | 5.44e-19 | heterogeneous |
+| 4b DynQuant vs GPTQ | +1.15 | -0.18 / -1.63 / +1.66 / -1.95 | 20.50 | 0.0004 | heterogeneous |
+| 4b DynQuant vs AWQ | +1.46 | +1.31 / -2.45 / +1.74 / -1.65 | 16.53 | 0.00177 | heterogeneous |
+| 4b GPTQ vs AWQ | +0.26 | +1.50 / -0.82 / +0.09 / +0.29 | 4.41 | 0.22 | consistent |
+| 3b DynQuant vs GPTQ | +18.94 | +14.14 / +0.82 / +23.93 / +8.17 | 305.36 | 3.44e-65 | heterogeneous |
+| 3b DynQuant vs AWQ | +20.82 | +8.98 / +1.75 / +29.83 / +6.32 | 668.74 | 7.56e-144 | heterogeneous |
+| 3b GPTQ vs AWQ | +2.10 | -5.17 / +0.93 / +5.89 / -1.85 | 94.46 | 9.64e-20 | heterogeneous |
 
-The third row is the control, and it is the one worth reading twice: GPTQ and AWQ do not
-separate from each other on aggregate accuracy at 4 bits at all (+0.34, *p*=0.272), and
-their margin still moves across the four cells. Cell structure is a property this panel
-finds in the *baselines*, so a heterogeneous row is a statement about the mixture and not a
-signature of the method under test. These cells are small and their intervals are wide, and
-that is not what they are read for: a margin that changes sign between one source's two
-cells held the source fixed while it did so, and no width of interval turns that back into
-a source effect.
+**And the third row is the one that changed most, in the direction that costs this section an
+argument.** Under the grouped panel, 4-bit GPTQ vs AWQ came out heterogeneous (Q=8.73, Holm
+0.0331), and this section read that as the reassuring result: two arms that do not separate on
+aggregate accuracy still move across the cells, so cell structure is a property of the *mixture*
+rather than a signature of the method under test. On the eager panel that row is consistent
+(Q=4.41, Holm 0.22) and the reassurance is gone. At 4 bits the baseline-only comparison is flat
+across all four cells while both comparisons involving DynQuant are not, which is the opposite of
+a mixture artifact: the structure is specific to the rows with DynQuant in them.
+
+That is a worse defence and a better position, because the structure has a mechanical explanation
+that does not need a control at all. §13.1 shows the ceiling-wrong row is the *fidelity* margin
+with its sign flipped, exactly -- identical *p*, discordant counts swapped. Any arm that tracks the
+ceiling more closely than its comparator **must** win the ceiling-right stratum and lose the
+ceiling-wrong one; opposite signs across difficulty are what fidelity looks like when it is read as
+accuracy, not a finding on top of it. The Q measures how hard that identity bites here. The
+baseline pair shows no structure at 4 bits for the same reason it shows no fidelity gap: +0.37 at
+*p*=0.177, nothing to decompose. The row that still carries the old reading is the 3-bit baseline
+pair -- GPTQ and AWQ separate by only +2.84 pooled and spread across cells at Q=94.46 -- so cell
+structure between two baselines is available on this mixture; it just is not available at 4 bits,
+where neither baseline is damaged enough to have any.
 
 ### 13.1 One measurement accounts for both halves
 
-A quantized arm either matches the ceiling on an item or flips it -- a hit is a boolean and
-there is no third case -- so accuracy is an **identity**, not a model:
+A quantized arm either matches the ceiling on an item or flips it -- a hit is a boolean and there
+is no third case -- so accuracy is an **identity**, not a model:
 
     accuracy = c * agree_where_right + (1 - c) * (1 - agree_where_wrong)
 
-`panel_table.py` computes this now rather than a scratch script, and its load-bearing test
-asserts the identity itself rather than four hand-checked percentages, because every
-plausible mis-edit still prints four believable numbers.
+with `c = 0.842917` on this panel. `panel_table.py` computes this rather than a scratch script, and
+its load-bearing test asserts the identity itself rather than four hand-checked percentages,
+because every plausible mis-edit still prints four believable numbers.
 
 | arm | accuracy | agrees with bf16 | where bf16 right | where bf16 wrong |
 |---|---:|---:|---:|---:|
-| gptq_4b | 82.07% | 93.91% | 95.08% | 87.61% |
-| awq_4b | 81.77% | 93.56% | 94.70% | 87.45% |
-| **dq_4b** | **82.71%** | **95.25%** | **96.26%** | **89.84%** |
-| bf16 | 84.26% | -- | -- | -- |
+| gptq_4b | 82.07% | 93.96% | 95.10% | 87.85% |
+| awq_4b | 81.77% | 93.59% | 94.70% | 87.64% |
+| **dq_4b** | **82.84%** | **95.30%** | **96.35%** | **89.66%** |
+| gptq_3b | 60.76% | 72.28% | 69.60% | 86.68% |
+| awq_3b | 57.92% | 69.26% | 66.12% | 86.10% |
+| **dq_3b** | **79.89%** | **89.90%** | **91.40%** | **81.86%** |
+| bf16 | 84.29% | -- | -- | -- |
 
-McNemar on the agreement indicator: dq vs gptq **+1.34** (+507/-346) *p*=3.93e-08; dq vs awq
-**+1.69** (+520/-317) *p*=2.28e-12; gptq vs awq +0.35 (+528/-486) *p*=0.198 -- **the two
-baselines do not separate from each other on fidelity**, exactly as they do not separate on
-accuracy (*p*=0.272). Feeding those back through the identity reproduces the accuracy margin
-to the penny and says which side of the ledger it came from: dq vs gptq is +0.99 where the
-ceiling is right and -0.35 where it is wrong, summing to the observed +0.64; dq vs awq is
-+1.32 and -0.38, summing to +0.94.
+McNemar on the agreement indicator: at 4 bits dq vs gptq **+1.34** (+514/-353) *p*=1.01e-07 and dq
+vs awq **+1.71** (+528/-323) *p*=8.47e-12, while gptq vs awq is +0.37 (+529/-485) *p*=0.177 --
+**the two baselines do not separate from each other on fidelity**, exactly as they do not separate
+on accuracy (*p*=0.272). At 3 bits dq vs gptq is **+17.62** (+2690/-576) and dq vs awq **+20.64**
+(+3070/-593), both at *p* below double precision.
 
-So the account is: **DynQuant tracks the ceiling more closely in both directions.** It
-inherits bf16's right answers, which wins the 84% of items where the ceiling is right, and
-inherits its wrong ones, which loses the other 16%. Two strata, opposite signs, one cause.
-It also explains why the margin is larger where the ceiling is higher: a point of fidelity
-moves accuracy by `2c - 1`, which is 0.77 on wikisql and 0.43 on gretel.
+Feeding those back through the identity reproduces every accuracy margin to the penny and says
+which side of the ledger it came from:
 
-Running the panel's own Cochran Q on the fidelity indicator separates the two baselines.
-`panel_table.py` prints both spreads and carries both into the json, because one of them
-without the other supports the opposite reading; verdicts follow the Holm-adjusted *p*
-within each block, and each block is three comparisons wide until the 3-bit arms land.
+| comparison | fidelity | where right | where wrong | accuracy contribution | total |
+|---|---:|---:|---:|---|---:|
+| 4b dq vs gptq | +1.34 | +1.26 | +1.80 | +1.06 and -0.28 | **+0.78** |
+| 4b dq vs awq | +1.71 | +1.65 | +2.02 | +1.39 and -0.32 | **+1.07** |
+| 3b dq vs gptq | +17.62 | +21.80 | -4.83 | +18.38 and +0.76 | **+19.13** |
+| 3b dq vs awq | +20.64 | +25.28 | -4.24 | +21.31 and +0.67 | **+21.98** |
 
-| comparison | gretel | wikisql | Q | *p* | *p* (Holm) | |
-|---|---:|---:|---:|---:|---:|---|
-| dq vs gptq, accuracy | -0.49 | +1.03 | 6.32 | 0.012 | 0.036 | heterogeneous |
-| dq vs gptq, fidelity | +0.10 | +1.77 | 7.64 | 0.0057 | 0.015 | heterogeneous |
-| dq vs awq, accuracy | +0.36 | +1.14 | 1.53 | 0.216 | 0.431 | consistent |
-| dq vs awq, fidelity | +1.86 | +1.63 | 0.13 | **0.719** | **0.719** | consistent |
-| gptq vs awq, accuracy | +0.85 | +0.11 | 1.19 | 0.276 | 0.431 | consistent |
-| gptq vs awq, fidelity | +1.76 | -0.13 | 7.88 | 0.0050 | 0.015 | heterogeneous |
+So the account at 4 bits is: **DynQuant tracks the ceiling more closely in both directions.** It
+inherits bf16's right answers, which wins the 84% of items where the ceiling is right, and inherits
+its wrong ones, which loses the other 16%. Two strata, opposite signs, one cause.
 
-Against AWQ the fidelity edge is flat across sources and the entire variation in the
-*accuracy* margin is the `2c - 1` arithmetic. Against GPTQ the heterogeneity is real and
-lives in fidelity itself.
+The 3-bit rows are the same identity describing something different. There the *wrong* column
+turns negative -- dq_3b agrees with bf16 on 81.86% of the items bf16 missed against gptq_3b's
+86.68% -- so DynQuant loses the inheritance term and still gains from it, because agreeing less
+often with a wrong answer is worth points. Both 3-bit contributions point the same way and there is
+no cancellation left to do. That is not a better version of the 4-bit result; it is what the
+measure reads when the comparator has stopped tracking the ceiling at all, and §13.4 takes it up.
 
-The last row is the check that the instrument is not simply reporting on whichever arm is
-being singled out. GPTQ and AWQ do not separate from each other on aggregate fidelity at
-all (+0.35, *p*=0.198), and yet their fidelity margin **changes sign** between the two
-sources, +1.76 on gretel against -0.13 on wikisql. Two arms that agree with the ceiling
-equally often, on a mixture, disagree about which half of the mixture they agree with it
-on -- so per-source fidelity structure is a property this panel finds in the baselines
-too, not a signature of the method under test. The 3-bit GPTQ arm shows the same instrument reading a collapse:
-it agrees with bf16 on 87.08% of the items bf16 got **wrong** and only 69.70% of the ones it
-got **right** -- an arm that has stopped tracking the ceiling and "agrees" on the failures
-by being broadly wrong. The identity confirms it, 0.8426 x 0.6970 + 0.1574 x 0.1292 =
-60.76%, its accuracy.
+`panel_table.py` prints the source spread on the fidelity indicator as well as on accuracy, and
+carries both into the json, because one of them without the other supports the opposite reading.
+Verdicts follow the Holm-adjusted *p* within each block, six comparisons wide.
 
-### 13.2 The confound is not a hypothesis here, and §8 already measured it
+| comparison | gretel | wikisql | Q | *p* (Holm) | |
+|---|---:|---:|---:|---:|---|
+| 4b dq vs gptq, accuracy | -0.59 | +1.24 | 9.01 | 0.00807 | heterogeneous |
+| 4b dq vs gptq, fidelity | +0.33 | +1.69 | 5.00 | 0.076 | consistent |
+| 4b dq vs awq, accuracy | +0.26 | +1.35 | 2.89 | 0.178 | consistent |
+| 4b dq vs awq, fidelity | +1.63 | +1.73 | 0.03 | 0.874 | consistent |
+| 4b gptq vs awq, accuracy | +0.85 | +0.11 | 1.19 | 0.276 | consistent |
+| 4b gptq vs awq, fidelity | +1.31 | +0.04 | 3.48 | 0.125 | consistent |
 
-Nothing above is new evidence about the *method*. §8's dispatch probe already established
-that the panel compares **dq(`grouped_mm`) against gptq(`eager`)**: `llm-compressor`
-linearises all 22 banks into 2,201 `Linear`s, so a baseline has no batched tensor left for
-the grouped kernel to take, while bf16 and both DynQuant arms keep their banks -- DynQuant
-being scored by encoding widths back into the ceiling's own checkpoint. §11 then read the
-records and found `experts` **absent** on all five banked arms, so no arm in this panel
-recorded choosing its dispatch.
+**Every 4-bit fidelity margin is flat across the two sources.** That is new -- on the grouped panel
+the dq-vs-gptq fidelity row was heterogeneous (Q=7.64, Holm 0.015) and so was the baseline pair
+(Q=7.88, Holm 0.015), and this section reported the baseline pair's fidelity margin *changing sign*
+between sources, +1.76 on gretel against -0.13 on wikisql. It is now +1.31 and +0.04. Both sign
+changes were within-noise structure that a second measurement did not reproduce, which is what a
+Holm-adjusted *p* of 0.015 across a six-row block is entitled to produce roughly this often.
 
-**That inference had one unstated assumption, and it survives being checked.** Every
-statement of the `grouped_mm` default in this repository cites transformers **5.14.1**, the
-version the checkpoint was written under -- and the panel runs **5.10.1**. On 5.10.1
-`modeling_lfm2_moe` contains no `grouped_mm` at all: `Lfm2MoeExperts.forward` is the
-indexing loop, and the `@use_experts_implementation` decorator swaps it for whatever
-`config._experts_implementation` names. The checkpoint's own config leaves that `None`, and
-`None` reaching `ExpertsInterface.get_interface` returns the eager loop **and logs a warning**
--- which appears **zero times** in the panel log's 60,674 lines. So it was not `None` at
-forward time. `PreTrainedModel.get_correct_experts_implementation` is where it stops being
-`None`:
+What is left is cleaner than what it replaces. At 4 bits the *fidelity* margin is one number per
+comparison, and the entire per-source variation in the *accuracy* margin is the identity applied to
+two different mixtures:
 
-```python
-applicable_experts = "grouped_mm" if requested_experts is None else requested_experts
-...
-if applicable_experts == "grouped_mm":
-    try:
-        self._grouped_mm_can_dispatch()
-    except (ValueError, ImportError):
-        applicable_experts = "eager"
-```
+| comparison | source | c | fidelity where right | where wrong | c-weighted | (1-c)-weighted | accuracy |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 4b dq vs gptq | gretel | 0.7202 | -0.18 | +1.63 | -0.13 | -0.46 | **-0.59** |
+| 4b dq vs gptq | wikisql | 0.8850 | +1.66 | +1.95 | +1.47 | -0.22 | **+1.24** |
+| 4b dq vs awq | gretel | 0.7202 | +1.31 | +2.45 | +0.95 | -0.69 | **+0.26** |
+| 4b dq vs awq | wikisql | 0.8850 | +1.74 | +1.65 | +1.54 | -0.19 | **+1.35** |
 
-`None` becomes `grouped_mm` on 5.10.1 exactly as on 5.14.1, and the one escape hatch cannot
-fire here: `_grouped_mm_can_dispatch` on this version raises only when the class does not
-support setting the implementation at all, which it does. It never asks torch or the device
-whether a grouped matmul is available, so there is no silent hardware fallback to `eager`
-hiding in this panel -- the failure mode that would have made the confound imaginary. The
-banked arms ran `grouped_mm`, on the version that ran them.
+gretel is 28.0% ceiling-wrong against wikisql's 11.5%, so the term DynQuant loses is weighted two
+and a half times more heavily there. The gretel accuracy margin is negative against GPTQ not
+because DynQuant tracks the ceiling worse on gretel -- it tracks it +0.33 better -- but because
+gretel is the harder half and the penalty for tracking closely is charged on the hard items. This
+is arithmetic, not inference: the four rows sum to the observed margins exactly.
 
-**What makes that decisive for a fidelity claim specifically is that §8's probe contains a
-fidelity measurement.** Its first cell is bf16 against bf16, one load, dispatch varied and
-nothing else:
+The instrument reads a collapse the same way. `gptq_3b` agrees with bf16 on 86.68% of the items
+bf16 got **wrong** and only 69.60% of the ones it got **right** -- where-wrong above where-right,
+which no arm that is tracking the ceiling can produce; it "agrees" on the failures by being broadly
+wrong. `awq_3b` is the same shape at 86.10 against 66.12. The identity confirms both:
+`0.842917 x 69.60% + 0.157083 x 13.32% = 60.76%` and `0.842917 x 66.12% + 0.157083 x 13.90% =
+57.92%`, their accuracies. `dq_3b` keeps the normal ordering, 91.40 against 81.86.
 
-```
-A vs B   bf16: grouped_mm against eager    (dispatch, unquantized)   0.9876
-B vs C   eager: bf16 against dq            (quantization)            0.9567
-```
+### 13.2 The confound is closed by measurement, not by argument
 
-That 0.9876 is the ceiling agreeing **with itself** at 98.76% across exactly the dispatch
-change that separates the DynQuant arms from the baselines. The quantity this section
-reports is agreement with bf16, and the dispatch alone moves it by **1.24 points** against a
-claimed fidelity gap of **1.34**. The confound is not merely the same order as the effect;
-on the same axis, in the same units, it is nearly the whole of it.
+Everything above is a second reading of one panel. The first reading came from a panel in which
+`dq` and `bf16` ran the model's batched expert banks through `grouped_mm` while `gptq` and `awq`
+could not -- `llm-compressor` linearises all 22 banks into 2,201 `Linear`s, so a baseline has no
+batched tensor left for the grouped kernel to take. DynQuant is scored by encoding widths back into
+the ceiling's own checkpoint, so it kept its banks and the ceiling's arithmetic together.
 
-The mapping from teacher-forced token agreement over 24 items to exact-match over 12,000
-generations is unknown, and it is unknown in *both* directions -- 1.24% of gold positions
-spread over 20--40-token queries could touch far more than 1.24% of items, or greedy decode
-could absorb most of it. That uncertainty is the point. The honest statement is:
+That was a real confound on the exact quantity this section reports. §8's dispatch probe put a
+number on it: bf16 against bf16, one load, dispatch varied and nothing else, agreed on **98.76%** of
+teacher-forced argmax tokens. Dispatch alone moved agreement-with-bf16 by 1.24 points against a
+claimed fidelity gap of 1.34. Same axis, same units, nearly the whole of it. The honest statement
+this section carried was that the data could not separate the two.
 
-> At 4 bits DynQuant tracks the unquantized model more closely than either baseline, by
-> +1.34 and +1.69 points of agreement. DynQuant is also scored through the same expert
-> dispatch as the ceiling while the baselines are not, and that difference alone moves
-> agreement with bf16 by 1.24 points. This data cannot separate the two.
+**`experiments/phase4/rescore_eager.sh` re-scored `bf16`, `dq_4b` and `dq_3b` under
+`--experts-impl eager`, and the panel above is that re-score.** Every arm in it now runs the
+arithmetic the baselines were forced onto. The three re-scored records carry
+`"experts": {"found": "grouped_mm", "ran": "eager"}`, which is the second thing the run settles:
+the first panel's banked arms really did dispatch `grouped_mm`, so this is a measurement of the
+confound and not a relabelling of it. The allocation did not move -- the driver reported
+`allocation unchanged` and `maps/` is byte-identical -- so the only difference between the two
+panels is the expert kernel. Both are committed:
+`experiments/phase4/results/s4-lfm25-panel/` is the eager panel of record, and
+`experiments/phase4/results/s4-lfm25-panel-grouped_mm/` keeps the three superseded records.
 
-The accuracy headline carries the identical caveat, because it is the same measurement seen
-through the identity above -- which is why the panel prints `!` on those rows and why the
-model cards emit the `0.29x` figure rather than stripping it.
+Net, dispatch was worth almost nothing:
 
-One thing §8 does settle in the method's favour: `dynquant_experts_forward` indexes a packed
-bank from inside the grouped path and measures **bit-identical** to `grouped_mm`, 0.00% of
-argmax tokens against `eager`'s 1.95% at this model's MoE geometry. So DynQuant's own packed
-path introduces nothing. The confound is entirely that the *baselines* were moved and the
-ceiling was not.
+| arm | grouped_mm | eager | delta | items won / lost | items changed |
+|---|---:|---:|---:|---:|---:|
+| bf16 | 84.258% | 84.292% | +0.033 | 53 / 49 | 102 (0.85%) |
+| dq_4b | 82.708% | 82.842% | +0.133 | 74 / 58 | 132 (1.10%) |
+| dq_3b | 79.850% | 79.892% | +0.042 | 108 / 103 | 211 (1.76%) |
 
-**The deciding experiment therefore stops being hygiene.** `experiments/phase4/rescore_eager.sh`
-re-scores `bf16`, `dq_4b` and `dq_3b` under `--experts-impl eager`, putting every arm on the
-arithmetic the baselines ran. It re-computes the ceiling too, so every number in §13.1 moves
--- that is what it is for. §8 brackets it near **15 hours** on the argument that holding the
-weights fixed on both sides leaves the fixed 1.82x multiplier as the only one in play.
+**The net is small because the churn is symmetric, and the churn is the honest measure.** Dispatch
+moved 102 of bf16's 12,000 items -- 0.85%, against §8's 1.24% estimate on 24 teacher-forced items,
+close enough that the probe was measuring the right thing -- but it moved 53 up and 49 down. What
+§8 could supply was a magnitude. What it could not supply, and what no argument was going to
+supply, was a direction. Near-symmetric noise at that rate cannot manufacture a systematic
+1.34-point fidelity gap in either arm's favour.
+
+And it did not. Taking the arithmetic away from DynQuant made every margin against a baseline
+**larger**, not smaller:
+
+| comparison | grouped panel | eager panel |
+|---|---:|---:|
+| 4b dq vs gptq, accuracy | +0.64 | **+0.78** |
+| 4b dq vs awq, accuracy | +0.94 | **+1.08** |
+| 3b dq vs gptq, accuracy | +19.09 | **+19.13** |
+| 3b dq vs awq, accuracy | +21.93 | **+21.98** |
+
+The direction is the point. A confound that had been supplying the effect would have shrunk the
+margin when it was removed; this one was costing DynQuant about a tenth of a point. The blockquote
+this section used to end on -- *"DynQuant is also scored through the same expert dispatch as the
+ceiling while the baselines are not... This data cannot separate the two"* -- is retired. The
+replacement is not an argument:
+
+> At 4 bits DynQuant tracks the unquantized model more closely than either baseline, by +1.34 and
+> +1.71 points of agreement, measured with every arm on one expert arithmetic. The dispatch
+> difference that previously separated it from the baselines was measured directly by re-scoring
+> the three banked arms under the baselines' kernel: it changes 0.85--1.76% of items, near
+> symmetrically, and removing it *increased* the margin.
+
+Two things §8 established still stand and are not superseded by this. `dynquant_experts_forward`
+indexes a packed bank from inside the grouped path and measures **bit-identical** to `grouped_mm`,
+0.00% of argmax tokens against `eager`'s 1.95% at this model's MoE geometry, so DynQuant's own
+packed path introduces nothing of its own. And the version reasoning holds: the panel ran
+transformers 5.10.1, where `PreTrainedModel.get_correct_experts_implementation` turns a `None`
+request into `grouped_mm` exactly as 5.14.1 does, and `_grouped_mm_can_dispatch` on that version
+raises only when the class cannot set an implementation at all -- it never asks torch or the device
+-- so there was no silent hardware fallback to `eager` hiding in the first panel. The records
+agreeing with that inference is a check on it, not a coincidence.
 
 ### 13.3 A corroborating observation, at the same confidence
 
-Decode time behaves like a fidelity signal. On identical items and hardware, `dq_4b` covered
-items 4800--8800 in **46 minutes** against `awq_4b`'s **1h49m**. A model that emits
-well-formed SQL stops at the terminator; a damaged one runs to `max_new_tokens`, which is
-the mechanism §8 used to attribute at least 1.40--1.45x of the linearised arms' slowdown to
-generation length rather than to unpack cost. It is consistent with the fidelity account. It
-is equally consistent with the dispatch confound, and it is not independent evidence.
+Decode time behaves like a fidelity signal. Within the original panel -- one box, one window, one
+batch size, all seven arms -- `dq_4b` finished 12,000 items in 10,011 s against `awq_4b`'s
+23,351 s and `gptq_4b`'s 19,805 s; at 3 bits the gap widens to `dq_3b` 10,216 s against `gptq_3b`
+38,209 s and `awq_3b` 44,396 s. A model that emits well-formed SQL stops at the terminator; a
+damaged one runs to `max_new_tokens`, which is the mechanism §8 used to attribute at least
+1.40--1.45x of the linearised arms' slowdown to generation length rather than to unpack cost. It is
+consistent with the fidelity account. It is also consistent with the dispatch difference, since
+`dq_4b` was on `grouped_mm` and both baselines were not, and it is not independent evidence.
+
+**The re-score does not fix that, and the reason is worth recording so it is not mined later.** The
+eager arms finished far faster -- bf16 3,524 s against 10,308 s, `dq_4b` 2,820 s against 10,011 s,
+`dq_3b` 3,461 s against 10,216 s, a near-uniform 2.9--3.6x. Batch size is the one configuration
+difference that could produce a uniform factor, and it is excluded from the records themselves
+rather than from a launch log: every one of the ten records carries a `decode` block and all ten
+read `batch_size: 32`. So the obvious reading is that `grouped_mm` costs 3x here. That reading is
+still not available: the two panels ran two days apart, no arm ran in both windows under one
+dispatch, and nothing in the records pins box state. A uniform factor across all three arms is
+exactly what a slower window looks like and exactly what a slower kernel looks like. The timing
+comparison that survives is the within-window one above, with the caveat it already had.
+
+### 13.4 The 3-bit result, and the control it still needs
+
+At 3 bits the panel stops being a comparison of degradations and becomes a comparison of a
+degradation against a collapse. At 3,332,904,576 bytes -- 3.10 GiB, 5.08x compression, matched to
+within 0.04% -- GPTQ scores 60.76% and AWQ 57.92% against the bf16 ceiling's 84.29%. DynQuant
+scores **79.89%**, which is +19.13 over GPTQ (+2781/-485) and +21.98 over AWQ (+3150/-513), both at
+*p* below double precision, and -4.40 against the ceiling it was encoded from. Against bf16 the
+three arms cost -23.53, -26.37 and **-4.40** points respectively. It is the only 3-bit arm on this
+panel that is still a working text-to-SQL model: 213 unparseable generations against GPTQ's 1,008
+and AWQ's 1,523.
+
+**What the allocator did is legible, and it is not diffuse.** `experiments/phase4/map_roles.py`
+reads the two exported maps and prints role by width; the table below is generated, not
+transcribed. 133 quantized modules, four widths.
+
+| role | floor | n | dq_4b @ 2/3/4/8b | dq_3b @ 2/3/4/8b |
+|---|---:|---:|---|---|
+| `embedding` | 8* | 1 | 0 / 0 / 0 / 1 | 0 / 0 / 1 / 0 |
+| `moe.router` | 8 | 22 | 0 / 0 / 0 / 22 | 0 / 0 / 0 / 22 |
+| `attn.k` | 4 | 6 | 0 / 0 / 0 / 6 | 0 / 0 / 0 / 6 |
+| `attn.o` | 4 | 24 | 0 / 0 / 7 / 17 | 0 / 0 / 23 / 1 |
+| `attn.q` | 4 | 6 | 0 / 0 / 0 / 6 | 0 / 0 / 6 / 0 |
+| `attn.v` | 4 | 6 | 0 / 0 / 0 / 6 | 0 / 0 / 0 / 6 |
+| `mlp.gate` | 4 | 2 | 0 / 0 / 1 / 1 | 0 / 0 / 2 / 0 |
+| `moe.expert.gate_up` | 4* | 22 | 0 / 0 / 22 / 0 | 4 / 10 / 8 / 0 |
+| `ssm.in` | 4 | 18 | 0 / 0 / 17 / 1 | 0 / 0 / 18 / 0 |
+| `mlp.down` | 3 | 2 | 0 / 0 / 0 / 2 | 0 / 0 / 2 / 0 |
+| `mlp.up` | 3 | 2 | 0 / 0 / 1 / 1 | 0 / 1 / 1 / 0 |
+| `moe.expert.down` | 2 | 22 | 4 / 14 / 4 / 0 | 22 / 0 / 0 / 0 |
+
+Two rows carry most of the story. **All 22 routers sit at 8 bits at both budgets** -- the widest
+width in the table, on 22 of the smallest tensors in the model, held there while the budget tightens
+by a full bit per parameter around them. A router that mis-ranks its top-k sends a token to the
+wrong expert and no downstream precision recovers it, and this is the failure a uniform 3-bit
+recipe has no way to avoid. Against that, **all 22 expert down-projections go to 2 bits at the
+3-bit budget** -- 0.94 G parameters at the cheapest width in the table -- which is where the bytes
+for the routers come from. Those two decisions are the shape of the map.
+
+The 4-bit map breached no floor at all: the budget was not binding on any role. The 3-bit map
+breached 15.
+
+| role | floor | assigned | modules | params |
+|---|---:|---:|---:|---:|
+| `embedding` | 8 | **4** | 1 | 0.26G |
+| `moe.expert.gate_up` | 4 | **2** | 4 | 0.94G |
+| `moe.expert.gate_up` | 4 | **3** | 10 | 2.35G |
+
+That is the soft-floor mechanism doing the job P4 specified for it: rather than returning the floor
+map and reporting failure, the allocator downgrades by lowest ROI and names every role it broke.
+`embedding` reads as floor 8 rather than the 4 of `DEFAULT_FLOOR_BITS` because this checkpoint ties
+the embedding to the LM head and `Policy.floor_for` takes the strictest floor across a tie -- the
+star in the widths table marks a floor read from the map's own violation record rather than from the
+default table, which is a distinction the tool was taught after its first run printed both and
+contradicted itself three lines apart. The `attn.o` row is 24 modules because `role_of_name` files
+the short-convolution block's `out_proj` alongside attention's; both carry floor 4, so the widths
+are right and only the label is broad. The allocator classified from the module tree and did not
+merge them.
+
+**And here is what this section cannot yet claim.** The +19.13 is byte-matched, paired, and
+enormous, and it credits *DynQuant-the-method*. What it demonstrates is *DynQuant-the-allocator*:
+that a mixed-width map holding routers at 8 bits and expert down-projections at 2 beats a uniform
+3-bit recipe by nineteen points. Nothing in this panel separates the map's **structure** from the
+**signal that chose it**. The decomposing arm is a matched-byte mixed-width map allocated without
+the signal -- shuffled scores, or rank-product, or uniform-within-role at the same byte target --
+and it has not been run on this model. Prior campaigns say the answer is not predictable from
+elsewhere: the signal's share of the margin was 12% on Qwen3.5-2B and 56% on Ministral-8B at
+comparable anchors, and at 4 bits on Qwen a plain RTN map tied DynQuant at matched bytes. A second
+control worth the same run is GPTQ and AWQ given *DynQuant's* bit map, which would price the
+allocator against the quantizer. Until one of those lands, the defensible statement is that
+role-aware mixed-width allocation at 3 bits beats uniform 3-bit by nineteen points on this model,
+and the share of that attributable to the plasticity-times-saliency score is unmeasured here.
 
 ## 14. Status
 
@@ -2499,9 +2635,24 @@ unfinished generations in either arm, so it is unfused kernels over the batched 
 damage; and the discordance rate the whole power calculation rests on is **6.1%** here rather than
 the 20% carried over from phase 3.
 
-Not done, in order: the five remaining arms at matched
-bytes -- GPTQ and AWQ through the linearized structure verified bit-exact in §10, all three widths
-weighed rather than requested; then the paired comparison over stored per-item hits.
+Also done since: **all seven arms, and then three of them twice.** The panel landed at matched
+bytes -- 4 399 629 312 B and 3 332 904 576 B, every arm within 0.05% of its anchor -- and the
+paired comparison over stored per-item hits ran on all fifteen pairs, cut by source, by the
+ceiling's own answer, and by both crossed. Then `rescore_eager.sh` re-ran `bf16`, `dq_4b` and
+`dq_3b` under the baselines' expert dispatch, which closed the one confound §13 could not argue
+its way out of: it changes 0.85--1.76% of items, near symmetrically, and taking it away made every
+margin **larger**. Both panels are in the repository -- `experiments/phase4/results/s4-lfm25-panel/`
+is the panel of record and `.../s4-lfm25-panel-grouped_mm/` keeps the three superseded records --
+so the comparison no longer depends on a box whose `/workspace` is not a volume. The headline is
++0.78 over GPTQ at 4 bits and **+19.13 at 3**, against a 4.40-point cost from the ceiling.
+
+Not done, and it is the control the 3-bit number needs rather than a loose end: **a matched-byte
+mixed-width map allocated without the signal.** Shuffled scores, rank-product, or uniform-within-
+role at the same anchor -- any of the three decomposes +19.13 into what the allocator's structure
+is worth and what the plasticity-times-saliency score is worth on top of it. Nothing in this panel
+separates them, and prior campaigns say the split is not portable: 12% on Qwen3.5-2B, 56% on
+Ministral-8B. §13.4 states the claim at the strength the data supports. Also not done: GPTQ and
+AWQ given DynQuant's own bit map, which would price the allocator against the quantizer.
 
 One number in this report is now conditional on §11 rather than absolute. The fine-tuned model's
 accuracy is a claim about text-to-SQL only because the filter ran; before it, 38 of the 200 WikiSQL
