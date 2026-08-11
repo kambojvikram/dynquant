@@ -199,6 +199,7 @@ def _write_panel(
     omit: tuple[str, ...] = (),
     ceiling_correct: int = 320,
     nulls: tuple[str, ...] = (),
+    draws: tuple[tuple[str, int], ...] = (),
 ) -> Path:
     """A full seven-arm panel on disk, in the shape ``arms_lfm2 run`` writes.
 
@@ -222,15 +223,24 @@ def _write_panel(
         "awq_3b": three[2],
     }
 
+    # Label, mode and seed for every control arm: the first draw of each mode, then any
+    # further draws of one. Built once and read by both the hits below and the manifest
+    # further down, so a redrawn arm cannot end up scored under one name and planned under
+    # another -- which is a failure the table would report as a missing row.
+    controls = [(f"dq_3b_{mode[:4]}", mode, 0) for mode in nulls]
+    controls += [(f"dq_3b_{mode[:4]}s{seed}", mode, seed) for mode, seed in draws]
+
     # A control's hits sit between the arm it controls and the baseline it is measured
     # against, which is the only shape that makes both of its rows non-degenerate: a
     # control identical to `dq_3b` gives a zero signal row and a control identical to
     # `gptq_3b` gives a zero shape row, and either one would let a printer that dropped a
-    # row still pass. Deterministic and index-based rather than sampled, because a fixture
-    # that reseeds is a fixture whose failures do not reproduce.
-    for index, mode in enumerate(nulls):
+    # row still pass. Each control hands back a little more than the one before it, so the
+    # ladder's rungs are all positive and a reversed row shows up as a sign. Deterministic
+    # and index-based rather than sampled, because a fixture that reseeds is a fixture
+    # whose failures do not reproduce.
+    for index, (label, _, _) in enumerate(controls):
         share = 3 + index
-        hits[f"dq_3b_{mode[:4]}"] = [
+        hits[label] = [
             base if (mine and not base and position % share) else mine
             for position, (mine, base) in enumerate(
                 zip(hits["dq_3b"], hits["gptq_3b"], strict=True)
@@ -256,8 +266,7 @@ def _write_panel(
                 entry["map"] = str(path)
                 _write_map(path, width, entry["nbytes"], breach=width == 3 and breach_at_3b)
             arms.append(entry)
-    for mode in nulls:
-        label = f"dq_3b_{mode[:4]}"
+    for label, mode, seed in controls:
         path = maps / f"{label}.json"
         _write_map(path, 3, ANCHORS[3], breach=breach_at_3b)
         arms.append(
@@ -268,7 +277,7 @@ def _write_panel(
                 "target_bytes": ANCHORS[3],
                 "nbytes": ANCHORS[3],
                 "map": str(path),
-                "score_null": {"mode": mode, "seed": 0},
+                "score_null": {"mode": mode, "seed": seed},
             }
         )
 
@@ -2332,3 +2341,117 @@ def test_the_ladder_is_ordered_by_the_package_and_not_by_the_manifest(
         ("dq_3b_shuf", "dq_3b_unif"),
         ("dq_3b_unif", "gptq_3b"),
     ]
+
+
+def _redrawn_block(table: Any, printed: str) -> str:
+    """The redrawn block, sliced the way :func:`_decomposition_block` slices its own."""
+    start = printed.index("the same rung, redrawn:")
+    closing = table.REPLICATE_NOTE[-1]
+    return printed[start : printed.index(closing, start) + len(closing)]
+
+
+def test_a_further_draw_of_a_rung_does_not_become_a_further_rung(
+    table: Any, tmp_path: Path
+) -> None:
+    """Redrawing a control measures the rung again; it does not add a step to the ladder.
+
+    The ladder partitions the margin because each rung runs from the arm the one before it
+    ran to. Chaining four shuffle draws would still sum to the margin -- any chain of the
+    same endpoints does -- while printing three rows that read "signal: shuffle vs shuffle",
+    each worth the difference between two permutations of the same nulled score, and
+    splitting the rung shuffle actually buys across the four of them. The block would then
+    say the signal was worth a quarter of what it is worth, in rows that all look valid.
+
+    Turns red when: the chain is built by pairing every control arm in rank order.
+    """
+    out = _write_panel(
+        tmp_path / "panel", nulls=("shuffle", "uniform"), draws=(("shuffle", 1), ("shuffle", 2))
+    )
+    printed = _run(table, out, "--json-out", str(tmp_path / "panel.json"))
+    payload = json.loads((tmp_path / "panel.json").read_text(encoding="utf-8"))
+
+    margin = next(
+        row["delta_points"]
+        for row in payload["head_to_head"]
+        if (row["left"], row["right"]) == ("dq_3b", "gptq_3b")
+    )
+    assert [(row["left"], row["right"]) for row in payload["decomposition"]] == [
+        ("dq_3b", "dq_3b_shuf"),
+        ("dq_3b_shuf", "dq_3b_unif"),
+        ("dq_3b_unif", "gptq_3b"),
+    ]
+    assert round(sum(row["delta_points"] for row in payload["decomposition"]), 2) == round(
+        margin, 2
+    )
+
+    # Every further draw runs from the arm its own rung runs from -- `dq_3b` here, since the
+    # shuffle rung is the first -- so the spread is the spread on that rung and not on some
+    # other quantity wearing the same row.
+    assert [(row["left"], row["right"]) for row in payload["replicates"]] == [
+        ("dq_3b", "dq_3b_shufs1"),
+        ("dq_3b", "dq_3b_shufs2"),
+    ]
+    block = _redrawn_block(table, printed)
+    assert "redrawn: shuffle @1" in block and "redrawn: shuffle @2" in block
+    assert "shuffle vs shuffle" not in printed
+
+
+def test_the_ladder_prints_the_draw_a_rule_picked_and_not_the_one_that_flatters_it(
+    table: Any, tmp_path: Path
+) -> None:
+    """Which draw is the rung is decided by lowest seed, fixed before any of them ran.
+
+    A block that printed, say, the median or the best of four draws would be choosing the
+    published rung with the numbers in hand. The fixture degrades each successive control
+    further, so seed 0 is here the *smallest* of the three shuffle rungs -- if the printer
+    were picking by size in either direction this fails, and if it were picking by seed it
+    passes for the reason the docstring gives.
+
+    Turns red when: the representative draw is chosen from the measurements.
+    """
+    out = _write_panel(
+        tmp_path / "panel", nulls=("shuffle",), draws=(("shuffle", 1), ("shuffle", 2))
+    )
+    _run(table, out, "--json-out", str(tmp_path / "panel.json"))
+    payload = json.loads((tmp_path / "panel.json").read_text(encoding="utf-8"))
+
+    rung = next(row for row in payload["decomposition"] if row["right"] == "dq_3b_shuf")
+    others = [row["delta_points"] for row in payload["replicates"]]
+    assert len(others) == 2
+    assert all(other > rung["delta_points"] for other in others), (
+        "the fixture makes each later draw a wider rung, so a size rule would not pick seed 0"
+    )
+
+
+def test_a_rung_drawn_once_prints_no_redrawn_block(table: Any, tmp_path: Path) -> None:
+    """A panel whose controls each ran once has no spread, and must not imply it has one.
+
+    An empty block titled "the same rung, redrawn" is a claim that the question was asked,
+    in a table where every other block appears only when its arms did. The banked panels
+    were drawn once and their committed tables must keep re-printing identically.
+
+    Turns red when: the block stops being guarded by whether anything was redrawn.
+    """
+    printed = _run(table, _write_panel(tmp_path / "panel", nulls=("shuffle", "uniform")))
+
+    assert "the decomposition" in printed
+    assert "redrawn" not in printed
+
+
+def test_a_redrawn_rung_is_corrected_in_its_own_family(table: Any, tmp_path: Path) -> None:
+    """The spread on a rung is not a rung, and must not enlarge the ladder's multiplier.
+
+    Holm's multiplier is the size of the family a comparison is corrected in. Folding two
+    further draws into the three-row ladder would raise every rung's adjusted p by a factor
+    of 5/3 for having asked how much the choice of permutation was worth -- a question about
+    the control's variance, not about what the allocator put back.
+
+    Turns red when: the two blocks are corrected together, in either direction.
+    """
+    out = _write_panel(
+        tmp_path / "panel", nulls=("shuffle", "uniform"), draws=(("shuffle", 1), ("shuffle", 2))
+    )
+    printed = _run(table, out)
+
+    assert "Holm-adjusted over 3 of 3 comparisons" in _decomposition_block(table, printed)
+    assert "Holm-adjusted over 2 of 2 comparisons" in _redrawn_block(table, printed)

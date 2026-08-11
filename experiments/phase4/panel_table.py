@@ -127,14 +127,97 @@ DECOMPOSITION_NOTE = (
 )
 
 
-def decomposition_family(built: list[dict[str, Any]]) -> tuple[tuple[str, str, str], ...]:
-    """The comparisons a signal-free control makes available, if one ran.
+#: Printed under the redrawn block, and only when a rung was drawn more than once.
+REPLICATE_NOTE = (
+    "A rung is one draw of its control; these are the others -- the same rung, run from the",
+    "same arm, with a different permutation. They are not themselves rungs. The ladder",
+    "partitions the margin only because each rung runs from the arm the one before it ran",
+    "to, and two draws of one control are the same step taken twice, so adding these to the",
+    "ladder would count that step again. Read them as the spread on their rung: the ladder",
+    "prints one draw, chosen by a rule fixed before the data -- the lowest seed -- and how",
+    "far these land from it is what that choice was worth.",
+)
+
+
+def control_chains(
+    built: list[dict[str, Any]],
+) -> dict[int, tuple[list[tuple[str, str]], list[tuple[str, str, str, int]]]]:
+    """Per anchor: the ladder's arms in order, and every further draw of one of its rungs.
 
     Discovered from each arm's ``score_null`` provenance rather than from a suffix on its
-    label, for the reason this file already gives about source labels: a label is a
-    filename someone typed and the manifest is what the driver wrote. An arm named
-    ``dq_3b_shuf`` that carries no ``score_null`` block did not have its signal nulled, and
-    putting it in this family would report a control that was never run.
+    label, for the reason this file already gives about source labels: a label is a filename
+    someone typed and the manifest is what the driver wrote. An arm named ``dq_3b_shuf``
+    that carries no ``score_null`` block did not have its signal nulled, and putting it on
+    the ladder would report a control that was never run.
+
+    One rung per *mode*, because a rung is a step and two draws of one control are the same
+    step taken twice. Chaining them would still sum to the margin -- any chain does -- while
+    reading as though a permutation were a thing the allocator puts back, and it would split
+    the rung that mode does buy across as many near-zero rows as there were draws. The
+    further draws come back separately so the caller can price them as a spread.
+
+    The draw the ladder prints is the lowest seed, which is a rule rather than a choice:
+    fixed before the numbers, it cannot be the draw that made the rung look best. The others
+    say what it was worth.
+
+    The mode order is the package's, not this file's: :data:`NULL_MODES` is declared in
+    increasing order of how much each mode removes, and a second copy of that ordering here
+    would be a copy that goes stale in the direction of a silently mis-ordered ladder. A
+    mode this package no longer knows sorts last rather than raising -- the sum over the
+    rungs is the margin whatever the order, so a wrong order costs interpretability and not
+    correctness, and it shows up as a negative rung rather than as a wrong total.
+    """
+    from dynquant.score.null import NULL_MODES
+
+    controls: dict[int, list[tuple[int, int, str, str]]] = {}
+    for row in built:
+        spec = row.get("score_null")
+        if not spec or not row.get("anchor"):
+            continue
+        mode = str(spec.get("mode", "null"))
+        rank = NULL_MODES.index(mode) if mode in NULL_MODES else len(NULL_MODES)
+        controls.setdefault(int(row["anchor"]), []).append(
+            (rank, int(spec.get("seed", 0)), str(row["label"]), mode)
+        )
+
+    chains: dict[int, tuple[list[tuple[str, str]], list[tuple[str, str, str, int]]]] = {}
+    for width in sorted(controls):
+        chain = [(f"dq_{width}b", "dq")]
+        rung_at: dict[str, int] = {}
+        further: list[tuple[int, str, str, int]] = []
+        for _, seed, label, mode in sorted(controls[width]):
+            if mode in rung_at:
+                further.append((rung_at[mode], label, mode, seed))
+                continue
+            rung_at[mode] = len(chain)
+            chain.append((label, mode))
+        chain.append((f"gptq_{width}b", "GPTQ"))
+        # The arm a redrawn rung runs *from* is the one before its rung on the ladder, so a
+        # further draw is weighed against exactly what the printed draw was weighed against.
+        # Against anything else it would be a different quantity wearing the same row, and
+        # the spread would not be the spread on that rung.
+        chains[width] = (
+            chain,
+            [(chain[index - 1][0], label, mode, seed) for index, label, mode, seed in further],
+        )
+    return chains
+
+
+def replicate_family(built: list[dict[str, Any]]) -> tuple[tuple[str, str, str], ...]:
+    """Each draw of a rung after the one the ladder prints, against that rung's own left arm.
+
+    Empty unless a mode ran at more than one seed, and the caller prints nothing rather than
+    a block explaining that nothing was redrawn.
+    """
+    return tuple(
+        (left, label, f"{width}b  redrawn: {mode} @{seed}")
+        for width, (_, further) in control_chains(built).items()
+        for left, label, mode, seed in further
+    )
+
+
+def decomposition_family(built: list[dict[str, Any]]) -> tuple[tuple[str, str, str], ...]:
+    """The ladder a signal-free control makes available, if one ran.
 
     Chained rather than fanned out, because the controls are nested: ``uniform`` removes
     everything ``shuffle`` removes and the pricing table besides. Two controls compared
@@ -145,12 +228,8 @@ def decomposition_family(built: list[dict[str, Any]]) -> tuple[tuple[str, str, s
     keeps. With a single control the two are the same block, which is why this generalises
     rather than replaces.
 
-    The order is the package's, not this file's: :data:`NULL_MODES` is declared in
-    increasing order of how much each mode removes, and a second copy of that ordering here
-    would be a copy that goes stale in the direction of a silently mis-ordered ladder. A
-    mode this package no longer knows sorts last rather than raising -- the sum over the
-    rungs is the margin whatever the order, so a wrong order costs interpretability and not
-    correctness, and it shows up as a negative rung rather than as a wrong total.
+    The arms and their order come from :func:`control_chains`, which also decides which draw
+    of a redrawn rung is the one this block prints.
 
     Empty when no control is present, and the caller prints nothing rather than placeholder
     rows -- the seven-arm panel does not ask this question and its table should not grow a
@@ -158,27 +237,12 @@ def decomposition_family(built: list[dict[str, Any]]) -> tuple[tuple[str, str, s
     """
     from itertools import pairwise
 
-    from dynquant.score.null import NULL_MODES
-
-    controls: dict[int, list[tuple[int, str, str]]] = {}
-    for row in built:
-        spec = row.get("score_null")
-        if not spec or not row.get("anchor"):
-            continue
-        mode = str(spec.get("mode", "null"))
-        rank = NULL_MODES.index(mode) if mode in NULL_MODES else len(NULL_MODES)
-        controls.setdefault(int(row["anchor"]), []).append((rank, row["label"], mode))
-
     family: list[tuple[str, str, str]] = []
-    for width in sorted(controls):
-        rungs = sorted(controls[width])
+    for width, (chain, _) in control_chains(built).items():
         # Left-positive throughout, so every row asks what the arm on the left has over the
         # arm on the right and a reader adding the column down gets the margin. Written the
         # other way round some rungs would be negative and the sum would still be right,
         # which is the worst of both.
-        chain = [(f"dq_{width}b", "dq")]
-        chain += [(label, mode) for _, label, mode in rungs]
-        chain.append((f"gptq_{width}b", "GPTQ"))
         for index, ((left, left_name), (right, right_name)) in enumerate(pairwise(chain)):
             kind = "shape" if index == len(chain) - 2 else "signal"
             family.append((left, right, f"{width}b  {kind}: {left_name} vs {right_name}"))
@@ -1531,6 +1595,7 @@ def main(argv: list[str] | None = None) -> int:
     ceiling = print_comparisons("what each method cost", AGAINST_CEILING, records, arithmetic)
     print()
     decomposition: list[dict[str, Any]] = []
+    replicates: list[dict[str, Any]] = []
     family = decomposition_family(built)
     if family:
         decomposition = print_comparisons(
@@ -1541,6 +1606,18 @@ def main(argv: list[str] | None = None) -> int:
             explain_arithmetic=False,
         )
         for line in DECOMPOSITION_NOTE:
+            print(f"  {line}")
+        print()
+    redrawn = replicate_family(built)
+    if redrawn:
+        replicates = print_comparisons(
+            "the same rung, redrawn: what a different permutation was worth",
+            redrawn,
+            records,
+            arithmetic,
+            explain_arithmetic=False,
+        )
+        for line in REPLICATE_NOTE:
             print(f"  {line}")
         print()
     fidelity = print_fidelity(built, records)
@@ -1622,6 +1699,7 @@ def main(argv: list[str] | None = None) -> int:
         # that finds no key cannot tell a panel that did not ask the question from one
         # written before the key existed, and only one of those is worth re-running.
         "decomposition": as_json(decomposition),
+        "replicates": as_json(replicates),
         # Carried because a card that reads only the accuracy delta cannot tell a method
         # that is more accurate from one that is more faithful to the model it was built
         # from -- and on this panel that distinction is the finding, not a nuance.
