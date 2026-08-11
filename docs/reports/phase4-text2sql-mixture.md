@@ -2484,7 +2484,7 @@ dispatch, and nothing in the records pins box state. A uniform factor across all
 exactly what a slower window looks like and exactly what a slower kernel looks like. The timing
 comparison that survives is the within-window one above, with the caveat it already had.
 
-### 13.4 The 3-bit result, and the control it still needs
+### 13.4 The 3-bit result, and how much of it the signal earned
 
 At 3 bits the panel stops being a comparison of degradations and becomes a comparison of a
 degradation against a collapse. At 3,332,904,576 bytes -- 3.10 GiB, 5.08x compression, matched to
@@ -2514,13 +2514,25 @@ transcribed. 133 quantized modules, four widths.
 | `mlp.up` | 3 | 2 | 0 / 0 / 1 / 1 | 0 / 1 / 1 / 0 |
 | `moe.expert.down` | 2 | 22 | 4 / 14 / 4 / 0 | 22 / 0 / 0 / 0 |
 
-Two rows carry most of the story. **All 22 routers sit at 8 bits at both budgets** -- the widest
-width in the table, on 22 of the smallest tensors in the model, held there while the budget tightens
-by a full bit per parameter around them. A router that mis-ranks its top-k sends a token to the
-wrong expert and no downstream precision recovers it, and this is the failure a uniform 3-bit
-recipe has no way to avoid. Against that, **all 22 expert down-projections go to 2 bits at the
-3-bit budget** -- 0.94 G parameters at the cheapest width in the table -- which is where the bytes
-for the routers come from. Those two decisions are the shape of the map.
+Three rows carry the story, and the control arms below say which of them the allocator
+actually decided. **All 22 routers sit at 8 bits at both budgets** -- the widest width in the
+table, on 22 of the smallest tensors in the model, held there while the budget tightens by a full
+bit per parameter around them. That is not an allocation: `MOE_ROUTER` is in `STRUCTURAL_ROLES`,
+so 8 bits is a hard floor and the allocator was never free to breach it. A router that mis-ranks
+its top-k sends a token to the wrong expert and no downstream precision recovers it, which is why
+the floor is hard -- and it is still the failure a uniform 3-bit recipe has no way to avoid, since
+that recipe has no roles to attach a floor to. But it is a fact about this package's floor table,
+not about this fine-tune. Against that, **all 22 expert down-projections go to 2 bits at the 3-bit
+budget** -- 0.94 G parameters at the cheapest width in the table -- which is where the bytes for
+the routers come from. That one is at the role's floor of 2 rather than above it, and it survives
+both controls unchanged, so it too is the architecture and the budget speaking.
+
+The row that *is* an allocation is **`attn.k` and `attn.v` at 8 bits against a floor of 4**. Both
+are held four bits above what the policy requires, at a budget tight enough that the allocator was
+breaching floors elsewhere on 41.9% of the model's parameters to pay for it. Nothing structural
+forces it. The uniform control drops all twelve to 3 or 4 bits, and it is the single largest role
+swing between the real map and a signal-free one -- so the KV projections are where the hook's
+output is visible in the map, and the routers, which read as the headline, are not.
 
 The 4-bit map breached no floor at all: the budget was not binding on any role. The 3-bit map
 breached 15.
@@ -2542,19 +2554,75 @@ the short-convolution block's `out_proj` alongside attention's; both carry floor
 are right and only the label is broad. The allocator classified from the module tree and did not
 merge them.
 
-**And here is what this section cannot yet claim.** The +19.13 is byte-matched, paired, and
-enormous, and it credits *DynQuant-the-method*. What it demonstrates is *DynQuant-the-allocator*:
-that a mixed-width map holding routers at 8 bits and expert down-projections at 2 beats a uniform
-3-bit recipe by nineteen points. Nothing in this panel separates the map's **structure** from the
-**signal that chose it**. The decomposing arm is a matched-byte mixed-width map allocated without
-the signal -- shuffled scores, or rank-product, or uniform-within-role at the same byte target --
-and it has not been run on this model. Prior campaigns say the answer is not predictable from
-elsewhere: the signal's share of the margin was 12% on Qwen3.5-2B and 56% on Ministral-8B at
-comparable anchors, and at 4 bits on Qwen a plain RTN map tied DynQuant at matched bytes. A second
-control worth the same run is GPTQ and AWQ given *DynQuant's* bit map, which would price the
-allocator against the quantizer. Until one of those lands, the defensible statement is that
-role-aware mixed-width allocation at 3 bits beats uniform 3-bit by nineteen points on this model,
-and the share of that attributable to the plasticity-times-saliency score is unmeasured here.
+**So how much of the nineteen points is the signal?** The +19.13 is byte-matched, paired and
+enormous, and on its own it credits *DynQuant-the-method* for something that might be
+*DynQuant-the-allocator*: a mixed-width map with role floors would beat a uniform 3-bit recipe
+whether or not the fine-tune chose the widths. Nothing in the seven-arm panel separates those. Two
+further arms do, and they were run at the same anchor with the same flags, the same evaluation set
+and the same expert dispatch -- the only difference is what the allocator was shown.
+
+`--score-null shuffle` permutes the driving quantity **within role** under a seed. Every score and
+every measured `dL` row still exists and still has its magnitude; it has simply moved to another
+module of the same role. `--score-null uniform` gives every module the same score and consults no
+sensitivity table at all, because there is no such thing as measured sensitivity without the
+fine-tune -- `dL` is built from the hook's own `E[x^2]` and `E[delta^2]`. The second removes
+everything the first does and the pricing besides, so the two are nested and the rows chain.
+
+| arm | GiB | b/param | off anchor | exec match | correct | gretel | wikisql | SQL errors |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| bf16 | 15.773 | 16.0000 | -- | 84.29% | 10 115 | 72.0% | 88.5% | 90 |
+| dq_3b | 3.103 | 3.1475 | -0.0413% | **79.89%** | 9 587 | 64.4% | 85.2% | 213 |
+| dq_3b_shuf | 3.103 | 3.1476 | -0.0353% | 79.12% | 9 495 | 62.5% | 84.8% | 247 |
+| dq_3b_unif | 3.104 | 3.1486 | -0.0038% | 70.42% | 8 450 | 53.8% | 76.1% | 492 |
+| gptq_3b | 3.104 | 3.1488 | +0.0000% | 60.76% | 7 291 | 54.0% | 63.1% | 1 008 |
+
+Both controls spent *more* bytes than the real arm -- 202 KB for the shuffle, 1.25 MB for the
+uniform -- so every byte advantage in this block runs against DynQuant and the shares below are
+conservative. The ladder, Holm-corrected inside its own family of three:
+
+| rung | what it puts back | delta | 95% CI | flips | p (Holm) |
+|---|---|---:|---|---|---:|
+| `dq_3b` - `dq_3b_shuf` | which module of a role holds a width | +0.77 | [+0.27, +1.26] | 509/417 | 0.00277 |
+| `dq_3b_shuf` - `dq_3b_unif` | which role gets the bits, and the measured pricing | **+8.71** | [+8.01, +9.41] | 1494/449 | 3.4e-130 |
+| `dq_3b_unif` - `gptq_3b` | role floors and the knapsack, with no signal at all | +9.66 | [+8.76, +10.56] | 2164/1005 | 6.9e-96 |
+
+The three rungs partition the margin exactly, in raw counts and not just to two decimals:
+92 + 1045 + 1159 = 2296 items. **The fine-tune signal is worth +9.48 of the +19.13, or 49.6%; the
+signal-free allocator is worth +9.66, or 50.4%.** Both halves separate at *p* far below any
+threshold this report uses. A method with no training-time hook, given this package's role floors
+and soft-floor knapsack, would score 70.42% -- ten points over GPTQ and nine under DynQuant.
+
+**The shuffle alone would have given the wrong answer, and it is worth saying why.** Read on its
+own the first rung says the signal is 4.0% of the margin, which is the number this section carried
+until the second control landed. It is the small half by construction: a within-role permutation
+cannot move a bit from one role to another, so it can never price the decision to hold `attn.k`
+and `attn.v` four bits above their floor. It moved 20 of 133 widths and left the width histogram
+`{2: 26, 3: 11, 4: 61, 8: 35}` *identical*, and it reproduced the floor-breach shape exactly --
+15 modules, 10 at 3 bits, 4 at 2 bits, one embedding -- changing only which six layers pay. That
+fidelity is what makes it a good control rather than a worse allocator, and it is also exactly why
+it measures so little. The uniform control moved 65 of 133 widths, flattened the histogram to
+`{2: 21, 3: 60, 4: 30, 8: 22}`, and grew the breached mass from 41.9% to 50.2% of parameters. A
+single within-role null reports the small half of the signal as the whole of it.
+
+**Three things this does not establish.** First, `uniform` removes the plasticity-times-saliency
+ranking *and* the measured `dL` table in one step, so the +8.71 is what having any fine-tune-derived
+quantity at role granularity is worth and does not split score from pricing; the arm that would
+split it keeps `dL` and flattens only the score, and has not been run. Second, `shuffle` at seed 0
+is a single draw, so the +0.77 carries item-level sampling variance but not permutation variance --
+further seeds are now collision-free and would turn a point estimate into a defensible one. Third,
+a control this campaign has named twice and still not built is GPTQ and AWQ handed *DynQuant's*
+bit map, which would price the allocator against the quantizer rather than against itself.
+
+**And one comparison that is not yet a series.** Prior campaigns put the signal's share at 12% on
+Qwen3.5-2B and 56% on Ministral-8B. Those were not measured against this two-control ladder, so
+49.6% here is not a third point beside them until the null each used is re-checked; on the
+evidence of this section, a share measured with a within-role null and a share measured against a
+signal-free allocator are answers to different questions.
+
+An independent read on the same ordering, from a quantity nothing here computes with: evaluation
+wall clock. The arms took 58, 62, 130, 637 and 740 minutes for `dq_3b`, `dq_3b_shuf`,
+`dq_3b_unif`, `gptq_3b` and `awq_3b`. A worse arm runs longer because it generates further before
+a stop, and the ordering by minutes is the ordering by accuracy, inverted, with no ties.
 
 ## 14. Status
 
