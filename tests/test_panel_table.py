@@ -2455,3 +2455,45 @@ def test_a_redrawn_rung_is_corrected_in_its_own_family(table: Any, tmp_path: Pat
 
     assert "Holm-adjusted over 3 of 3 comparisons" in _decomposition_block(table, printed)
     assert "Holm-adjusted over 2 of 2 comparisons" in _redrawn_block(table, printed)
+
+
+def test_a_third_control_lengthens_the_ladder_and_still_partitions_the_margin(
+    table: Any, tmp_path: Path
+) -> None:
+    """The chain is k+1 rungs over k controls, for whatever k the panel holds.
+
+    The two-control ladder could be produced by code that knew there were two, and the
+    third control is the first that would catch it. What it must not do is displace a rung:
+    the nested modes each remove more than the last, so the rungs stay in declaration order,
+    the new one lands between the two it was declared between, and the column still adds to
+    the same head-to-head margin -- a chain of any length over the same endpoints does, and
+    that is exactly why the ordering has to be asserted alongside the sum.
+
+    Turns red when: the chain hard-codes its length, or orders rungs by anything but rank.
+    """
+    out = _write_panel(tmp_path / "panel", nulls=("shuffle", "flat", "uniform"))
+    printed = _run(table, out, "--json-out", str(tmp_path / "panel.json"))
+    payload = json.loads((tmp_path / "panel.json").read_text(encoding="utf-8"))
+
+    margin = next(
+        row["delta_points"]
+        for row in payload["head_to_head"]
+        if (row["left"], row["right"]) == ("dq_3b", "gptq_3b")
+    )
+    assert [(row["left"], row["right"]) for row in payload["decomposition"]] == [
+        ("dq_3b", "dq_3b_shuf"),
+        ("dq_3b_shuf", "dq_3b_flat"),
+        ("dq_3b_flat", "dq_3b_unif"),
+        ("dq_3b_unif", "gptq_3b"),
+    ]
+    assert round(sum(row["delta_points"] for row in payload["decomposition"]), 2) == round(
+        margin, 2
+    )
+
+    block = _decomposition_block(table, printed)
+    # Only the last rung is the shape rung, however many rungs precede it: everything above
+    # it is a control against a control and is signal, and a block that named two of them
+    # "shape" would be claiming the allocator's structure was put back twice.
+    assert block.count("shape:") == 1
+    assert "shape: uniform vs GPTQ" in block
+    assert "signal: shuffle vs flat" in block and "signal: flat vs uniform" in block

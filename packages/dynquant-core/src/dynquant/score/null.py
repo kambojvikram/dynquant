@@ -16,8 +16,8 @@ about it, and re-run at the same anchor. Whatever the real arm has left over tha
 arm is the signal's share; whatever both have over a uniform recipe is the
 allocator's structure.
 
-Two nulls, because they bracket the question from opposite sides
-----------------------------------------------------------------
+Three nulls, because the margin has more than one thing in it
+--------------------------------------------------------------
 
 ``shuffle`` permutes the driving quantity **within role**, under a seed. Every
 score and every measured ``dL`` row still exists, still has its magnitude, and is
@@ -35,6 +35,28 @@ that scores are not transferable across roles. Within a role the members are
 near-identical in shape (twenty-two copies of one projection, one per layer), so
 the swap is between comparable numbers and the only thing destroyed is which
 layer.
+
+``flat`` keeps that same permutation and additionally sets every score to
+1.0. The sensitivity table is still there, still permuted, still priced by the
+same code; what is gone is the score's magnitude -- the plasticity-times-saliency
+number the knapsack falls back on for every module the channel moments could not
+price. It sits between the other two by construction: it removes everything
+``shuffle`` removes and the ordering besides, and ``uniform`` removes everything
+it removes and the table as well. That nesting is the point of it. The rung from
+``shuffle`` down to ``flat`` is what the score channel is worth and the rung from
+``flat`` down to ``uniform`` is what the measured channel is worth, so the single
+large step between a permuted arm and a signal-free one splits into ranking and
+pricing instead of standing as one number that could be either.
+
+Worth being exact about which modules that rung can move. The knapsack prices a
+module from its measured ``dL`` row when it has one and from ``score x params x
+error-curve`` when it does not, so flattening the score changes only the widths
+of modules the moments never reached -- on a batched-expert architecture that is
+most of the parameters -- together with the scale that puts the proxy price on
+the table's units. A ``shuffle``-to-``flat`` rung at zero would therefore be a
+finding about the fallback, saying the proxied modules were allocated no better
+than by size alone; it would not say the signal was worthless, because the rung
+below it never asked the score anything.
 
 ``uniform`` gives every module the same score and consults no sensitivity table
 at all. There is no such thing as measured sensitivity without the fine-tune --
@@ -77,10 +99,17 @@ if TYPE_CHECKING:
 __all__ = ["NULL_MODES", "STOCHASTIC_NULL_MODES", "NullReport", "apply_null", "uses_seed"]
 
 #: The nulls, in increasing order of how much they remove.
-NULL_MODES = ("shuffle", "uniform")
+#:
+#: Increasing, and asserted to be: a ladder built over these is only a partition of the
+#: margin if each mode removes everything the one before it removed, and the order is
+#: read by name from here rather than restated wherever a chain gets built.
+NULL_MODES = ("shuffle", "flat", "uniform")
 
 #: The subset that draws, so that a seed names a different arm rather than the same one.
-STOCHASTIC_NULL_MODES = ("shuffle",)
+#:
+#: ``flat`` is in it even though its scores are constant: the permutation it applies to
+#: the sensitivity table is drawn, so two seeds are two arms and each needs its own record.
+STOCHASTIC_NULL_MODES = ("shuffle", "flat")
 
 
 def uses_seed(mode: str) -> bool:
@@ -148,11 +177,21 @@ class NullReport:
                 "parameter counts and the universal error curve -- no fine-tuning "
                 "signal reaches the allocator."
             )
-        lines = [
-            f"null arm: driving quantity permuted within role, seed {self.seed}. "
-            f"{self.moved}/{self.modules} modules took another module's number, "
-            f"{self.fixed} kept their own."
-        ]
+        if self.mode == "flat":
+            lines = [
+                f"null arm: every one of {self.modules} modules scores 1.0, and the "
+                f"measured sensitivity table is kept but permuted within role, seed "
+                f"{self.seed}. {self.moved}/{self.modules} modules took another "
+                f"module's row, {self.fixed} kept their own. Every module the moments "
+                "could not price is left to role floors, parameter counts and the "
+                "universal error curve."
+            ]
+        else:
+            lines = [
+                f"null arm: driving quantity permuted within role, seed {self.seed}. "
+                f"{self.moved}/{self.modules} modules took another module's number, "
+                f"{self.fixed} kept their own."
+            ]
         if self.singleton_roles:
             lines.append(
                 f"  {len(self.singleton_roles)} role(s) have a single member and "
@@ -194,9 +233,10 @@ def apply_null(
     intact.
 
     Args:
-        mode: ``"shuffle"`` to permute within role, ``"uniform"`` to remove the
-            ordering entirely. See the module docstring for which question each
-            one answers.
+        mode: ``"shuffle"`` to permute the driving quantity within role,
+            ``"flat"`` to permute it and drop the score's magnitude as well,
+            ``"uniform"`` to remove the signal entirely. Nested in that order.
+            See the module docstring for which question each one answers.
         seed: Fixed so the arm is reproducible and so a second seed is a
             deliberate act. Ignored by ``"uniform"``, which is deterministic.
     """
@@ -246,7 +286,15 @@ def apply_null(
         rng.shuffle(shuffled)
         donor.update(zip(ordered, shuffled, strict=True))
 
-    null_scores = {name: float(scores.get(donor[name], 0.0)) for name in names}
+    # `flat` keeps the permutation and drops the magnitudes. The table built below is
+    # the permuted one either way, so the two arms differ in the score channel and in
+    # nothing else -- which is the only thing that makes the rung between them a price
+    # for that channel rather than for that channel plus whatever else moved.
+    null_scores = (
+        dict.fromkeys(names, 1.0)
+        if mode == "flat"
+        else {name: float(scores.get(donor[name], 0.0)) for name in names}
+    )
 
     null_table: SensitivityTable | None = None
     changed = 0

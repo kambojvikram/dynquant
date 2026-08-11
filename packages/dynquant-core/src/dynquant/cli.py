@@ -35,7 +35,7 @@ from .constants import BIT_OPTIONS, COMPUTE_DTYPES, DEFAULT_GROUP_SIZE
 # One import of the null modes rather than a second copy of the tuple here: a
 # choices list that drifts from the dispatch it guards rejects a mode the code
 # supports, or accepts one it does not. The module is stdlib-only at import time.
-from .score.null import NULL_MODES
+from .score.null import NULL_MODES, STOCHASTIC_NULL_MODES
 
 if TYPE_CHECKING:
     # `_SubParsersAction` is generic to type checkers but a plain class at runtime,
@@ -143,20 +143,30 @@ def _add_allocation(parser: argparse.ArgumentParser) -> None:
         "--score-null",
         choices=NULL_MODES,
         metavar="MODE",
+        # The modes are named from `NULL_MODES` rather than spelled out. A help string
+        # listing two of them stayed on the screen after a third was added, which is the
+        # copy of a registry that goes stale in the direction that matters: the reader
+        # most in need of the list is the one who has not read `dynquant.score.null`.
         help=(
-            "allocate a control arm with the fine-tuning signal removed: "
-            "`shuffle` permutes the driving quantity within role, `uniform` "
-            "drops it entirely. Everything else -- roles, floors, budget, "
-            "pricing code -- is unchanged, so the difference from the real arm "
-            "at the same byte anchor is the signal's contribution. The mode is "
-            "recorded in the map's `allocator` field"
+            "allocate a control arm with the fine-tuning signal removed, in one of "
+            f"{', '.join(f'`{mode}`' for mode in NULL_MODES)} -- listed in increasing "
+            "order of how much each removes, so a panel running several of them reads "
+            "as a ladder. Everything else -- roles, floors, budget, pricing code -- is "
+            "unchanged, so the difference from the real arm at the same byte anchor is "
+            "the signal's contribution. See `dynquant.score.null` for what each mode "
+            "removes. The mode is recorded in the map's `allocator` field"
         ),
     )
     parser.add_argument(
         "--null-seed",
         type=int,
         default=0,
-        help="seed for `--score-null shuffle` (default: 0)",
+        help=(
+            "seed for the modes that draw ("
+            f"{', '.join(f'`{mode}`' for mode in STOCHASTIC_NULL_MODES)}); ignored by "
+            "the rest, which record no seed rather than one that did not apply "
+            "(default: 0)"
+        ),
     )
 
 

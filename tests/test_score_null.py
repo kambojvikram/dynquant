@@ -349,6 +349,8 @@ def test_a_real_arm_carries_no_null_block(graph, scores, sensitivity) -> None:
     [
         ("shuffle", True, "sensitivity+null:shuffle(seed=0)"),
         ("shuffle", False, "rank_product+null:shuffle(seed=0)"),
+        ("flat", True, "sensitivity+null:flat(seed=0)"),
+        ("flat", False, "rank_product+null:flat(seed=0)"),
         ("uniform", True, "null:uniform"),
         ("uniform", False, "null:uniform"),
     ],
@@ -388,7 +390,12 @@ def test_a_seed_names_an_arm_only_when_the_mode_actually_draws() -> None:
     Turns red when: a second caller starts answering it with `mode == "uniform"`.
     """
     assert set(STOCHASTIC_NULL_MODES) <= set(NULL_MODES)
-    assert [mode for mode in NULL_MODES if uses_seed(mode)] == ["shuffle"]
+    # Named from the deterministic side. Listing the drawing modes instead would make
+    # this a second copy of the registry, needing an edit every time one is added -- and
+    # an assertion you edit to make green is an assertion that stopped asserting. The
+    # claim that matters has one member and gains none: a mode that draws nothing must
+    # not be given a seed.
+    assert [mode for mode in NULL_MODES if not uses_seed(mode)] == ["uniform"]
 
 
 def test_a_deterministic_null_records_no_seed_however_it_was_called(graph, scores) -> None:
@@ -408,3 +415,101 @@ def test_a_deterministic_null_records_no_seed_however_it_was_called(graph, score
     assert table is None
     assert report.seed is None
     assert report.label == "null:uniform"
+
+
+# --------------------------------------------------------------------------
+# The third null: the score goes, the pricing stays
+# --------------------------------------------------------------------------
+
+
+def test_flat_differs_from_shuffle_in_the_score_channel_and_in_nothing_else(
+    graph, scores, sensitivity
+) -> None:
+    """The rung between two arms prices what separates them, so one thing may separate them.
+
+    `flat` exists to split the large step between a permuted arm and a signal-free one into
+    what the score bought and what the measured table bought. That split is only a split if
+    `flat` is `shuffle` with the score removed and every other input byte-identical -- same
+    permutation, same seed, same table. Rebuilt from a fresh `Random` or a different donor
+    map it would differ in two things at once, and the rung would price both while reading
+    as though it priced one.
+
+    Turns red when: `flat` stops sharing the permutation `shuffle` drew at the same seed.
+    """
+    flat_scores, flat_table, _ = apply_null(graph, scores, sensitivity, mode="flat", seed=0)
+    shuffled, shuffled_table, _ = apply_null(graph, scores, sensitivity, mode="shuffle", seed=0)
+
+    assert set(flat_scores) == set(shuffled)
+    assert set(flat_scores.values()) == {1.0}
+    assert flat_scores != shuffled, "the fixture's scores are not already constant"
+    assert flat_table == shuffled_table
+
+
+def test_the_nulls_are_nested_in_the_order_they_are_declared(graph, scores, sensitivity) -> None:
+    """A ladder over these modes partitions the margin only if each removes the last's more.
+
+    Asserted as the property rather than as the tuple: what a chain built over `NULL_MODES`
+    needs is that mode k+1 removes everything mode k removed, and a test that pinned the
+    tuple would go green on a reordering that broke exactly that. Two inputs reach the
+    allocator, so nesting is visible in two columns -- the score loses its ordering, then
+    the table goes -- and a mode that gave one back while taking the other is a mode whose
+    rung is a difference rather than a step.
+
+    Turns red when: a mode is inserted at a rank it does not belong at.
+    """
+    ordering, tables = [], []
+    for mode in NULL_MODES:
+        null_scores, null_table, _ = apply_null(graph, scores, sensitivity, mode=mode, seed=0)
+        ordering.append(len(set(null_scores.values())) > 1)
+        tables.append(null_table is not None)
+
+    # Once a column goes it stays gone: `sorted(reverse=True)` on the booleans is the
+    # nesting, and any other pattern is a mode that put something back.
+    assert ordering == sorted(ordering, reverse=True), NULL_MODES
+    assert tables == sorted(tables, reverse=True), NULL_MODES
+    assert (ordering, tables) != ([], []), "there is at least one mode to check"
+
+
+def test_flat_is_capable_of_a_different_map_from_either_of_its_neighbours(
+    graph, scores, sensitivity
+) -> None:
+    """A rung between two arms that always allocate alike is a guaranteed zero.
+
+    The same argument the `shuffle` arm gets: an arm incapable of a different answer is not
+    a control, and a decomposition row that could only ever print +0.00 would read as a
+    measurement of the thing it never varied. `flat` has two neighbours on the ladder and
+    has to be able to differ from both -- from `shuffle` because the proxied modules lose
+    their ordering, from `uniform` because the measured ones keep their prices.
+
+    Turns red when: the score stops reaching the allocator, or the table stops doing.
+    """
+    policy = AllocationPolicy(group_size=128)
+    budget = Budget.from_target(graph, target_bits=3.0, group_size=128)
+
+    maps = {}
+    for mode in ("shuffle", "flat", "uniform"):
+        null_scores, null_table, _ = apply_null(graph, scores, sensitivity, mode=mode, seed=0)
+        maps[mode] = allocate_bits(graph, null_scores, budget, policy, sensitivity=null_table).bits
+
+    assert maps["flat"] != maps["shuffle"]
+    assert maps["flat"] != maps["uniform"]
+
+
+def test_the_flat_report_says_the_table_survived_the_score(graph, scores, sensitivity) -> None:
+    """Its summary is the only place a reader learns this arm still has measured prices.
+
+    `flat` is the one mode whose name does not describe what it kept. Summarised with the
+    `shuffle` wording it would read as an arm whose scores were permuted -- they were not,
+    they were erased -- and summarised with the `uniform` wording it would claim no
+    sensitivity table was consulted, which is the opposite of the arm's purpose.
+
+    Turns red when: a third mode reuses another mode's summary.
+    """
+    _, _, report = apply_null(graph, scores, sensitivity, mode="flat", seed=2)
+    summary = report.summary()
+
+    assert report.label == "null:flat(seed=2)"
+    assert report.seed == 2
+    assert "scores 1.0" in summary
+    assert "permuted within role" in summary
+    assert "no sensitivity table" not in summary
