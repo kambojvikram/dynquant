@@ -159,18 +159,57 @@ def comparisons_for(table: dict[str, Any], label: str) -> list[dict[str, Any]]:
     return found
 
 
-def frontmatter(base_model: str, row: dict[str, Any]) -> str:
+def architecture_tags(finetune: dict[str, Any]) -> list[str]:
+    """What the checkpoint *is*, read off the checkpoint's own config.
+
+    ``moe`` used to be a constant in the tag list. It was true of the one model this
+    campaign had published and false of the next one, and a dense model tagged ``moe`` is
+    the same defect the ``quantized`` tag is guarded against a few lines below: a wrong
+    answer to somebody's search, which costs them a multi-gigabyte download to discover.
+
+    Asked of the config rather than of a list of model names, because the list is the part
+    that goes stale. What makes a checkpoint mixture-of-experts is that it carries a count
+    of experts, and the families spell that differently -- ``num_experts`` on LFM2 and
+    Qwen3-MoE, ``num_local_experts`` on Mixtral, ``n_routed_experts`` on DeepSeek. Matching
+    the substring asks the question once instead of tracking three spellings that grow.
+    Booleans are excluded on purpose: ``use_expert_bias`` sits right beside ``num_experts``
+    in the same config and is a flag, not a count.
+
+    Refuses rather than guesses when the merge is not reachable. A tag list assembled
+    without the config would be silently missing whatever the config would have added, and
+    a card is a claim about a specific checkpoint.
+    """
+    merged = Path(str(finetune.get("output", "")))
+    config_path = merged / "config.json"
+    if not config_path.is_file():
+        raise SystemExit(
+            f"{config_path} does not exist, so the card cannot say what this checkpoint is. "
+            f"The fine-tune's own record names {merged} as its output; point --finetune at a "
+            f"manifest whose merge is present."
+        )
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    experts = any(
+        "expert" in key.lower()
+        and isinstance(value, int)
+        and not isinstance(value, bool)
+        and value > 1
+        for key, value in config.items()
+    )
+    return ["moe"] if experts else []
+
+
+def frontmatter(base_model: str, row: dict[str, Any], arch_tags: list[str]) -> str:
     if row["kind"] == CEILING:
         # No `quantized` tag and no width: the Hub filters on these, and an unquantized
         # checkpoint answering a 4-bit filter is a wrong answer to a search.
-        tags = ["text-to-sql", "moe", "sft", "bf16", "dynquant"]
+        tags = ["text-to-sql", *arch_tags, "sft", "bf16", "dynquant"]
     else:
         tags = [
             "dynquant",
             "quantized",
             f"{row['anchor']}-bit",
             "text-to-sql",
-            "moe",
+            *arch_tags,
             METHOD_NAMES[row["kind"]].lower().replace(" ", "-"),
         ]
     # A DynQuant arm's method name and the package tag are the same word. Deduplicated in
@@ -463,7 +502,7 @@ def card(
     repo = f"{repo_prefix}-{slug(label, row['kind'], row['anchor'])}" if repo_prefix else None
 
     parts = [
-        frontmatter(base_model, row),
+        frontmatter(base_model, row, architecture_tags(finetune)),
         "",
         f"# {base_model.split('/')[-1]} text-to-SQL, {method}"
         + ("" if ceiling else f" {row['anchor']}-bit"),

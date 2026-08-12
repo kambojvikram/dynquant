@@ -59,6 +59,39 @@ FINETUNE = {
 }
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _merge_on_disk(tmp_path_factory: Any) -> None:
+    """Give ``FINETUNE`` the merge it names, because the card now reads that merge.
+
+    The real ``s2_finetune.json`` carries ``output``, and :func:`architecture_tags` refuses
+    to describe a checkpoint it cannot look at, so the fixture needs a directory rather than
+    a string. The config written here is LFM2's own -- an expert count beside a boolean that
+    merely mentions experts -- because that is the checkpoint every card in this file is
+    written about, and the ``moe`` tag they expect has to be earned from it.
+    """
+    merged = tmp_path_factory.mktemp("merged")
+    (merged / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["Lfm2MoeForCausalLM"],
+                "num_experts": 32,
+                "num_experts_per_tok": 4,
+                "use_expert_bias": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    FINETUNE["output"] = str(merged)
+
+
+def _finetune_for(tmp_path: Path, config: dict[str, Any]) -> dict[str, Any]:
+    """``FINETUNE`` pointed at a merge holding ``config``."""
+    merged = tmp_path / "other-merge"
+    merged.mkdir(parents=True, exist_ok=True)
+    (merged / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    return {**FINETUNE, "output": str(merged)}
+
+
 @pytest.fixture(scope="module")
 def cards() -> Any:
     return _load("_dq_model_cards", CARDS)
@@ -79,6 +112,12 @@ def _built(table_mod: Any, out: Path) -> tuple[dict[str, Any], Path]:
     dest = out.parent / "table.json"
     _run(table_mod, out, "--json-out", str(dest))
     return json.loads(dest.read_text(encoding="utf-8")), dest
+
+
+def _tags(text: str) -> list[str]:
+    """The tag list out of a card's frontmatter."""
+    front = text.split("---")[1]
+    return [line[2:] for line in front.splitlines() if line.startswith("- ")]
 
 
 def _row(text: str, prefix: str) -> str:
@@ -441,6 +480,72 @@ def test_the_snippet_names_a_function_that_exists(
     ]
     assert called == ["register_hf_quantizer"]
     assert callable(getattr(dynquant, called[0]))
+
+
+def test_a_dense_checkpoint_is_not_advertised_as_a_mixture_of_experts(
+    cards: Any, table_mod: Any, tmp_path: Path
+) -> None:
+    """The ``moe`` tag has to be earned by the checkpoint being published.
+
+    It was a constant in both branches of the tag list, which was true of the only model
+    this campaign had published and false of the next one. The Hub filters on these tags,
+    so a dense model carrying ``moe`` is the same defect the ``quantized`` tag is guarded
+    against -- a wrong answer to a search -- except a reader pays for this one by
+    downloading several gigabytes before they can see it.
+
+    Turns red when: the tag is hardcoded again, or read from anything other than the
+    config of the checkpoint the card is about.
+    """
+    out = _write_panel(tmp_path / "arms")
+    table, _ = _built(table_mod, out)
+
+    dense = _finetune_for(tmp_path, {"architectures": ["MistralForCausalLM"]})
+    tags = _tags(cards.card(table, "dq_4b", dense, repo_prefix=None))
+    assert "moe" not in tags, tags
+    assert "dynquant" in tags and "4-bit" in tags, "the rest of the list still builds"
+
+    tags = _tags(cards.card(table, "dq_4b", FINETUNE, repo_prefix=None))
+    assert "moe" in tags, "and a model that does have experts still says so"
+
+
+def test_a_flag_that_merely_mentions_experts_is_not_an_expert_count(
+    cards: Any, table_mod: Any, tmp_path: Path
+) -> None:
+    """``use_expert_bias: true`` sits in the same config as ``num_experts``.
+
+    The check is a substring match against the config's keys, which is what keeps it from
+    tracking three spellings of the same field across model families -- and the price of a
+    substring match is that it also matches the booleans beside them. ``True`` is an
+    ``int`` in Python and would compare greater than zero, so a dense architecture that
+    happened to carry any expert-ish flag would be tagged from it.
+
+    Turns red when: the boolean exclusion is dropped, or the comparison stops requiring a
+    real count.
+    """
+    out = _write_panel(tmp_path / "arms")
+    table, _ = _built(table_mod, out)
+
+    finetune = _finetune_for(
+        tmp_path, {"architectures": ["MistralForCausalLM"], "use_expert_bias": True}
+    )
+    assert "moe" not in _tags(cards.card(table, "dq_4b", finetune, repo_prefix=None))
+
+
+def test_a_card_is_refused_when_the_checkpoint_it_describes_is_not_there(
+    cards: Any, table_mod: Any, tmp_path: Path
+) -> None:
+    """Refusing beats a tag list that is quietly missing whatever the config would add.
+
+    Turns red when: an unreachable merge falls back to a default set of tags instead of
+    stopping, which would publish a card whose claims nothing checked.
+    """
+    out = _write_panel(tmp_path / "arms")
+    table, _ = _built(table_mod, out)
+
+    gone = {**FINETUNE, "output": str(tmp_path / "never-written")}
+    with pytest.raises(SystemExit) as caught:
+        cards.card(table, "dq_4b", gone, repo_prefix=None)
+    assert "never-written" in str(caught.value), "the message names the path it looked at"
 
 
 def test_the_frontmatter_carries_no_tag_twice_and_invents_no_licence(
