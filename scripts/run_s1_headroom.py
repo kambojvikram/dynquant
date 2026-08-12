@@ -56,6 +56,10 @@ MODELS: dict[str, dict[str, object]] = {
     "gemma3-4b": {"repo": "google/gemma-3-4b-it", "gated": True},
     "phi4-mini": {"repo": "microsoft/Phi-4-mini-instruct", "gated": False},
     "ministral-8b": {"repo": "mistralai/Ministral-8B-Instruct-2410", "gated": False},
+    # Open, and checked rather than assumed. `mistralai` reads as a gated org -- its
+    # model pages carry a licence banner -- but the API reports `gated: false` for both
+    # this repo and Ministral above, and it is the API the driver's skip list follows.
+    "mistral7b-v03": {"repo": "mistralai/Mistral-7B-Instruct-v0.3", "gated": False},
     # No dot in the key, deliberately: records are `{name}.{task}.json` and `summarize`
     # splits on the first one, so "lfm2.5-8b-a1b" would file itself under model "lfm2".
     "lfm25-8b-a1b": {"repo": "LiquidAI/LFM2.5-8B-A1B", "gated": False},

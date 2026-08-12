@@ -231,6 +231,12 @@ def test_the_gated_models_are_the_ones_the_hub_actually_gates(s1) -> None:
         "phi4-mini",
         "ministral-8b",
         "lfm25-8b-a1b",
+        # Also open, and the one entry where the answer was not what it looked like:
+        # `mistralai` model pages carry a licence banner, but the API reports
+        # `gated: false` for this repo and for Ministral. Marking it gated on the
+        # strength of the banner would have put it on the skip list and left the S4
+        # arm unrun on a box that could have run it.
+        "mistral7b-v03",
     }
 
 
