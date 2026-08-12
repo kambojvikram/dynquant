@@ -513,8 +513,15 @@ def fake_hub(monkeypatch, splits: dict[tuple[str, str], list[dict]]) -> None:
     ``from datasets import load_dataset`` at call time -- and a test that patched only one
     of them would be comparing the two against different data, which is the exact mistake
     the first version of ``experiments/phase4/leak_text2sql.py`` made.
+
+    Skipped rather than faked when the module is absent, because the attach point *is* the
+    module: with no ``datasets`` installed there is nothing for the callers to import and
+    nothing for this to patch, so a stub would test the stub. The base CI matrix installs
+    core and pytest only, which is where that state occurs; the ``transformers`` job
+    installs ``datasets`` and asserts this file does not skip, so the skip cannot become
+    the way these tests never run.
     """
-    import datasets
+    datasets = pytest.importorskip("datasets")
 
     def load_dataset(repo, config=None, **kwargs):
         return _Split(splits[(repo, kwargs["split"])])

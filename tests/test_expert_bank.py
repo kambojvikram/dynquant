@@ -28,6 +28,7 @@ from dynquant.errors import DynQuantError  # noqa: E402
 from dynquant.integration import hf_quantizer  # noqa: E402
 from dynquant.quant.checkpoint import export_packed_checkpoint  # noqa: E402
 from dynquant.quant.quantizer import quantize_model  # noqa: E402
+from dynquant.runtime.experts import DISPATCH_NAME  # noqa: E402
 from dynquant.runtime.linear import (  # noqa: E402
     DynQuantExpertBank,
     ExpertBank,
@@ -37,6 +38,28 @@ from dynquant.runtime.linear import (  # noqa: E402
 )
 
 PACKED = QUANT_TENSOR_SUFFIXES["packed"]
+
+
+def _served_dispatch() -> str:
+    """Which dispatch a packed bank lands on *here*, read off transformers and not off us.
+
+    There are two right answers and which one is right is a fact about the installed
+    transformers, not about the packer: 5.14 has ``ALL_EXPERTS_FUNCTIONS`` to register
+    ``dynquant`` into, and every release before it has nothing, where ``eager`` is the
+    only indexing path there is. Pinning either literal makes this file pass on one line
+    and fail on the other -- which is exactly what it did, green on 4.53.2 for weeks while
+    the ``transformers 5.14.1`` job failed on ``assert 'dynquant' == 'eager'``.
+
+    So the expectation is derived from the same import the fallback branches on, and what
+    the tests below assert is the invariant that holds either way: the model left a
+    dispatch that hands the bank to a grouped matmul, and arrived at one that indexes it.
+    """
+    try:
+        from transformers.integrations.moe import ALL_EXPERTS_FUNCTIONS  # noqa: F401
+    except ImportError:
+        return "eager"
+    return DISPATCH_NAME
+
 
 EXPERTS, HIDDEN, INTER, TOP_K = 4, 256, 384, 2
 BANKS = ("block.experts.gate_up_proj", "block.experts.down_proj")
@@ -576,7 +599,13 @@ class _DispatchedExperts(_Experts):
         top_k_index: torch.Tensor,
         top_k_weights: torch.Tensor,
     ) -> torch.Tensor:
-        if getattr(self.config, "_experts_implementation", "eager") == "eager":
+        # `dynquant` sits with `eager` and not with the rest: it is the real
+        # `ALL_EXPERTS_FUNCTIONS` entry this package registers, and it reaches an expert
+        # by `bank[e]` -- the same contract the loop above holds to, and the reason a
+        # packed bank can stand where the parameter stood. What it does differently is
+        # keep the grouped path's reduction order, which is arithmetic this fixture does
+        # not model either way; see `tests/test_experts_dispatch.py` for that.
+        if getattr(self.config, "_experts_implementation", "eager") in ("eager", DISPATCH_NAME):
             return super().forward(hidden_states, top_k_index, top_k_weights)
         return self._grouped(hidden_states, top_k_index, top_k_weights)
 
@@ -675,10 +704,10 @@ def test_packing_a_bank_moves_the_model_off_the_dispatch_that_cannot_hold_one() 
     report = pack_model(model, {BANKS[0]: 4, BANKS[1]: 3}, compute_device=None)
 
     assert isinstance(model.block.experts.gate_up_proj, DynQuantExpertBank)
-    assert model.config._experts_implementation == "eager"
-    assert model.moves == ["eager"], "the model's own setter is what should have run"
+    assert model.config._experts_implementation == _served_dispatch()
+    assert model.moves == [_served_dispatch()], "the model's own setter is what should have run"
     assert report.experts_implementation == "grouped_mm"
-    assert "grouped_mm" in report.summary() and "eager" in report.summary()
+    assert "grouped_mm" in report.summary() and _served_dispatch() in report.summary()
 
     # And the model runs, which is the whole claim -- previously an AttributeError.
     packed = _out(model)
@@ -743,8 +772,8 @@ def test_the_load_path_moves_the_dispatch_too(tmp_path) -> None:
     model = _fresh_dispatched("grouped_mm")
     quantizer._process_model_before_weight_loading(model)
 
-    assert model.config._experts_implementation == "eager"
-    assert model.moves == ["eager"]
+    assert model.config._experts_implementation == _served_dispatch()
+    assert model.moves == [_served_dispatch()]
 
     state: dict[str, torch.Tensor] = {}
     for shard in sorted(out.glob("*.safetensors")):

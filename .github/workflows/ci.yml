@@ -220,10 +220,14 @@ jobs:
 
       - name: install core, the pinned transformers and test deps
         # peft as well: the arch-matrix and checkpoint-export files reach for it, and
-        # a skip here would reproduce the hole this job exists to close.
+        # a skip here would reproduce the hole this job exists to close. `datasets` for
+        # the same reason and one more: the text2sql source tests patch `load_dataset`
+        # *on the datasets module*, because both readers import it at call time -- so
+        # with the module absent there is no attach point and six decontamination tests
+        # skip, which is the suite's only coverage of the leak guard.
         run: |
           pip install ./packages/dynquant-core pytest pytest-xdist hypothesis
-          pip install "transformers==${{ matrix.transformers }}" peft
+          pip install "transformers==${{ matrix.transformers }}" peft datasets
 
       - name: the version under test is the one that got installed
         # A resolver backtrack that quietly lands on a different transformers would
@@ -240,9 +244,11 @@ jobs:
       - name: pytest
         run: pytest -n auto --no-header
 
-      - name: no transformers-gated file may skip
+      - name: no dependency-gated file may skip
         # The failure mode is not a red test, it is a green run over a module that
-        # never loaded. Anything importorskipping transformers here is a hole.
+        # never loaded. Anything importorskipping transformers or datasets here is a
+        # hole -- and a guard added to make the base matrix green is exactly how one
+        # gets opened, so every file that grew one is listed here in the same commit.
         run: |
           pytest --no-header -q -rs \
             tests/test_eval_harness.py \
@@ -252,6 +258,8 @@ jobs:
             tests/test_quant_phase3_shapes.py \
             tests/test_graph_arch_matrix.py \
             tests/test_export_checkpoint.py \
+            tests/test_baselines_lfm2.py \
+            tests/test_eval_text2sql_sources.py \
             | tee /tmp/gated.txt
           ! grep -q "skipped" /tmp/gated.txt
 

@@ -19,8 +19,8 @@ belong to the signal or to the shape of the map are nine separate failures:
 |---|---|---|---|
 | 1 | Does a signal-driven allocator beat a same-size uniform one? | **Only after the score was replaced.** The published rank-product score *lost* by 2.03 pts; a measured Gauss–Newton sensitivity wins by **+10.29** | [`RESULTS.md`](../../experiments/four_point/RESULTS.md) |
 | 2 | Does that hold on a different model, scale, architecture and training regime? | **Yes, qualitatively; not in magnitude** | [`RESULTS-mistral7b-banking77.md`](../../experiments/four_point/RESULTS-mistral7b-banking77.md) |
-| 3 | Does it beat what people actually ship — GPTQ, AWQ, RTN, bnb-NF4? | **Wins at 2.42×, ties at 3.8×, lost at 4.9×** | [phase 1 PDF](dynquant-phase1-external-comparison.pdf) · [record](../../experiments/four_point/RESULTS-external-comparison.md) |
-| 4 | Can the 3-bit loss be reversed without adopting GPTQ's mechanism? | **Yes. +1.54 over GPTQ at 7.4 % fewer bytes, p < 0.0001** | [phase 2 PDF](dynquant-phase2-beating-gptq-3bit.pdf) |
+| 3 | Does it beat what people actually ship — GPTQ, AWQ, RTN, bnb-NF4? | **Wins at 2.42×, ties at 3.8×, lost at 4.9×** | [phase 1 PDF](https://github.com/kambojvikram/dynquant/releases/latest/download/dynquant-phase1-external-comparison.pdf) · [record](../../experiments/four_point/RESULTS-external-comparison.md) |
+| 4 | Can the 3-bit loss be reversed without adopting GPTQ's mechanism? | **Yes. +1.54 over GPTQ at 7.4 % fewer bytes, p < 0.0001** | [phase 2 PDF](https://github.com/kambojvikram/dynquant/releases/latest/download/dynquant-phase2-beating-gptq-3bit.pdf) |
 | 5 | Do inference servers hold the same quantized weights the direct run holds? | **Yes, on both vLLM and SGLang** — after a real defect was found and fixed | [`serving-parity.md`](serving-parity.md) |
 | 6 | Do the phase-3 benchmarks have room for quantization damage to show? | **Yes, all four** — 54.5–83.2 %, no arm near ceiling; two harness defects caught | [`phase3-s1-headroom-screen.md`](phase3-s1-headroom-screen.md) |
 | 7 | Does the S2 fine-tune know which tokens are the assistant's? | **Yes on both tokenizers, ≤0.07 % unmaskable** — after the obvious method dropped 100 % of the data on one of them | [`phase3-s2-loss-masking.md`](phase3-s2-loss-masking.md) |
@@ -42,8 +42,15 @@ belong to the signal or to the shape of the map are nine separate failures:
 
 The method itself — signals, sensitivity estimator, allocator, encoder, format, packed
 runtime, kernels — is documented end to end in the
-[**whitepaper**](../whitepaper/dynquant-whitepaper.pdf), which also carries the kernel and
-VRAM measurements described in §6 below.
+[**whitepaper**](https://github.com/kambojvikram/dynquant/releases/latest/download/dynquant-whitepaper.pdf),
+which also carries the kernel and VRAM measurements described in §6 below.
+
+Every PDF linked from this page is a **release asset**, not a file in the tree: the xelatex
+source sits next to this index and is what gets reviewed, and the built PDF is attached to the
+release. The repository-wide `*.pdf` ignore exists to keep a confidential document out of git
+history and is not worth a hole for a build artifact. So each link points at
+`releases/latest/download/…`, which means a release that ships without re-attaching a rebuilt
+PDF gives a reader a 404 rather than a stale document — the loud failure, on purpose.
 
 ---
 
@@ -119,7 +126,7 @@ model buys robustness that reduces how much any allocator can add.
 
 ## 3. Phase 1 — against GPTQ, AWQ, RTN and bitsandbytes NF4
 
-[**PDF**](dynquant-phase1-external-comparison.pdf) · [LaTeX](dynquant-phase1-external-comparison.tex) ·
+[**PDF**](https://github.com/kambojvikram/dynquant/releases/latest/download/dynquant-phase1-external-comparison.pdf) · [LaTeX](dynquant-phase1-external-comparison.tex) ·
 records: [`REPORT-quantization-comparison.md`](../../experiments/four_point/REPORT-quantization-comparison.md) (934 lines),
 [`RESULTS-external-comparison.md`](../../experiments/four_point/RESULTS-external-comparison.md) (1 540 lines)
 
@@ -166,7 +173,7 @@ different sizes.
 
 ## 4. Phase 2 — reversing the 3-bit loss without copying GPTQ
 
-[**PDF**](dynquant-phase2-beating-gptq-3bit.pdf) · [LaTeX](dynquant-phase2-beating-gptq-3bit.tex) ·
+[**PDF**](https://github.com/kambojvikram/dynquant/releases/latest/download/dynquant-phase2-beating-gptq-3bit.pdf) · [LaTeX](dynquant-phase2-beating-gptq-3bit.tex) ·
 record: [`RESULTS-external-comparison.md` §Phase 2](../../experiments/four_point/RESULTS-external-comparison.md)
 
 Measured 2026-07-30. One panel: Qwen3.5-2B-Base / CaseHOLD, 5 314 items, every comparison a
@@ -225,7 +232,7 @@ identically for 12/12 prompts, on the quantized checkpoint only 10/12.
 ## 6. The packed runtime, VRAM and the kernels
 
 Not a separate document — measured inside campaigns 1–3 and written up in the
-[whitepaper](../whitepaper/dynquant-whitepaper.pdf) §"The packed runtime" and in
+[whitepaper](https://github.com/kambojvikram/dynquant/releases/latest/download/dynquant-whitepaper.pdf) §"The packed runtime" and in
 [`RESULTS.md` §"Running it packed"](../../experiments/four_point/RESULTS.md). Collected here
 because it answers its own question: *do the accounted bytes exist on the GPU, and what do
 they cost?*

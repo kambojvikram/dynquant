@@ -44,6 +44,21 @@ def driver() -> Any:
     return module
 
 
+@pytest.fixture
+def transformers_module() -> Any:
+    """For the tests that reach transformers *through the driver* rather than by import.
+
+    Most of this file exercises argument handling and refusals, which need nothing
+    installed -- the base CI matrix installs core and pytest only, and that is the point of
+    keeping this file cheap. But `pristine_config` and `do_publish` call `AutoConfig` at
+    call time, so the dependency is invisible at the top of the file and shows up as a
+    `ModuleNotFoundError` inside somebody else's function. Requesting this fixture is the
+    declaration; the `transformers` job installs the module and asserts this file does not
+    skip, so declaring it cannot become the way these three stop running.
+    """
+    return pytest.importorskip("transformers")
+
+
 def _args(driver: Any, argv: list[str]) -> argparse.Namespace:
     """Parse through the driver's own parser, so a renamed flag fails here."""
     return driver.build_parser().parse_args(argv)  # type: ignore[no-any-return]
@@ -1763,7 +1778,7 @@ def _checkpoint(tmp_path: Any, **fields: Any) -> str:
 
 
 def test_the_export_reads_the_checkpoints_config_and_not_the_recipes(
-    driver: Any, tmp_path: Any
+    driver: Any, tmp_path: Any, transformers_module: Any
 ) -> None:
     """``model.config`` after a recipe is a description of a checkpoint nobody is writing.
 
@@ -1781,7 +1796,7 @@ def test_the_export_reads_the_checkpoints_config_and_not_the_recipes(
 
 
 def test_the_activation_linearize_moe_reads_is_supplied_without_touching_the_checkpoint(
-    driver: Any, tmp_path: Any
+    driver: Any, tmp_path: Any, transformers_module: Any
 ) -> None:
     """LFM2's config omits ``hidden_act``; the expert modules built from it read one.
 
@@ -1880,7 +1895,7 @@ def test_a_pass_that_reproduces_the_scored_arm_publishes_and_one_that_does_not_i
 
 
 def test_the_scored_flags_are_checked_before_the_recipe_runs_and_not_after(
-    driver: Any, tmp_path: Any, monkeypatch: Any
+    driver: Any, tmp_path: Any, monkeypatch: Any, transformers_module: Any
 ) -> None:
     """A width that disagrees with the record has to cost a second, not a calibration pass.
 
