@@ -229,7 +229,7 @@ bounded fallback plus a guard that makes the failure loud forever after.
 One number is not yet explained and is flagged as open: on fp16 the two servers generate
 identically for 12/12 prompts, on the quantized checkpoint only 10/12.
 
-## 6. The packed runtime, VRAM and the kernels
+## The packed runtime, VRAM and the kernels
 
 Not a separate document — measured inside campaigns 1–3 and written up in the
 [whitepaper](https://github.com/kambojvikram/dynquant/releases/latest/download/dynquant-whitepaper.pdf) §"The packed runtime" and in
@@ -268,6 +268,46 @@ instruction-issue floor of ~141 µs against 237 µs achieved — and needs the t
 **Verification.** 417 kernel-parity tests across every geometry × width × M × dtype, and all
 four `compute-sanitizer` tools — memcheck, initcheck, racecheck, synccheck — report 0 errors
 and 0 hazards over that suite.
+
+## 6. Phase 3 — S1, the headroom screen
+
+[`phase3-s1-headroom-screen.md`](phase3-s1-headroom-screen.md)
+
+The first pre-flight check of phase 3, applying a rule this project had already paid to learn:
+*screen headroom before spending a fine-tune.* GSM8K's flat arms in campaign 1 cost a full
+six-arm run to diagnose, and the diagnosis was that the base model already sat at the supervised
+ceiling — so nothing downstream could read quantization damage against a fine-tuning gain. Phase
+3 changes the models, the datasets and the benchmarks at once, so every benchmark has to be shown
+to have room first. Eight arms, seven minutes of GPU.
+
+**All eight have room.** Phi-4-mini-instruct scores 68.76 % IFEval, 83.17 % GSM8K, 77.44 %
+HumanEval and 60.00 % MBPP; Ministral-8B-Instruct 54.53 %, 80.89 %, 79.27 % and 55.80 %. The
+highest arm leaves 16.8 points before the ceiling and the lowest 45, so nothing is near enough to
+100 % that damage would have nowhere to show — the single question S1 was run to answer. The two
+models also rank differently on three of the four tasks, which is the argument for a
+four-benchmark panel rather than one benchmark and three correlated with it. MBPP is the tightest
+floor and the arm most likely to need paired hits to separate anything.
+
+**Two of the four candidate models are not in the panel, and that is scope rather than an
+omission.** `meta-llama/Llama-3.1-8B-Instruct` and `google/gemma-3-4b-it` are `gated=manual` on
+the Hub — per-account licence acceptance through a web UI, not resolvable from the box — so on
+2026-08-05 the panel was settled at two models rather than held for a token. What survives spans
+fused projections against unfused dense GQA, two tokenizer backends and 2.1× of scale; what is
+given up is the Llama family and the only alternating sliding-window stack. Every arm is scored
+against its own model's bf16 ceiling, so adding a model later invalidates none of it.
+
+**The screen's other product was two harness defects**, both returning a stable, plausible, wrong
+number rather than an error. The harness decided whether to frame a prompt as a chat turn by
+reading `tokenizer.chat_template` — an attribute of the *Jinja-backed implementation*, not of the
+capability. `AutoTokenizer` hands back `MistralCommonBackend` for any Mistral checkpoint shipping
+a `tekken.json`, and that class leaves the attribute `None` while `apply_chat_template` works, so
+an instruct model was measured as a base model: **24.77 %** IFEval with 195 of 541 generations
+empty, because an instruct checkpoint handed bare text continues it instead of answering it. The
+second bug detected the frame and then discarded it on the way to the model, taking HumanEval to
+**23.17 %** with 120 of 164 empty. Correctly framed, the same checkpoint scores 54.53 % and
+79.27 %. **Getting the framing wrong is worth up to 56.1 points on HumanEval and 29.8 on IFEval**
+— five to thirty times the +1.54 effect size phase 2 was built to measure. Both losing arms are
+kept as controls, because a number that large is only harmless once it is priced.
 
 ## 7. Phase 3 — S2, locating the assistant turns
 
