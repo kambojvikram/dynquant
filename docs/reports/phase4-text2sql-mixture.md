@@ -2593,9 +2593,22 @@ has not been run.
 | dq_3b_unif | 3.104 | 3.1486 | -0.0038% | 70.42% | 8 450 | 53.8% | 76.1% | 492 |
 | gptq_3b | 3.104 | 3.1488 | +0.0000% | 60.76% | 7 291 | 54.0% | 63.1% | 1 008 |
 
-All three controls spent *more* bytes than the real arm -- 202 KB for the shuffle and for the flat
-arm alike, 1.25 MB for the uniform -- so every byte advantage in this block runs against DynQuant
-and the shares below are conservative. The ladder, Holm-corrected inside its own family of four:
+The byte edge over the two permuted controls is **zero, not 202 KB**, and the correction belongs
+here because it ran the other way for two days. `dq_3b`'s map was priced on 2026-08-10 by code
+that predates `709b0c1`, the commit that gave a price to the rank-1 tensors the graph refuses --
+61 of them here, 101,120 parameters, 202,240 B at bf16. Every map from `dq_3b_shuf` onward
+counts them and `dq_3b`'s does not, so its stored 3,331,526,656 B is a smaller number for a
+larger reason than a tighter allocation. Re-derived under the current checkout the same inputs
+produce the same allocation *to the width* -- 0 of 133 modules differ, the histogram and all 15
+floor breaches are identical -- and price at **3,331,728,896 B**, the shuffle and flat arms'
+figure to the byte, which puts the row's `-0.0413%` at `-0.0353%` like theirs. What survives is
+the uniform arm's edge, and it is exactly 1 MiB: 1,048,576 B more than the real arm for a map
+that scores 9.47 points worse. The rungs below are therefore read at matched bytes rather than at
+a byte discount -- a weaker claim than the one this paragraph used to make, and the one the
+numbers support. (Two accountings of those refused tensors do not yet agree: [the runtime
+report](phase4-packed-moe-runtime.md) §7 measures them on disk at 205,056 B, 1,408 parameters more
+than the allocator prices. Re-pricing the 4-bit map is what settles which one double-counts a
+tied tensor.) The ladder, Holm-corrected inside its own family of four:
 
 | rung | what it puts back | delta | 95% CI | flips | p (Holm) |
 |---|---|---:|---|---|---:|

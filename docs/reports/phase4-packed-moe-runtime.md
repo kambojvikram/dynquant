@@ -895,6 +895,16 @@ against a 0.1% match tolerance. The maps are not invalidated and are not being r
 eager re-score of section 8 reuses them through `--rescore`, precisely so that the dispatch is the
 only thing that moves between the two measurements — this change is the second one that would
 otherwise have ridden along.
+
+**Re-derived since, and the claim holds — with one number left to settle.** `dq_3b` was rebuilt
+under the current checkout on 2026-08-12: 0 of its 133 widths differ, the histogram and all 15
+floor breaches are identical, and the only thing that moves is the price, by exactly 202,240 B.
+The old accounting therefore cost the maps nothing and cost the *reported* size 0.006%. But
+202,240 is not 205,056 — the allocator prices 61 refused tensors at 101,120 parameters, and the
+disk figure above counts 1,408 parameters more. One of the two accountings counts a tied tensor
+twice; re-pricing the 4-bit map says which. The consequence downstream is in [the mixture
+report](phase4-text2sql-mixture.md) §13.4, where the real arm's 202 KB byte edge over its own
+controls was this artifact and not an allocation.
 ---
 
 ## 11. What a linearised baseline still carries
