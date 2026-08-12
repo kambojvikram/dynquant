@@ -608,8 +608,19 @@ def load_text2sql(
             accounting is what tells a later reader whether the decontamination ran at
             all, which a count that only reaches the log cannot.
 
-    Three sources train and two evaluate, and the third is why this has a
-    decontamination step at all. ``b-mc2/sql-create-context`` is a community aggregate
+    Three sources train and three evaluate, and they are not the same three. The lists
+    are asymmetric on purpose: ``create-context`` ships schemas without rows, so it is
+    trainable but cannot be scored by execution, and ``spider`` is registered for
+    evaluation only -- it is the held-out benchmark, and a mixture that trained on its
+    train split would be reporting generalisation it had partly memorised.
+
+    Note that :data:`DEFAULT_TEST` is *derived* from ``has_data`` while
+    :data:`DEFAULT_TRAIN` is written out, so registering a data-bearing source widens the
+    evaluation set and nothing recomputes a sentence like this one. It said "two
+    evaluate" for as long as it took to notice.
+
+    The training list is where the decontamination step comes from.
+    ``b-mc2/sql-create-context`` is a community aggregate
     built from WikiSQL and Spider, shipped as a single ``train`` split; it never claimed
     to respect WikiSQL's own train/test boundary, and it does not. Measured against this
     campaign's evaluation set, **189 of its 200 WikiSQL items are questions present in
