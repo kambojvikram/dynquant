@@ -35,7 +35,7 @@ from .constants import BIT_OPTIONS, COMPUTE_DTYPES, DEFAULT_GROUP_SIZE
 # One import of the null modes rather than a second copy of the tuple here: a
 # choices list that drifts from the dispatch it guards rejects a mode the code
 # supports, or accepts one it does not. The module is stdlib-only at import time.
-from .score.null import NULL_LADDER, NULL_MODES, STOCHASTIC_NULL_MODES
+from .score.null import NULL_CHAINS, NULL_MODES, STOCHASTIC_NULL_MODES
 
 if TYPE_CHECKING:
     # `_SubParsersAction` is generic to type checkers but a plain class at runtime,
@@ -152,11 +152,12 @@ def _add_allocation(parser: argparse.ArgumentParser) -> None:
             f"{', '.join(f'`{mode}`' for mode in NULL_MODES)}. Everything else -- "
             "roles, floors, budget, pricing code -- is unchanged, so the difference "
             "from the real arm at the same byte anchor is the signal's contribution. "
-            f"A panel chaining {', '.join(f'`{mode}`' for mode in NULL_LADDER)} reads "
-            "as a ladder, in that order, because each of those removes everything the "
-            "one before it removed; the rest are modes and not rungs, and subtract "
-            "against the real arm alone. See `dynquant.score.null` for what each mode "
-            "removes. The mode is recorded in the map's `allocator` field"
+            "A panel reads as a ladder only along one of "
+            f"{' or '.join(' -> '.join(chain) for chain in NULL_CHAINS)}, because "
+            "within those each mode removes everything the one before it removed. Any "
+            "other pair subtracts two changes at once and still adds up. See "
+            "`dynquant.score.null` for what each mode removes. The mode is recorded in "
+            "the map's `allocator` field"
         ),
     )
     parser.add_argument(

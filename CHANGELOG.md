@@ -34,12 +34,22 @@ identity** — not rebuilt, not filtered, not permuted. It is the only mode that
 one of the allocator's two inputs, so `dq_3b − dq_3b_tabl` is the score channel and nothing
 else.
 
-It is deliberately not a fourth rung. `NULL_LADDER` now names the chain a decomposition may be
-built over (`shuffle → flat → uniform`, each removing everything the last did) and `NULL_MODES`
-names every mode the CLI accepts. Separate tuples because the two facts go stale independently:
-adding a mode must extend the second without silently extending the first, and a mode that
-joins the ladder without earning it turns a partition into a sum of overlapping differences
-that still adds up.
+It is not a fourth rung on the existing ladder, and it is not off the ladder either: the
+nesting over these modes is a partial order, not a line. `shuffle` and `table` are the
+incomparable pair — one keeps every magnitude and destroys both correspondences, the other
+keeps one correspondence exactly and destroys every magnitude — so no chain holds both. Both
+sit above `flat`, which sits above `uniform`. `NULL_CHAINS` now names both chains
+(`shuffle → flat → uniform` and `table → flat → uniform`) and `NULL_MODES` names every mode
+the CLI accepts. Separate registries because the two facts go stale independently: adding a
+mode must extend the second without silently extending the first, and a mode that joins a
+chain without earning it turns a partition into a sum of overlapping differences that still
+adds up.
+
+The `table` chain is the one to reach for when the question is what each channel is worth.
+Against the real arm its rungs are single-channel contrasts — real → `table` moves the score
+and nothing else, `table` → `uniform` moves the measured table and nothing else, and the two
+sum to the whole signal in two steps. Every middle rung of the `shuffle` chain moves two
+things at once, which is why the published four-rung decomposition has a negative middle.
 
 Two guards came with it. The seed test now derives "does this mode draw?" from the code's
 behaviour at two seeds instead of pinning a literal list — the old form's stated reason for

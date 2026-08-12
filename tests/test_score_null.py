@@ -39,7 +39,7 @@ from dynquant.allocate.policy import AllocationPolicy
 from dynquant.errors import DynQuantError
 from dynquant.graph.classify import classify_model
 from dynquant.score.null import (
-    NULL_LADDER,
+    NULL_CHAINS,
     NULL_MODES,
     STOCHASTIC_NULL_MODES,
     apply_null,
@@ -455,26 +455,32 @@ def test_flat_differs_from_shuffle_in_the_score_channel_and_in_nothing_else(
 def test_the_nulls_are_nested_in_the_order_they_are_declared(graph, scores, sensitivity) -> None:
     """A ladder over these modes partitions the margin only if each removes the last's more.
 
-    Asserted as the property rather than as the tuple: what a chain built over `NULL_LADDER`
-    needs is that mode k+1 removes everything mode k removed, and a test that pinned the
-    tuple would go green on a reordering that broke exactly that. Two inputs reach the
-    allocator, so nesting is visible in two columns -- the score loses its ordering, then
-    the table goes -- and a mode that gave one back while taking the other is a mode whose
-    rung is a difference rather than a step.
+    Asserted as the property rather than as the tuple: what a chain in `NULL_CHAINS` needs
+    is that mode k+1 removes everything mode k removed, and a test that pinned the tuples
+    would go green on a reordering that broke exactly that. Two inputs reach the allocator,
+    so nesting is visible in two columns -- the score loses its ordering, then the table
+    goes -- and a mode that gave one back while taking the other is a mode whose rung is a
+    difference rather than a step.
 
-    Turns red when: a mode is inserted at a rank it does not belong at.
+    Every chain, not just the first: the nesting is a partial order, and the whole reason
+    there is more than one chain is that a mode was found which nests with some of the
+    others and not all. A test that checked one of them would bless the rest by silence.
+
+    Turns red when: a mode is inserted into a chain at a rank it does not belong at.
     """
-    ordering, tables = [], []
-    for mode in NULL_LADDER:
-        null_scores, null_table, _ = apply_null(graph, scores, sensitivity, mode=mode, seed=0)
-        ordering.append(len(set(null_scores.values())) > 1)
-        tables.append(null_table is not None)
+    assert NULL_CHAINS, "there is at least one chain to check"
+    for chain in NULL_CHAINS:
+        ordering, tables = [], []
+        for mode in chain:
+            null_scores, null_table, _ = apply_null(graph, scores, sensitivity, mode=mode, seed=0)
+            ordering.append(len(set(null_scores.values())) > 1)
+            tables.append(null_table is not None)
 
-    # Once a column goes it stays gone: `sorted(reverse=True)` on the booleans is the
-    # nesting, and any other pattern is a mode that put something back.
-    assert ordering == sorted(ordering, reverse=True), NULL_LADDER
-    assert tables == sorted(tables, reverse=True), NULL_LADDER
-    assert (ordering, tables) != ([], []), "there is at least one mode to check"
+        # Once a column goes it stays gone: `sorted(reverse=True)` on the booleans is the
+        # nesting, and any other pattern is a mode that put something back.
+        assert ordering == sorted(ordering, reverse=True), chain
+        assert tables == sorted(tables, reverse=True), chain
+        assert len(chain) > 1, chain
 
 
 def test_flat_is_capable_of_a_different_map_from_either_of_its_neighbours(
@@ -551,23 +557,29 @@ def test_the_table_mode_is_capable_of_a_different_map_from_the_real_arm(
     assert real != nulled
 
 
-def test_the_ladder_is_a_subset_of_the_modes_and_says_so() -> None:
-    """Two tuples, two facts, and the one that must not drift is which is which.
+def test_the_chains_are_subsets_of_the_modes_and_ordered_like_them() -> None:
+    """Two registries, two facts, and the one that must not drift is which is which.
 
-    `NULL_MODES` is every mode the CLI accepts; `NULL_LADDER` is the smaller claim that a
-    chain over it partitions a margin. A mode added to the ladder without earning it turns
-    a decomposition into a sum of overlapping differences that still adds up, which is the
-    failure that prints a clean-looking table and means nothing.
+    `NULL_MODES` is every mode the CLI accepts; `NULL_CHAINS` is the smaller claim that
+    chaining these particular sequences partitions a margin. A mode added to a chain
+    without earning it turns a decomposition into a sum of overlapping differences that
+    still adds up, which is the failure that prints a clean-looking table and means
+    nothing.
 
-    Turns red when: a mode joins the ladder, or the ladder stops being ordered as declared.
+    Also asserts the display order is a linear extension of the nesting: `NULL_MODES` is
+    what the panel sorts controls by, and a chain that ran backwards through it would
+    table a ladder upside down.
+
+    Turns red when: a mode joins a chain, or the display order stops respecting one.
     """
-    assert set(NULL_LADDER) <= set(NULL_MODES)
-    assert "table" not in NULL_LADDER
-    # A contiguous run, so `NULL_MODES.index` -- which is what the panel sorts controls by
-    # -- never interleaves a non-rung between two rungs of a ladder it is displaying.
-    positions = [NULL_MODES.index(mode) for mode in NULL_LADDER]
-    assert positions == sorted(positions)
-    assert positions == list(range(positions[0], positions[0] + len(positions)))
+    for chain in NULL_CHAINS:
+        assert set(chain) <= set(NULL_MODES), chain
+        assert len(set(chain)) == len(chain), chain
+        positions = [NULL_MODES.index(mode) for mode in chain]
+        assert positions == sorted(positions), chain
+    # The incomparable pair is the reason there is more than one chain; if some later mode
+    # makes them chainable the plural has stopped earning itself.
+    assert not any({"shuffle", "table"} <= set(chain) for chain in NULL_CHAINS)
 
 
 def test_the_table_report_says_nothing_moved_and_why(graph, scores, sensitivity) -> None:
@@ -584,7 +596,7 @@ def test_the_table_report_says_nothing_moved_and_why(graph, scores, sensitivity)
 
     assert "not permuted" in summary
     assert "by construction" in summary
-    assert "not a rung" in summary
+    assert "shuffle" in summary
     assert "another module" not in summary
     assert report.label == "null:table"
 

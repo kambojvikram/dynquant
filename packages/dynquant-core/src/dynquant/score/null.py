@@ -66,12 +66,20 @@ the table under ``flat`` is a *permuted* table and the rung below it prices a
 permuted table against no table rather than the real one against no table. Read
 against the real arm, ``table`` is the score channel and nothing else.
 
-It is deliberately **not** on the ladder. It removes strictly less than ``flat``
-and is not comparable to ``shuffle`` at all -- ``shuffle`` keeps every magnitude
-and destroys both correspondences, ``table`` keeps one correspondence perfectly
-and destroys every score magnitude -- so neither contains the other and a rung
-between them would be a difference, not a step. It reads against the real arm
-directly, and against nothing else.
+It is not on the ``shuffle`` ladder, and it is not off the ladder either: the
+nesting over these modes is a partial order, not a line. ``shuffle`` and ``table``
+are the incomparable pair -- one keeps every magnitude and destroys both
+correspondences, the other keeps one correspondence exactly and destroys every
+magnitude -- so no chain holds both, and a rung between them would be a difference
+rather than a step. Both sit above ``flat``, which removes what either removes and
+more, and ``flat`` sits above ``uniform``. So there are two chains, and
+:data:`NULL_CHAINS` names them.
+
+The ``table`` chain is the one to prefer when the question is what each channel is
+worth. Against the real arm its rungs are single-channel contrasts -- real to
+``table`` moves the score and nothing else, ``table`` to ``uniform`` moves the
+measured table and nothing else, and the two sum to the whole signal in two steps.
+Every middle rung of the ``shuffle`` chain moves two things at once.
 
 ``uniform`` gives every module the same score and consults no sensitivity table
 at all. There is no such thing as measured sensitivity without the fine-tune --
@@ -112,7 +120,7 @@ if TYPE_CHECKING:
     from dynquant.score.sensitivity import SensitivityTable
 
 __all__ = [
-    "NULL_LADDER",
+    "NULL_CHAINS",
     "NULL_MODES",
     "STOCHASTIC_NULL_MODES",
     "NullReport",
@@ -127,15 +135,19 @@ __all__ = [
 #: read by name from here rather than restated wherever a chain gets built.
 NULL_MODES = ("table", "shuffle", "flat", "uniform")
 
-#: The subset a decomposition may chain over, in the order that makes it a partition.
+#: Every chain a decomposition may be built over, each in the order that makes it one.
 #:
 #: :data:`NULL_MODES` is every mode the CLI accepts, ordered for display; this is the
-#: smaller claim, that each of these removes everything the one before it removed. Only
-#: a chain over *this* tuple partitions a margin -- ``table`` is a fourth mode and not a
-#: fourth rung, and subtracting it from a neighbour prices two changes at once. Separate
-#: names because the two facts go stale independently: adding a mode extends the first
-#: and must not silently extend the second.
-NULL_LADDER = ("shuffle", "flat", "uniform")
+#: smaller claim, that within a chain each mode removes everything the one before it
+#: removed. Plural because the nesting is a partial order: ``shuffle`` and ``table``
+#: remove incomparable things, so no chain holds both, and subtracting one from the
+#: other prices two changes at once and adds up anyway. Separate names from
+#: :data:`NULL_MODES` because the two facts go stale independently -- adding a mode
+#: extends the registry and must not silently extend a chain.
+NULL_CHAINS = (
+    ("shuffle", "flat", "uniform"),
+    ("table", "flat", "uniform"),
+)
 
 #: The subset that draws, so that a seed names a different arm rather than the same one.
 #:
@@ -217,8 +229,9 @@ class NullReport:
                 "received it -- not permuted, not rebuilt. Nothing moved, so `moved` is "
                 "0 by construction rather than by a weak draw: the one thing removed is "
                 "the score's magnitude, and every module the moments could price keeps "
-                "its own measured row. Reads against the real arm and against nothing "
-                "else -- it is not a rung on the ladder."
+                "its own measured row. Subtracts cleanly from the real arm and from "
+                "`uniform`; never from `shuffle`, which removes something else "
+                "entirely."
             )
         if self.mode == "flat":
             lines = [
@@ -279,10 +292,11 @@ def apply_null(
         mode: ``"shuffle"`` to permute the driving quantity within role,
             ``"flat"`` to permute it and drop the score's magnitude as well,
             ``"uniform"`` to remove the signal entirely -- nested in that order,
-            and named by :data:`NULL_LADDER`. ``"table"`` drops the score's
-            magnitude and keeps the measured table untouched; it is a mode and
-            not a rung, and subtracts against the real arm only. See the module
-            docstring for which question each one answers.
+            ``"table"`` drops the score's magnitude and keeps the measured table
+            untouched, which makes it the cleanest contrast against the real arm.
+            :data:`NULL_CHAINS` says which sequences nest; ``"shuffle"`` and
+            ``"table"`` are incomparable and never chain. See the module docstring
+            for which question each one answers.
         seed: Fixed so the arm is reproducible and so a second seed is a
             deliberate act. Ignored by ``"uniform"``, which is deterministic.
     """
@@ -293,8 +307,8 @@ def apply_null(
             f"unknown null mode {mode!r}; expected one of {', '.join(NULL_MODES)}. "
             "`shuffle` permutes the driving quantity within role and `uniform` "
             "removes it, and they answer different questions -- see "
-            "dynquant.score.null. Only the modes in NULL_LADDER chain into a "
-            "partition; `table` reads against the real arm alone."
+            "dynquant.score.null. NULL_CHAINS names which sequences of them chain "
+            "into a partition; `shuffle` and `table` are in no chain together."
         )
 
     names = [info.name for info in graph.quantizable()]
