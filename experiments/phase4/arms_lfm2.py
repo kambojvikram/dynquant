@@ -363,6 +363,14 @@ def eval_flags(args: argparse.Namespace, label: str) -> list[str]:
         # what every arm ran, including after that default moves.
         "--experts-impl",
         args.experts_impl,
+        # Pinned, and the reason is the same shape as `--experts-impl` above: the eval
+        # default is *derived* -- every registry source whose contexts carry rows -- so
+        # adding a source widens the scored set without touching this file. Spider did
+        # exactly that. An unpinned panel would have scored a different mixture than the
+        # arms already banked and the pairing guard would have caught it as a mismatch
+        # rather than as the silent denominator change it actually is.
+        "--sources",
+        *args.sources,
     ]
     for name, value in (("--limit", args.limit), ("--batch-size", args.batch_size)):
         if value is not None:
@@ -1013,6 +1021,16 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--shots", type=int, default=2)
     run.add_argument("--shot-seed", type=int, default=0)
     run.add_argument("--prompt-style", default="chat")
+    run.add_argument(
+        "--sources",
+        nargs="+",
+        default=["gretel", "wikisql"],
+        metavar="NAME",
+        help=(
+            "text2sql sources to score. Defaults to the two this panel's banked arms "
+            "were scored on, not to the eval default, which grows with the registry"
+        ),
+    )
     run.add_argument("--limit", type=int, default=None)
     run.add_argument("--batch-size", type=int, default=None)
     # 1024, not the task spec's 320, and set here rather than left to default so all seven

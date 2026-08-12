@@ -40,13 +40,16 @@ from dynquant.eval.text2sql import (
     run_query,
 )
 from dynquant.eval.text2sql_sources import (
+    DEFAULT_TEST,
     DEFAULT_TRAIN,
+    MAX_CONTEXT_CHARS,
     MAX_TABLE_ROWS,
     SOURCES,
     RawItem,
     Source,
     SourceTally,
     _read_create_context,
+    _spider_context,
     _wikisql_item,
     evaluation_questions,
     is_readable_query,
@@ -412,9 +415,36 @@ def test_a_source_without_rows_is_refused_for_a_scored_split_and_kept_for_traini
 
 def test_an_unknown_source_name_is_an_error_rather_than_an_empty_mixture() -> None:
     """Turns red when: unknown names are filtered out instead of raising, which turns a
-    typo in a launch script into a run against a smaller set than the one it reports."""
+    typo in a launch script into a run against a smaller set than the one it reports.
+
+    The typo is spelled ``bird`` rather than a plausible near-miss on purpose. This test
+    used to name ``spider``, which then joined the registry -- and the failure it produced
+    was this assertion going green-to-red rather than a source silently vanishing from a
+    mixture, which is the only reason the rename is a footnote and not an incident.
+    """
     with pytest.raises(DynQuantError, match="unknown"):
-        resolve_sources(["gretel", "spider"], split="test")
+        resolve_sources(["gretel", "bird"], split="test")
+
+
+def test_the_scored_default_is_derived_from_the_registry_and_not_written_down() -> None:
+    """Every source that carries rows is scored by default, including ones added later.
+
+    That is a convenience and a hazard at once, and the hazard is why `dynquant eval`
+    records the resolved list. Adding Spider widened this tuple from two names to three
+    without a line changing in any launch script, so a record that named only its split
+    would claim to be comparable with every text2sql arm this campaign has banked while
+    having scored a third dataset none of them saw.
+
+    Turns red when: a source with rows is added and left out of the default, or the
+    default is frozen into a literal that stops tracking `has_data`.
+    """
+    assert set(DEFAULT_TEST) == {name for name, source in SOURCES.items() if source.has_data}
+    assert "spider" in DEFAULT_TEST
+    # And not in training. Spider's train split is 6,960 questions over the same 169
+    # databases, so putting it here would make the scored column a memorisation check
+    # over schemas the model had already been fitted on. Held out entirely, the column
+    # reads as generalisation to databases the mixture never showed it.
+    assert "spider" not in DEFAULT_TRAIN
 
 
 @pytest.mark.parametrize(
@@ -505,6 +535,27 @@ class _Split:
         return _Split([self.rows[index] for index in indices])
 
 
+def fake_spider_databases(monkeypatch) -> None:
+    """Answer every ``db_id`` with the same populated one-table schema.
+
+    Spider is the one source whose context is not in the row -- it is read out of a
+    sqlite file in a second repository -- so a fake hub that served only the questions
+    would leave the reader reaching for the network. The tests below that use this are
+    about the *registry*: which sources a split resolves to, which column the banned set
+    is built from, whether a training row that asks a test question is dropped. None of
+    them is about what the schema looks like.
+
+    So the schema is stubbed and :func:`_spider_context` is tested directly, against a
+    real sqlite file, in its own tests further down. Stubbing it here rather than pointing
+    at a real file keeps a change to the context builder from turning five registry tests
+    red for a reason that has nothing to do with the registry.
+    """
+    from dynquant.eval import text2sql_sources
+
+    monkeypatch.setattr(text2sql_sources, "_spider_databases", lambda cache_dir=None: {"db": "x"})
+    monkeypatch.setattr(text2sql_sources, "_spider_context", lambda path: POPULATED)
+
+
 def fake_hub(monkeypatch, splits: dict[tuple[str, str], list[dict]]) -> None:
     """Serve ``{(repo, split): rows}`` in place of the Hub.
 
@@ -527,6 +578,7 @@ def fake_hub(monkeypatch, splits: dict[tuple[str, str], list[dict]]) -> None:
         return _Split(splits[(repo, kwargs["split"])])
 
     monkeypatch.setattr(datasets, "load_dataset", load_dataset)
+    fake_spider_databases(monkeypatch)
 
 
 def gretel_row(question: str, gold: str = "SELECT a FROM t") -> dict:
@@ -537,15 +589,25 @@ def create_context_row(question: str) -> dict:
     return {"question": question, "context": BARE, "answer": "SELECT a FROM t"}
 
 
+def spider_row(question: str) -> dict:
+    return {"db_id": "db", "question": question, "query": "SELECT a FROM t"}
+
+
 EVAL_QUESTION = "Which staff are in engineering?"
 WIKISQL_EVAL_QUESTION = "Who was the home team?"
+SPIDER_EVAL_QUESTION = "How many singers are there?"
 
 
 def three_sources(train: dict[str, list[dict]] | None = None) -> dict[tuple[str, str], list[dict]]:
     """A hub holding one question per evaluated source, plus whatever training rows.
 
     The ``test`` splits are the point: they are what the banned set is built from, and
-    every training row below is contaminated or clean relative to *those two* strings.
+    every training row below is contaminated or clean relative to *those three* strings.
+
+    Named for the three sources of the original mixture and now serving four, which is
+    left alone deliberately: what these tests assert is that the banned set follows
+    ``DEFAULT_TEST`` rather than a list written down anywhere, and a helper renamed every
+    time the registry grows would be one more list written down.
     """
     train = train or {}
     return {
@@ -553,6 +615,8 @@ def three_sources(train: dict[str, list[dict]] | None = None) -> dict[tuple[str,
         ("gretelai/synthetic_text_to_sql", "train"): train.get("gretel", []),
         ("Salesforce/wikisql", "test"): [wikisql_row(question=WIKISQL_EVAL_QUESTION)],
         ("Salesforce/wikisql", "train"): train.get("wikisql", []),
+        ("xlangai/spider", "validation"): [spider_row(SPIDER_EVAL_QUESTION)],
+        ("xlangai/spider", "train"): train.get("spider", []),
         ("b-mc2/sql-create-context", "train"): train.get("create-context", []),
     }
 
@@ -608,7 +672,11 @@ def test_question_columns_match_the_readers(monkeypatch) -> None:
         for source in resolve_sources(None, split="test")
         for item in read_source(source, "test", seed=0, cache_dir=None)
     }
-    assert through_the_readers == {question_key(EVAL_QUESTION), question_key(WIKISQL_EVAL_QUESTION)}
+    assert through_the_readers == {
+        question_key(EVAL_QUESTION),
+        question_key(WIKISQL_EVAL_QUESTION),
+        question_key(SPIDER_EVAL_QUESTION),
+    }
     assert evaluation_questions() == through_the_readers
 
 
@@ -782,3 +850,101 @@ def test_the_banned_set_comes_from_the_evaluated_sources_not_the_training_list(
     assert tallies["create-context"].contaminated == 1
     assert tallies["gretel"].contaminated == 0
     assert tallies["wikisql"].contaminated == 0
+
+
+# --- Spider: the context is synthesised, and the budget is what bounds it -------------
+
+
+def spider_database(tmp_path, tables: dict[str, list[tuple]], columns: str = "(a INT, b TEXT)"):
+    """A real sqlite file, because :func:`_spider_context` reads one.
+
+    Spider's schema does not travel with its questions -- it is a checkout of 169 sqlite
+    databases in a second repository -- so the builder's input is a file, and a fake that
+    was not one would be testing a different function.
+    """
+    import sqlite3
+
+    path = tmp_path / "db.sqlite"
+    conn = sqlite3.connect(path)
+    for name, rows in tables.items():
+        conn.execute(f"CREATE TABLE {name} {columns}")
+        conn.executemany(f"INSERT INTO {name} VALUES ({', '.join('?' * len(rows[0]))})", rows)
+    conn.commit()
+    conn.close()
+    return path
+
+
+def test_the_schema_survives_a_budget_the_rows_do_not(tmp_path) -> None:
+    """Every ``CREATE TABLE`` is in the context; rows are what gets cut.
+
+    The order is the claim. A schema is the question -- an item whose context omits a
+    table the gold joins is unanswerable rather than hard, and would be scored as the
+    model's failure. Rows are only what makes a ``WHERE`` clause match something, so a
+    context short of rows costs recall on some items and costs nothing on the rest.
+
+    Turns red when: the builder starts spending the budget in table order, or truncates
+    the head, either of which drops a table from a wide schema and silently converts a
+    scorable item into an unanswerable one.
+    """
+    wide = {f"t{index}": [(index, "x" * 400)] for index in range(40)}
+    context = _spider_context(spider_database(tmp_path, wide))
+
+    for index in range(40):
+        assert f"CREATE TABLE t{index}" in context
+    assert len(context) <= MAX_CONTEXT_CHARS
+    # And it did spend the budget rather than stopping at the schema: some rows are in.
+    assert "INSERT INTO" in context
+
+
+def test_rows_go_in_round_robin_so_one_wide_table_cannot_eat_the_budget(tmp_path) -> None:
+    """Each table gets a row before any table gets a second.
+
+    Measured on the dev split this is what took admission from 59.8% to 79.1%. Filling
+    table by table gives the first table every row it has and leaves the last tables with
+    none, which is the shape that makes a join match nothing -- an item that then reads as
+    an empty result set and is refused, or worse, scored against a gold that also returns
+    nothing.
+
+    Turns red when: the fill goes table by table, or the round-robin index stops advancing
+    so one queue is drained before the next is touched.
+    """
+    tables = {"a": [(index, "x" * 300) for index in range(20)], "b": [(1, "y")]}
+    context = _spider_context(spider_database(tmp_path, tables))
+
+    assert 'INSERT INTO "b"' in context
+    assert context.count('INSERT INTO "a"') < 20
+
+
+def test_a_null_cell_is_not_the_empty_string(tmp_path) -> None:
+    """``NULL`` and ``''`` answer differently to ``IS NULL`` and to ``= ''``.
+
+    Spider's dev set has goals that filter on both. Writing a NULL as an empty string
+    would change which rows a gold returns, and the item would be scored against a
+    database that is not the one the annotator saw.
+
+    Turns red when: the cell formatter quotes ``None``, or drops the row.
+    """
+    context = _spider_context(spider_database(tmp_path, {"t": [(1, None), (2, "")]}))
+    assert "NULL" in context
+    assert "''" in context
+
+
+def test_a_database_that_is_not_utf8_still_produces_a_context(tmp_path) -> None:
+    """One undecodable byte must not refuse the whole database.
+
+    sqlite3's default text factory raises on the first byte it cannot decode, and Spider's
+    databases are not all UTF-8. Refusing there would drop every item on that ``db_id`` --
+    silently, since the reader's fallback is to skip.
+
+    Turns red when: the text factory is removed, or replaced with one that raises.
+    """
+    import sqlite3
+
+    path = tmp_path / "db.sqlite"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE t (a INT, b BLOB)")
+    conn.execute("INSERT INTO t VALUES (1, ?)", (bytes([0xFF, 0xFE]),))
+    conn.commit()
+    conn.close()
+
+    assert "CREATE TABLE t" in _spider_context(path)

@@ -663,6 +663,12 @@ def eval_namespace(args: argparse.Namespace) -> argparse.Namespace:
         str(args.shot_seed),
         "--prompt-style",
         args.prompt_style,
+        # Forwarded rather than left to the eval default, for the same reason the panel
+        # states it: the default is derived from the source registry and widens whenever a
+        # dataset carrying rows is added to it, so an arm that stayed silent would be
+        # scored on whatever mixture the registry holds on the day it ran.
+        "--sources",
+        *args.sources,
         # The arm this driver builds has no `*Experts` module left -- `llm-compressor`
         # rewrites the bank into per-expert `Linear`s, which is what `eager` computes -- so
         # pinning changes nothing here and records everything: it is what lets this record
@@ -1507,6 +1513,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--shots", type=int, default=2)
         p.add_argument("--shot-seed", type=int, default=0)
         p.add_argument("--prompt-style", default="chat")
+        p.add_argument("--sources", nargs="+", default=["gretel", "wikisql"], metavar="NAME")
         p.add_argument("--limit", type=int, default=None)
         p.add_argument("--batch-size", type=int, default=None)
         # No default. The budget for these arms is read off the ceiling run's closure

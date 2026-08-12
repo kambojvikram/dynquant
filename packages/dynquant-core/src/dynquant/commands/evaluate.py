@@ -58,6 +58,7 @@ __all__ = [
     "EXPERTS_PAIRING_FIELDS",
     "PAIRING_FIELDS",
     "TASKS",
+    "TASK_PAIRING_FIELDS",
     "run",
 ]
 
@@ -123,6 +124,24 @@ DETAIL_PAIRING_FIELDS = ("prompt_style",)
 #: bookkeeping.
 EXPERTS_PAIRING_FIELDS = ("ran",)
 
+#: Which *items* a task built, beyond what naming a split already says.
+#:
+#: One task needs this and the rest never will. text2sql is a mixture, so `--split test`
+#: does not finish naming the evaluation set -- `--sources` does -- and the default is
+#: derived from the registry rather than written down, so it widens on its own whenever a
+#: source that carries rows is added. Spider did exactly that: every text2sql record
+#: written before it joined scored two sources, every one after scores three, and nothing
+#: in either record said so.
+#:
+#: A nested optional block rather than a seventh ``PAIRING_FIELDS`` entry, and the
+#: distinction is the whole point. A top-level field is written by every run on every
+#: task, so adding one would put ``sources: None`` into every casehold, gsm8k and ifeval
+#: record from here on -- which pairs against another new record and refuses against the
+#: entire banked history of those tasks, over a setting none of them has. Read out of
+#: ``task_options``, absence means "this task has no such option", which pairs with
+#: absence exactly the way ``experts.ran`` does on a dense model.
+TASK_PAIRING_FIELDS = ("sources",)
+
 #: Comparability keys whose absence from *this* run's record is legitimate.
 #:
 #: Every other pairing field is written by ``dynquant eval`` on every run, so missing one
@@ -133,6 +152,7 @@ EXPERTS_PAIRING_FIELDS = ("ran",)
 _OPTIONAL_COMPARABILITY = frozenset(
     [f"detail.{field}" for field in DETAIL_PAIRING_FIELDS]
     + [f"experts.{field}" for field in EXPERTS_PAIRING_FIELDS]
+    + [f"task_options.{field}" for field in TASK_PAIRING_FIELDS]
 )
 
 #: Distinguishes "this record does not carry the field" from "it carries ``None``".
@@ -177,6 +197,7 @@ class _TaskSpec:
         unscored: str = "unparseable",
         executes_code: bool = False,
         takes_style: bool = False,
+        takes_sources: bool = False,
         unverifiable: bool = False,
         detail: bool = False,
     ) -> None:
@@ -192,6 +213,7 @@ class _TaskSpec:
         self.unscored = unscored
         self.executes_code = executes_code
         self.takes_style = takes_style
+        self.takes_sources = takes_sources
         self.unverifiable = unverifiable
         self.detail = detail
 
@@ -210,9 +232,16 @@ class _TaskSpec:
 
         return import_module(f"dynquant.eval.{self.key}")
 
-    def load(self, split: str | None) -> list[Any]:
+    def load(self, split: str | None, **kwargs: Any) -> list[Any]:
+        """Build the task's examples, forwarding the options that pick the item set.
+
+        ``kwargs`` is empty for every task but text-to-SQL, which is a mixture and so
+        the only one where naming a split does not finish naming what gets scored.
+        """
         loader = getattr(self._module(), f"load_{self.key}")
-        return loader() if split is None else loader(split)  # type: ignore[no-any-return]
+        if split is None:
+            return loader(**kwargs)  # type: ignore[no-any-return]
+        return loader(split, **kwargs)  # type: ignore[no-any-return]
 
     def unscored_count(self, result: Any) -> int:
         return int(getattr(result, self.unscored))
@@ -329,6 +358,7 @@ TASKS = {
         split="test",
         shot_split="shots",
         takes_style=True,
+        takes_sources=True,
         detail=True,
     ),
     # MBPP's exemplars are its own `prompt` split, which is not scored. The budgets
@@ -385,7 +415,8 @@ def run(args: argparse.Namespace, *, model: Any = None) -> int:
     spec = TASKS[args.task]
     split, shot_split, n_shots = _resolve_splits(spec, args)
 
-    examples = spec.load(split)
+    options = _load_options(spec, args)
+    examples = spec.load(split, **options)
     shots = _pick_shots(spec, n_shots, seed=args.shot_seed, split=shot_split)
     source = f"the {split} split" if split is not None else "its only split"
     prefix = f"{len(shots)} shot(s) from {shot_split} at seed {args.shot_seed}"
@@ -472,6 +503,11 @@ def run(args: argparse.Namespace, *, model: Any = None) -> int:
         },
         "packed": packed,
         "experts": experts,
+        # Written on every task, empty on all but one. Empty rather than omitted so the
+        # block itself is not the thing that varies: `_comparability` reads a missing
+        # block and a block missing the key the same way, and a reader of the record can
+        # tell "this task takes no options" from "this run forgot to say".
+        "task_options": options,
         "hits": result.hits,
         "predictions": result.predictions,
     }
@@ -613,6 +649,31 @@ def _resolve_splits(
 
     shot_split = spec.shot_split if args.shot_split is None else args.shot_split
     return split, shot_split, spec.shots if args.shots is None else args.shots
+
+
+def _load_options(spec: _TaskSpec, args: argparse.Namespace) -> dict[str, Any]:
+    """The loader options that change *which items* are scored.
+
+    Both the loader's keyword arguments and the record's ``task_options`` block are built
+    here, from one call, so a run cannot score a mixture it does not report. Passed by
+    declared capability rather than by task name, like :func:`_task_kwargs` below.
+
+    Empty for every task but text-to-SQL -- and empty rather than ``{"sources": None}``,
+    because a key written on a task that has no such option would refuse to pair against
+    every record of that task written before today, over a setting it does not have.
+
+    The mixture's default is resolved here rather than left to the loader, so the record
+    names the sources even when the command line did not. That default is *derived* from
+    the registry, so a run that stayed silent about it would be a run whose evaluation set
+    is decided by a later edit to `dynquant.eval.text2sql_sources`.
+    """
+    if not spec.takes_sources:
+        return {}
+    from dynquant.eval.text2sql_sources import resolve_sources
+
+    split = spec.split if args.split is None else args.split
+    chosen = resolve_sources(getattr(args, "sources", None), split=split or "test")
+    return {"sources": [source.name for source in chosen]}
 
 
 def _task_kwargs(spec: _TaskSpec, args: argparse.Namespace, shots: list[Any]) -> dict[str, Any]:
@@ -892,6 +953,7 @@ def _comparability(record: dict[str, Any]) -> dict[str, Any]:
         ("decode", DECODE_PAIRING_FIELDS),
         ("detail", DETAIL_PAIRING_FIELDS),
         ("experts", EXPERTS_PAIRING_FIELDS),
+        ("task_options", TASK_PAIRING_FIELDS),
     ):
         block = record.get(prefix)
         for field in fields:

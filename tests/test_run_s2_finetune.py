@@ -838,21 +838,27 @@ def test_every_registered_dataset_names_a_config_the_hub_will_accept(s2, monkeyp
 
 
 def test_the_text2sql_entry_names_the_corpora_it_actually_reads(s2) -> None:
-    """Its ``repo`` is three Hub ids joined by ``+``, and nothing loads it.
+    """Its ``repo`` is the *training* Hub ids joined by ``+``, and nothing loads it.
 
     That string exists to be copied into the run manifest, so it is the only record of
     what an arm was trained on -- and being inert, it cannot fail loudly when the
     mixture changes underneath it. A manifest naming two corpora for a run that read
     three is worse than no manifest: it reads as measured provenance.
 
-    Turns red when: a source is added to, removed from or renamed in ``SOURCES`` and the
-    registry entry is not updated with it.
+    Keyed to ``DEFAULT_TRAIN`` and not to ``SOURCES``, which is the distinction Spider
+    introduced. Spider is scored and never trained on, so joining the whole registry here
+    would put a fourth corpus in the provenance of a run that never opened it -- and the
+    reader who then discounts the Spider column as contaminated would be discounting the
+    one column that is clean.
+
+    Turns red when: a source is added to, removed from or renamed in ``DEFAULT_TRAIN`` and
+    the registry entry is not updated with it.
     """
-    from dynquant.eval.text2sql_sources import SOURCES
+    from dynquant.eval.text2sql_sources import DEFAULT_TRAIN, SOURCES
 
     spec = s2.DATASETS["text2sql"]
     assert spec["builder"] == "text2sql"
-    assert spec["repo"] == "+".join(source.repo for source in SOURCES.values())
+    assert spec["repo"] == "+".join(SOURCES[name].repo for name in DEFAULT_TRAIN)
 
 
 # --------------------------------------------------------------------------

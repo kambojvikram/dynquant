@@ -1510,11 +1510,103 @@ def test_a_task_that_reports_no_style_pairs_exactly_as_it_did_before(tmp_path: P
 
     assert evaluate._compare(both_absent, str(path))
 
-    assert set(evaluate._OPTIONAL_COMPARABILITY) == {"detail.prompt_style", "experts.ran"}
+    assert set(evaluate._OPTIONAL_COMPARABILITY) == {
+        "detail.prompt_style",
+        "experts.ran",
+        # A third exemption, earned the same way as the other two: `task_options` is
+        # written on every run and is empty for every task that has no loader options, so
+        # absence still means "there was nothing to record". What it buys is that a
+        # text2sql run from here on cannot fail to say which sources it scored -- and
+        # cannot pair against one written before the mixture widened.
+        "task_options.sources",
+    }
     assert not any(
-        key.split(".", 1)[0] not in {"decode", "detail", "experts"}
+        key.split(".", 1)[0] not in {"decode", "detail", "experts", "task_options"}
         for key in evaluate._OPTIONAL_COMPARABILITY
     )
+
+
+def _sourced(names: list[str] | None) -> dict:
+    """A text2sql record, with or without the source list its run resolved."""
+    record = _styled("chat")
+    record["task_options"] = {} if names is None else {"sources": names}
+    return record
+
+
+def test_an_arm_scored_on_a_wider_mixture_will_not_pair_with_one_scored_on_less(
+    tmp_path: Path,
+) -> None:
+    """Two records that agree on every other field can still have asked different questions.
+
+    text2sql is a mixture, so ``--split test`` does not finish naming the evaluation set.
+    Both records here say ``test``, both say 400 items, both say two shots at seed 0 --
+    and one of them scored a third dataset. A paired test lines the two hit vectors up
+    element-wise, so pairing them would be comparing arm A's Gretel items against arm B's
+    Spider ones and reporting the difference as a quantization effect.
+
+    Turns red when: ``sources`` leaves ``TASK_PAIRING_FIELDS``, or the block stops being
+    read by ``_comparability``.
+    """
+    path = tmp_path / "other.json"
+    path.write_text(json.dumps(_sourced(["gretel", "wikisql"])), encoding="utf-8")
+
+    with pytest.raises(DynQuantError, match=re.escape("task_options.sources")):
+        evaluate._compare(_sourced(["gretel", "wikisql", "spider"]), str(path))
+
+
+def test_a_text2sql_record_written_before_the_mixture_was_named_does_not_pair_silently(
+    tmp_path: Path,
+) -> None:
+    """The banked arms are the ones this guard exists for, and they cannot be repaired.
+
+    Every text2sql record this campaign wrote before Spider joined the registry scored
+    two sources and said so nowhere. The new default scores three. Absence has to refuse
+    against a stated list rather than compare equal to it -- otherwise the one comparison
+    the widening actually breaks is the one that goes through unremarked.
+
+    Turns red when: absence is filled in with a guess, or the missing-field exemption is
+    read as "these two agree" rather than as "this task has no such option".
+    """
+    path = tmp_path / "other.json"
+    path.write_text(json.dumps(_styled("chat")), encoding="utf-8")
+
+    with pytest.raises(DynQuantError, match=re.escape("task_options.sources")):
+        evaluate._compare(_sourced(["gretel", "wikisql"]), str(path))
+
+
+def test_the_run_records_the_mixture_it_resolved_even_when_the_flag_was_silent() -> None:
+    """An unset ``--sources`` still writes the list, because the default is derived.
+
+    ``DEFAULT_TEST`` is every registry source that carries rows, so it grows on its own.
+    A record that copied the flag verbatim would write ``None`` for the run that mattered
+    most -- the unpinned one -- and two unpinned runs a registry edit apart would pair.
+
+    Turns red when: ``_load_options`` records the flag instead of the resolution, or stops
+    resolving through ``resolve_sources``.
+    """
+    from dynquant.eval.text2sql_sources import DEFAULT_TEST
+
+    args = argparse.Namespace(task="text2sql", split=None, sources=None)
+    assert evaluate._load_options(evaluate.TASKS["text2sql"], args) == {
+        "sources": list(DEFAULT_TEST)
+    }
+
+    args.sources = ["gretel"]
+    assert evaluate._load_options(evaluate.TASKS["text2sql"], args) == {"sources": ["gretel"]}
+
+
+def test_a_task_with_no_loader_options_records_an_empty_block_and_not_a_null() -> None:
+    """The five other tasks must keep pairing against every record they have ever written.
+
+    ``sources`` is a text2sql setting. Writing ``sources: None`` onto a casehold record
+    would refuse it against the whole banked casehold history, over a field casehold does
+    not have -- which is the failure this block's shape exists to avoid, and is why it is
+    nested and optional rather than a seventh ``PAIRING_FIELDS`` entry.
+
+    Turns red when: ``_load_options`` returns a key for a task that declares no options.
+    """
+    args = argparse.Namespace(task="casehold", split=None, sources=["gretel"])
+    assert evaluate._load_options(evaluate.TASKS["casehold"], args) == {}
 
 
 def test_a_record_that_knows_its_style_will_not_pair_against_one_that_does_not(

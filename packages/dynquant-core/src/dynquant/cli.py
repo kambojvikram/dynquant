@@ -522,6 +522,17 @@ def _add_eval(subparsers: _SubParsers) -> None:
     )
     parser.add_argument("--shot-split", help="split the shots are drawn from (default: per task)")
     parser.add_argument("--shot-seed", type=int, default=0, help="seed for the shots (default: 0)")
+    parser.add_argument(
+        "--sources",
+        nargs="+",
+        metavar="NAME",
+        help=(
+            "text2sql only: which datasets to score, e.g. `gretel wikisql spider`. "
+            "Part of the pairing contract, because the mixture's default widens "
+            "whenever a data-bearing source joins the registry (default: every "
+            "source whose contexts carry rows)"
+        ),
+    )
     parser.add_argument("--limit", type=int, help="score only the first N problems")
     parser.add_argument("--batch-size", type=int, help="generation batch size (default: per task)")
     parser.add_argument("--max-new-tokens", type=int, help="decode budget (default: per task)")

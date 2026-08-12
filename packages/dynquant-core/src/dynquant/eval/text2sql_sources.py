@@ -279,6 +279,176 @@ def _wikisql_select(query: Any, headers: Sequence[str], table: str) -> str | Non
 
 
 # --------------------------------------------------------------------------
+# Spider -- real databases, in a second repo from the questions
+# --------------------------------------------------------------------------
+
+SPIDER_DATABASES = "premai-io/spider"
+"""Where the databases come from, since the canonical question repo has none.
+
+``xlangai/spider`` ships two parquet files and nothing else: ``db_id``, ``question`` and
+``query``, with the schema left implicit because the reference evaluator executes against
+a checkout of the databases on disk. This campaign inlines the schema into the prompt
+instead -- every item has to be answerable from what the model is shown -- so the
+databases have to come from somewhere, and this mirror carries all 169 of them as
+``database/<db_id>/<db_id>.sqlite``.
+
+Two repos for one source is a seam, so it is reported rather than trusted: a ``db_id``
+the questions name and the mirror lacks is logged at WARNING and skipped, instead of
+silently shrinking the evaluation set.
+"""
+
+MAX_SPIDER_TABLE_ROWS = 20
+"""Rows read per table before the context budget is spent.
+
+Not the binding constraint -- measured on the 1034-item dev split, 20, 40 and 80 admit
+exactly the same 818 items, because :func:`_spider_context` stops at
+:data:`MAX_CONTEXT_CHARS` long before it stops at this. It bounds the *work*: without it
+a table with 100k rows is read in full to inline nine of them.
+"""
+
+
+def _spider_cell(value: Any) -> str:
+    """One value as a SQL literal, keeping NULL distinct from the empty string."""
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", "replace")
+    return _literal(str(value))
+
+
+def _spider_context(path: Any) -> str:
+    """A self-contained schema: every table's DDL, then as much data as the budget holds.
+
+    A fixed row cap is wrong in both directions on this corpus at once. Measured over the
+    dev split: at 3 rows a table 199 items have a gold that matches nothing, because the
+    value it filters on is not in the prefix; at 20 rows that falls to 10, but 704 items
+    overflow :data:`MAX_CONTEXT_CHARS` and are dropped instead. The best fixed cap admits
+    59.8%.
+
+    So the budget is spent rather than guessed. Every ``CREATE TABLE`` goes in first --
+    the schema *is* the question, and an item missing one is unanswerable rather than hard
+    -- and then rows go in round-robin across tables until the next would cross the cap.
+    Round-robin so a wide first table cannot eat the whole budget and leave the rest of
+    the schema with no data at all, which is the shape that makes a join match nothing.
+    That admits **79.1%** and drops ``too_long`` to zero by construction.
+
+    Nothing here reads the gold. The rule is "as much of the database as fits", identical
+    for every item -- picking the tables or rows the gold touches would score a model on a
+    prompt that had already answered half the question.
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    # Spider's databases are not all UTF-8, and the default text factory raises on the
+    # first byte it cannot decode -- refusing a whole database over one cell.
+    conn.text_factory = lambda raw: raw.decode("utf-8", "replace")
+    try:
+        tables = [
+            (name, sql)
+            for name, sql in conn.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND sql IS NOT NULL"
+            ).fetchall()
+            if not str(name).startswith("sqlite_")
+        ]
+        head = [str(sql).strip().rstrip(";") + ";" for _, sql in tables]
+        used = sum(len(part) + 1 for part in head)
+
+        pending: list[list[str]] = []
+        for name, _ in tables:
+            try:
+                cursor = conn.execute(f'SELECT * FROM "{name}" LIMIT {MAX_SPIDER_TABLE_ROWS}')
+                rows = cursor.fetchall()
+            except sqlite3.Error:
+                continue  # a view over a missing table, or a corrupt page
+            if not rows:
+                continue
+            columns = ", ".join(f'"{column[0]}"' for column in cursor.description)
+            pending.append(
+                [
+                    f'INSERT INTO "{name}" ({columns}) '
+                    f"VALUES ({', '.join(_spider_cell(cell) for cell in row)});"
+                    for row in rows
+                ]
+            )
+    finally:
+        conn.close()
+
+    body: list[str] = []
+    index = 0
+    while pending:
+        queue = pending[index % len(pending)]
+        statement = queue.pop(0)
+        if used + len(statement) + 1 > MAX_CONTEXT_CHARS:
+            break
+        body.append(statement)
+        used += len(statement) + 1
+        if queue:
+            index += 1
+        else:
+            pending.pop(index % len(pending))
+    return "\n".join(head + body)
+
+
+def _spider_databases(cache_dir: str | None = None) -> dict[str, Any]:
+    """The mirror's sqlite files, by ``db_id``."""
+    import pathlib
+
+    from huggingface_hub import snapshot_download
+
+    from dynquant.errors import DynQuantError
+
+    root = pathlib.Path(
+        snapshot_download(
+            SPIDER_DATABASES,
+            repo_type="dataset",
+            cache_dir=cache_dir,
+            allow_patterns=["database/**"],
+        )
+    )
+    found = {path.stem: path for path in sorted(root.glob("database/*/*.sqlite"))}
+    if not found:
+        raise DynQuantError(
+            f"{SPIDER_DATABASES} carried no database/*/*.sqlite files. Spider's questions "
+            f"live in xlangai/spider and its databases only in this mirror; without them "
+            f"there is no schema to put in the prompt."
+        )
+    return found
+
+
+def _read_spider(raw: Any) -> Iterator[RawItem]:
+    """Spider items, with the schema synthesised from the database the question names."""
+    databases = _spider_databases()
+    missing: set[str] = set()
+    for index, row in enumerate(raw):
+        db_id = str(row["db_id"])
+        source_db = databases.get(db_id)
+        if source_db is None:
+            missing.add(db_id)
+            continue
+        yield RawItem(
+            task_id=f"spider/{db_id}/{index}",
+            question=str(row["question"]).strip(),
+            context=_spider_context(source_db),
+            gold=str(row["query"]).strip(),
+            source="spider",
+            domain=db_id,
+        )
+    if missing:
+        # Loud, because the alternative is a Spider column that quietly scores a subset
+        # and reads as a complete one.
+        _log.warning(
+            "spider: %d database(s) named by the questions are absent from %s: %s",
+            len(missing),
+            SPIDER_DATABASES,
+            sorted(missing)[:5],
+        )
+
+
+# --------------------------------------------------------------------------
 # The registry
 # --------------------------------------------------------------------------
 
@@ -301,6 +471,16 @@ SOURCES: dict[str, Source] = {
         splits={"train": "train", "test": "test"},
         reader=_read_wikisql,
         notes="real Wikipedia tables; schema and rows synthesised from table content",
+    ),
+    "spider": Source(
+        name="spider",
+        repo="xlangai/spider",
+        has_data=True,
+        # `test` is Yale's held-back split and is not on the Hub; `validation` is the
+        # 1034-item dev set every published Spider number is measured on.
+        splits={"train": "train", "test": "validation"},
+        reader=_read_spider,
+        notes="169 real databases; schema and rows inlined from the premai-io mirror",
     ),
     "create-context": Source(
         name="create-context",
@@ -377,6 +557,7 @@ def read_source(
 _QUESTION_COLUMN = {
     "gretel": "sql_prompt",
     "wikisql": "question",
+    "spider": "question",
     "create-context": "question",
 }
 """The raw column each reader takes ``RawItem.question`` from.

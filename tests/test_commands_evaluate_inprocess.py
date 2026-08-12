@@ -69,6 +69,7 @@ class _Spec:
     add_special_tokens = True
     takes_shots = False
     takes_style = False
+    takes_sources = False
     unverifiable = False
     executes_code = False
     detail = False

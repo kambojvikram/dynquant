@@ -108,6 +108,9 @@ DATASETS: dict[str, dict[str, str]] = {
     # single-turn conversations by `load_text2sql`. `builder` marks that, and `repo` is
     # the three repos joined so the run manifest names what was actually trained on
     # rather than one of them.
+    #
+    # Three, not four: the registry also holds Spider, which is scored and never trained
+    # on. Naming it here would put a corpus in the provenance of a run that never read it.
     "text2sql": {
         "repo": "gretelai/synthetic_text_to_sql+Salesforce/wikisql+b-mc2/sql-create-context",
         "split": "train",
