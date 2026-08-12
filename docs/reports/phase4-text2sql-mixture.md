@@ -2604,12 +2604,48 @@ it measures so little. The uniform control moved 65 of 133 widths, flattened the
 `{2: 21, 3: 60, 4: 30, 8: 22}`, and grew the breached mass from 41.9% to 50.2% of parameters. A
 single within-role null reports the small half of the signal as the whole of it.
 
+**And a single draw of it reports one number out of a range.** The permutation is seeded, so
+`+0.77` is one sample from a distribution nobody had sampled twice. Three more draws, at seeds 1,
+2 and 3, cost about an hour each and land at byte-identical maps -- 3,331,728,896 B, the same
+figure for all four, 202,240 B above the real arm every time, so no draw buys its result with
+bytes.
+
+| draw | exec match | correct | delta vs `dq_3b` | 95% CI | flips | p (Holm) | separated |
+|---|---:|---:|---:|---|---|---:|---|
+| `shuffle` @0 | 79.12% | 9 495 | +0.77 | [+0.27, +1.26] | 509/417 | 0.00277 | yes |
+| `shuffle` @1 | 79.12% | 9 495 | +0.77 | [+0.25, +1.29] | 554/462 | 0.00856 | yes |
+| `shuffle` @2 | 78.69% | 9 443 | **+1.20** | [+0.71, +1.69] | 531/387 | 6.8e-6 | yes |
+| `shuffle` @3 | 79.49% | 9 539 | **+0.40** | [-0.08, +0.88] | 457/409 | 0.110 | **no** |
+
+Mean **+0.78**, sample SD 0.33, range 0.40 to 1.20. The spread across draws is the same size as
+the paired SE *within* a draw (0.25 to 0.27), so permutation variance is not a rounding term here:
+it is as large as the measurement noise the CIs already report, and the two are independent. Three
+of the four separate after Holm and **the fourth does not** -- at seed 3 the permutation happens to
+place widths well enough that 12,000 items cannot tell it from the real map. Reporting +0.77 with
+its own CI and nothing else would have understated the uncertainty on this rung by about a factor
+of two, and would have implied a rung that always separates.
+
+Seeds 0 and 1 are worth a second look: both score exactly 9,495 and they are **not the same
+allocation**. The discordant counts differ (926 against 1,016), so the two maps disagree with the
+real arm on different items and agree on the total by coincidence. An identical accuracy is not an
+identical map, which is the same reason the width histogram was not enough to call the shuffle a
+good control.
+
+**What this does not move is the headline.** The ladder is nested, so the two signal rungs sum to
+`dq_3b` - `dq_3b_unif` = **+9.48** whatever the seed: a draw that raises the first rung lowers the
+second by the same amount. The signal's total, and the 49.6% share, are fixed by two arms neither
+of which is a permutation. What the seed does move is the *boundary between* the rungs, by about
++/-0.4 points, and with it the one-rung figure that the Ministral comparison below is read
+against: **2.1% at seed 3, 4.0% at seeds 0 and 1, 6.3% at seed 2.** So `56% against 4.0%` in that
+table is `56% against 2.1-6.3%`, which does not change its direction and does widen it.
+
 **Three things this does not establish.** First, `uniform` removes the plasticity-times-saliency
 ranking *and* the measured `dL` table in one step, so the +8.71 is what having any fine-tune-derived
 quantity at role granularity is worth and does not split score from pricing; the arm that would
-split it keeps `dL` and flattens only the score, and has not been run. Second, `shuffle` at seed 0
-is a single draw, so the +0.77 carries item-level sampling variance but not permutation variance --
-further seeds are now collision-free and would turn a point estimate into a defensible one. Third,
+split it keeps `dL` and flattens only the score, and has not been run. Second, the
+permutation spread is now measured across four draws and reported above, but four is enough to see
+that the spread is real and not enough to put a CI on the spread itself -- the +/-0.4 point range
+is an observation about four numbers, not an estimate with a standard error. Third,
 a control this campaign has named twice and still not built is GPTQ and AWQ handed *DynQuant's*
 bit map, which would price the allocator against the quantizer rather than against itself.
 
