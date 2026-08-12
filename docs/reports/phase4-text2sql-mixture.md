@@ -2581,8 +2581,9 @@ builds one `donor` permutation per seed and hands the *same* one to `shuffle` an
 permuting the sensitivity table identically in both. The two therefore differ in the score
 channel and in nothing else, which is what makes the rung between them a price for that channel.
 It also means `flat` is **not** the real pricing with a constant score: its `dL` rows are permuted
-too. The arm that keeps the real table and flattens only the score is a fourth control, and it
-has not been run.
+too. The arm that keeps the real table and flattens only the score is a fourth control,
+`--score-null table`. It has now run, and it is the one to read the decomposition off: the
+two chains and what separates them are below.
 
 | arm | GiB | b/param | off anchor | exec match | correct | gretel | wikisql | SQL errors |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -2590,6 +2591,7 @@ has not been run.
 | dq_3b | 3.103 | 3.1475 | -0.0413% | **79.89%** | 9 587 | 64.4% | 85.2% | 213 |
 | dq_3b_shuf | 3.103 | 3.1476 | -0.0353% | 79.12% | 9 495 | 62.5% | 84.8% | 247 |
 | dq_3b_flat | 3.103 | 3.1476 | -0.0353% | **80.30%** | 9 636 | 64.3% | 85.8% | 200 |
+| dq_3b_tabl | 3.103 | 3.1476 | -0.0353% | **80.38%** | 9 645 | 64.6% | 85.8% | 190 |
 | dq_3b_unif | 3.104 | 3.1486 | -0.0038% | 70.42% | 8 450 | 53.8% | 76.1% | 492 |
 | gptq_3b | 3.104 | 3.1488 | +0.0000% | 60.76% | 7 291 | 54.0% | 63.1% | 1 008 |
 
@@ -2626,14 +2628,15 @@ GPTQ and nine under DynQuant.
 **The middle rung is negative, and that is the result.** Setting every score to 1.0 does not cost
 accuracy against a permuted score; it *gains* 1.18 points, 450 items flipping to `dq_3b_flat`
 against 309 the other way, at Holm 6.9e-07. And the real arm does not separate from the flat one
-at all: `dq_3b` - `dq_3b_flat` is **-0.41** [-0.89, +0.07] on 404/453 flips, *p* = 0.101 -- the
-only comparison in this section that fails to separate. The honest reading is not that the
-plasticity-times-saliency score is harmful, but that on this model at this budget it is **not
-distinguishable from a constant**, while a *permuted* score is measurably worse than none.
+at all: `dq_3b` - `dq_3b_flat` is **-0.41** [-0.89, +0.07] on 404/453 flips, *p* = 0.101 -- one
+of the two comparisons in this section that fail to separate. The reading that survives the
+fourth control is not that the plasticity-times-saliency score is harmful but that it is **not
+worth points**: against the clean control below it is -0.48 [-0.95, -0.02] rather than -0.41,
+and it separates only barely. A *permuted* score is measurably worse than none either way.
 
 So the signal's half of the margin is almost entirely the measured `dL` pricing: +9.88 on its own,
 which is more than the +9.47 the whole signal is worth, because the score channel hands 1.18 of it
-back. Everything this section previously attributed to "the plasticity-times-saliency ranking"
+back -- and +9.96 once the table it prices is the real one rather than a permuted one. Everything this section previously attributed to "the plasticity-times-saliency ranking"
 belongs to the moments the hook measured, and the ranking built on top of them is currently
 carrying its own weight and no more.
 
@@ -2644,6 +2647,54 @@ does at least as well. Nor is the flat arm winning on reconstruction: its median
 *worse*, 0.10385 against 0.10305, so whatever the score buys is not being paid back in fidelity
 either. Split by source, the real arm's -0.41 is entirely wikisql -- +0.16 on gretel (171/166
 flips) against -0.60 on wikisql (233/287).
+
+**The fourth control settles it, and the answer is one channel at a time.** `--score-null table`
+hands the allocator the measured sensitivity table *by identity* -- not rebuilt from the module
+list, which would be a second edit no matter how faithful it looked -- and sets every score to 1.0.
+So `dq_3b` - `dq_3b_tabl` is the score channel and nothing else, and `dq_3b_tabl` - `dq_3b_unif` is
+the measured table and nothing else. `dq_3b_tabl` scores **80.38%** (9 645/12 000) at
+3,331,728,896 B, the same bytes as every other control at this anchor:
+
+| rung | what it puts back | delta | 95% CI | flips | p (Holm) |
+|---|---|---:|---|---|---:|
+| `dq_3b` - `dq_3b_tabl` | the plasticity-times-saliency score, over the real table | **-0.48** | [-0.95, -0.02] | 381/439 | 0.0465 |
+| `dq_3b_tabl` - `dq_3b_unif` | the measured `dL` table, unpermuted | **+9.96** | [+9.24, +10.68] | 1578/383 | 6.4e-171 |
+
+-58 + 1195 = 1137 items, the same 1137 that `dq_3b` - `dq_3b_unif` is worth measured directly.
+Both chains nest and both partition the margin; the difference is that every rung of this one moves
+exactly one thing, which is why it has no negative middle rung to explain. Holm here is over the
+union of the six distinct rungs the two chains report, a family fixed in the analysis script before
+the arm landed -- and the score rung is the fragile one in it: at *p* = 0.0465 it is the largest
+in the family, so a seventh comparison admitted to it would push the same measurement back over
+0.05. The claim it supports is that the score is **not worth points**, not that it is reliably
+harmful.
+
+**And the score's entire effect is on the expert banks.** Sixteen of 133 widths separate `dq_3b`
+from `dq_3b_tabl`, and every one of them is a `feed_forward.experts.gate_up_proj` -- four that the
+score pushed down to 2 bits, eight it pushed up to 4, and four it left at 3 that the constant
+raises to 4. Nothing else in the model moves. That is not a coincidence of this budget: the
+allocator prices 89 modules by measured Gauss-Newton sensitivity and 44 expert banks by the
+rescaled rank-product proxy (§13.2), 22 of which are `down_proj` pinned at their floor of 2. The
+22 `gate_up_proj` banks are therefore the only modules in the model whose price *is* the score,
+with no measured `dL` behind it -- and they are exactly and only where flattening the score changes
+the map. The score channel is being priced where it is least anchored, and it comes out at -0.48.
+
+**The table's within-role ranking is worth nothing; its role-level magnitude is worth everything.**
+`dq_3b_tabl` - `dq_3b_flat` is the same allocator with the same flat score, differing only in
+whether the `dL` rows sit on their own modules or on a within-role permutation of them: **+0.07**
+[-0.28, +0.43] on 243/234 flips, *p* = 0.71, four widths apart (two `feed_forward.w3`, two
+`self_attn.out_proj`) -- a null result, and the reason the published chain's +9.88 and this chain's
++9.96 differ by so little. Against `dq_3b_shuf` the same arm is **+1.25** [+0.77, +1.73], 3.99e-07.
+Put together: of the +9.47 the fine-tune signal is worth, +9.96 is the measured table's role-level
+magnitude, +0.07 is its within-role placement, and **-0.48 is the score**. The two arms that flatten
+the score, 80.38% and 80.30%, are the two best 3-bit arms in this panel -- both above the shipped
+`dq_3b` at 79.89%.
+
+One more thing the fidelity column says, in the same direction. Median relative error is identical
+to eight digits within each pair that shares a width histogram -- 0.10305443 for `dq_3b` and
+`dq_3b_shuf`, 0.10385353 for `dq_3b_tabl` and `dq_3b_flat` -- and it is the *worse* of the two
+figures that scores better. Whatever the score buys in weight-error terms, this task does not pay
+for it.
 
 **The shuffle alone would have given the wrong answer, and it is worth saying why.** Read on its
 own the first rung says the signal is 4.0% of the margin, which is the number this section carried
@@ -2660,8 +2711,8 @@ single within-role null reports the small half of the signal as the whole of it.
 **And a single draw of it reports one number out of a range.** The permutation is seeded, so
 `+0.77` is one sample from a distribution nobody had sampled twice. Three more draws, at seeds 1,
 2 and 3, cost about an hour each and land at byte-identical maps -- 3,331,728,896 B, the same
-figure for all four, 202,240 B above the real arm every time, so no draw buys its result with
-bytes.
+figure for all four and, once the real arm's map is re-priced under the current accounting, the
+same figure it has too, so no draw buys its result with bytes.
 
 | draw | exec match | correct | delta vs `dq_3b` | 95% CI | flips | p (Holm) | separated |
 |---|---:|---:|---:|---|---|---:|---|
