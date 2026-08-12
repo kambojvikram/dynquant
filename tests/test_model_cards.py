@@ -249,6 +249,40 @@ def test_the_ceiling_card_claims_a_fine_tune_and_never_a_quantization(
         assert cards.card(table, other, FINETUNE, repo_prefix="acme/lfm").count(cards.PIP) == 1
 
 
+def test_a_control_allocation_is_not_an_arm_a_reader_can_have(
+    cards: Any, table_mod: Any, tmp_path: Path
+) -> None:
+    """The panel's own controls passed every filter a card had.
+
+    A `--score-null` arm is the same budget and the same encoder with the signal permuted
+    or flattened -- an allocation built to be worse on purpose, so the panel can say what
+    the signal bought. It has an accuracy, a byte count and kind `dq`, which is every
+    property this generator was testing for. The first card off the real panel listed
+    `dq_3b_shuf 79.12%` in its results table, under a sentence counting twelve arms, with
+    nothing anywhere to say what `shuf` meant. Nothing was wrong with the number; it was
+    the answer to a question the card never asked.
+
+    The exclusion reads `score_null`, not the `_shuf` in the label, because the suffix is
+    this campaign's naming convention and the next campaign's is not this one's to assume.
+
+    Turns red when: a control reaches the results table, the arm count, the publish set, or
+    a card of its own.
+    """
+    out = _write_panel(tmp_path / "arms")
+    table, _ = _built(table_mod, out)
+    real = cards.card(table, "dq_3b", FINETUNE, repo_prefix=None)
+
+    shuf = dict(next(r for r in table["arms"] if r["label"] == "dq_3b"))
+    shuf["label"] = "dq_3b_shuf"
+    shuf["score_null"] = {"mode": "shuffle", "seed": 0}
+    table["arms"].append(shuf)
+
+    assert "dq_3b_shuf" not in cards.publishable(table, include_ceiling=True)
+    assert cards.card(table, "dq_3b", FINETUNE, repo_prefix=None) == real
+    with pytest.raises(SystemExit, match="control allocation"):
+        cards.card(table, "dq_3b_shuf", FINETUNE, repo_prefix=None)
+
+
 def test_a_card_written_mid_panel_still_counts_the_arms_that_have_not_run(
     cards: Any, table_mod: Any, tmp_path: Path
 ) -> None:

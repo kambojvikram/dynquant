@@ -98,6 +98,23 @@ def gib(nbytes: int | None) -> str:
     return "--" if not nbytes else f"{nbytes / 2**30:.3f} GiB"
 
 
+def published(table: dict[str, Any]) -> list[dict[str, Any]]:
+    """The arms a reader is being offered, which is not every arm the panel ran.
+
+    A `--score-null` arm is an allocation built to be worse on purpose: the same budget
+    and the same encoder with the signal permuted or flattened, so the panel can say how
+    much of a margin the signal bought. It is a measurement and never a checkpoint. But
+    it carries an accuracy, a byte count and kind `dq`, so it passed every filter here --
+    the first card off this generator listed `dq_3b_shuf 79.12%` among the results with
+    nothing to say what `shuf` was, under a sentence counting twelve arms.
+
+    Discovered from the `score_null` block the table already carries, not from the `_shuf`
+    and `_unif` in the labels: those are this campaign's naming and the next campaign's
+    labels are somebody else's to choose.
+    """
+    return [row for row in table["arms"] if not row.get("score_null")]
+
+
 def find_arm(table: dict[str, Any], label: str) -> dict[str, Any]:
     for row in table["arms"]:
         if row["label"] == label:
@@ -120,7 +137,7 @@ def publishable(table: dict[str, Any], include_ceiling: bool = False) -> list[st
     kinds = set(METHOD_NAMES) | ({CEILING} if include_ceiling else set())
     return [
         row["label"]
-        for row in table["arms"]
+        for row in published(table)
         if row.get("kind") in kinds and row.get("accuracy") is not None
     ]
 
@@ -220,13 +237,15 @@ def results_table(table: dict[str, Any], label: str) -> str:
     An arm that has not been scored keeps its row and says so. Dropping it produced a card
     whose own first sentence counted seven arms above a table of five, and a reader had no
     way to learn that two more exist -- which mid-panel is the normal state, since the
-    expensive arms are published first and the cheap ones are still running.
+    expensive arms are published first and the cheap ones are still running. A control
+    allocation is the opposite case and is dropped: it is not an arm a reader can have,
+    and a row saying so would need the whole ablation to be readable.
     """
     lines = [
         "| arm | exec match | size | bits/param |",
         "|---|---|---|---|",
     ]
-    for row in table["arms"]:
+    for row in published(table):
         bits = row.get("bits_per_param")
         if row.get("accuracy") is None:
             lines.append(f"| {row['label']} | *not scored yet* | -- | -- |")
@@ -418,6 +437,14 @@ def card(
     repo_prefix: str | None,
 ) -> str:
     row = find_arm(table, label)
+    if row.get("score_null"):
+        spec = row["score_null"]
+        raise SystemExit(
+            f"{label} is a control allocation ({spec.get('mode')}, seed "
+            f"{spec.get('seed')}), not a checkpoint. It exists to be worse than the arm "
+            f"it is subtracted from; published on its own it is a model nobody should "
+            f"download and a number nobody can read."
+        )
     if row.get("kind") not in set(METHOD_NAMES) | {CEILING}:
         raise SystemExit(
             f"{label} is a {row.get('kind')!r} arm, which this generator has no card for. "
@@ -443,12 +470,12 @@ def card(
         "",
         (
             f"{base_model} fine-tuned on text-to-SQL, merged and left in bf16. It is the ceiling "
-            f"arm of a panel of {len(table['arms'])} arms: every quantized arm below was "
+            f"arm of a panel of {len(published(table))} arms: every quantized arm below was "
             f"made from this checkpoint and allocated the same byte budget, so their "
             f"accuracies differ by method and not by size."
             if ceiling
             else f"{base_model} fine-tuned on text-to-SQL and quantized to {row['anchor']} bits "
-            f"with {method}. It is one of {len(table['arms'])} arms in a panel where "
+            f"with {method}. It is one of {len(published(table))} arms in a panel where "
             f"every quantized arm was allocated the *same byte budget*, so the accuracies "
             f"below differ by method and not by size."
         ),
