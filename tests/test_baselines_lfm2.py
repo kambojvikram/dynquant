@@ -751,6 +751,29 @@ def awq_mapping_class() -> Any:
             self.balance_layers = balance_layers
 
     module.AWQMapping = AWQMapping  # type: ignore[attr-defined]
+
+    def get_layer_mappings_from_model(_model: Any) -> Any:
+        """Upstream's dispatcher, stubbed at its "never heard of it" answer."""
+        return module.default_mappings  # type: ignore[attr-defined]
+
+    def compatible(*_args: Any) -> bool:
+        """Upstream's shape test, stubbed at "nothing is refused"."""
+        return True
+
+    # An empty registry and a lookup that hands back the defaults is exactly what an
+    # architecture upstream has no table for looks like -- LFM2's case, and the one every
+    # test below this fixture was written against. A test that wants the other fork
+    # rewrites these three on the module it gets from ``sys.modules``.
+    module.AWQ_MAPPING_REGISTRY = {}  # type: ignore[attr-defined]
+    module.default_mappings = []  # type: ignore[attr-defined]
+    module.get_layer_mappings_from_model = get_layer_mappings_from_model  # type: ignore[attr-defined]
+
+    # A package rather than a module, because the shape test is imported from a submodule
+    # and a bare ModuleType answers that with "is not a package" instead of resolving it.
+    module.__path__ = []  # type: ignore[attr-defined]
+    base = types.ModuleType("llmcompressor.modifiers.transform.awq.base")
+    base._check_layers_are_compatible = compatible  # type: ignore[attr-defined]
+
     saved = {
         name: sys.modules.get(name)
         for name in (
@@ -758,11 +781,13 @@ def awq_mapping_class() -> Any:
             "llmcompressor.modifiers",
             "llmcompressor.modifiers.transform",
             "llmcompressor.modifiers.transform.awq",
+            "llmcompressor.modifiers.transform.awq.base",
         )
     }
     for name in saved:
         sys.modules.setdefault(name, types.ModuleType(name))
     sys.modules["llmcompressor.modifiers.transform.awq"] = module
+    sys.modules["llmcompressor.modifiers.transform.awq.base"] = base
     try:
         yield AWQMapping
     finally:
@@ -874,6 +899,156 @@ def test_a_config_from_another_architecture_is_refused_rather_than_matched(
 
     with pytest.raises(SystemExit, match="LFM2 MoE stack"):
         driver.awq_mappings(types.SimpleNamespace(num_hidden_layers=32))
+
+
+def _upstream() -> Any:
+    """The stubbed ``llmcompressor.modifiers.transform.awq``, for a test to rewrite."""
+    import sys
+
+    return sys.modules["llmcompressor.modifiers.transform.awq"]
+
+
+def _named_model(class_name: str, **leaves: Any) -> Any:
+    """A tree whose class is named like a model upstream may or may not have a table for.
+
+    The class name is the whole point: it is the key ``AWQ_MAPPING_REGISTRY`` is asked
+    about, so a test that wants "known" and one that wants "unknown" differ only here.
+    """
+    import torch
+
+    model = type(class_name, (torch.nn.Module,), {})()
+    model.config = _config()
+    for name, leaf in leaves.items():
+        model.add_module(name, leaf)
+    return model
+
+
+def test_an_architecture_upstream_describes_is_left_to_look_its_own_table_up(
+    driver: Any, awq_mapping_class: Any
+) -> None:
+    """The recipe must not be handed back a copy of a list the modifier will fetch itself.
+
+    ``AWQModifier()`` with no mappings calls ``get_layer_mappings_from_model``. Reading that
+    list here and passing it in would work, and would keep working until a release changed
+    the table -- at which point this panel would smooth by the old one and every other user
+    of the same version by the new one, with nothing in the record saying which.
+
+    Turns red when: the resolver returns the mappings it read for a registry architecture,
+    or takes the LFM2 table for a model upstream already describes.
+    """
+    import torch
+
+    stub = _upstream()
+    mapping = awq_mapping_class("re:.*input_layernorm$", ["re:.*q_proj$"])
+    stub.AWQ_MAPPING_REGISTRY = {"KnownForCausalLM": [mapping]}
+    stub.get_layer_mappings_from_model = lambda _model: [mapping]
+
+    model = _named_model(
+        "KnownForCausalLM", input_layernorm=torch.nn.Module(), q_proj=torch.nn.Linear(4, 4)
+    )
+
+    def one_set(_model: Any, _targets: Any) -> Any:
+        yield [[model.input_layernorm], [model.q_proj]]
+
+    with _resolver_stack(one_set, {}):
+        mappings, report = driver.resolve_awq_mappings(model)
+
+    assert mappings is None, "the modifier looks the table up; handing it back duplicates it"
+    assert report["mapping_source"] == "llm-compressor"
+    assert report["smoothed_linears"] == 1
+
+
+def test_the_registry_is_asked_by_name_because_eight_of_its_entries_are_the_default_list(
+    driver: Any, awq_mapping_class: Any
+) -> None:
+    """Identity is not membership, and here the difference decides whether the arm runs.
+
+    ``get_layer_mappings_from_model`` returns ``default_mappings`` for a model it does not
+    know, which makes ``mappings is default_mappings`` look like the test for "unknown". It
+    is not. ``AWQ_MAPPING_REGISTRY`` stores *one list object* for the whole Llama shape, so
+    ``MistralForCausalLM``, ``LlamaForCausalLM``, ``Qwen2``, ``Qwen3`` and four more all are
+    that object. Identity would call the architectures upstream supports best unknown and
+    send them to a table written for a different model, where they resolve nothing.
+
+    Turns red when: the known/unknown test is written on identity, or on the dynamic
+    registry alone -- its builders return ``None`` when they decline, and that falls through
+    to the same default list.
+    """
+    stub = _upstream()
+    shared = [awq_mapping_class("re:.*input_layernorm$", ["re:.*q_proj$"])]
+    stub.default_mappings = shared
+    stub.AWQ_MAPPING_REGISTRY = {"KnownForCausalLM": shared}  # the aliasing, on purpose
+    stub.get_layer_mappings_from_model = lambda _model: shared
+
+    assert driver.upstream_mappings(_named_model("KnownForCausalLM")) == shared, (
+        "a registry entry that happens to be the default list is still a table upstream has"
+    )
+    assert driver.upstream_mappings(_named_model("NobodysForCausalLM")) is None, (
+        "an architecture in neither registry is the one case the local table is for"
+    )
+
+
+def test_a_pair_upstream_will_skip_on_shape_is_reported_rather_than_counted_as_smoothed(
+    driver: Any, awq_mapping_class: Any
+) -> None:
+    """Under grouped-query attention every ``v_proj -> o_proj`` set is dropped.
+
+    ``v_proj`` emits ``kv_heads * head_dim`` rows where ``o_proj`` reads ``heads * head_dim``
+    -- 1024 against 4096 on Mistral-7B-v0.3 -- so no per-channel scale can divide one and
+    multiply the other. Upstream drops those sets and keeps the count at debug level. An arm
+    whose record says ``o_proj`` was smoothed is not wrong about its accuracy, but it is
+    wrong about what produced it.
+
+    The names the check is called with are asserted too, and that is the sharper half. A
+    mapping's ``smooth_layer`` is a regex: ``re:.*v_proj$`` ends in ``$``, so a resolver that
+    passes the pattern instead of the resolved module name makes upstream's ``endswith``
+    tests false everywhere and the whole filter silently inert -- which looks exactly like a
+    model that had no incompatible pairs.
+
+    Turns red when: the shape check is skipped, its answer ignored, or it is handed patterns
+    rather than resolved names.
+    """
+    import sys
+
+    import torch
+
+    model = _named_model(
+        "KnownForCausalLM",
+        input_layernorm=torch.nn.Module(),
+        q_proj=torch.nn.Linear(4096, 4096),
+        v_proj=torch.nn.Linear(4096, 1024),
+        o_proj=torch.nn.Linear(4096, 4096),
+    )
+    attention = awq_mapping_class("re:.*input_layernorm$", ["re:.*q_proj$"])
+    output = awq_mapping_class("re:.*v_proj$", ["re:.*o_proj$"])
+
+    stub = _upstream()
+    stub.AWQ_MAPPING_REGISTRY = {"KnownForCausalLM": [attention, output]}
+    stub.get_layer_mappings_from_model = lambda _model: [attention, output]
+
+    asked: list[tuple[Any, ...]] = []
+
+    def refuse_o_proj(_smooth: Any, smooth_name: Any, _balance: Any, balance_names: Any) -> bool:
+        asked.append((smooth_name, tuple(balance_names)))
+        return "o_proj" not in balance_names
+
+    base = sys.modules["llmcompressor.modifiers.transform.awq.base"]
+    base._check_layers_are_compatible = refuse_o_proj
+
+    def sets_for(_model: Any, targets: Any) -> Any:
+        smooth = model.input_layernorm if "input_layernorm" in targets[0] else model.v_proj
+        balance = model.q_proj if smooth is model.input_layernorm else model.o_proj
+        yield [[smooth], [balance]]
+
+    with _resolver_stack(sets_for, {}):
+        _, report = driver.resolve_awq_mappings(model)
+
+    assert asked == [("input_layernorm", ("q_proj",)), ("v_proj", ("o_proj",))], (
+        "the check reads suffixes off resolved names; a regex argument would always pass"
+    )
+    assert report["shape_incompatible_sets"] == 1
+    assert report["smoothed_linears"] == 1
+    assert report["unsmoothed_linears"] == {"o_proj": 1, "v_proj": 1}
 
 
 def _resolver_stack(sets_for: Any, seen: dict[str, Any]) -> Any:

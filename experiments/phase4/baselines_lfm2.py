@@ -295,6 +295,37 @@ def _layer_alternation(indices: list[int]) -> str:
     return "|".join(str(i) for i in sorted(indices, reverse=True))
 
 
+def upstream_mappings(model: Any) -> list[Any] | None:
+    """llm-compressor's own smoothing pairs for this architecture, or ``None``.
+
+    The mappings come from ``get_layer_mappings_from_model`` because that is the function
+    ``AWQModifier`` calls when it is handed none, and the point of checking is to check
+    what will run. It consults a dynamic registry first -- hybrid stacks get theirs built
+    against the module tree -- then the static one, then falls back to the Llama defaults
+    for anything it does not know.
+
+    Whether this architecture is *known* is a separate question, and the tempting way to
+    answer it is wrong. ``get_layer_mappings_from_model`` returns ``default_mappings`` for
+    an unknown model, so "did it hand back the defaults?" looks like the test -- but eight
+    entries in the static registry, ``MistralForCausalLM`` and ``LlamaForCausalLM`` among
+    them, *are* that same list object. The Llama shape is the common case and the table
+    stores one list for all of it. Identity would therefore report the architectures
+    upstream supports best as unknown, and send them to a hand-written table that describes
+    a different model. So the static registry is asked by name, and the dynamic one is
+    asked by whether it actually produced something -- its builders return ``None`` when
+    they decline, which falls through to exactly the same default.
+    """
+    from llmcompressor.modifiers.transform.awq import (
+        AWQ_MAPPING_REGISTRY,
+        default_mappings,
+        get_layer_mappings_from_model,
+    )
+
+    mappings = get_layer_mappings_from_model(model)
+    known = model.__class__.__name__ in AWQ_MAPPING_REGISTRY or mappings is not default_mappings
+    return list(mappings) if known else None
+
+
 def awq_mappings(config: Any) -> list[tuple[Any, int]]:
     """LFM2's activation-aware smoothing pairs, each with the number of sets it must resolve.
 
@@ -425,24 +456,49 @@ def awq_mappings(config: Any) -> list[tuple[Any, int]]:
     return pairs
 
 
-def resolve_awq_mappings(model: Any) -> tuple[list[Any], dict[str, Any]]:
+def resolve_awq_mappings(model: Any) -> tuple[list[Any] | None, dict[str, Any]]:
     """Resolve the mappings against the real tree before anything expensive happens.
 
     Runs llm-compressor's own matcher, so what is checked here is what the modifier will
     do -- a hand-rolled name scan could agree with the regexes and disagree with
     ``match_modules_set``, and the disagreement is the whole defect.
 
-    Returns the mappings and a record of what they cover. The unsmoothed suffixes are in
-    the record on purpose: ``conv.out_proj`` and ``lm_head`` are quantized without an AWQ
-    scale, that is a property of the architecture rather than a miss, and a number nobody
-    writes down is a number that becomes a surprise the first time it changes.
+    Returns the mappings and a record of what they cover, and returns ``None`` for the
+    mappings when upstream has a table for this architecture -- the recipe then passes no
+    ``mappings`` at all and ``AWQModifier`` looks the same list up itself. Handing back
+    what was just read would be a second copy of it, and the two would agree right until a
+    release changed one of them.
+
+    The unsmoothed suffixes are in the record on purpose: ``conv.out_proj``, ``lm_head``
+    and, under grouped-query attention, ``o_proj`` are quantized without an AWQ scale. That
+    is a property of the architecture rather than a miss, and a number nobody writes down
+    is a number that becomes a surprise the first time it changes.
     """
     import torch
     from compressed_tensors.utils import match_modules_set
 
+    # Private, and imported anyway. It decides whether a `v_proj -> o_proj` pair survives,
+    # and the whole set is dropped when any balance layer fails it. Reimplementing the test
+    # would put a second copy of a dependency's arithmetic in this file; importing it means
+    # a move raises here rather than quietly overstating what was smoothed.
+    from llmcompressor.modifiers.transform.awq.base import _check_layers_are_compatible
+
+    upstream = upstream_mappings(model)
+    table: list[tuple[Any, int | None]] = (
+        [(mapping, None) for mapping in upstream]
+        if upstream is not None
+        else awq_mappings(model.config)
+    )
+    # Identity-keyed, which is what `named_modules` gives and what upstream builds for the
+    # same purpose: `_check_layers_are_compatible` reads suffixes off *resolved* names, and
+    # a mapping's `smooth_layer` is a regex -- `re:.*v_proj$` ends with `$`, so passing the
+    # pattern would make every compatibility test pass and the filter inert.
+    module_names = {module: name for name, module in model.named_modules()}
+
     smoothed: set[int] = set()
+    incompatible = 0
     resolved, wrong = [], []
-    for mapping, expected in awq_mappings(model.config):
+    for mapping, expected in table:
         targets = (mapping.smooth_layer, *mapping.balance_layers)
         try:
             sets = list(match_modules_set(model, targets))
@@ -451,14 +507,34 @@ def resolve_awq_mappings(model: Any) -> tuple[list[Any], dict[str, Any]]:
                 f"AWQ mapping {mapping.smooth_layer} matched part of its target set and not "
                 f"the rest, which means these names do not describe this model: {exc}"
             ) from None
-        if len(sets) != expected:
+        # `expected is None` on the upstream path, where no config arithmetic predicts a
+        # set count. Coverage is still checked below; only the prediction is dropped,
+        # because a guessed one would fail runs rather than catch anything.
+        if expected is not None and len(sets) != expected:
             wrong.append(
                 f"{mapping.smooth_layer} resolved {len(sets)} sets, config predicts {expected}"
             )
         resolved.append(mapping)
-        for matched in sets:
-            for balance in matched[1:]:
-                smoothed.update(id(module) for module in balance)
+        for smooth_layers, *nested in sets:
+            # Flattened and tested as one set, because that is how the modifier treats it:
+            # one incompatible balance layer skips the whole mapping for that block rather
+            # than just itself.
+            balance_layers = [module for group in nested for module in group]
+            if not smooth_layers or not balance_layers:
+                # A set the matcher hands back with a side missing smooths nothing, and
+                # there is no pair to ask the shape question about. Not tallied as
+                # incompatible either: what catches a matcher returning nothing is the
+                # coverage check below, and it counts the modules that actually came back.
+                continue
+            if not _check_layers_are_compatible(
+                smooth_layers[0],
+                module_names.get(smooth_layers[0]),
+                balance_layers,
+                [module_names.get(module) for module in balance_layers],
+            ):
+                incompatible += 1
+                continue
+            smoothed.update(id(module) for module in balance_layers)
 
     if wrong:
         raise SystemExit(
@@ -482,13 +558,18 @@ def resolve_awq_mappings(model: Any) -> tuple[list[Any], dict[str, Any]]:
         )
 
     report = {
+        "mapping_source": "llm-compressor" if upstream is not None else "this file (LFM2)",
         "mappings": len(resolved),
         "linear_modules": len(linears),
         "smoothed_linears": covered,
+        # Nonzero means the modifier will skip that many sets on shape. Not an error --
+        # under GQA it is every `v_proj -> o_proj` pair in the model -- but it is the
+        # difference between "AWQ smoothed everything" and what actually happened.
+        "shape_incompatible_sets": incompatible,
         "unsmoothed_linears": dict(sorted(unsmoothed.items())),
     }
     print(json.dumps(report), flush=True)
-    return resolved, report
+    return (None if upstream is not None else resolved), report
 
 
 def calibration_rows(tokenizer: Any, samples: int, seq_len: int, *, seed: int) -> Any:
