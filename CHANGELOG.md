@@ -17,7 +17,137 @@ it is talking about:
 A bump to any of the last three is called out explicitly, because those are the
 ones that invalidate artifacts a user has already produced.
 
-## [Unreleased]
+## [0.4.0] — 2026-08-11
+
+`KERNEL_ABI_VERSION` moves 2 → 3, additively: `MIN_KERNEL_ABI_VERSION` stays at 2, so a
+0.1.x–0.3.0 kernels wheel already installed keeps working — core feature-detects the new
+grouped op and falls back to the per-expert loop, which is slower and not wrong.
+`CHECKPOINT_FORMAT_VERSION` stays 2 and `STATS_SCHEMA_VERSION` stays 2, so checkpoints and
+stats files written by any earlier release are read unchanged. The kernels wheel version moves
+to 0.4.0 regardless — PyPI refuses a filename it already holds — so the meta package's ceiling
+moves from `<0.4` to `<0.5`.
+
+This release is what it took to quantize a batched-expert MoE end to end. Every entry below was
+found by running LFM2.5-8B-A1B through the pipeline, not by reading the code.
+
+### Added — a batched expert bank stays packed, and its parent indexes it
+
+91.5 % of LFM2.5-8B-A1B's quantizable parameters are two 3-D `nn.Parameter` banks per layer, and
+the packed runtime had nothing to put in their place: `pack_model` swaps modules, and a bank is
+a parameter. That refusal was the last thing standing between the two DynQuant variants and a
+checkpoint that loads.
+
+`DynQuantExpertBank` registers under the parameter's own name and intercepts the one access
+every batched-MoE forward makes — `self.gate_up_proj[expert_idx]`, on LFM2, Qwen3-Next and
+GPT-OSS alike — dequantizing 11 MiB of a 352 MiB bank per expert. No forward is rewritten and
+nothing is dequantized whole, which were the two shortcuts on offer. `nn.Module.__setattr__`
+refuses to overwrite a registered parameter with a module, so the swap has to deregister first;
+that is now `replace_module`, one copy, used by the packer and the loader alike.
+`QuantTensor.rows()` addresses a band of rows as a view — the same addressing the grouped kernel
+below needs, so that kernel landed against this interface instead of replacing it.
+
+Two things fell out. `packed_bytes` gained a pass over bare parameters, without which an
+unpacked bank and every MoE router sat outside the denominator and each ratio computed from it
+flattered us by 91.5 % of the model. And `_shell` now reads the bank's geometry off the model
+rather than `spec.out_features`, which is the flattened `E*out` row count and cannot rebuild
+rank 3.
+
+### Added — `moe_grouped_gemv`, one launch per bank and no host read of the segment table
+
+The arithmetic is unchanged: each expert's band is the same GEMV either way. What moves is where
+the segment offsets live. The loop path calls `.tolist()` on the table once per bank per layer,
+which is a device synchronization — 44 per token on the 22-layer, two-bank model this campaign
+quantized. The fused kernel derives its launch geometry from `seg_offsets.shape` alone and reads
+the values on device, so the caller never syncs and the forward becomes capturable.
+
+The CUDA side clamps a malformed segment table rather than checking it: monotonicity needs a
+reduction it would then have to synchronize on, which is the one thing this path exists to
+avoid. Validation therefore lives in the CPU reference, which has the whole table in hand. GPU
+parity asserts *exact* equality against `dynquant::gemv` band for band — a tolerance would let a
+band-addressing bug through whenever the wrong expert happened to produce a nearby number.
+
+### Added — `DynQuantHfQuantizer`, so an unloadable checkpoint says so
+
+`AutoModelForCausalLM.from_pretrained` on an exported DynQuant directory did not fail. With no
+quantizer registered, transformers logs *"Unknown quantization type, got dynquant … Hence, we
+will skip the quantization"*, reports every packed tensor as an unused key and every real weight
+as newly initialised, and returns a **randomly initialised model**. No exception, no non-zero
+exit. Publishing a directory with that failure mode invites the conclusion that the quantizer is
+bad rather than absent.
+
+`integration/hf_quantizer.py` registers a `DynQuantConfig` and a `DynQuantHfQuantizer`, and both
+outcomes are now loud. The load itself copies nothing: the packed modules already register
+`qweight`/`scales`/`offsets` under the checkpoint's own keys, so the hook swaps each named module
+for a correctly shaped but uninitialised shell and transformers fills the buffers by name. Shapes
+come from a new `QuantTensor.empty`, derived through the same `row_geometry` resolver the encoder
+used, and hold `torch.empty` rather than zeros — so an unfilled buffer decodes to garbage instead
+of to a plausible-looking model. Tied heads survive `tie_weights()`, which matters because
+LFM2.5-8B-A1B and Qwen3.5-2B are both tied.
+
+### Added — text-to-SQL over a three-corpus mixture, scored by execution accuracy
+
+Gretel, WikiSQL and sql-create-context, balanced per source and round-robin interleaved so a
+truncated run still sees every corpus. Execution accuracy has one failure mode worth naming: two
+queries that both return nothing compare equal, so admission requires the database to hold rows,
+the gold to find some, and the answer not to be a single all-null or all-zero row.
+
+Three defects closed, all found by screening rather than by a number that looked wrong. WikiSQL
+declares its text columns `COLLATE NOCASE`; its condition values are the annotator's typing and
+its cells are Wikipedia's, so under SQLite's case-sensitive `TEXT` comparison a third of golds
+matched nothing and were refused as *"the gold finds no rows"* — a correct refusal for an
+incorrect reason, discarding a third of the corpus. 33 % to 0.4 %. DML golds now carry their own
+tally: 10.2 % of Gretel's test golds and 11.3 % of its train golds are
+`UPDATE`/`INSERT`/`DELETE`/`CREATE`, already excluded from evaluation but as `empty_result`,
+which is the wrong diagnosis for a statement that was never going to match anything — and
+training had no row filter at all, so they survived there, teaching a response format
+`extract_sql` reads as no answer, scored unparseable on a metric whose floor is zero,
+identically across every arm of the comparison. And `eval --task` now derives its choices from
+the registry: `text2sql` shipped with a loader, a scorer, a registry entry and two test files and
+could not be run, because argparse carried a hand-written copy of the other six task names and
+refused it with a usage error, which reads as a typo rather than as the omission it was.
+
+The mixture is also decontaminated against its own benchmark before training.
+
+### Added — `--score-null`, the control that says how much of a win is the signal
+
+A panel showing DynQuant beating a uniform recipe at matched bytes cannot say how much of the
+margin is the training signal and how much is mixed-width structure. `apply_null` returns scores
+the allocator can still consume but cannot learn from, in three modes. `uniform` sets every score
+to 1.0 and drops the sensitivity table, so allocation falls back to pure ROI over params and
+floors. `shuffle` permutes scores *within role* — attention keeps attention's score distribution,
+routers keep routers' — so the marginal distribution the allocator sees is unchanged and only the
+assignment of score to module is destroyed. `flat` is both at once, the same permutation at the
+same seed with every score set to 1.0 and the table kept, which is what separates the ranking
+from the measured pricing.
+
+The sensitivity row is permuted alongside the score with the same donor map, because on this
+checkpoint 8.5 % of parameters are priced by measured `dL` and the rest by a proxy built from the
+score; a null that moved one and not the other would leave the measured modules priced by their
+own moments and report a partial control as a whole one. `NullReport` records the mode, the seed
+and how many modules moved, and composes an allocator label (`sensitivity+null:shuffle(seed=0)`)
+that lands in the map, so a control cannot be mistaken for a real arm downstream. The
+seed-to-permutation map is pinned by a golden test: arms banked weeks apart are one sample only
+if the draw never moved, and nothing else raises when it does.
+
+What it measured, on LFM2.5-8B-A1B at 3.15 bits over 12 000 text-to-SQL items: the three rungs
+partition a +19.13-point margin over GPTQ exactly, 92 + 1045 + 1159 = 2296 flipped items —
+within-role placement **+0.77**, role assignment plus measured pricing **+8.71**, and
+floors-plus-knapsack with no signal at all **+9.66**.
+
+### Added — `QuantTensor.from_codes`, for a checkpoint that is already on a grid
+
+`from_dense` fits the affine map from float weights. That is the wrong operation for a GPTQ or
+AWQ checkpoint being re-housed, because re-deriving the map is not the identity: min/max recovers
+the original scale only when a group still occupies both ends of its code range, and neither
+GPTQ's error compensation nor AWQ's clipping search leaves that true everywhere. Where it is
+false the re-fitted step is narrower, the original levels fall between the new ones, and the
+weights move.
+
+`from_codes` takes the codes and the map as given and only packs. The format needs no adapter for
+this: DynQuant stores `scale * code + offset` with a float offset and no integer zero-point, so
+the ecosystem's `scale * (q - zero)` lands on it directly with `offset = -scale * zero`. The
+translation is left at the call site, so the only code that knows a foreign convention is the
+code reading a foreign checkpoint.
 
 ### Fixed — the allocator priced a smaller model than it was writing
 
@@ -1639,7 +1769,8 @@ and `mma.sync` accumulation — the AWQ/Marlin route — which is P7.
   Python costs. CUDA Graphs (P8) and a `flash-linear-attention` fast path are what address
   it. `experiments/qwen35_2b/RESULTS.md` has the measurement.
 
-[Unreleased]: https://github.com/kambojvikram/dynquant/compare/v0.3.0...main
+[Unreleased]: https://github.com/kambojvikram/dynquant/compare/v0.4.0...main
+[0.4.0]: https://github.com/kambojvikram/dynquant/releases/tag/v0.4.0
 [0.3.0]: https://github.com/kambojvikram/dynquant/releases/tag/v0.3.0
 [0.2.0]: https://github.com/kambojvikram/dynquant/releases/tag/v0.2.0
 [0.1.2]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.2

@@ -24,7 +24,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dynquant"
-version = "0.3.0"
+version = "0.4.0"
 description = "Training-dynamics-driven mixed-precision LLM quantization, with prebuilt CUDA kernels."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -42,7 +42,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "dynquant-core==0.3.0",
+    "dynquant-core==0.4.0",
     # Prebuilt kernels exist only where we can build and test them. Elsewhere this
     # resolves to nothing, `dynquant doctor` reports backend=torch with the reason,
     # and quantization still works -- rather than pip failing to find a wheel and
@@ -65,28 +65,33 @@ dependencies = [
     # minor, which is the failure 0.1.1 exists to close. Leaving the floor at 0.1.0
     # would let this release resolve the very wheel it fixes.
     #
-    # Ceiling raised to <0.4 at 0.3.0, for the same duller reason it was raised to <0.3
+    # Ceiling raised to <0.5 at 0.4.0, for the same duller reason it was raised to <0.4
     # before it: the kernels wheel moves with every tagged release whether or not a
     # kernel changed, because PyPI refuses a filename it already holds -- so this release
-    # publishes 0.3.0 wheels, and a `<0.3` ceiling would have excluded them. The floor
-    # stays at 0.1.1 because it can: the ABI is still 2, so a 0.1.x wheel a user already
-    # has keeps working, and nothing in this release changes a kernel signature or the
-    # packed layout.
-    "dynquant-kernels>=0.1.1,<0.4; platform_system=='Linux' and platform_machine=='x86_64'",
+    # publishes 0.4.0 wheels, and a `<0.4` ceiling would have excluded them.
+    #
+    # The floor stays at 0.1.1, but this release is the first where that needs an
+    # argument rather than an observation. The ABI moved 2 -> 3 for `moe_grouped_gemv`,
+    # so a 0.1.x wheel no longer carries every op core knows about. It stays compatible
+    # because MIN_KERNEL_ABI_VERSION was deliberately left at 2: core feature-detects
+    # the grouped op and falls back to the per-expert loop, which is slower and not
+    # wrong. A floor raise would refuse a wheel that can still serve every model it
+    # served yesterday.
+    "dynquant-kernels>=0.1.1,<0.5; platform_system=='Linux' and platform_machine=='x86_64'",
 ]
 
 [project.optional-dependencies]
 # Mirrors of dynquant-core's extras, so users never have to know that `core`
 # exists as a separate name.
-hf = ["dynquant-core[hf]==0.3.0"]
-train = ["dynquant-core[train]==0.3.0"]
-eval = ["dynquant-core[eval]==0.3.0"]
-triton = ["dynquant-core[triton]==0.3.0"]
-dev = ["dynquant-core[dev]==0.3.0"]
+hf = ["dynquant-core[hf]==0.4.0"]
+train = ["dynquant-core[train]==0.4.0"]
+eval = ["dynquant-core[eval]==0.4.0"]
+triton = ["dynquant-core[triton]==0.4.0"]
+dev = ["dynquant-core[dev]==0.4.0"]
 
 # Force the compiled kernels regardless of platform marker. Falls back to an sdist
 # build, which needs nvcc, cmake and a C++ toolchain.
-kernels = ["dynquant-kernels>=0.1.1,<0.4"]
+kernels = ["dynquant-kernels>=0.1.1,<0.5"]
 
 [project.urls]
 # See the note in dynquant-core: no Documentation key until the site exists.
