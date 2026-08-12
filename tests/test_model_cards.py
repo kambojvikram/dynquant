@@ -12,7 +12,9 @@ the failures worth covering here are the ones that produce a card a reader belie
 * a comparison the table flagged for mixed expert arithmetic, printed on the card as a
   clean verdict -- the dispatch difference is 0.29x the effect being reported, so a flag
   dropped here is a result overstated by a quarter of itself;
-* a card for the bf16 ceiling, which would describe a model this campaign did not make.
+* a bf16 card written by a quantization generator, carrying a `quantized` tag, a width
+  tag, a container caveat or a `register_hf_quantizer()` call -- four claims that are
+  true of the six packed arms, false of the ceiling, and silent when wrong.
 
 The panel here is `test_panel_table`'s, imported rather than copied. The two files test
 opposite ends of one pipeline -- that module builds the table, this one renders it -- and a
@@ -177,18 +179,23 @@ def test_the_flag_the_table_raised_is_the_flag_the_card_prints(
     assert "separated" in clean, "clearing the flag must not clear the result"
 
 
-def test_a_ceiling_and_an_unscored_arm_are_refused_rather_than_described(
+def test_an_unscored_arm_is_refused_and_the_ceiling_is_opt_in(
     cards: Any, table_mod: Any, tmp_path: Path
 ) -> None:
     """Three ways to end up with a card for something that is not a published arm.
 
-    The ceiling is the checkpoint the panel started from; a card for it would describe
-    somebody else's model under this campaign's name. An arm still running has no accuracy,
-    and a card is a claim about a measurement -- mid-panel that is the state four arms are
-    in for a day. A label that is simply not in the table is a typo in `--only`, and
-    guessing at it would write a card for the wrong arm.
+    An arm still running has no accuracy, and a card is a claim about a measurement --
+    mid-panel that is the state four arms are in for a day. A label that is simply not in
+    the table is a typo in `--only`, and guessing at it would write a card for the wrong
+    arm. The ceiling is the third and is different in kind: it is refused by *default* and
+    not on request, because whether it is publishable is a fact about the campaign that ran
+    the panel, not about the panel. On a campaign that quantized somebody else's checkpoint
+    a ceiling card would publish that checkpoint under this campaign's name; on one that
+    trained the thing it quantized, it is the fine-tune. Nothing in the table distinguishes
+    those, so the default stays the safe one and the caller opts in.
 
-    Turns red when: a refusal becomes a default, a placeholder, or an empty results row.
+    Turns red when: a refusal becomes a default, a placeholder, or an empty results row; or
+    the ceiling starts appearing in the publish set without being asked for.
     """
     out = _write_panel(tmp_path / "arms", omit=("awq_3b",))
     table, _ = _built(table_mod, out)
@@ -196,13 +203,50 @@ def test_a_ceiling_and_an_unscored_arm_are_refused_rather_than_described(
     assert "bf16" not in cards.publishable(table)
     assert "awq_3b" not in cards.publishable(table)
     assert cards.publishable(table) == ["gptq_4b", "awq_4b", "dq_4b", "gptq_3b", "dq_3b"]
+    assert cards.publishable(table, include_ceiling=True)[0] == "bf16"
+    assert "awq_3b" not in cards.publishable(table, include_ceiling=True)
 
-    with pytest.raises(SystemExit, match="ceiling"):
-        cards.card(table, "bf16", FINETUNE, repo_prefix=None)
     with pytest.raises(SystemExit, match="no accuracy"):
         cards.card(table, "awq_3b", FINETUNE, repo_prefix=None)
     with pytest.raises(SystemExit, match="has no arm"):
         cards.card(table, "dq_2b", FINETUNE, repo_prefix=None)
+
+
+def test_the_ceiling_card_claims_a_fine_tune_and_never_a_quantization(
+    cards: Any, table_mod: Any, tmp_path: Path
+) -> None:
+    """A bf16 card built by a quantization generator is one copied line from lying.
+
+    Every branch here guards a claim that is true of the six quantized arms and false of
+    this one, and each fails silently: a `quantized` tag and a `4-bit` tag put an
+    unquantized checkpoint into the Hub filter a reader uses to find quantized ones, which
+    is a wrong answer to a search rather than a broken page. The container caveat says this
+    directory is 2.3% larger than the size it was scored at, which is a statement about
+    DynQuant's container and this arm is not in one. And a usage block that calls
+    `register_hf_quantizer()` is worse than wrong: it runs, so the reader finds out nothing.
+
+    What must survive from the shared body is the install section -- the ceiling is the arm
+    a reader lands on first, and it is the one place the panel gets named.
+
+    Turns red when: any of those four leak into the unquantized card, or the links section
+    stops being emitted on every card.
+    """
+    out = _write_panel(tmp_path / "arms")
+    table, _ = _built(table_mod, out)
+    card = cards.card(table, "bf16", FINETUNE, repo_prefix="acme/lfm")
+
+    head = card.split("---", 2)[1]
+    assert "text-to-sql" in head and "bf16" in head
+    assert "quantized" not in head and "4-bit" not in head
+
+    assert "register_hf_quantizer" not in card
+    assert "2.3% larger" not in card
+    assert "none -- this is the bf16 fine-tune" in card
+
+    assert cards.PIP in card and cards.GITHUB in card
+    assert "## Results" in card
+    for other in ("gptq_4b", "dq_4b", "dq_3b"):
+        assert cards.card(table, other, FINETUNE, repo_prefix="acme/lfm").count(cards.PIP) == 1
 
 
 def test_a_card_written_mid_panel_still_counts_the_arms_that_have_not_run(

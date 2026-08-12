@@ -68,9 +68,25 @@ METHOD_NAMES = {
 #: line would send a reader to a loader that cannot open the file.
 LOADER = "`transformers` with `dynquant` installed"
 
+#: Where the method itself lives, and what opens a directory written by it. A card is
+#: the only place a reader meets the checkpoint and the code at once, and every packed
+#: arm here is unreadable without the package -- so both lines are generated onto the
+#: card rather than left to a reader who has already spent 4 GB finding out.
+GITHUB = "https://github.com/kambojvikram/dynquant"
+PIP = "pip install dynquant"
+
+#: The kind the panel records for the unquantized arm. It is publishable here, unlike
+#: in `publish_panel.py`, because on this campaign the ceiling *is* the merged
+#: fine-tune -- a checkpoint this work produced -- and not the base model it started
+#: from. It stays opt-in: publishing a fine-tune is a separate decision from
+#: publishing a quantization of it, and its card claims no quantization at all.
+CEILING = "ceiling"
+
 
 def slug(label: str, kind: str, anchor: int) -> str:
     """The repo suffix for an arm: `gptq_4b` reads as `GPTQ-4bit`."""
+    if kind == CEILING:
+        return "bf16"
     return f"{METHOD_NAMES[kind].replace(' ', '-')}-{anchor}bit"
 
 
@@ -90,17 +106,22 @@ def find_arm(table: dict[str, Any], label: str) -> dict[str, Any]:
     raise SystemExit(f"the table has no arm {label!r}; it has {known}")
 
 
-def publishable(table: dict[str, Any]) -> list[str]:
-    """Every scored arm that is a quantization of the base model.
+def publishable(table: dict[str, Any], include_ceiling: bool = False) -> list[str]:
+    """Every scored arm this campaign produced and can describe.
 
-    The ceiling is excluded the same way it is in `publish_panel.py` and for the same
-    reason: it is the checkpoint the panel started from, so a card for it would describe
-    somebody else's model.
+    The ceiling used to be excluded on the grounds that it is the checkpoint the panel
+    started from, so a card for it would describe somebody else's model. That is true of
+    a base model and false of this one: the ceiling arm *is* the merged fine-tune, which
+    this campaign trained, and the base model is a different checkpoint on the Hub. The
+    reason survives as the reason it stays opt-in rather than becoming the default --
+    on a panel that quantized a checkpoint it did not make, `--include-ceiling` would be
+    wrong and nothing here can tell the two cases apart.
     """
+    kinds = set(METHOD_NAMES) | ({CEILING} if include_ceiling else set())
     return [
         row["label"]
         for row in table["arms"]
-        if row.get("kind") in METHOD_NAMES and row.get("accuracy") is not None
+        if row.get("kind") in kinds and row.get("accuracy") is not None
     ]
 
 
@@ -122,14 +143,19 @@ def comparisons_for(table: dict[str, Any], label: str) -> list[dict[str, Any]]:
 
 
 def frontmatter(base_model: str, row: dict[str, Any]) -> str:
-    tags = [
-        "dynquant",
-        "quantized",
-        f"{row['anchor']}-bit",
-        "text-to-sql",
-        "moe",
-        METHOD_NAMES[row["kind"]].lower().replace(" ", "-"),
-    ]
+    if row["kind"] == CEILING:
+        # No `quantized` tag and no width: the Hub filters on these, and an unquantized
+        # checkpoint answering a 4-bit filter is a wrong answer to a search.
+        tags = ["text-to-sql", "moe", "sft", "bf16", "dynquant"]
+    else:
+        tags = [
+            "dynquant",
+            "quantized",
+            f"{row['anchor']}-bit",
+            "text-to-sql",
+            "moe",
+            METHOD_NAMES[row["kind"]].lower().replace(" ", "-"),
+        ]
     # A DynQuant arm's method name and the package tag are the same word. Deduplicated in
     # order rather than by sorting: the Hub renders the repeat as two identical chips, and
     # the leading tags are the ones a reader scans.
@@ -153,7 +179,8 @@ def frontmatter(base_model: str, row: dict[str, Any]) -> str:
 
 
 def what_this_is(base_model: str, row: dict[str, Any], finetune: dict[str, Any]) -> str:
-    method = METHOD_NAMES[row["kind"]]
+    ceiling = row["kind"] == CEILING
+    method = "" if ceiling else METHOD_NAMES[row["kind"]]
     datasets = str(finetune.get("dataset", "")).split("+")
     kept = finetune.get("conversations_kept")
     bits = row.get("bits_per_param")
@@ -169,15 +196,20 @@ def what_this_is(base_model: str, row: dict[str, Any], finetune: dict[str, Any])
         else "uniform, group size 128"
     )
     size = gib(row.get("nbytes")) + (f" ({bits:.4f} bits per parameter)" if bits else "")
+    quantization = (
+        "none -- this is the bf16 fine-tune every quantized arm was made from"
+        if ceiling
+        else f"{method}, {row['anchor']}-bit, {widths}"
+    )
     table = [
         "| | |",
         "|---|---|",
         f"| base model | [{base_model}](https://huggingface.co/{base_model}) |",
         f"| fine-tune | {regime} |",
         "| training data | " + ", ".join(f"`{name}`" for name in datasets if name) + " |",
-        f"| quantization | {method}, {row['anchor']}-bit, {widths} |",
+        f"| quantization | {quantization} |",
         f"| size on disk | {size} |",
-        f"| loads with | {LOADER} |",
+        f"| loads with | {'`transformers`' if ceiling else LOADER} |",
     ]
     return NL.join(table)
 
@@ -265,7 +297,7 @@ def caveats(table: dict[str, Any], row: dict[str, Any], flagged: int) -> str:
             "the packed and encoded containers were separately scored."
         )
 
-    if row["kind"] != "dq":
+    if row["kind"] not in (CEILING, "dq"):
         bullets.append(
             "**This directory is about 2.3% larger than the size it was scored at.** The "
             "recipe's integer codes are carried across exactly and re-stored in DynQuant's "
@@ -307,16 +339,47 @@ def caveats(table: dict[str, Any], row: dict[str, Any], flagged: int) -> str:
     return NL.join(f"- {line}" for line in bullets)
 
 
+def links(row: dict[str, Any]) -> str:
+    """The package that opens this directory, and the source that produced it."""
+    if row["kind"] == CEILING:
+        return NL.join(
+            [
+                "This checkpoint is plain bf16 and loads with `transformers` alone. It is "
+                "the ceiling arm of a DynQuant panel: the quantized arms in the table above "
+                "are this same fine-tune at a fraction of the size, and those need the "
+                "package.",
+                "",
+                "```bash",
+                PIP,
+                "```",
+                "",
+                f"Source, format spec, and the allocator that produced their bit maps: <{GITHUB}>",
+            ]
+        )
+    return NL.join(
+        [
+            "This directory is packed, so `transformers` alone cannot open it -- it needs "
+            "DynQuant's `HfQuantizer`, which the package registers. Prebuilt CUDA kernels "
+            "come with it where a wheel exists for your platform, and it falls back to a "
+            "pure-torch path where one does not.",
+            "",
+            "```bash",
+            PIP,
+            "```",
+            "",
+            f"Source, format spec, and the allocator that produced this arm's bit map: <{GITHUB}>",
+        ]
+    )
+
+
 def usage(row: dict[str, Any], repo: str | None) -> str:
     where = repo or f"./{row['label']}"
+    ceiling = row["kind"] == CEILING
     body = [
         "```python",
         "from transformers import AutoModelForCausalLM, AutoTokenizer",
         "",
-        "import dynquant",
-        "",
-        "dynquant.register_hf_quantizer()",
-        "",
+        *([] if ceiling else ["import dynquant", "", "dynquant.register_hf_quantizer()", ""]),
         f'model = AutoModelForCausalLM.from_pretrained("{where}", device_map="cuda")',
         f'tokenizer = AutoTokenizer.from_pretrained("{where}")',
         "```",
@@ -355,10 +418,10 @@ def card(
     repo_prefix: str | None,
 ) -> str:
     row = find_arm(table, label)
-    if row.get("kind") not in METHOD_NAMES:
+    if row.get("kind") not in set(METHOD_NAMES) | {CEILING}:
         raise SystemExit(
-            f"{label} is a {row.get('kind')!r} arm. Only a quantization of the base model "
-            f"gets a card; a ceiling would describe a model this campaign did not make."
+            f"{label} is a {row.get('kind')!r} arm, which this generator has no card for. "
+            f"A ceiling needs --include-ceiling; anything else is not a checkpoint."
         )
     if row.get("accuracy") is None:
         raise SystemExit(
@@ -367,19 +430,28 @@ def card(
         )
 
     base_model = str(finetune["model"])
-    method = METHOD_NAMES[row["kind"]]
+    ceiling = row["kind"] == CEILING
+    method = "bf16" if ceiling else METHOD_NAMES[row["kind"]]
     entries = comparisons_for(table, label)
     repo = f"{repo_prefix}-{slug(label, row['kind'], row['anchor'])}" if repo_prefix else None
 
     parts = [
         frontmatter(base_model, row),
         "",
-        f"# {base_model.split('/')[-1]} text-to-SQL, {method} {row['anchor']}-bit",
+        f"# {base_model.split('/')[-1]} text-to-SQL, {method}"
+        + ("" if ceiling else f" {row['anchor']}-bit"),
         "",
-        f"{base_model} fine-tuned on text-to-SQL and quantized to {row['anchor']} bits with "
-        f"{method}. It is one of {len(table['arms'])} arms in a panel where every quantized "
-        f"arm was allocated the *same byte budget*, so the accuracies below differ by method "
-        f"and not by size.",
+        (
+            f"{base_model} fine-tuned on text-to-SQL, merged and left in bf16. It is the ceiling "
+            f"arm of a panel of {len(table['arms'])} arms: every quantized arm below was "
+            f"made from this checkpoint and allocated the same byte budget, so their "
+            f"accuracies differ by method and not by size."
+            if ceiling
+            else f"{base_model} fine-tuned on text-to-SQL and quantized to {row['anchor']} bits "
+            f"with {method}. It is one of {len(table['arms'])} arms in a panel where "
+            f"every quantized arm was allocated the *same byte budget*, so the accuracies "
+            f"below differ by method and not by size."
+        ),
         "",
         "## What this is",
         "",
@@ -424,6 +496,10 @@ def card(
         "",
         caveats(table, row, flagged),
         "",
+        "## Install",
+        "",
+        links(row),
+        "",
         "## Usage",
         "",
         usage(row, repo),
@@ -455,12 +531,21 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Hub id prefix, so the usage snippet names the repo rather than a local path",
     )
+    p.add_argument(
+        "--include-ceiling",
+        action="store_true",
+        help="also card the unquantized arm, which on this panel is the merged fine-tune",
+    )
     p.add_argument("--print", action="store_true", help="write nothing; print the cards")
     args = p.parse_args(argv)
 
     table = json.loads(Path(args.table).read_text(encoding="utf-8"))
     finetune = json.loads(Path(args.finetune).read_text(encoding="utf-8"))
-    labels = [s for s in args.only.split(",") if s] if args.only else publishable(table)
+    labels = (
+        [s for s in args.only.split(",") if s]
+        if args.only
+        else publishable(table, include_ceiling=args.include_ceiling)
+    )
     if not labels:
         raise SystemExit(
             f"{args.table} carries no scored quantized arm. A card is a claim about a "
