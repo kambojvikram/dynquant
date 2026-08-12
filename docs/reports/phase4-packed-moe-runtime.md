@@ -367,17 +367,23 @@ bf16, tied, and 18 of its 24 layers are convolutions. It has now been through th
 **The bytes reconcile three ways, and each way answers a different question.**
 
 ```
-priced     4,397,666,304 = packed 4,397,445,120 + conv 221,184
-on disk    4,397,930,240 = priced + rank-1 205,056 + container 58,880
+priced     4,397,868,544 = packed 4,397,445,120 + conv 221,184 + refused norms 202,240
+on disk    4,397,930,240 = priced + fp32 router bias 2,816 + container 58,880
 in memory  4,400,549,888 = packed + dense 3,104,768  (conv 221,184 + restored routers 2,883,584)
 ```
 
+*(As re-derived in §10. The arms in this report were allocated before the refused norms were
+priced, when the first line read 4,397,666,304 and the second charged all 205,056 rank-1 bytes to
+the gap; the maps are bit-identical either way — §10 rebuilt `dq_3b` and 0 of 133 widths moved.)*
+
 The allocator's price is what the manifest promises, the disk figure is what a downloader pays, and
-the memory figure is what the model occupies while answering. They differ by 264 KB and 2.9 MB, and
-both differences are named rather than absorbed: the rank-1 tensors the budget did not price, the
-safetensors container, and the 22 routers that live at 8 bits on disk and bf16 in RAM because no
-packed forward can stand where they stand (§4). The first of those is now priced — see §10,
-where a 205 KB rounding error turns out to be 91.5% of a differently-shaped model.
+the memory figure is what the model occupies while answering. They differ by 61 KB and 2.7 MB, and
+every part of both differences is named rather than absorbed: the safetensors container, the 22
+fp32 router biases charged at the 16-bit floor, and the 22 routers that live at 8 bits on disk and
+bf16 in RAM because no packed forward can stand where they stand (§4). The rank-1 norms used to be
+a fourth — see §10, where a 205 KB rounding error turns out to be 91.5% of a differently-shaped
+model, and where the 2,816 bytes it did not explain turn out to be a tensor no walk over parameters
+can see.
 
 **Every tensor in the map came back exactly.**
 
@@ -896,15 +902,49 @@ eager re-score of section 8 reuses them through `--rescore`, precisely so that t
 only thing that moves between the two measurements — this change is the second one that would
 otherwise have ridden along.
 
-**Re-derived since, and the claim holds — with one number left to settle.** `dq_3b` was rebuilt
-under the current checkout on 2026-08-12: 0 of its 133 widths differ, the histogram and all 15
-floor breaches are identical, and the only thing that moves is the price, by exactly 202,240 B.
-The old accounting therefore cost the maps nothing and cost the *reported* size 0.006%. But
-202,240 is not 205,056 — the allocator prices 61 refused tensors at 101,120 parameters, and the
-disk figure above counts 1,408 parameters more. One of the two accountings counts a tied tensor
-twice; re-pricing the 4-bit map says which. The consequence downstream is in [the mixture
+**Re-derived since, and the claim holds.** `dq_3b` was rebuilt under the current checkout on
+2026-08-12: 0 of its 133 widths differ, the histogram and all 15 floor breaches are identical, and
+the only thing that moves is the price, by exactly 202,240 B. The old accounting therefore cost the
+maps nothing and cost the *reported* size 0.006%. The consequence downstream is in [the mixture
 report](phase4-text2sql-mixture.md) §13.4, where the real arm's 202 KB byte edge over its own
 controls was this artifact and not an allocation.
+
+**But 202,240 is not 205,056, and the first answer here was wrong twice over.** This section
+previously read the 2,816-byte remainder as *1,408 parameters* and proposed that one of the two
+accountings counts a tied tensor twice. The arithmetic was wrong because it divided bytes by two,
+assuming the missing tensors were bf16 like every other norm in the file, and the explanation was
+wrong because nothing is tied. Reading the shard header instead of reasoning about the model says
+what they are:
+
+| rank-1 on disk | count | dtype | params | bytes |
+|---|---|---|---|---|
+| norms — `embedding_norm`, `k_layernorm`, ... | 61 | BF16 | 101,120 | 202,240 |
+| `feed_forward.expert_bias` | 22 | **F32** | 704 | 2,816 |
+| **total** | **83** | | **101,824** | **205,056** |
+
+So the delta is 704 parameters, and the graph does not merely mis-price them — it has never seen
+them. `expert_bias` is the router's load-balancing bias, and on this architecture it is a
+**persistent buffer**: `requires_grad=False`, `register_buffer`, fp32, 32 values per layer.
+`_unowned_parameters` — the sweep §10 added to catch bare `nn.Parameter` weights — walks
+`named_parameters()`, which by construction never yields a buffer. Neither does anything else in
+`classify_model`. The tensors were in the download, in `save_pretrained`, and in no denominator.
+
+That is the third time this campaign has met the same error, and the second time it has run
+backwards. The tied embedding counted one tensor twice and made it 27% of a model; the bare
+projection weight counted a real tensor zero times; the persistent buffer counts a real tensor zero
+times for a reason no walk over *parameters* can ever fix. The repair is a fourth sweep,
+`_persistent_buffers`, and its persistence test is `state_dict()` membership rather than "is a
+buffer" — the same model's rotary `inv_freq` is a buffer and is *not* written, so charging for
+every buffer would be the opposite error at 64 values a layer. With it, `total_params()` is
+8,467,856,832 and equals the checkpoint exactly.
+
+**One term is still named and not priced, and it is now the only one besides the container.**
+A refused tensor is charged at `UNQUANTIZED_FLOOR`, and an fp32 buffer costs twice that on disk:
+1,408 bytes on this model, 0.00003% of it. Pricing it exactly means carrying a per-tensor stored
+width through `Budget.from_target` and every manifest built from it, which would move every banked
+number on the panel to fix three ten-thousandths of a percent. It is written down here and in
+`_persistent_buffers` instead.
+
 ---
 
 ## 11. What a linearised baseline still carries

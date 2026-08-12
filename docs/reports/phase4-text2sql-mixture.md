@@ -2607,10 +2607,15 @@ figure to the byte, which puts the row's `-0.0413%` at `-0.0353%` like theirs. W
 the uniform arm's edge, and it is exactly 1 MiB: 1,048,576 B more than the real arm for a map
 that scores 9.47 points worse. The rungs below are therefore read at matched bytes rather than at
 a byte discount -- a weaker claim than the one this paragraph used to make, and the one the
-numbers support. (Two accountings of those refused tensors do not yet agree: [the runtime
-report](phase4-packed-moe-runtime.md) §7 measures them on disk at 205,056 B, 1,408 parameters more
-than the allocator prices. Re-pricing the 4-bit map is what settles which one double-counts a
-tied tensor.) The ladder, Holm-corrected inside its own family of four:
+numbers support. (The two accountings of those refused tensors now agree, and the gap between them was
+not what this paragraph guessed. [The runtime report](phase4-packed-moe-runtime.md) §10 settles
+it: the 205,056 B on disk are 61 bf16 norms at 202,240 B *plus* 22 fp32 `expert_bias` tensors at
+2,816 B. Nothing is double-counted — the router bias is a persistent **buffer**, so no walk over
+`named_parameters` could ever reach it, and 704 parameters of this model were in the download and
+in no denominator. Fixed by a fourth sweep. This report's model is that model, so the
+denominator every map below was allocated against is 704 parameters short: at a 3.0-bit target
+that is 264 bytes of budget on 3.33 GB, below the granularity of a single module's cheapest move.
+The maps here are not re-derived for it, and the next one built on this architecture will be.) The ladder, Holm-corrected inside its own family of four:
 
 | rung | what it puts back | delta | 95% CI | flips | p (Holm) |
 |---|---|---:|---|---|---:|

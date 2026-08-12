@@ -568,3 +568,96 @@ def test_dtype_and_device_do_not_affect_classification() -> None:
     model = Qwen3_5ForCausalLM().to(torch.float16)
     graph = classify_model(model)
     assert graph["model.layers.3.self_attn.q_proj"].role is ModuleRole.ATTN_Q_GATE
+
+
+# --------------------------------------------------------------------------
+# Persistent buffers -- on disk, and in no walk over parameters
+# --------------------------------------------------------------------------
+
+
+class _RouterWithBias(nn.Module):
+    """A router that keeps its load-balancing bias where LFM2.5-8B-A1B keeps it.
+
+    ``expert_bias`` is a buffer, not a parameter: ``requires_grad=False``, registered
+    with ``register_buffer``, and written to the shard in fp32. Every counting walk in
+    ``classify`` descends from ``named_parameters``, which never yields it.
+    """
+
+    def __init__(self, experts: int = 4, hidden: int = 8) -> None:
+        super().__init__()
+        self.gate = nn.Linear(hidden, experts, bias=False)
+        self.register_buffer("expert_bias", torch.zeros(experts, dtype=torch.float32))
+        # Not persistent, so it is not in the checkpoint and must not be charged for.
+        self.register_buffer("inv_freq", torch.zeros(hidden), persistent=False)
+
+
+class _BufferModel(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.config = _Cfg(model_type="x", vocab_size=10)
+        self.embed_tokens = nn.Embedding(10, 8)
+        self.feed_forward = _RouterWithBias()
+
+
+def test_a_persistent_buffer_is_counted_because_the_download_carries_it() -> None:
+    """The +704 that made an 8B model's denominator smaller than its own file.
+
+    Turns red if the buffer sweep is dropped: the graph goes back to counting only
+    what ``named_parameters`` yields, and ``total_params`` silently loses four values
+    that a downloader pays for.
+    """
+    model = _BufferModel()
+    graph = classify_model(model)
+
+    assert "feed_forward.expert_bias" in graph.skipped
+    assert graph.skipped["feed_forward.expert_bias"].num_params == 4
+    assert "buffer" in graph.skipped["feed_forward.expert_bias"].reason
+    assert graph.total_params() == sum(t.numel() for t in model.state_dict().values())
+
+
+def test_a_non_persistent_buffer_is_not_counted_because_it_is_not_written() -> None:
+    """The opposite error, and it is available in the same walk.
+
+    ``inv_freq`` is a buffer on the very same module and is absent from
+    ``state_dict``. Charging for it would inflate the denominator by bytes no one
+    downloads -- so persistence is read from ``state_dict``, not from "is a buffer".
+    """
+    graph = classify_model(_BufferModel())
+    assert "feed_forward.inv_freq" not in graph.skipped
+    assert not [name for name in graph.names if "inv_freq" in name]
+
+
+def test_a_buffer_is_refused_rather_than_given_a_role() -> None:
+    """State is not a weight. There is no size/accuracy trade in a routing bias."""
+    graph = classify_model(_BufferModel())
+    assert "feed_forward.expert_bias" not in graph.modules
+    assert "feed_forward.gate" in graph.modules
+
+
+def test_the_graph_denominator_equals_the_checkpoint_it_describes() -> None:
+    """The claim the whole sweep exists to make, on a model that has every kind.
+
+    A parameter some module owns, a bare parameter no module exposes as ``.weight``,
+    a rank-1 norm the graph refuses, a persistent buffer and a non-persistent one.
+    ``state_dict`` is what ``save_pretrained`` writes, so it is the only denominator
+    an average-bits figure is allowed to be computed against.
+    """
+
+    class Model(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.config = _Cfg(model_type="x", vocab_size=10)
+            self.embed_tokens = nn.Embedding(10, 8)
+            self.norm = nn.LayerNorm(8)
+            self.proj = nn.Linear(8, 8, bias=False)
+            self.bridge = nn.Parameter(torch.zeros(8, 8))
+            self.register_buffer("running", torch.zeros(6))
+            self.register_buffer("scratch", torch.zeros(99), persistent=False)
+
+    model = Model()
+    graph = classify_model(model)
+    written = sum(t.numel() for t in model.state_dict().values())
+
+    assert graph.total_params() == written
+    assert "running" in graph.skipped
+    assert "scratch" not in graph.skipped

@@ -70,12 +70,16 @@ class SkippedTensor:
     """A weight the graph refused, and how much of the file it still occupies.
 
     Refusing to quantize a tensor is a decision about *bits*, not about existence. Every
-    one of these is written to the checkpoint at compute dtype, so a budget that does not
-    know their size targets a number smaller than the folder it produces, and an
-    average-bits figure computed without their parameters is an average over a subset of
-    the file. That is a rounding error at one end of the range and not at the other:
-    LFM2.5-8B-A1B's norms and biases come to 205,056 bytes against 4.4 GB, while a batched
-    expert bank refused for orientation is 91.5% of the same model.
+    one of these is written to the checkpoint, so a budget that does not know their size
+    targets a number smaller than the folder it produces, and an average-bits figure
+    computed without their parameters is an average over a subset of the file. That is a
+    rounding error at one end of the range and not at the other: LFM2.5-8B-A1B's norms and
+    router biases come to 205,056 bytes against 4.4 GB, while a batched expert bank refused
+    for orientation is 91.5% of the same model.
+
+    Priced at :data:`UNQUANTIZED_FLOOR` rather than at the width each is actually stored
+    at, which is exact for the norms and half the truth for the 22 fp32 buffers beside
+    them -- 1,408 bytes on that model. See :func:`_persistent_buffers`.
 
     Carries a count rather than a shape, because the count is what a budget needs and the
     shape is usually already in :attr:`reason`.
@@ -464,6 +468,7 @@ def classify_model(
         )
 
     unowned, refused = _unowned_parameters(model, claimed=claimed, overrides=overrides)
+    refused += _persistent_buffers(model, claimed=claimed)
     _record_skipped(
         [entry for entry in refused if entry[0] not in modules], into=skipped, seen=seen_skipped
     )
@@ -733,6 +738,61 @@ def _unowned_parameters(
             )
         )
     return found, refused
+
+
+def _persistent_buffers(
+    model: nn.Module, *, claimed: set[int]
+) -> list[tuple[str, SkippedTensor, Any]]:
+    """Tensors that reach the checkpoint without ever having been parameters.
+
+    :func:`_unowned_parameters` walks ``named_parameters``, which by construction never
+    yields a buffer, and every total this module builds descends from that walk. A
+    persistent buffer is therefore in the download and in no denominator.
+
+    Not hypothetical. LFM2.5-8B-A1B keeps its router's load-balancing bias in
+    ``feed_forward.expert_bias``: 22 tensors of 32 values, ``requires_grad=False``,
+    registered as buffers and written to the shard in fp32. The graph counted
+    8,467,856,128 parameters against the file's 8,467,856,832, and the missing 704 were
+    exactly these. This is the tied-embedding error running backwards for the second
+    time -- there a shared tensor was counted twice, here a real one is counted zero
+    times -- and the first backwards case, bare :class:`torch.nn.Parameter` weights, is
+    what :func:`_unowned_parameters` above exists to catch.
+
+    Persistence is read from ``state_dict()``, not from a module's private
+    non-persistent set, because ``state_dict`` *is* the definition of what gets written.
+    A rotary ``inv_freq`` is a buffer on this same model and is not in there; charging
+    for it would be the opposite error, and by exactly the number of bytes a downloader
+    never pays.
+
+    Every one of these is refused rather than classified. A buffer is state -- a routing
+    bias, a cached mask, a running statistic -- and there is no version of quantizing one
+    that trades size for accuracy instead of simply damaging it.
+
+    One term stays unpriced and is named here rather than absorbed: a refused tensor is
+    charged at :data:`UNQUANTIZED_FLOOR`, and a buffer stored in fp32 costs twice that on
+    disk. On LFM2.5-8B-A1B that is 704 parameters and 1,408 bytes against 4.4 GB. Pricing
+    it properly means carrying a per-tensor width through the budget, which is a wider
+    change than the error justifies; leaving it undocumented is what would not be.
+    """
+    persistent = set(model.state_dict())
+    refused: list[tuple[str, SkippedTensor, Any]] = []
+    for raw_name, buffer in model.named_buffers():
+        if raw_name not in persistent or id(buffer) in claimed:
+            continue
+        name = canonical_name(raw_name)
+        if not name:
+            continue
+        refused.append(
+            (
+                name,
+                SkippedTensor(
+                    reason=f"persistent buffer {tuple(buffer.shape)}, not a weight",
+                    num_params=buffer.numel(),
+                ),
+                buffer,
+            )
+        )
+    return refused
 
 
 def _partitions(ctx: ModuleContext, role: ModuleRole, plugin: Any) -> tuple[RowPartition, ...]:
