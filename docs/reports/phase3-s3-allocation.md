@@ -116,10 +116,12 @@ deleting it are not the same ablation, and nothing in either report noticed.
 
 A later campaign on LFM2.5-8B-A1B ran **both** controls at one anchor and chained them, which is
 what makes the two readable against each other. On that ladder the within-role rung is +0.77 of a
-+19.13 margin and the constant-score rung is a further +8.71 — an order of magnitude apart. So
++19.13 margin and everything below it is a further +8.71 — an order of magnitude apart. That
+lower figure has since split in two, and unevenly: −1.18 for the score's magnitude and +9.88 for
+the measured pricing, so the constant-score step is not where its value sits. So
 **56 % is the first rung alone and 12 % is both**, and the campaigns pair off as two series of
 two: 56 % here against 4.0 % there, over allocator terms of +1.91 and +18.36; 12 % on Qwen
-against 49.6 % there, over +22.62 and +9.66. Both pairs move in the direction this section
+against 49.5 % there, over +22.62 and +9.66. Both pairs move in the direction this section
 argues — the share grows as the allocator's structural advantage shrinks — which is the part that
 survives, and two points are monotone whatever they are, which is the part that should not be
 oversold.

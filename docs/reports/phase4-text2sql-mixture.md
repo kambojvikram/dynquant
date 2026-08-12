@@ -2532,7 +2532,12 @@ are held four bits above what the policy requires, at a budget tight enough that
 breaching floors elsewhere on 41.9% of the model's parameters to pay for it. Nothing structural
 forces it. The uniform control drops all twelve to 3 or 4 bits, and it is the single largest role
 swing between the real map and a signal-free one -- so the KV projections are where the hook's
-output is visible in the map, and the routers, which read as the headline, are not.
+output is visible in the map, and the routers, which read as the headline, are not. The flat
+control narrows it further: with every score set to 1.0 and the sensitivity table permuted
+within role, all twelve KV projections still sit at 8 bits and the whole 35-module 8-bit tier
+survives intact. The decision is bought by the *role-level* magnitude of the measured `dL`
+table, which a within-role permutation preserves, and not by the plasticity-times-saliency
+ranking at all.
 
 The 4-bit map breached no floor at all: the budget was not binding on any role. The 3-bit map
 breached 15.
@@ -2563,34 +2568,69 @@ and the same expert dispatch -- the only difference is what the allocator was sh
 
 `--score-null shuffle` permutes the driving quantity **within role** under a seed. Every score and
 every measured `dL` row still exists and still has its magnitude; it has simply moved to another
-module of the same role. `--score-null uniform` gives every module the same score and consults no
-sensitivity table at all, because there is no such thing as measured sensitivity without the
-fine-tune -- `dL` is built from the hook's own `E[x^2]` and `E[delta^2]`. The second removes
-everything the first does and the pricing besides, so the two are nested and the rows chain.
+module of the same role. `--score-null flat` draws the same permutation and then sets every score
+to 1.0, dropping the score's magnitude and nothing else. `--score-null uniform` gives every module
+the same score and consults no sensitivity table at all, because there is no such thing as measured
+sensitivity without the fine-tune -- `dL` is built from the hook's own `E[x^2]` and `E[delta^2]`.
+Each removes everything the one before it does and one thing more, so the three are nested and
+the rows chain.
+
+The nesting is a property of the code rather than of the naming, and it is worth stating precisely
+because the arm is easy to misread. [`apply_null`](../../packages/dynquant-core/src/dynquant/score/null.py)
+builds one `donor` permutation per seed and hands the *same* one to `shuffle` and to `flat`,
+permuting the sensitivity table identically in both. The two therefore differ in the score
+channel and in nothing else, which is what makes the rung between them a price for that channel.
+It also means `flat` is **not** the real pricing with a constant score: its `dL` rows are permuted
+too. The arm that keeps the real table and flattens only the score is a fourth control, and it
+has not been run.
 
 | arm | GiB | b/param | off anchor | exec match | correct | gretel | wikisql | SQL errors |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | bf16 | 15.773 | 16.0000 | -- | 84.29% | 10 115 | 72.0% | 88.5% | 90 |
 | dq_3b | 3.103 | 3.1475 | -0.0413% | **79.89%** | 9 587 | 64.4% | 85.2% | 213 |
 | dq_3b_shuf | 3.103 | 3.1476 | -0.0353% | 79.12% | 9 495 | 62.5% | 84.8% | 247 |
+| dq_3b_flat | 3.103 | 3.1476 | -0.0353% | **80.30%** | 9 636 | 64.3% | 85.8% | 200 |
 | dq_3b_unif | 3.104 | 3.1486 | -0.0038% | 70.42% | 8 450 | 53.8% | 76.1% | 492 |
 | gptq_3b | 3.104 | 3.1488 | +0.0000% | 60.76% | 7 291 | 54.0% | 63.1% | 1 008 |
 
-Both controls spent *more* bytes than the real arm -- 202 KB for the shuffle, 1.25 MB for the
-uniform -- so every byte advantage in this block runs against DynQuant and the shares below are
-conservative. The ladder, Holm-corrected inside its own family of three:
+All three controls spent *more* bytes than the real arm -- 202 KB for the shuffle and for the flat
+arm alike, 1.25 MB for the uniform -- so every byte advantage in this block runs against DynQuant
+and the shares below are conservative. The ladder, Holm-corrected inside its own family of four:
 
 | rung | what it puts back | delta | 95% CI | flips | p (Holm) |
 |---|---|---:|---|---|---:|
-| `dq_3b` - `dq_3b_shuf` | which module of a role holds a width | +0.77 | [+0.27, +1.26] | 509/417 | 0.00277 |
-| `dq_3b_shuf` - `dq_3b_unif` | which role gets the bits, and the measured pricing | **+8.71** | [+8.01, +9.41] | 1494/449 | 3.4e-130 |
-| `dq_3b_unif` - `gptq_3b` | role floors and the knapsack, with no signal at all | +9.66 | [+8.76, +10.56] | 2164/1005 | 6.9e-96 |
+| `dq_3b` - `dq_3b_shuf` | which module of a role holds a width -- score and `dL` row together | +0.77 | [+0.27, +1.26] | 509/417 | 0.00277 |
+| `dq_3b_shuf` - `dq_3b_flat` | the score's magnitude, over a table permuted the same way | **-1.18** | [-1.62, -0.73] | 309/450 | 6.9e-07 |
+| `dq_3b_flat` - `dq_3b_unif` | the measured `dL` table, permuted but present | **+9.88** | [+9.16, +10.60] | 1568/382 | 1.9e-169 |
+| `dq_3b_unif` - `gptq_3b` | role floors and the knapsack, with no signal at all | +9.66 | [+8.74, +10.58] | 2164/1005 | 1.0e-95 |
 
-The three rungs partition the margin exactly, in raw counts and not just to two decimals:
-92 + 1045 + 1159 = 2296 items. **The fine-tune signal is worth +9.48 of the +19.13, or 49.6%; the
-signal-free allocator is worth +9.66, or 50.4%.** Both halves separate at *p* far below any
-threshold this report uses. A method with no training-time hook, given this package's role floors
-and soft-floor knapsack, would score 70.42% -- ten points over GPTQ and nine under DynQuant.
+The four rungs partition the margin exactly, in raw counts and not just to two decimals:
+92 - 141 + 1186 + 1159 = 2296 items. **The fine-tune signal is worth +9.47 of the +19.13, or
+49.5%; the signal-free allocator is worth +9.66, or 50.5%.** A method with no training-time hook,
+given this package's role floors and soft-floor knapsack, would score 70.42% -- ten points over
+GPTQ and nine under DynQuant.
+
+**The middle rung is negative, and that is the result.** Setting every score to 1.0 does not cost
+accuracy against a permuted score; it *gains* 1.18 points, 450 items flipping to `dq_3b_flat`
+against 309 the other way, at Holm 6.9e-07. And the real arm does not separate from the flat one
+at all: `dq_3b` - `dq_3b_flat` is **-0.41** [-0.89, +0.07] on 404/453 flips, *p* = 0.101 -- the
+only comparison in this section that fails to separate. The honest reading is not that the
+plasticity-times-saliency score is harmful, but that on this model at this budget it is **not
+distinguishable from a constant**, while a *permuted* score is measurably worse than none.
+
+So the signal's half of the margin is almost entirely the measured `dL` pricing: +9.88 on its own,
+which is more than the +9.47 the whole signal is worth, because the score channel hands 1.18 of it
+back. Everything this section previously attributed to "the plasticity-times-saliency ranking"
+belongs to the moments the hook measured, and the ranking built on top of them is currently
+carrying its own weight and no more.
+
+The maps say it structurally too. Flattening the score moves the width histogram from
+`{2: 26, 3: 11, 4: 61, 8: 35}` to `{2: 22, 3: 19, 4: 57, 8: 35}` and the floor breaches from 15 to
+19 -- the score's effect is to push widths toward the extremes, and a flatter map at the same bytes
+does at least as well. Nor is the flat arm winning on reconstruction: its median relative error is
+*worse*, 0.10385 against 0.10305, so whatever the score buys is not being paid back in fidelity
+either. Split by source, the real arm's -0.41 is entirely wikisql -- +0.16 on gretel (171/166
+flips) against -0.60 on wikisql (233/287).
 
 **The shuffle alone would have given the wrong answer, and it is worth saying why.** Read on its
 own the first rung says the signal is 4.0% of the margin, which is the number this section carried
@@ -2631,18 +2671,21 @@ real arm on different items and agree on the total by coincidence. An identical 
 identical map, which is the same reason the width histogram was not enough to call the shuffle a
 good control.
 
-**What this does not move is the headline.** The ladder is nested, so the two signal rungs sum to
-`dq_3b` - `dq_3b_unif` = **+9.48** whatever the seed: a draw that raises the first rung lowers the
-second by the same amount. The signal's total, and the 49.6% share, are fixed by two arms neither
+**What this does not move is the headline.** The ladder is nested, so the signal rungs sum to
+`dq_3b` - `dq_3b_unif` = **+9.47** whatever the seed: a draw that raises the first rung lowers the
+next by the same amount. The signal's total, and the 49.5% share, are fixed by two arms neither
 of which is a permutation. What the seed does move is the *boundary between* the rungs, by about
 +/-0.4 points, and with it the one-rung figure that the Ministral comparison below is read
 against: **2.1% at seed 3, 4.0% at seeds 0 and 1, 6.3% at seed 2.** So `56% against 4.0%` in that
 table is `56% against 2.1-6.3%`, which does not change its direction and does widen it.
 
-**Three things this does not establish.** First, `uniform` removes the plasticity-times-saliency
-ranking *and* the measured `dL` table in one step, so the +8.71 is what having any fine-tune-derived
-quantity at role granularity is worth and does not split score from pricing; the arm that would
-split it keeps `dL` and flattens only the score, and has not been run. Second, the
+**Three things this does not establish.** First, `flat` splits the old +8.71 rung into a score
+channel and a pricing channel, but it does not isolate the pricing cleanly: `apply_null` permutes
+the sensitivity table for `flat` exactly as it does for `shuffle`, so the +9.88 is the price of a
+*permuted* measured table against no table, not of the real one. What can be said is that the
+table's role-level structure is doing the work, since permuting it within role costs nothing
+measurable; the arm that keeps the real rows and flattens only the score would price the rest, and
+has not been run. Second, the
 permutation spread is now measured across four draws and reported above, but four is enough to see
 that the spread is real and not enough to put a CI on the spread itself -- the +/-0.4 point range
 is an observation about four numbers, not an estimate with a standard error. Third,
@@ -2665,7 +2708,7 @@ So there are two series of two, not one series of three:
 
 | signal term | earlier point | here |
 |---|---|---|
-| both rungs, `dq` - `uniform` -- placement, ranking and pricing together | **12%** on Qwen, over an allocator worth +22.62 | **49.6%**, over +9.66 |
+| both rungs, `dq` - `uniform` -- placement, ranking and pricing together | **12%** on Qwen, over an allocator worth +22.62 | **49.5%**, over +9.66 |
 | one rung, `dq` - `shuffle` -- placement within role alone | **56%** on Ministral, over +1.91 | **4.0%**, over +18.36 |
 
 Both rows run in the direction those reports predicted, the share growing as the allocator's
@@ -2689,9 +2732,13 @@ past its one, and each remains correct for the arm it ran and unreadable on the 
 definition without running the arm it did not.
 
 An independent read on the same ordering, from a quantity nothing here computes with: evaluation
-wall clock. The arms took 58, 62, 130, 637 and 740 minutes for `dq_3b`, `dq_3b_shuf`,
-`dq_3b_unif`, `gptq_3b` and `awq_3b`. A worse arm runs longer because it generates further before
-a stop, and the ordering by minutes is the ordering by accuracy, inverted, with no ties.
+wall clock. The arms took 58, 62, 64, 130, 637 and 740 minutes for `dq_3b`, `dq_3b_shuf`,
+`dq_3b_flat`, `dq_3b_unif`, `gptq_3b` and `awq_3b`. A worse arm runs longer because it generates
+further before a stop, and the ordering by minutes is the ordering by accuracy inverted for five of
+the six. The flat arm is the exception and it is the arm this section turns on: it scores highest
+of all six and still runs longer than both `dq_3b` and `dq_3b_shuf`. Between arms this close the
+corroboration is worth less than it looked -- it separates the collapsed arms from the working
+ones cleanly and says nothing reliable inside the leading group.
 
 ## 14. Status
 
