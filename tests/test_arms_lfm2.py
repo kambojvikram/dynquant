@@ -1369,6 +1369,28 @@ def test_an_unknown_null_mode_is_refused_against_the_packages_own_list(arms: Any
     assert arms.check_null_modes("") == ()
 
 
+def test_every_null_mode_gets_its_own_arm_label(arms: Any) -> None:
+    """`null_label` names an arm by `mode[:4]`, and four characters is not a lot of them.
+
+    The truncation is what makes `dq_3b_shuf` readable, and it is also a collision waiting
+    for a mode whose name shares a prefix with an existing one -- `flat` and a hypothetical
+    `flatkept` are one arm under two names. Nothing downstream would raise: the second run
+    overwrites the first's record and map, and the panel tables one arm as though it were
+    the other. Cheaper to refuse the name here than to explain the row later.
+
+    Turns red when: a mode is added whose first four characters are already taken.
+    """
+    from dynquant.score.null import NULL_MODES, uses_seed
+
+    # An arm is a mode plus, for the modes that draw, a seed -- so collapse the seed on the
+    # ones that ignore it and assert the naming is injective over what is left. Asserting
+    # the labels are all distinct instead would be wrong in the other direction: a
+    # deterministic mode at two seeds is one arm and *must* name itself the same twice.
+    arms_seen = {(mode, seed if uses_seed(mode) else 0) for mode in NULL_MODES for seed in (0, 1)}
+    labels = {arm: arms.null_label(3, *arm) for arm in sorted(arms_seen)}
+    assert len(set(labels.values())) == len(arms_seen), labels
+
+
 def test_a_repeated_null_mode_is_refused_before_two_arms_share_a_record(arms: Any) -> None:
     """Two arms with one label is the silent version of running one arm.
 

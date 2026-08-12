@@ -16,8 +16,8 @@ about it, and re-run at the same anchor. Whatever the real arm has left over tha
 arm is the signal's share; whatever both have over a uniform recipe is the
 allocator's structure.
 
-Three nulls, because the margin has more than one thing in it
---------------------------------------------------------------
+The nulls, because the margin has more than one thing in it
+-----------------------------------------------------------
 
 ``shuffle`` permutes the driving quantity **within role**, under a seed. Every
 score and every measured ``dL`` row still exists, still has its magnitude, and is
@@ -58,6 +58,21 @@ finding about the fallback, saying the proxied modules were allocated no better
 than by size alone; it would not say the signal was worthless, because the rung
 below it never asked the score anything.
 
+``table`` sets every score to 1.0 and leaves the measured sensitivity table
+exactly as the real arm received it -- not permuted, not rebuilt. It is the
+only mode that isolates a single channel cleanly, and it exists because the
+``shuffle``-to-``flat`` rung does not: those two share one drawn permutation, so
+the table under ``flat`` is a *permuted* table and the rung below it prices a
+permuted table against no table rather than the real one against no table. Read
+against the real arm, ``table`` is the score channel and nothing else.
+
+It is deliberately **not** on the ladder. It removes strictly less than ``flat``
+and is not comparable to ``shuffle`` at all -- ``shuffle`` keeps every magnitude
+and destroys both correspondences, ``table`` keeps one correspondence perfectly
+and destroys every score magnitude -- so neither contains the other and a rung
+between them would be a difference, not a step. It reads against the real arm
+directly, and against nothing else.
+
 ``uniform`` gives every module the same score and consults no sensitivity table
 at all. There is no such thing as measured sensitivity without the fine-tune --
 ``dL`` is built from ``E[x^2]`` and ``E[delta^2]`` -- so a genuinely signal-free
@@ -96,19 +111,37 @@ if TYPE_CHECKING:
     from dynquant.graph.classify import ModelGraph
     from dynquant.score.sensitivity import SensitivityTable
 
-__all__ = ["NULL_MODES", "STOCHASTIC_NULL_MODES", "NullReport", "apply_null", "uses_seed"]
+__all__ = [
+    "NULL_LADDER",
+    "NULL_MODES",
+    "STOCHASTIC_NULL_MODES",
+    "NullReport",
+    "apply_null",
+    "uses_seed",
+]
 
 #: The nulls, in increasing order of how much they remove.
 #:
 #: Increasing, and asserted to be: a ladder built over these is only a partition of the
 #: margin if each mode removes everything the one before it removed, and the order is
 #: read by name from here rather than restated wherever a chain gets built.
-NULL_MODES = ("shuffle", "flat", "uniform")
+NULL_MODES = ("table", "shuffle", "flat", "uniform")
+
+#: The subset a decomposition may chain over, in the order that makes it a partition.
+#:
+#: :data:`NULL_MODES` is every mode the CLI accepts, ordered for display; this is the
+#: smaller claim, that each of these removes everything the one before it removed. Only
+#: a chain over *this* tuple partitions a margin -- ``table`` is a fourth mode and not a
+#: fourth rung, and subtracting it from a neighbour prices two changes at once. Separate
+#: names because the two facts go stale independently: adding a mode extends the first
+#: and must not silently extend the second.
+NULL_LADDER = ("shuffle", "flat", "uniform")
 
 #: The subset that draws, so that a seed names a different arm rather than the same one.
 #:
 #: ``flat`` is in it even though its scores are constant: the permutation it applies to
 #: the sensitivity table is drawn, so two seeds are two arms and each needs its own record.
+#: ``table`` is not, for the same reason ``uniform`` is not -- it draws nothing.
 STOCHASTIC_NULL_MODES = ("shuffle", "flat")
 
 
@@ -177,6 +210,16 @@ class NullReport:
                 "parameter counts and the universal error curve -- no fine-tuning "
                 "signal reaches the allocator."
             )
+        if self.mode == "table":
+            return (
+                f"null arm: every one of {self.modules} modules scores 1.0, and the "
+                "measured sensitivity table is passed through exactly as the real arm "
+                "received it -- not permuted, not rebuilt. Nothing moved, so `moved` is "
+                "0 by construction rather than by a weak draw: the one thing removed is "
+                "the score's magnitude, and every module the moments could price keeps "
+                "its own measured row. Reads against the real arm and against nothing "
+                "else -- it is not a rung on the ladder."
+            )
         if self.mode == "flat":
             lines = [
                 f"null arm: every one of {self.modules} modules scores 1.0, and the "
@@ -235,8 +278,11 @@ def apply_null(
     Args:
         mode: ``"shuffle"`` to permute the driving quantity within role,
             ``"flat"`` to permute it and drop the score's magnitude as well,
-            ``"uniform"`` to remove the signal entirely. Nested in that order.
-            See the module docstring for which question each one answers.
+            ``"uniform"`` to remove the signal entirely -- nested in that order,
+            and named by :data:`NULL_LADDER`. ``"table"`` drops the score's
+            magnitude and keeps the measured table untouched; it is a mode and
+            not a rung, and subtracts against the real arm only. See the module
+            docstring for which question each one answers.
         seed: Fixed so the arm is reproducible and so a second seed is a
             deliberate act. Ignored by ``"uniform"``, which is deterministic.
     """
@@ -247,10 +293,28 @@ def apply_null(
             f"unknown null mode {mode!r}; expected one of {', '.join(NULL_MODES)}. "
             "`shuffle` permutes the driving quantity within role and `uniform` "
             "removes it, and they answer different questions -- see "
-            "dynquant.score.null."
+            "dynquant.score.null. Only the modes in NULL_LADDER chain into a "
+            "partition; `table` reads against the real arm alone."
         )
 
     names = [info.name for info in graph.quantizable()]
+    if mode == "table":
+        # The table goes through by identity, not rebuilt from `names`: this arm has to
+        # differ from the real one in the score channel and in nothing else, and a
+        # rebuild would be a second edit no matter how faithful it looked.
+        return (
+            dict.fromkeys(names, 1.0),
+            sensitivity,
+            NullReport(
+                mode=mode,
+                seed=seed if uses_seed(mode) else None,
+                modules=len(names),
+                moved=0,
+                fixed=len(names),
+                singleton_roles=(),
+                estimability_changed=0,
+            ),
+        )
     if mode == "uniform":
         return (
             dict.fromkeys(names, 1.0),

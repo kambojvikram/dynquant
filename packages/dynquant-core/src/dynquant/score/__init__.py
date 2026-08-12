@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .importance import ScoreConfig, ScoredModule, score_modules
-    from .null import NULL_MODES, NullReport, apply_null
+    from .null import NULL_LADDER, NULL_MODES, NullReport, apply_null
     from .ranks import percentile_ranks
     from .sensitivity import (
         SensitivityTable,
@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
+    "NULL_LADDER",
     "NULL_MODES",
     "NullReport",
     "ScoreConfig",
@@ -53,6 +54,7 @@ __all__ = [
 ]
 
 _LAZY = {
+    "NULL_LADDER": "null",
     "NULL_MODES": "null",
     "NullReport": "null",
     "apply_null": "null",

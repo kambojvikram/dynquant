@@ -17,6 +17,37 @@ it is talking about:
 A bump to any of the last three is called out explicitly, because those are the
 ones that invalidate artifacts a user has already produced.
 
+## [Unreleased]
+
+### Added — `table`, the null that isolates the score channel
+
+`--score-null flat` was reached for as "the real pricing with a constant score" and is not
+that. [`apply_null`](packages/dynquant-core/src/dynquant/score/null.py) draws one permutation
+per seed and hands the *same* one to `shuffle` and to `flat`, so `flat`'s sensitivity table is
+permuted too. The rung beneath it therefore prices a permuted table against no table, which is
+a real measurement and not the one the reports were reading off it: on LFM2.5-8B-A1B it came
+to **+9.88 points**, more than the whole fine-tune signal is worth, because the rung above it
+gives 1.18 back.
+
+`--score-null table` sets every score to 1.0 and passes the measured table through **by
+identity** — not rebuilt, not filtered, not permuted. It is the only mode that changes exactly
+one of the allocator's two inputs, so `dq_3b − dq_3b_tabl` is the score channel and nothing
+else.
+
+It is deliberately not a fourth rung. `NULL_LADDER` now names the chain a decomposition may be
+built over (`shuffle → flat → uniform`, each removing everything the last did) and `NULL_MODES`
+names every mode the CLI accepts. Separate tuples because the two facts go stale independently:
+adding a mode must extend the second without silently extending the first, and a mode that
+joins the ladder without earning it turns a partition into a sum of overlapping differences
+that still adds up.
+
+Two guards came with it. The seed test now derives "does this mode draw?" from the code's
+behaviour at two seeds instead of pinning a literal list — the old form's stated reason for
+being safe was that the deterministic side gains no members, and it just gained one. And
+`null_label` names arms by `mode[:4]`, so a mode sharing four characters with an existing one
+would silently overwrite its record and map; the naming is now asserted injective over
+(mode, seed) arms.
+
 ## [0.4.0] — 2026-08-11
 
 `KERNEL_ABI_VERSION` moves 2 → 3, additively: `MIN_KERNEL_ABI_VERSION` stays at 2, so a

@@ -39,6 +39,7 @@ from dynquant.allocate.policy import AllocationPolicy
 from dynquant.errors import DynQuantError
 from dynquant.graph.classify import classify_model
 from dynquant.score.null import (
+    NULL_LADDER,
     NULL_MODES,
     STOCHASTIC_NULL_MODES,
     apply_null,
@@ -378,7 +379,7 @@ def test_the_allocator_field_says_which_null_over_which_pricing(
     assert inputs.allocator == expected
 
 
-def test_a_seed_names_an_arm_only_when_the_mode_actually_draws() -> None:
+def test_a_seed_names_an_arm_only_when_the_mode_actually_draws(graph, scores, sensitivity) -> None:
     """One function owns "does the seed matter here", and both readers ask it.
 
     `NullReport.label` decides whether the seed belongs in the allocator string, and a
@@ -391,12 +392,17 @@ def test_a_seed_names_an_arm_only_when_the_mode_actually_draws() -> None:
     Turns red when: a second caller starts answering it with `mode == "uniform"`.
     """
     assert set(STOCHASTIC_NULL_MODES) <= set(NULL_MODES)
-    # Named from the deterministic side. Listing the drawing modes instead would make
-    # this a second copy of the registry, needing an edit every time one is added -- and
-    # an assertion you edit to make green is an assertion that stopped asserting. The
-    # claim that matters has one member and gains none: a mode that draws nothing must
-    # not be given a seed.
-    assert [mode for mode in NULL_MODES if not uses_seed(mode)] == ["uniform"]
+    # Derived from behaviour, not from either tuple. An earlier version of this pinned
+    # the deterministic side to a literal `["uniform"]` on the reasoning that the list
+    # gains no members -- then `table` arrived and the fix was to edit the literal, which
+    # is the shape of an assertion that has stopped asserting. What is actually claimed
+    # is that `uses_seed` answers a question about the code: does a second seed produce
+    # a second arm? So ask the code. This needs no edit when a mode is added and catches
+    # a mode filed on the wrong side of either tuple.
+    for mode in NULL_MODES:
+        first = apply_null(graph, scores, sensitivity, mode=mode, seed=0)[:2]
+        second = apply_null(graph, scores, sensitivity, mode=mode, seed=1)[:2]
+        assert uses_seed(mode) == (first != second), mode
 
 
 def test_a_deterministic_null_records_no_seed_however_it_was_called(graph, scores) -> None:
@@ -449,7 +455,7 @@ def test_flat_differs_from_shuffle_in_the_score_channel_and_in_nothing_else(
 def test_the_nulls_are_nested_in_the_order_they_are_declared(graph, scores, sensitivity) -> None:
     """A ladder over these modes partitions the margin only if each removes the last's more.
 
-    Asserted as the property rather than as the tuple: what a chain built over `NULL_MODES`
+    Asserted as the property rather than as the tuple: what a chain built over `NULL_LADDER`
     needs is that mode k+1 removes everything mode k removed, and a test that pinned the
     tuple would go green on a reordering that broke exactly that. Two inputs reach the
     allocator, so nesting is visible in two columns -- the score loses its ordering, then
@@ -459,15 +465,15 @@ def test_the_nulls_are_nested_in_the_order_they_are_declared(graph, scores, sens
     Turns red when: a mode is inserted at a rank it does not belong at.
     """
     ordering, tables = [], []
-    for mode in NULL_MODES:
+    for mode in NULL_LADDER:
         null_scores, null_table, _ = apply_null(graph, scores, sensitivity, mode=mode, seed=0)
         ordering.append(len(set(null_scores.values())) > 1)
         tables.append(null_table is not None)
 
     # Once a column goes it stays gone: `sorted(reverse=True)` on the booleans is the
     # nesting, and any other pattern is a mode that put something back.
-    assert ordering == sorted(ordering, reverse=True), NULL_MODES
-    assert tables == sorted(tables, reverse=True), NULL_MODES
+    assert ordering == sorted(ordering, reverse=True), NULL_LADDER
+    assert tables == sorted(tables, reverse=True), NULL_LADDER
     assert (ordering, tables) != ([], []), "there is at least one mode to check"
 
 
@@ -494,6 +500,93 @@ def test_flat_is_capable_of_a_different_map_from_either_of_its_neighbours(
 
     assert maps["flat"] != maps["shuffle"]
     assert maps["flat"] != maps["uniform"]
+
+
+def test_the_table_mode_passes_the_measured_table_through_untouched(
+    graph, scores, sensitivity
+) -> None:
+    """The one mode that isolates a single channel, and identity is what makes it one.
+
+    `flat` was reached for as "the pricing with a constant score" and is not: it shares a
+    drawn permutation with `shuffle`, so its table is permuted and the rung below it prices
+    a permuted table against no table. This mode is the clean contrast, and it is only clean
+    if the table the allocator sees is the *same object* the real arm sees -- a faithful
+    rebuild is still a second edit, and a second edit is the thing that made `flat` unable
+    to answer this.
+
+    Turns red when: the table is rebuilt, filtered or permuted on the way through.
+    """
+    null_scores, null_table, report = apply_null(graph, scores, sensitivity, mode="table")
+
+    assert null_table is sensitivity
+    assert set(null_scores) == {info.name for info in graph.quantizable()}
+    assert set(null_scores.values()) == {1.0}
+    assert report.moved == 0
+    assert report.fixed == report.modules
+    assert report.estimability_changed == 0
+    assert report.seed is None
+
+
+def test_the_table_mode_is_capable_of_a_different_map_from_the_real_arm(
+    graph, scores, sensitivity
+) -> None:
+    """An arm that cannot allocate differently is not a control.
+
+    The same argument every other null gets. This one is worth making explicitly because
+    the mode keeps the more informative of the two inputs: if the knapsack priced every
+    module from its measured row the score would be dead weight, the map would be
+    identical by construction, and the rung would print +0.00 as a fact about the code
+    rather than about the signal. It differs because modules the moments never reached are
+    priced `score x params x error-curve`.
+
+    Turns red when: the score stops reaching the allocator at all.
+    """
+    policy = AllocationPolicy(group_size=128)
+    budget = Budget.from_target(graph, target_bits=3.0, group_size=128)
+
+    real = allocate_bits(graph, scores, budget, policy, sensitivity=sensitivity).bits
+    null_scores, null_table, _ = apply_null(graph, scores, sensitivity, mode="table")
+    nulled = allocate_bits(graph, null_scores, budget, policy, sensitivity=null_table).bits
+
+    assert real != nulled
+
+
+def test_the_ladder_is_a_subset_of_the_modes_and_says_so() -> None:
+    """Two tuples, two facts, and the one that must not drift is which is which.
+
+    `NULL_MODES` is every mode the CLI accepts; `NULL_LADDER` is the smaller claim that a
+    chain over it partitions a margin. A mode added to the ladder without earning it turns
+    a decomposition into a sum of overlapping differences that still adds up, which is the
+    failure that prints a clean-looking table and means nothing.
+
+    Turns red when: a mode joins the ladder, or the ladder stops being ordered as declared.
+    """
+    assert set(NULL_LADDER) <= set(NULL_MODES)
+    assert "table" not in NULL_LADDER
+    # A contiguous run, so `NULL_MODES.index` -- which is what the panel sorts controls by
+    # -- never interleaves a non-rung between two rungs of a ladder it is displaying.
+    positions = [NULL_MODES.index(mode) for mode in NULL_LADDER]
+    assert positions == sorted(positions)
+    assert positions == list(range(positions[0], positions[0] + len(positions)))
+
+
+def test_the_table_report_says_nothing_moved_and_why(graph, scores, sensitivity) -> None:
+    """`moved == 0` reads as a failed null everywhere else in this file.
+
+    For a permutation it means the draw left the signal in place and the arm is overclaiming.
+    Here it means nothing was supposed to move. The summary is the only place a reader meets
+    that distinction, so it has to make it rather than reporting the zero and leaving it.
+
+    Turns red when: the summary falls through to the permutation wording.
+    """
+    _, _, report = apply_null(graph, scores, sensitivity, mode="table")
+    summary = report.summary()
+
+    assert "not permuted" in summary
+    assert "by construction" in summary
+    assert "not a rung" in summary
+    assert "another module" not in summary
+    assert report.label == "null:table"
 
 
 def test_the_flat_report_says_the_table_survived_the_score(graph, scores, sensitivity) -> None:
