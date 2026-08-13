@@ -338,8 +338,9 @@ def caveats(table: dict[str, Any], row: dict[str, Any], flagged: int) -> str:
 
     Each bullet is emitted because of something in the table, not because it is on a list:
     the scoring-container bullet only appears for an arm scored through ``encode``, the
-    arithmetic bullet only when the table flagged one of this arm's comparisons, and the
-    pairing bullet only when the panel says its arms are not paired.
+    arithmetic bullet only when the table flagged one of this arm's comparisons, the
+    scheme bullet only when the panel mixes a symmetric method with an asymmetric one,
+    and the pairing bullet only when the panel says its arms are not paired.
     """
     bullets: list[str] = []
 
@@ -347,12 +348,12 @@ def caveats(table: dict[str, Any], row: dict[str, Any], flagged: int) -> str:
         bullets.append(
             "**The accuracy above was measured in bf16, not from this directory.** A "
             "DynQuant arm is scored by encoding its allocated widths back into bf16 -- the "
-            "same encoder, the same widths, the same values -- because 91.5% of this "
-            "model's parameters are batched expert banks and the scoring path applies "
-            "widths in memory rather than writing a 17 GB decoded copy per arm. The "
-            "directory you are downloading holds those same values packed. What is carried "
-            "across from the measurement is the arithmetic; what is not is a claim that "
-            "the packed and encoded containers were separately scored."
+            "same encoder, the same widths, the same values -- so that every arm in the "
+            "panel is scored through one path and no arm's number depends on which "
+            "container it was read from. The directory you are downloading holds those "
+            "same values packed. What is carried across from the measurement is the "
+            "arithmetic; what is not is a claim that the packed and encoded containers "
+            "were separately scored."
         )
 
     if row["kind"] not in (CEILING, "dq"):
@@ -363,6 +364,19 @@ def caveats(table: dict[str, Any], row: dict[str, Any], flagged: int) -> str:
             "compressed-tensors packs the zero to the weight width. Same codes, same "
             "numbers on dequantization, more bytes -- and it is why the size in the table "
             "above is the scored size rather than `du`."
+        )
+
+    kinds = {arm["kind"] for arm in table["arms"]}
+    if "gptq" in kinds and kinds & {"awq", "dq"}:
+        bullets.append(
+            "**The baselines run at their own libraries' defaults, and those defaults "
+            "are not the same scheme.** GPTQ here is symmetric with no activation "
+            "reordering; AWQ and DynQuant are asymmetric. Where a comparison above pairs "
+            "a symmetric arm against an asymmetric one its delta spans two differences at "
+            "once -- how the bits were allocated, and whether a zero point was stored per "
+            "group -- so a large gap between those two arms is not on its own evidence "
+            "about allocation. The comparison that would isolate it, two arms of the same "
+            "scheme at the same byte anchor, is not in this panel."
         )
 
     if flagged:

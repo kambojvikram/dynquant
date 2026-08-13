@@ -184,6 +184,36 @@ def test_each_arm_states_its_own_container_and_never_the_other_kinds(
     assert "measured in bf16" not in baseline
 
 
+def test_a_panel_that_mixes_two_schemes_says_so_and_one_that_does_not_stays_quiet(
+    cards: Any, table_mod: Any, tmp_path: Path
+) -> None:
+    """A 68-point gap that spans two differences must not read as one.
+
+    The baselines are run at their own libraries' published defaults, and those defaults
+    disagree about more than bit allocation: GPTQ is symmetric, AWQ and DynQuant store a
+    zero point per group. A comparison row pairing them carries both differences, so the
+    card has to say which of the two it cannot separate -- otherwise the largest number in
+    the table is the one a reader is most likely to cite as a method win.
+
+    The bullet is conditional, not boilerplate. A panel of asymmetric arms only has no
+    such confound and printing the caveat there would invent one.
+
+    Turns red when: the caveat becomes unconditional or is dropped, or its condition stops
+    reading the kinds actually present in the panel.
+    """
+    out = _write_panel(tmp_path / "arms")
+    table, _ = _built(table_mod, out)
+    row = next(arm for arm in table["arms"] if arm["label"] == "dq_3b")
+
+    mixed = cards.card(table, "dq_3b", FINETUNE, repo_prefix=None)
+    assert "are not the same scheme" in mixed
+    assert "symmetric with no activation reordering" in mixed
+
+    one_scheme = dict(table)
+    one_scheme["arms"] = [arm for arm in table["arms"] if arm["kind"] != "gptq"]
+    assert "are not the same scheme" not in cards.caveats(one_scheme, row, 0)
+
+
 def test_the_flag_the_table_raised_is_the_flag_the_card_prints(
     cards: Any, table_mod: Any, tmp_path: Path
 ) -> None:
