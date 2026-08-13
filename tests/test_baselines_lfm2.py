@@ -1281,6 +1281,60 @@ def test_the_mappings_reach_the_modifier_and_only_on_the_awq_arm(driver: Any) ->
     assert "mappings=mappings" in quantize
 
 
+def test_the_scheme_a_control_names_reaches_the_recipe_and_is_recorded(driver: Any) -> None:
+    """A control that runs under the default it was meant to override is not a control.
+
+    The panel's GPTQ arm is symmetric with no activation reordering, DynQuant's is
+    asymmetric; the delta between them spans two differences at once, so it says nothing
+    about allocation on its own. These two flags exist to run the arm that closes that gap
+    -- and an override that parses, is accepted by ``build_recipe`` and then silently
+    dropped would produce a *number*, filed under a name claiming a scheme it never ran.
+
+    ``auto`` is not what gets recorded: a record saying ``auto`` names the flag rather than
+    the scheme, and the whole point of the arm is that the scheme is the variable.
+
+    Turns red when: either flag stops reaching ``build_recipe``, ``auto`` reaches the record
+    instead of the resolved boolean, or the refusal on the Hessian-free methods is dropped
+    -- the last of which would let ``--actorder group --method rtn`` report an act-order arm
+    that ran without one.
+    """
+    import inspect
+
+    sys.path.insert(0, str(REPO_ROOT / "experiments"))
+    try:
+        import _llmc
+    finally:
+        sys.path.pop(0)
+
+    defaults = _args(driver, RUN)
+    assert (defaults.symmetric, defaults.actorder) == ("auto", "none")
+    named = _args(driver, [*RUN, "--symmetric", "no", "--actorder", "group"])
+    assert (named.symmetric, named.actorder) == ("no", "group")
+
+    quantize = inspect.getsource(driver.quantize)
+    assert 'symmetric = {"auto": None, "yes": True, "no": False}[args.symmetric]' in quantize
+    assert 'actorder = None if args.actorder == "none" else args.actorder' in quantize
+    assert "            symmetric=symmetric," in quantize
+    assert "            actorder=actorder," in quantize
+    # What lands in the record is the resolved scheme, including under `auto`, where it is
+    # the method's own default rather than the word the caller typed.
+    assert '"symmetric": (args.method != "awq") if symmetric is None else symmetric,' in quantize
+    assert '"actorder": actorder,' in quantize
+
+    signature = inspect.signature(_llmc.build_recipe)
+    assert signature.parameters["symmetric"].default is None
+    assert signature.parameters["actorder"].default is None
+    source = inspect.getsource(_llmc.build_recipe)
+    assert 'sym = (method != "awq") if symmetric is None else symmetric' in source
+    assert "symmetric=sym, actorder=actorder" in source
+
+    # Refused before the lazy imports, so the refusal fires on a box without
+    # llm-compressor -- which is every box this file runs on.
+    for method in ("rtn", "awq"):
+        with pytest.raises(SystemExit, match="has no activation order to sort by"):
+            _llmc.build_recipe(method, 3, 128, ignore=[], actorder="group")
+
+
 # --- carrying the recipe's own grid out ------------------------------------------------
 
 

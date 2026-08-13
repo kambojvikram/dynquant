@@ -682,6 +682,12 @@ def quantize(
     dataset = calibration_rows(tokenizer, args.calib_samples, args.seq_len, seed=args.seed)
     print(f"calibration: {len(dataset)} rows from the text2sql train mixture", flush=True)
 
+    # Resolved once, here, so the record carries what the recipe was built from rather
+    # than the flag it was spelled with -- `auto` in a record says nothing about which
+    # scheme ran, and the whole point of the override is that the scheme is the variable.
+    symmetric = {"auto": None, "yes": True, "no": False}[args.symmetric]
+    actorder = None if args.actorder == "none" else args.actorder
+
     started = time.time()
     # The model object, already linearized, rather than the path -- `oneshot` would reload
     # from disk and lose both the linearization and the hidden_act that made it possible.
@@ -690,7 +696,13 @@ def quantize(
         tokenizer=tokenizer,
         dataset=dataset,
         recipe=build_recipe(
-            args.method, args.bits, args.group_size, ignore=IGNORE, mappings=mappings
+            args.method,
+            args.bits,
+            args.group_size,
+            ignore=IGNORE,
+            mappings=mappings,
+            symmetric=symmetric,
+            actorder=actorder,
         ),
         num_calibration_samples=len(dataset),
         max_seq_length=args.seq_len,
@@ -702,6 +714,8 @@ def quantize(
         "method": args.method,
         "bits": args.bits,
         "group_size": args.group_size,
+        "symmetric": (args.method != "awq") if symmetric is None else symmetric,
+        "actorder": actorder,
         "ignore": list(IGNORE),
         "calib_samples": len(dataset),
         "seq_len": args.seq_len,
@@ -1569,6 +1583,19 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--method", choices=METHODS, required=True)
         p.add_argument("--bits", type=int, default=4)
         p.add_argument("--group-size", type=int, default=128)
+        # `auto` is each method's own published default -- symmetric for GPTQ and RTN,
+        # asymmetric for AWQ -- which is what a reader downloading a checkpoint under that
+        # name would get, and so what the panel's baselines run. Naming one is how the
+        # control gets run instead: a delta between a symmetric arm and an asymmetric one
+        # spans the scheme as well as the allocation. The size column does not move, because
+        # `accounted_bytes` charges a zero point per group for every arm either way.
+        p.add_argument("--symmetric", choices=("auto", "yes", "no"), default="auto")
+        p.add_argument(
+            "--actorder",
+            choices=("none", "group", "weight"),
+            default="none",
+            help="GPTQ activation ordering; refused on the methods that estimate no Hessian",
+        )
         # 256 rows at 1024 tokens. GPTQ's Hessian is estimated from this and published
         # recipes use 128-512; on a 4-of-32 router each expert still sees only about an
         # eighth of it, which is the caveat in the module docstring rather than something

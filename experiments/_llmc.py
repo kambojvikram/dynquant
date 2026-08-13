@@ -36,7 +36,7 @@ from typing import Any
 METHODS = ("gptq", "awq", "rtn")
 
 
-def quant_args(bits: int, group_size: int, *, symmetric: bool) -> Any:
+def quant_args(bits: int, group_size: int, *, symmetric: bool, actorder: str | None = None) -> Any:
     """The weight-quantization contract shared by every recipe below.
 
     Built explicitly instead of naming the ``W4A16`` preset because the preset only exists
@@ -56,6 +56,7 @@ def quant_args(bits: int, group_size: int, *, symmetric: bool) -> Any:
         symmetric=symmetric,
         strategy=QuantizationStrategy.GROUP,
         group_size=group_size,
+        actorder=actorder,
     )
 
 
@@ -66,6 +67,8 @@ def build_recipe(
     *,
     ignore: list[str],
     mappings: Any = None,
+    symmetric: bool | None = None,
+    actorder: str | None = None,
 ) -> Any:
     """One modifier list per method, identical in every respect except the method.
 
@@ -74,17 +77,36 @@ def build_recipe(
     ``None`` means llm-compressor's own table, which is right for every architecture in it.
     It is a parameter and not a constant here for the same reason ``ignore`` is -- this
     file is the one that knows nothing about the model.
+
+    ``symmetric`` and ``actorder`` override the method's own default, and they exist
+    for one purpose: running the control the defaults make impossible. A method's
+    default is what a reader would download under that name, which is why it is the
+    default here -- but a comparison between a symmetric arm and an asymmetric one
+    spans the scheme as well as the allocation, and only an arm matching its
+    opponent's scheme can say which of the two the delta belongs to. The size column
+    does not move when they are used: the byte accounting charges a zero point per
+    group for every arm regardless of symmetry.
     """
+    # Activation ordering reorders columns by a Hessian diagonal, so it means something
+    # only where a Hessian is estimated. Refused rather than ignored on the other two:
+    # a flag that is silently dropped is a control a caller believes it ran.
+    if actorder is not None and method != "gptq":
+        raise SystemExit(
+            f"actorder={actorder!r} was asked for on {method!r}, which estimates no "
+            "Hessian and has no activation order to sort by"
+        )
+
     from compressed_tensors.quantization import QuantizationScheme
     from llmcompressor.modifiers.quantization import GPTQModifier, QuantizationModifier
     from llmcompressor.modifiers.transform.awq import AWQModifier
 
-    # Asymmetric for AWQ, symmetric otherwise -- each method's own published default.
-    # Forcing one convention on all three would make the arms differ from the checkpoints
-    # a reader would download under those names.
+    # Asymmetric for AWQ, symmetric otherwise -- each method's own published default,
+    # unless the caller names one. Forcing one convention on all three would make the
+    # arms differ from the checkpoints a reader would download under those names.
+    sym = (method != "awq") if symmetric is None else symmetric
     scheme = QuantizationScheme(
         targets=["Linear"],
-        weights=quant_args(bits, group_size, symmetric=(method != "awq")),
+        weights=quant_args(bits, group_size, symmetric=sym, actorder=actorder),
     )
     groups = {"group_0": scheme}
 
