@@ -184,6 +184,36 @@ def test_each_arm_states_its_own_container_and_never_the_other_kinds(
     assert "measured in bf16" not in baseline
 
 
+def test_the_adapter_row_appears_only_when_an_adapter_was_published(
+    cards: Any, table_mod: Any, tmp_path: Path
+) -> None:
+    """A merge is 43x its adapter, and a reader who wants the fine-tune wants the smaller one.
+
+    The adapter is the whole of the difference between the base model and the merge, so a
+    reader who wants to re-merge it onto a different base, stack it, or just read what was
+    learned needs 320 MB and not 13.5 GiB. Nothing in the panel table records that it was
+    published, which is why this is a caller's argument -- and why it has to stay absent by
+    default: a row pointing at a Hub repo nobody created sends the reader to a 404 and makes
+    the rest of the card unfalsifiable to them.
+
+    Turns red when: the row becomes unconditional, stops rendering the id it was handed, or
+    stops reaching `card` from its caller.
+    """
+    out = _write_panel(tmp_path / "arms")
+    table, _ = _built(table_mod, out)
+
+    without = cards.card(table, "dq_3b", FINETUNE, repo_prefix=None)
+    assert "the adapter it merged" not in without
+
+    with_adapter = cards.card(
+        table, "dq_3b", FINETUNE, repo_prefix=None, adapter_repo="Owner/model-lora"
+    )
+    assert (
+        "| the adapter it merged | [Owner/model-lora]"
+        "(https://huggingface.co/Owner/model-lora) |" in with_adapter
+    )
+
+
 def test_a_panel_that_mixes_two_schemes_says_so_and_one_that_does_not_stays_quiet(
     cards: Any, table_mod: Any, tmp_path: Path
 ) -> None:

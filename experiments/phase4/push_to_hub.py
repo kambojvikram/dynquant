@@ -249,6 +249,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--published", required=True, help="publish_panel.py's --out")
     p.add_argument("--repo-prefix", required=True, help="owner/name; each arm appends its slug")
     p.add_argument("--only", default=None, help="comma-separated labels instead of every arm")
+    p.add_argument(
+        "--adapter-repo",
+        default=None,
+        help="Hub id of the published LoRA adapter, carried into every card",
+    )
     p.add_argument("--include-ceiling", action="store_true", help="also push the merged fine-tune")
     p.add_argument("--private", action="store_true", help="create the repos private")
     p.add_argument(
@@ -282,7 +287,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     for push in pushes:
-        card = model_cards.card(table, push.label, finetune, repo_prefix=args.repo_prefix)
+        card = model_cards.card(
+            table,
+            push.label,
+            finetune,
+            repo_prefix=args.repo_prefix,
+            adapter_repo=args.adapter_repo,
+        )
         size = sum(f.stat().st_size for f in push.source.glob("*.safetensors"))
         if args.dry_run:
             print(

@@ -234,7 +234,12 @@ def frontmatter(base_model: str, row: dict[str, Any], arch_tags: list[str]) -> s
     return NL.join(lines)
 
 
-def what_this_is(base_model: str, row: dict[str, Any], finetune: dict[str, Any]) -> str:
+def what_this_is(
+    base_model: str,
+    row: dict[str, Any],
+    finetune: dict[str, Any],
+    adapter_repo: str | None = None,
+) -> str:
     ceiling = row["kind"] == CEILING
     method = "" if ceiling else METHOD_NAMES[row["kind"]]
     datasets = str(finetune.get("dataset", "")).split("+")
@@ -262,6 +267,14 @@ def what_this_is(base_model: str, row: dict[str, Any], finetune: dict[str, Any])
         "|---|---|",
         f"| base model | [{base_model}](https://huggingface.co/{base_model}) |",
         f"| fine-tune | {regime} |",
+        # Only when the adapter was actually published. A row naming a repo that does not
+        # exist is worse than no row: the reader who follows it learns the card is wrong
+        # about something they cannot check the rest of.
+        *(
+            [f"| the adapter it merged | [{adapter_repo}](https://huggingface.co/{adapter_repo}) |"]
+            if adapter_repo
+            else []
+        ),
         "| training data | " + ", ".join(f"`{name}`" for name in datasets if name) + " |",
         f"| quantization | {quantization} |",
         f"| size on disk | {size} |",
@@ -488,6 +501,7 @@ def card(
     finetune: dict[str, Any],
     *,
     repo_prefix: str | None,
+    adapter_repo: str | None = None,
 ) -> str:
     row = find_arm(table, label)
     if row.get("score_null"):
@@ -535,7 +549,7 @@ def card(
         "",
         "## What this is",
         "",
-        what_this_is(base_model, row, finetune),
+        what_this_is(base_model, row, finetune, adapter_repo),
         "",
         "## Results",
         "",
@@ -612,6 +626,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Hub id prefix, so the usage snippet names the repo rather than a local path",
     )
     p.add_argument(
+        "--adapter-repo",
+        default=None,
+        help="Hub id of the published LoRA adapter, if there is one, so a reader can "
+        "reach the fine-tune itself and not only the merge",
+    )
+    p.add_argument(
         "--include-ceiling",
         action="store_true",
         help="also card the unquantized arm, which on this panel is the merged fine-tune",
@@ -634,7 +654,9 @@ def main(argv: list[str] | None = None) -> int:
 
     out_root = Path(args.out)
     for label in labels:
-        text = card(table, label, finetune, repo_prefix=args.repo_prefix)
+        text = card(
+            table, label, finetune, repo_prefix=args.repo_prefix, adapter_repo=args.adapter_repo
+        )
         if args.print:
             print(text)
             continue
