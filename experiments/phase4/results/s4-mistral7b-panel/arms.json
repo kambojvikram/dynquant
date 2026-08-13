@@ -1,0 +1,71 @@
+{
+  "model": "/workspace/runs/s4/mistral7b-v03.text2sql/merged",
+  "stats": "/workspace/runs/s4/mistral7b-v03.text2sql/stats/dynquant_stats.json",
+  "moments": "/workspace/runs/s4/mistral7b-v03.text2sql/stats/dynquant_moments.safetensors",
+  "group_size": 128,
+  "tolerance": 0.001,
+  "anchors": {
+    "4": 3964674048,
+    "3": 3068534784
+  },
+  "arms": [
+    {
+      "label": "bf16",
+      "kind": "ceiling",
+      "anchor": null,
+      "target_bytes": null,
+      "nbytes": null,
+      "record": "/workspace/runs/s4/panel-mistral/bf16.json"
+    },
+    {
+      "label": "gptq_4b",
+      "kind": "gptq",
+      "anchor": 4,
+      "target_bytes": 3964674048,
+      "nbytes": 3964674048,
+      "record": "/workspace/runs/s4/panel-mistral/gptq_4b.json"
+    },
+    {
+      "label": "awq_4b",
+      "kind": "awq",
+      "anchor": 4,
+      "target_bytes": 3964674048,
+      "nbytes": 3964674048,
+      "record": "/workspace/runs/s4/panel-mistral/awq_4b.json"
+    },
+    {
+      "label": "dq_4b",
+      "kind": "dq",
+      "anchor": 4,
+      "target_bytes": 3964674048,
+      "nbytes": 3964149760,
+      "record": "/workspace/runs/s4/panel-mistral/dq_4b.json",
+      "map": "/workspace/runs/s4/panel-mistral/maps/dq_4b.json"
+    },
+    {
+      "label": "gptq_3b",
+      "kind": "gptq",
+      "anchor": 3,
+      "target_bytes": 3068534784,
+      "nbytes": 3068534784,
+      "record": "/workspace/runs/s4/panel-mistral/gptq_3b.json"
+    },
+    {
+      "label": "awq_3b",
+      "kind": "awq",
+      "anchor": 3,
+      "target_bytes": 3068534784,
+      "nbytes": 3068534784,
+      "record": "/workspace/runs/s4/panel-mistral/awq_3b.json"
+    },
+    {
+      "label": "dq_3b",
+      "kind": "dq",
+      "anchor": 3,
+      "target_bytes": 3068534784,
+      "nbytes": 3067617280,
+      "record": "/workspace/runs/s4/panel-mistral/dq_3b.json",
+      "map": "/workspace/runs/s4/panel-mistral/maps/dq_3b.json"
+    }
+  ]
+}

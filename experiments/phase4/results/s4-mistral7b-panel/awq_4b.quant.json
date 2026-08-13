@@ -1,0 +1,51 @@
+{
+  "method": "awq",
+  "bits": 4,
+  "group_size": 128,
+  "ignore": [],
+  "calib_samples": 256,
+  "seq_len": 1024,
+  "source": "/workspace/runs/s4/mistral7b-v03.text2sql/merged",
+  "quantize_seconds": 214.7,
+  "linearization": {
+    "banks_before": 0,
+    "banks_after": 0,
+    "linear_modules": 225,
+    "linear_params": 7113539584,
+    "params": 7248023552,
+    "linear_share": 0.9814,
+    "device": "cuda"
+  },
+  "awq_smoothing": {
+    "mapping_source": "llm-compressor",
+    "mappings": 4,
+    "linear_modules": 225,
+    "smoothed_linears": 192,
+    "shape_incompatible_sets": 32,
+    "unsmoothed_linears": {
+      "lm_head": 1,
+      "self_attn.o_proj": 32
+    }
+  },
+  "materialized_modules": 225,
+  "weights_moved": 225,
+  "max_weight_delta": 1.328125,
+  "probe_unique_values_per_row": [
+    272,
+    329,
+    320,
+    309,
+    304,
+    310,
+    273,
+    280
+  ],
+  "accounted_bits": 4.376,
+  "accounted_bytes": 3964674048,
+  "accounted_gib": 3.6924,
+  "fp16_bits_share": 0.0678,
+  "quantized_params": 7113539584,
+  "quantized_share": 0.9814,
+  "banked_params_quantized": 0,
+  "params": 7248023552
+}

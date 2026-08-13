@@ -1,0 +1,39 @@
+{
+  "model": "mistralai/Mistral-7B-Instruct-v0.3",
+  "model_path": null,
+  "dataset": "gretelai/synthetic_text_to_sql+Salesforce/wikisql+b-mc2/sql-create-context",
+  "examples_requested": 40000,
+  "conversations_seen": 40000,
+  "conversations_kept": 39531,
+  "drop_rate": 0.011725,
+  "unmaskable_rate": 0.0,
+  "over_max_len_rate": 0.011725,
+  "dropped_by_reason": {
+    "too long": 469
+  },
+  "tokens": 15858075,
+  "supervised_tokens": 1426125,
+  "mask_mode": "template",
+  "mask_mode_requested": "auto",
+  "mask_mode_probe": {
+    "template": 31,
+    "assemble": 31
+  },
+  "max_len": 2048,
+  "sources": {
+    "text2sql/gretel": 13334,
+    "text2sql/wikisql": 13333,
+    "text2sql/create-context": 13333
+  },
+  "sources_overlapping_an_eval_task": [],
+  "contamination_markers": [
+    "gsm8k",
+    "humaneval",
+    "mbpp"
+  ],
+  "decontaminated": {
+    "gretel": 4,
+    "wikisql": 16,
+    "create-context": 3342
+  }
+}

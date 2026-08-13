@@ -1,0 +1,1605 @@
+{
+  "model": "/workspace/runs/s4/mistral7b-v03.text2sql/merged",
+  "anchors": {
+    "4": 3964674048,
+    "3": 3068534784
+  },
+  "params": 7248023552,
+  "pairable": true,
+  "pairing_error": null,
+  "arms": [
+    {
+      "label": "bf16",
+      "kind": "ceiling",
+      "anchor": null,
+      "score_null": null,
+      "nbytes": 14496047104,
+      "target_bytes": null,
+      "drift": null,
+      "bits_per_param": 16.0,
+      "accuracy": 0.7815810920945395,
+      "correct": 1918,
+      "total": 2454,
+      "unparseable": 0,
+      "errored": 50,
+      "exact": 1144,
+      "unfinished": 0,
+      "by_source": {
+        "gretel": [
+          630,
+          818
+        ],
+        "spider": [
+          520,
+          818
+        ],
+        "wikisql": [
+          768,
+          818
+        ]
+      },
+      "apply": null,
+      "experts": {
+        "found": "eager",
+        "ran": "eager"
+      },
+      "experts_recorded": true,
+      "linearization": null,
+      "allocation": null,
+      "seconds": 590.6
+    },
+    {
+      "label": "gptq_4b",
+      "kind": "gptq",
+      "anchor": 4,
+      "score_null": null,
+      "nbytes": 3964674048,
+      "target_bytes": 3964674048,
+      "drift": 0.0,
+      "bits_per_param": 4.376005700926288,
+      "accuracy": 0.7828035859820701,
+      "correct": 1921,
+      "total": 2454,
+      "unparseable": 0,
+      "errored": 58,
+      "exact": 1137,
+      "unfinished": 0,
+      "by_source": {
+        "gretel": [
+          636,
+          818
+        ],
+        "spider": [
+          517,
+          818
+        ],
+        "wikisql": [
+          768,
+          818
+        ]
+      },
+      "apply": null,
+      "experts": {
+        "found": "eager",
+        "ran": "eager"
+      },
+      "experts_recorded": true,
+      "linearization": {
+        "banks_before": 0,
+        "banks_after": 0,
+        "linear_modules": 225,
+        "linear_params": 7113539584,
+        "params": 7248023552,
+        "linear_share": 0.9814,
+        "device": "cuda"
+      },
+      "allocation": null,
+      "seconds": 1838.7
+    },
+    {
+      "label": "awq_4b",
+      "kind": "awq",
+      "anchor": 4,
+      "score_null": null,
+      "nbytes": 3964674048,
+      "target_bytes": 3964674048,
+      "drift": 0.0,
+      "bits_per_param": 4.376005700926288,
+      "accuracy": 0.7791361043194784,
+      "correct": 1912,
+      "total": 2454,
+      "unparseable": 0,
+      "errored": 51,
+      "exact": 1126,
+      "unfinished": 0,
+      "by_source": {
+        "gretel": [
+          630,
+          818
+        ],
+        "spider": [
+          516,
+          818
+        ],
+        "wikisql": [
+          766,
+          818
+        ]
+      },
+      "apply": null,
+      "experts": {
+        "found": "eager",
+        "ran": "eager"
+      },
+      "experts_recorded": true,
+      "linearization": {
+        "banks_before": 0,
+        "banks_after": 0,
+        "linear_modules": 225,
+        "linear_params": 7113539584,
+        "params": 7248023552,
+        "linear_share": 0.9814,
+        "device": "cuda"
+      },
+      "allocation": null,
+      "seconds": 2028.6
+    },
+    {
+      "label": "dq_4b",
+      "kind": "dq",
+      "anchor": 4,
+      "score_null": null,
+      "nbytes": 3964149760,
+      "target_bytes": 3964674048,
+      "drift": -0.0001322398748680184,
+      "bits_per_param": 4.375427018479975,
+      "accuracy": 0.7807660961695192,
+      "correct": 1916,
+      "total": 2454,
+      "unparseable": 0,
+      "errored": 50,
+      "exact": 1135,
+      "unfinished": 0,
+      "by_source": {
+        "gretel": [
+          630,
+          818
+        ],
+        "spider": [
+          516,
+          818
+        ],
+        "wikisql": [
+          770,
+          818
+        ]
+      },
+      "apply": "encode",
+      "experts": {
+        "found": "eager",
+        "ran": "eager"
+      },
+      "experts_recorded": true,
+      "linearization": null,
+      "allocation": {
+        "average_bits": 4.375427018479975,
+        "nbytes": 3964149760,
+        "histogram": {
+          "3": 14,
+          "4": 153,
+          "8": 59
+        },
+        "violations": [],
+        "pricing": {
+          "measured_modules": 225,
+          "proxied_modules": 1,
+          "measured_params": 7113539584,
+          "proxied_params": 134217728,
+          "proxied_share": 0.018518518518518517,
+          "scale": 4.6874416221074374e-18
+        }
+      },
+      "seconds": 706.1
+    },
+    {
+      "label": "gptq_3b",
+      "kind": "gptq",
+      "anchor": 3,
+      "score_null": null,
+      "nbytes": 3068534784,
+      "target_bytes": 3068534784,
+      "drift": 0.0,
+      "bits_per_param": 3.386892729567113,
+      "accuracy": 0.06682966585167074,
+      "correct": 164,
+      "total": 2454,
+      "unparseable": 0,
+      "errored": 1796,
+      "exact": 69,
+      "unfinished": 0,
+      "by_source": {
+        "gretel": [
+          110,
+          818
+        ],
+        "spider": [
+          49,
+          818
+        ],
+        "wikisql": [
+          5,
+          818
+        ]
+      },
+      "apply": null,
+      "experts": {
+        "found": "eager",
+        "ran": "eager"
+      },
+      "experts_recorded": true,
+      "linearization": {
+        "banks_before": 0,
+        "banks_after": 0,
+        "linear_modules": 225,
+        "linear_params": 7113539584,
+        "params": 7248023552,
+        "linear_share": 0.9814,
+        "device": "cuda"
+      },
+      "allocation": null,
+      "seconds": 23290.4
+    },
+    {
+      "label": "awq_3b",
+      "kind": "awq",
+      "anchor": 3,
+      "score_null": null,
+      "nbytes": 3068534784,
+      "target_bytes": 3068534784,
+      "drift": 0.0,
+      "bits_per_param": 3.386892729567113,
+      "accuracy": 0.7416462917685411,
+      "correct": 1820,
+      "total": 2454,
+      "unparseable": 0,
+      "errored": 57,
+      "exact": 1088,
+      "unfinished": 0,
+      "by_source": {
+        "gretel": [
+          618,
+          818
+        ],
+        "spider": [
+          446,
+          818
+        ],
+        "wikisql": [
+          756,
+          818
+        ]
+      },
+      "apply": null,
+      "experts": {
+        "found": "eager",
+        "ran": "eager"
+      },
+      "experts_recorded": true,
+      "linearization": {
+        "banks_before": 0,
+        "banks_after": 0,
+        "linear_modules": 225,
+        "linear_params": 7113539584,
+        "params": 7248023552,
+        "linear_share": 0.9814,
+        "device": "cuda"
+      },
+      "allocation": null,
+      "seconds": 2302.0
+    },
+    {
+      "label": "dq_3b",
+      "kind": "dq",
+      "anchor": 3,
+      "score_null": null,
+      "nbytes": 3067617280,
+      "target_bytes": 3068534784,
+      "drift": -0.0002990039431144998,
+      "bits_per_param": 3.3858800352860663,
+      "accuracy": 0.752241238793806,
+      "correct": 1846,
+      "total": 2454,
+      "unparseable": 0,
+      "errored": 62,
+      "exact": 1069,
+      "unfinished": 0,
+      "by_source": {
+        "gretel": [
+          607,
+          818
+        ],
+        "spider": [
+          480,
+          818
+        ],
+        "wikisql": [
+          759,
+          818
+        ]
+      },
+      "apply": "encode",
+      "experts": {
+        "found": "eager",
+        "ran": "eager"
+      },
+      "experts_recorded": true,
+      "linearization": null,
+      "allocation": {
+        "average_bits": 3.3858800352860663,
+        "nbytes": 3067617280,
+        "histogram": {
+          "2": 7,
+          "3": 111,
+          "4": 107,
+          "8": 1
+        },
+        "violations": [
+          {
+            "name": "lm_head",
+            "role": "lm_head",
+            "floor_bits": 8,
+            "assigned_bits": 4,
+            "num_params": 134217728
+          },
+          {
+            "name": "model.embed_tokens",
+            "role": "embedding",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 134217728
+          },
+          {
+            "name": "model.layers.0.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 2,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.0.mlp.up_proj",
+            "role": "mlp.up",
+            "floor_bits": 3,
+            "assigned_bits": 2,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.0.self_attn.q_proj",
+            "role": "attn.q",
+            "floor_bits": 4,
+            "assigned_bits": 2,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.1.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.10.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.11.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.12.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.13.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.15.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.16.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.17.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.18.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.19.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.2.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.20.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.20.self_attn.o_proj",
+            "role": "attn.o",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.21.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.21.self_attn.o_proj",
+            "role": "attn.o",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.21.self_attn.q_proj",
+            "role": "attn.q",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.22.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.22.self_attn.o_proj",
+            "role": "attn.o",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.23.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.23.self_attn.o_proj",
+            "role": "attn.o",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.23.self_attn.q_proj",
+            "role": "attn.q",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.24.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.24.self_attn.o_proj",
+            "role": "attn.o",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.24.self_attn.q_proj",
+            "role": "attn.q",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.25.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.25.self_attn.o_proj",
+            "role": "attn.o",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.25.self_attn.q_proj",
+            "role": "attn.q",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.26.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.26.self_attn.o_proj",
+            "role": "attn.o",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.26.self_attn.q_proj",
+            "role": "attn.q",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.27.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.27.self_attn.o_proj",
+            "role": "attn.o",
+            "floor_bits": 4,
+            "assigned_bits": 2,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.27.self_attn.q_proj",
+            "role": "attn.q",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.28.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.28.self_attn.o_proj",
+            "role": "attn.o",
+            "floor_bits": 4,
+            "assigned_bits": 2,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.28.self_attn.q_proj",
+            "role": "attn.q",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.29.mlp.down_proj",
+            "role": "mlp.down",
+            "floor_bits": 3,
+            "assigned_bits": 2,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.29.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.29.self_attn.o_proj",
+            "role": "attn.o",
+            "floor_bits": 4,
+            "assigned_bits": 2,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.29.self_attn.q_proj",
+            "role": "attn.q",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.3.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.30.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.30.self_attn.o_proj",
+            "role": "attn.o",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.30.self_attn.q_proj",
+            "role": "attn.q",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.31.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.31.self_attn.o_proj",
+            "role": "attn.o",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.31.self_attn.q_proj",
+            "role": "attn.q",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 16777216
+          },
+          {
+            "name": "model.layers.4.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.5.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.6.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.7.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          },
+          {
+            "name": "model.layers.9.mlp.gate_proj",
+            "role": "mlp.gate",
+            "floor_bits": 4,
+            "assigned_bits": 3,
+            "num_params": 58720256
+          }
+        ],
+        "pricing": {
+          "measured_modules": 225,
+          "proxied_modules": 1,
+          "measured_params": 7113539584,
+          "proxied_params": 134217728,
+          "proxied_share": 0.018518518518518517,
+          "scale": 4.6874416221074374e-18
+        }
+      },
+      "seconds": 655.4
+    }
+  ],
+  "head_to_head": [
+    {
+      "left": "dq_4b",
+      "right": "gptq_4b",
+      "question": "4b  DynQuant vs GPTQ",
+      "label_a": "dq_4b",
+      "label_b": "gptq_4b",
+      "accuracy_a": 0.7807660961695192,
+      "accuracy_b": 0.7828035859820701,
+      "delta_points": -0.2037489812550919,
+      "standard_error_points": 0.43315674917024155,
+      "ci_low_points": -1.0527362096287654,
+      "ci_high_points": 0.6452382471185816,
+      "both_right": 1862,
+      "a_only": 54,
+      "b_only": 59,
+      "both_wrong": 479,
+      "discordant": 113,
+      "p_value": 0.7068822614919528,
+      "separated": false,
+      "p_adjusted": 1.0,
+      "same_arithmetic": true
+    },
+    {
+      "left": "dq_4b",
+      "right": "awq_4b",
+      "question": "4b  DynQuant vs AWQ",
+      "label_a": "dq_4b",
+      "label_b": "awq_4b",
+      "accuracy_a": 0.7807660961695192,
+      "accuracy_b": 0.7791361043194784,
+      "delta_points": 0.16299918500407573,
+      "standard_error_points": 0.45375859684731545,
+      "ci_low_points": -0.7263676648166626,
+      "ci_high_points": 1.052366034824814,
+      "both_right": 1852,
+      "a_only": 64,
+      "b_only": 60,
+      "both_wrong": 478,
+      "discordant": 124,
+      "p_value": 0.787746582402333,
+      "separated": false,
+      "p_adjusted": 1.0,
+      "same_arithmetic": true
+    },
+    {
+      "left": "gptq_4b",
+      "right": "awq_4b",
+      "question": "4b  GPTQ vs AWQ",
+      "label_a": "gptq_4b",
+      "label_b": "awq_4b",
+      "accuracy_a": 0.7828035859820701,
+      "accuracy_b": 0.7791361043194784,
+      "delta_points": 0.3667481662591676,
+      "standard_error_points": 0.4214541499580817,
+      "ci_low_points": -0.4593019676586726,
+      "ci_high_points": 1.192798300177008,
+      "both_right": 1863,
+      "a_only": 58,
+      "b_only": 49,
+      "both_wrong": 484,
+      "discordant": 107,
+      "p_value": 0.43944010177908277,
+      "separated": false,
+      "p_adjusted": 1.0,
+      "same_arithmetic": true
+    },
+    {
+      "left": "dq_3b",
+      "right": "gptq_3b",
+      "question": "3b  DynQuant vs GPTQ",
+      "label_a": "dq_3b",
+      "label_b": "gptq_3b",
+      "accuracy_a": 0.752241238793806,
+      "accuracy_b": 0.06682966585167074,
+      "delta_points": 68.54115729421353,
+      "standard_error_points": 0.9601206619964251,
+      "ci_low_points": 66.65932079670054,
+      "ci_high_points": 70.42299379172653,
+      "both_right": 151,
+      "a_only": 1695,
+      "b_only": 13,
+      "both_wrong": 595,
+      "discordant": 1708,
+      "p_value": 0.0,
+      "separated": true,
+      "p_adjusted": 0.0,
+      "same_arithmetic": true
+    },
+    {
+      "left": "dq_3b",
+      "right": "awq_3b",
+      "question": "3b  DynQuant vs AWQ",
+      "label_a": "dq_3b",
+      "label_b": "awq_3b",
+      "accuracy_a": 0.752241238793806,
+      "accuracy_b": 0.7416462917685411,
+      "delta_points": 1.0594947025264867,
+      "standard_error_points": 0.7054830544098463,
+      "ci_low_points": -0.32325208411681206,
+      "ci_high_points": 2.4422414891697857,
+      "both_right": 1683,
+      "a_only": 163,
+      "b_only": 137,
+      "both_wrong": 471,
+      "discordant": 300,
+      "p_value": 0.148792557741031,
+      "separated": false,
+      "p_adjusted": 0.595170230964124,
+      "same_arithmetic": true
+    },
+    {
+      "left": "gptq_3b",
+      "right": "awq_3b",
+      "question": "3b  GPTQ vs AWQ",
+      "label_a": "gptq_3b",
+      "label_b": "awq_3b",
+      "accuracy_a": 0.06682966585167074,
+      "accuracy_b": 0.7416462917685411,
+      "delta_points": -67.48166259168704,
+      "standard_error_points": 0.9750223662165938,
+      "ci_low_points": -69.39270642947156,
+      "ci_high_points": -65.57061875390252,
+      "both_right": 147,
+      "a_only": 17,
+      "b_only": 1673,
+      "both_wrong": 617,
+      "discordant": 1690,
+      "p_value": 0.0,
+      "separated": true,
+      "p_adjusted": 0.0,
+      "same_arithmetic": true
+    }
+  ],
+  "head_to_head_by_source": {},
+  "source_heterogeneity": [],
+  "head_to_head_by_difficulty": {
+    "ceiling-right": [
+      {
+        "left": "dq_4b",
+        "right": "gptq_4b",
+        "question": "4b  DynQuant vs GPTQ",
+        "label_a": "dq_4b",
+        "label_b": "gptq_4b",
+        "accuracy_a": 0.9765380604796663,
+        "accuracy_b": 0.9827945776850886,
+        "delta_points": -0.6256517205422307,
+        "standard_error_points": 0.38286543412925605,
+        "ci_low_points": -1.3760679714355726,
+        "ci_high_points": 0.12476453035111112,
+        "both_right": 1852,
+        "a_only": 21,
+        "b_only": 33,
+        "both_wrong": 12,
+        "discordant": 54,
+        "p_value": 0.13367423536410528,
+        "separated": false,
+        "p_adjusted": 0.26734847072821055,
+        "same_arithmetic": true
+      },
+      {
+        "left": "dq_4b",
+        "right": "awq_4b",
+        "question": "4b  DynQuant vs AWQ",
+        "label_a": "dq_4b",
+        "label_b": "awq_4b",
+        "accuracy_a": 0.9765380604796663,
+        "accuracy_b": 0.9718456725755996,
+        "delta_points": 0.4692387904066675,
+        "standard_error_points": 0.4266304831246918,
+        "ci_low_points": -0.3669569565177284,
+        "ci_high_points": 1.3054345373310634,
+        "both_right": 1835,
+        "a_only": 38,
+        "b_only": 29,
+        "both_wrong": 16,
+        "discordant": 67,
+        "p_value": 0.3284320626971899,
+        "separated": false,
+        "p_adjusted": 0.3284320626971899,
+        "same_arithmetic": true
+      },
+      {
+        "left": "gptq_4b",
+        "right": "awq_4b",
+        "question": "4b  GPTQ vs AWQ",
+        "label_a": "gptq_4b",
+        "label_b": "awq_4b",
+        "accuracy_a": 0.9827945776850886,
+        "accuracy_b": 0.9718456725755996,
+        "delta_points": 1.0948905109488982,
+        "standard_error_points": 0.4130738609819568,
+        "ci_low_points": 0.2852657434242629,
+        "ci_high_points": 1.9045152784735335,
+        "both_right": 1843,
+        "a_only": 42,
+        "b_only": 21,
+        "both_wrong": 12,
+        "discordant": 63,
+        "p_value": 0.011141407415305074,
+        "separated": true,
+        "p_adjusted": 0.044565629661220296,
+        "same_arithmetic": true
+      },
+      {
+        "left": "dq_3b",
+        "right": "gptq_3b",
+        "question": "3b  DynQuant vs GPTQ",
+        "label_a": "dq_3b",
+        "label_b": "gptq_3b",
+        "accuracy_a": 0.9191866527632951,
+        "accuracy_b": 0.07977059436913451,
+        "delta_points": 83.94160583941607,
+        "standard_error_points": 0.8607294036116888,
+        "ci_low_points": 82.25457620833716,
+        "ci_high_points": 85.62863547049498,
+        "both_right": 146,
+        "a_only": 1617,
+        "b_only": 7,
+        "both_wrong": 148,
+        "discordant": 1624,
+        "p_value": 0.0,
+        "separated": true,
+        "p_adjusted": 0.0,
+        "same_arithmetic": true
+      },
+      {
+        "left": "dq_3b",
+        "right": "awq_3b",
+        "question": "3b  DynQuant vs AWQ",
+        "label_a": "dq_3b",
+        "label_b": "awq_3b",
+        "accuracy_a": 0.9191866527632951,
+        "accuracy_b": 0.9051094890510949,
+        "delta_points": 1.4077163712200247,
+        "standard_error_points": 0.7347892513682728,
+        "ci_low_points": -0.03247056146178995,
+        "ci_high_points": 2.8479033039018393,
+        "both_right": 1650,
+        "a_only": 113,
+        "b_only": 86,
+        "both_wrong": 69,
+        "discordant": 199,
+        "p_value": 0.06504501335635778,
+        "separated": false,
+        "p_adjusted": 0.19513504006907334,
+        "same_arithmetic": true
+      },
+      {
+        "left": "gptq_3b",
+        "right": "awq_3b",
+        "question": "3b  GPTQ vs AWQ",
+        "label_a": "gptq_3b",
+        "label_b": "awq_3b",
+        "accuracy_a": 0.07977059436913451,
+        "accuracy_b": 0.9051094890510949,
+        "delta_points": -82.53388946819604,
+        "standard_error_points": 0.9007727106653648,
+        "ci_low_points": -84.29940398110016,
+        "ci_high_points": -80.76837495529192,
+        "both_right": 142,
+        "a_only": 11,
+        "b_only": 1594,
+        "both_wrong": 171,
+        "discordant": 1605,
+        "p_value": 0.0,
+        "separated": true,
+        "p_adjusted": 0.0,
+        "same_arithmetic": true
+      }
+    ],
+    "ceiling-wrong": [
+      {
+        "left": "dq_4b",
+        "right": "gptq_4b",
+        "question": "4b  DynQuant vs GPTQ",
+        "label_a": "dq_4b",
+        "label_b": "gptq_4b",
+        "accuracy_a": 0.08022388059701492,
+        "accuracy_b": 0.06716417910447761,
+        "delta_points": 1.305970149253731,
+        "standard_error_points": 1.4319389257188166,
+        "ci_low_points": -1.5006301451551494,
+        "ci_high_points": 4.112570443662611,
+        "both_right": 10,
+        "a_only": 33,
+        "b_only": 26,
+        "both_wrong": 467,
+        "discordant": 59,
+        "p_value": 0.4349928051221534,
+        "separated": false,
+        "p_adjusted": 1.0,
+        "same_arithmetic": true
+      },
+      {
+        "left": "dq_4b",
+        "right": "awq_4b",
+        "question": "4b  DynQuant vs AWQ",
+        "label_a": "dq_4b",
+        "label_b": "awq_4b",
+        "accuracy_a": 0.08022388059701492,
+        "accuracy_b": 0.08955223880597014,
+        "delta_points": -0.9328358208955223,
+        "standard_error_points": 1.4079747901195603,
+        "ci_low_points": -3.6924664095298603,
+        "ci_high_points": 1.8267947677388159,
+        "both_right": 17,
+        "a_only": 26,
+        "b_only": 31,
+        "both_wrong": 462,
+        "discordant": 57,
+        "p_value": 0.5966417603730826,
+        "separated": false,
+        "p_adjusted": 1.0,
+        "same_arithmetic": true
+      },
+      {
+        "left": "gptq_4b",
+        "right": "awq_4b",
+        "question": "4b  GPTQ vs AWQ",
+        "label_a": "gptq_4b",
+        "label_b": "awq_4b",
+        "accuracy_a": 0.06716417910447761,
+        "accuracy_b": 0.08955223880597014,
+        "delta_points": -2.238805970149253,
+        "standard_error_points": 1.2337626515071234,
+        "ci_low_points": -4.6569807671032155,
+        "ci_high_points": 0.1793688268047089,
+        "both_right": 20,
+        "a_only": 16,
+        "b_only": 28,
+        "both_wrong": 472,
+        "discordant": 44,
+        "p_value": 0.09614175442061423,
+        "separated": false,
+        "p_adjusted": 0.38456701768245694,
+        "same_arithmetic": true
+      },
+      {
+        "left": "dq_3b",
+        "right": "gptq_3b",
+        "question": "3b  DynQuant vs GPTQ",
+        "label_a": "dq_3b",
+        "label_b": "gptq_3b",
+        "accuracy_a": 0.15485074626865672,
+        "accuracy_b": 0.020522388059701493,
+        "delta_points": 13.432835820895523,
+        "standard_error_points": 1.6084682043455403,
+        "ci_low_points": 10.280238140378264,
+        "ci_high_points": 16.585433501412783,
+        "both_right": 5,
+        "a_only": 78,
+        "b_only": 6,
+        "both_wrong": 447,
+        "discordant": 84,
+        "p_value": 4.543102530270037e-17,
+        "separated": true,
+        "p_adjusted": 2.2715512651350184e-16,
+        "same_arithmetic": true
+      },
+      {
+        "left": "dq_3b",
+        "right": "awq_3b",
+        "question": "3b  DynQuant vs AWQ",
+        "label_a": "dq_3b",
+        "label_b": "awq_3b",
+        "accuracy_a": 0.15485074626865672,
+        "accuracy_b": 0.15671641791044777,
+        "delta_points": -0.18656716417910502,
+        "standard_error_points": 1.8749594776229153,
+        "ci_low_points": -3.861487740320019,
+        "ci_high_points": 3.4883534119618087,
+        "both_right": 33,
+        "a_only": 50,
+        "b_only": 51,
+        "both_wrong": 402,
+        "discordant": 101,
+        "p_value": 1.0,
+        "separated": false,
+        "p_adjusted": 1.0,
+        "same_arithmetic": true
+      },
+      {
+        "left": "gptq_3b",
+        "right": "awq_3b",
+        "question": "3b  GPTQ vs AWQ",
+        "label_a": "gptq_3b",
+        "label_b": "awq_3b",
+        "accuracy_a": 0.020522388059701493,
+        "accuracy_b": 0.15671641791044777,
+        "delta_points": -13.619402985074627,
+        "standard_error_points": 1.6163418931019846,
+        "ci_low_points": -16.787433095554515,
+        "ci_high_points": -10.451372874594737,
+        "both_right": 5,
+        "a_only": 6,
+        "b_only": 79,
+        "both_wrong": 446,
+        "discordant": 85,
+        "p_value": 2.441642201786159e-17,
+        "separated": true,
+        "p_adjusted": 1.4649853210716954e-16,
+        "same_arithmetic": true
+      }
+    ]
+  },
+  "difficulty_heterogeneity": [
+    {
+      "left": "dq_4b",
+      "right": "gptq_4b",
+      "question": "4b  DynQuant vs GPTQ",
+      "sources": {
+        "ceiling-right": -0.6256517205422307,
+        "ceiling-wrong": 1.305970149253731
+      },
+      "pooled_points": -0.4967741172250741,
+      "q": 1.698271989719894,
+      "df": 1,
+      "p_value": 0.1925141182986686,
+      "same_arithmetic": true,
+      "p_adjusted": 0.5775423548960058,
+      "heterogeneous": false,
+      "holm_corrected": 6,
+      "holm_family": 6
+    },
+    {
+      "left": "dq_4b",
+      "right": "awq_4b",
+      "question": "4b  DynQuant vs AWQ",
+      "sources": {
+        "ceiling-right": 0.4692387904066675,
+        "ceiling-wrong": -0.9328358208955223
+      },
+      "pooled_points": 0.35133275246645757,
+      "q": 0.9082458143328428,
+      "df": 1,
+      "p_value": 0.34058028458066003,
+      "same_arithmetic": true,
+      "p_adjusted": 0.6811605691613201,
+      "heterogeneous": false,
+      "holm_corrected": 6,
+      "holm_family": 6
+    },
+    {
+      "left": "gptq_4b",
+      "right": "awq_4b",
+      "question": "4b  GPTQ vs AWQ",
+      "sources": {
+        "ceiling-right": 1.0948905109488982,
+        "ceiling-wrong": -2.238805970149253
+      },
+      "pooled_points": 0.7588622853805626,
+      "q": 6.565176212278013,
+      "df": 1,
+      "p_value": 0.010399344008174433,
+      "same_arithmetic": true,
+      "p_adjusted": 0.04159737603269773,
+      "heterogeneous": true,
+      "holm_corrected": 6,
+      "holm_family": 6
+    },
+    {
+      "left": "dq_3b",
+      "right": "gptq_3b",
+      "question": "3b  DynQuant vs GPTQ",
+      "sources": {
+        "ceiling-right": 83.94160583941607,
+        "ceiling-wrong": 13.432835820895523
+      },
+      "pooled_points": 68.24557555286526,
+      "q": 1493.824879324024,
+      "df": 1,
+      "p_value": 0.0,
+      "same_arithmetic": true,
+      "p_adjusted": 0.0,
+      "heterogeneous": true,
+      "holm_corrected": 6,
+      "holm_family": 6
+    },
+    {
+      "left": "dq_3b",
+      "right": "awq_3b",
+      "question": "3b  DynQuant vs AWQ",
+      "sources": {
+        "ceiling-right": 1.4077163712200247,
+        "ceiling-wrong": -0.18656716417910502
+      },
+      "pooled_points": 1.1954609907092442,
+      "q": 0.6267562589775246,
+      "df": 1,
+      "p_value": 0.42854764175864213,
+      "same_arithmetic": true,
+      "p_adjusted": 0.6811605691613201,
+      "heterogeneous": false,
+      "holm_corrected": 6,
+      "holm_family": 6
+    },
+    {
+      "left": "gptq_3b",
+      "right": "awq_3b",
+      "question": "3b  GPTQ vs AWQ",
+      "sources": {
+        "ceiling-right": -82.53388946819604,
+        "ceiling-wrong": -13.619402985074627
+      },
+      "pooled_points": -66.20287277698394,
+      "q": 1387.0537982267183,
+      "df": 1,
+      "p_value": 1.3667073459624819e-303,
+      "same_arithmetic": true,
+      "p_adjusted": 6.83353672981241e-303,
+      "heterogeneous": true,
+      "holm_corrected": 6,
+      "holm_family": 6
+    }
+  ],
+  "head_to_head_by_source_and_difficulty": {},
+  "source_and_difficulty_heterogeneity": [],
+  "against_ceiling": [
+    {
+      "left": "gptq_4b",
+      "right": "bf16",
+      "question": "4b  GPTQ vs bf16",
+      "label_a": "gptq_4b",
+      "label_b": "bf16",
+      "accuracy_a": 0.7828035859820701,
+      "accuracy_b": 0.7815810920945395,
+      "delta_points": 0.12224938875305957,
+      "standard_error_points": 0.33848423404768857,
+      "ci_low_points": -0.54117970998041,
+      "ci_high_points": 0.7856784874865291,
+      "both_right": 1885,
+      "a_only": 36,
+      "b_only": 33,
+      "both_wrong": 500,
+      "discordant": 69,
+      "p_value": 0.8099490529189247,
+      "separated": false,
+      "p_adjusted": 1.0,
+      "same_arithmetic": true
+    },
+    {
+      "left": "awq_4b",
+      "right": "bf16",
+      "question": "4b  AWQ vs bf16",
+      "label_a": "awq_4b",
+      "label_b": "bf16",
+      "accuracy_a": 0.7791361043194784,
+      "accuracy_b": 0.7815810920945395,
+      "delta_points": -0.24449877750610804,
+      "standard_error_points": 0.4115231720723407,
+      "ci_low_points": -1.0510841947678957,
+      "ci_high_points": 0.5620866397556796,
+      "both_right": 1864,
+      "a_only": 48,
+      "b_only": 54,
+      "both_wrong": 488,
+      "discordant": 102,
+      "p_value": 0.6207676687971156,
+      "separated": false,
+      "p_adjusted": 1.0,
+      "same_arithmetic": true
+    },
+    {
+      "left": "dq_4b",
+      "right": "bf16",
+      "question": "4b  DynQuant vs bf16",
+      "label_a": "dq_4b",
+      "label_b": "bf16",
+      "accuracy_a": 0.7807660961695192,
+      "accuracy_b": 0.7815810920945395,
+      "delta_points": -0.08149959250203231,
+      "standard_error_points": 0.3822634327786075,
+      "ci_low_points": -0.8307359207481031,
+      "ci_high_points": 0.6677367357440385,
+      "both_right": 1873,
+      "a_only": 43,
+      "b_only": 45,
+      "both_wrong": 493,
+      "discordant": 88,
+      "p_value": 0.9151865048428769,
+      "separated": false,
+      "p_adjusted": 1.0,
+      "same_arithmetic": true
+    },
+    {
+      "left": "gptq_3b",
+      "right": "bf16",
+      "question": "3b  GPTQ vs bf16",
+      "label_a": "gptq_3b",
+      "label_b": "bf16",
+      "accuracy_a": 0.06682966585167074,
+      "accuracy_b": 0.7815810920945395,
+      "delta_points": -71.47514262428687,
+      "standard_error_points": 0.9313142821752983,
+      "ci_low_points": -73.30051861735046,
+      "ci_high_points": -69.64976663122329,
+      "both_right": 153,
+      "a_only": 11,
+      "b_only": 1765,
+      "both_wrong": 525,
+      "discordant": 1776,
+      "p_value": 0.0,
+      "separated": true,
+      "p_adjusted": 0.0,
+      "same_arithmetic": true
+    },
+    {
+      "left": "awq_3b",
+      "right": "bf16",
+      "question": "3b  AWQ vs bf16",
+      "label_a": "awq_3b",
+      "label_b": "bf16",
+      "accuracy_a": 0.7416462917685411,
+      "accuracy_b": 0.7815810920945395,
+      "delta_points": -3.9934800325998387,
+      "standard_error_points": 0.6597018100637867,
+      "ci_low_points": -5.2864955803248606,
+      "ci_high_points": -2.700464484874817,
+      "both_right": 1736,
+      "a_only": 84,
+      "b_only": 182,
+      "both_wrong": 452,
+      "discordant": 266,
+      "p_value": 1.8011298707161438e-09,
+      "separated": true,
+      "p_adjusted": 9.005649353580719e-09,
+      "same_arithmetic": true
+    },
+    {
+      "left": "dq_3b",
+      "right": "bf16",
+      "question": "3b  DynQuant vs bf16",
+      "label_a": "dq_3b",
+      "label_b": "bf16",
+      "accuracy_a": 0.752241238793806,
+      "accuracy_b": 0.7815810920945395,
+      "delta_points": -2.933985330073352,
+      "standard_error_points": 0.6258610632072751,
+      "ci_low_points": -4.160673013959611,
+      "ci_high_points": -1.707297646187093,
+      "both_right": 1763,
+      "a_only": 83,
+      "b_only": 155,
+      "both_wrong": 453,
+      "discordant": 238,
+      "p_value": 3.5545348314384262e-06,
+      "separated": true,
+      "p_adjusted": 1.4218139325753705e-05,
+      "same_arithmetic": true
+    }
+  ],
+  "decomposition": [],
+  "replicates": [],
+  "fidelity": [
+    {
+      "label": "gptq_4b",
+      "ceiling": "bf16",
+      "accuracy": 0.7828035859820701,
+      "agreement": 0.9718826405867971,
+      "agreement_where_ceiling_right": 0.9827945776850886,
+      "agreement_where_ceiling_wrong": 0.9328358208955224,
+      "ceiling_accuracy": 0.7815810920945395
+    },
+    {
+      "label": "awq_4b",
+      "ceiling": "bf16",
+      "accuracy": 0.7791361043194784,
+      "agreement": 0.9584352078239609,
+      "agreement_where_ceiling_right": 0.9718456725755996,
+      "agreement_where_ceiling_wrong": 0.9104477611940298,
+      "ceiling_accuracy": 0.7815810920945395
+    },
+    {
+      "label": "dq_4b",
+      "ceiling": "bf16",
+      "accuracy": 0.7807660961695192,
+      "agreement": 0.9641401792991035,
+      "agreement_where_ceiling_right": 0.9765380604796663,
+      "agreement_where_ceiling_wrong": 0.9197761194029851,
+      "ceiling_accuracy": 0.7815810920945395
+    },
+    {
+      "label": "gptq_3b",
+      "ceiling": "bf16",
+      "accuracy": 0.06682966585167074,
+      "agreement": 0.2762836185819071,
+      "agreement_where_ceiling_right": 0.07977059436913451,
+      "agreement_where_ceiling_wrong": 0.9794776119402985,
+      "ceiling_accuracy": 0.7815810920945395
+    },
+    {
+      "label": "awq_3b",
+      "ceiling": "bf16",
+      "accuracy": 0.7416462917685411,
+      "agreement": 0.8916055419722901,
+      "agreement_where_ceiling_right": 0.9051094890510949,
+      "agreement_where_ceiling_wrong": 0.8432835820895522,
+      "ceiling_accuracy": 0.7815810920945395
+    },
+    {
+      "label": "dq_3b",
+      "ceiling": "bf16",
+      "accuracy": 0.752241238793806,
+      "agreement": 0.9030154849225754,
+      "agreement_where_ceiling_right": 0.9191866527632951,
+      "agreement_where_ceiling_wrong": 0.8451492537313433,
+      "ceiling_accuracy": 0.7815810920945395
+    }
+  ],
+  "fidelity_head_to_head": [
+    {
+      "left": "dq_4b",
+      "right": "gptq_4b",
+      "question": "4b  DynQuant vs GPTQ",
+      "label_a": "dq_4b",
+      "label_b": "gptq_4b",
+      "accuracy_a": 0.9641401792991035,
+      "accuracy_b": 0.9718826405867971,
+      "delta_points": -0.7742461287693625,
+      "standard_error_points": 0.4328942232747634,
+      "ci_low_points": -1.6227188063878988,
+      "ci_high_points": 0.07422654884917379,
+      "both_right": 2319,
+      "a_only": 47,
+      "b_only": 66,
+      "both_wrong": 22,
+      "discordant": 113,
+      "p_value": 0.08995433294496465,
+      "separated": false,
+      "p_adjusted": 0.26986299883489395,
+      "same_arithmetic": true
+    },
+    {
+      "left": "dq_4b",
+      "right": "awq_4b",
+      "question": "4b  DynQuant vs AWQ",
+      "label_a": "dq_4b",
+      "label_b": "awq_4b",
+      "accuracy_a": 0.9641401792991035,
+      "accuracy_b": 0.9584352078239609,
+      "delta_points": 0.5704971475142595,
+      "standard_error_points": 0.4536243641830597,
+      "ci_low_points": -0.3186066062845374,
+      "ci_high_points": 1.4596009013130564,
+      "both_right": 2297,
+      "a_only": 69,
+      "b_only": 55,
+      "both_wrong": 33,
+      "discordant": 124,
+      "p_value": 0.24292283198051134,
+      "separated": false,
+      "p_adjusted": 0.26986299883489395,
+      "same_arithmetic": true
+    },
+    {
+      "left": "gptq_4b",
+      "right": "awq_4b",
+      "question": "4b  GPTQ vs AWQ",
+      "label_a": "gptq_4b",
+      "label_b": "awq_4b",
+      "accuracy_a": 0.9718826405867971,
+      "accuracy_b": 0.9584352078239609,
+      "delta_points": 1.344743276283622,
+      "standard_error_points": 0.42064417040495955,
+      "ci_low_points": 0.5202807022899013,
+      "ci_high_points": 2.1692058502773426,
+      "both_right": 2315,
+      "a_only": 70,
+      "b_only": 37,
+      "both_wrong": 32,
+      "discordant": 107,
+      "p_value": 0.0018401240468733445,
+      "separated": true,
+      "p_adjusted": 0.007360496187493378,
+      "same_arithmetic": true
+    },
+    {
+      "left": "dq_3b",
+      "right": "gptq_3b",
+      "question": "3b  DynQuant vs GPTQ",
+      "label_a": "dq_3b",
+      "label_b": "gptq_3b",
+      "accuracy_a": 0.9030154849225754,
+      "accuracy_b": 0.2762836185819071,
+      "delta_points": 62.67318663406684,
+      "standard_error_points": 1.1115707801801087,
+      "ci_low_points": 60.494507904913824,
+      "ci_high_points": 64.85186536321984,
+      "both_right": 593,
+      "a_only": 1623,
+      "b_only": 85,
+      "both_wrong": 153,
+      "discordant": 1708,
+      "p_value": 0.0,
+      "separated": true,
+      "p_adjusted": 0.0,
+      "same_arithmetic": true
+    },
+    {
+      "left": "dq_3b",
+      "right": "awq_3b",
+      "question": "3b  DynQuant vs AWQ",
+      "label_a": "dq_3b",
+      "label_b": "awq_3b",
+      "accuracy_a": 0.9030154849225754,
+      "accuracy_b": 0.8916055419722901,
+      "delta_points": 1.1409942950285301,
+      "standard_error_points": 0.7054312580259188,
+      "ci_low_points": -0.2416509707022707,
+      "ci_high_points": 2.5236395607593307,
+      "both_right": 2052,
+      "a_only": 164,
+      "b_only": 136,
+      "both_wrong": 102,
+      "discordant": 300,
+      "p_value": 0.11888633674819818,
+      "separated": false,
+      "p_adjusted": 0.26986299883489395,
+      "same_arithmetic": true
+    },
+    {
+      "left": "gptq_3b",
+      "right": "awq_3b",
+      "question": "3b  GPTQ vs AWQ",
+      "label_a": "gptq_3b",
+      "label_b": "awq_3b",
+      "accuracy_a": 0.2762836185819071,
+      "accuracy_b": 0.8916055419722901,
+      "delta_points": -61.5321923390383,
+      "standard_error_points": 1.1240326588872842,
+      "ci_low_points": -63.73529635045738,
+      "ci_high_points": -59.329088327619225,
+      "both_right": 588,
+      "a_only": 90,
+      "b_only": 1600,
+      "both_wrong": 176,
+      "discordant": 1690,
+      "p_value": 0.0,
+      "separated": true,
+      "p_adjusted": 0.0,
+      "same_arithmetic": true
+    }
+  ],
+  "fidelity_head_to_head_by_source": {},
+  "fidelity_source_heterogeneity": []
+}
