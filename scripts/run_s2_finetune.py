@@ -832,6 +832,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch", type=int, default=4)
     parser.add_argument("--accum", type=int, default=8)
     parser.add_argument("--max-steps", type=int, default=-1)
+    parser.add_argument(
+        "--save-steps",
+        type=int,
+        default=100,
+        help="checkpoint interval; 0 disables checkpointing entirely",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--estimator", default="outer_exact")
     parser.add_argument(
@@ -1177,7 +1183,18 @@ def _train(
         # would double-count. Memory is not the constraint here -- LoRA is.
         gradient_checkpointing=False,
         logging_steps=10,
-        save_strategy="no",
+        # Was "no". A twelve-hour run then had nothing to fall back on, and a box that
+        # died at step 1800 cost all 1800 -- which is exactly what happened once, on a
+        # host whose GPU turned out to be power-capped to a sixth of its clock.
+        #
+        # A checkpoint here is worth more than recoverable weights. ``on_save`` calls
+        # ``tracker.save(checkpoint)``, so every checkpoint carries a complete signal map
+        # as of that step, and the signal map is the artifact the panel cannot be run
+        # without and cannot be recomputed without retraining. Only the LoRA adapter is
+        # written, so three of them do not reach a gigabyte.
+        save_strategy="steps" if args.save_steps > 0 else "no",
+        save_steps=args.save_steps if args.save_steps > 0 else 500,
+        save_total_limit=3,
         report_to=[],
         seed=args.seed,
         dataloader_num_workers=2,
