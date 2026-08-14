@@ -99,6 +99,47 @@ HEAD_TO_HEAD: tuple[tuple[str, str, str], ...] = (
     ("gptq_3b", "awq_3b", "3b  GPTQ vs AWQ"),
 )
 
+
+def extra_comparisons(
+    specs: list[str] | None, manifest: dict[str, Any]
+) -> tuple[tuple[str, str, str], ...]:
+    """``LEFT:RIGHT:QUESTION`` triples, joining the standing head-to-head family.
+
+    The six rows above are the panel's standing claim and are a constant because every
+    campaign makes them. A control run *after* a panel is the other case: it is one more
+    arm at an anchor the panel already has, and the question it answers is a paired test
+    against an arm already scored. Adding it to the constant would put a placeholder row
+    into every other campaign's table and shorten every other campaign's Holm family;
+    computing it in a one-off script beside the panel would leave the number the report
+    cites outside the table the report is assembled from.
+
+    An unknown label is refused rather than left to print ``(needs both arms)``. That
+    placeholder is right for the standing family, where a missing arm means the panel is
+    still running -- but here the caller named this comparison, so a name that is not in
+    the manifest is a typo, and a typo that prints a placeholder is a comparison the
+    caller believes was made.
+    """
+    known = {arm["label"] for arm in manifest.get("arms", [])}
+    family: list[tuple[str, str, str]] = []
+    for spec in specs or []:
+        left, sep, rest = spec.partition(":")
+        right, sep2, question = rest.partition(":")
+        if not (sep and sep2 and left and right and question):
+            raise SystemExit(
+                f"--compare {spec!r} is not LEFT:RIGHT:QUESTION. The question is not optional: "
+                f"it is what the row is headed with, and a row headed with two labels says "
+                f"what was compared but not what was being asked."
+            )
+        missing = sorted({left, right} - known)
+        if missing:
+            raise SystemExit(
+                f"--compare {spec!r} names {', '.join(missing)}, which the manifest does not "
+                f"carry. Known arms: {', '.join(sorted(known))}."
+            )
+        family.append((left, right, question))
+    return tuple(family)
+
+
 #: What each method cost against the unquantized model it was built from.
 AGAINST_CEILING: tuple[tuple[str, str, str], ...] = (
     ("gptq_4b", "bf16", "4b  GPTQ vs bf16"),
@@ -1187,6 +1228,7 @@ def print_partition_blocks(
     *,
     question: str = "head to head",
     closing: str = ACCURACY_BY_SOURCE_NOTE,
+    family: tuple[tuple[str, str, str], ...] = HEAD_TO_HEAD,
 ) -> dict[str, list[dict[str, Any]]]:
     """One `print_comparisons` block per label, over whatever indicator ``records`` carry.
 
@@ -1209,7 +1251,7 @@ def print_partition_blocks(
         count = sum(1 for src in labels if src == name)
         blocks[name] = print_comparisons(
             f"{question}, on {name} alone ({count:,} of {len(labels):,} items)",
-            HEAD_TO_HEAD,
+            family,
             restrict(records, labels, name),
             arithmetic,
             explain_arithmetic=False,
@@ -1524,10 +1566,21 @@ def main(argv: list[str] | None = None) -> int:
         "--sources",
         help="json list of per-item source labels; defaults to sources.json beside the arms",
     )
+    parser.add_argument(
+        "--compare",
+        action="append",
+        metavar="LEFT:RIGHT:QUESTION",
+        help=(
+            "one more head-to-head comparison, for an arm the standing family does not name -- "
+            "a control run after the panel, say. Repeatable. It joins the same Holm family and "
+            "the same per-source and per-difficulty blocks as the six standing rows"
+        ),
+    )
     args = parser.parse_args(argv)
 
     out = Path(args.arms)
     manifest, records = load_panel(out)
+    head_family = HEAD_TO_HEAD + extra_comparisons(args.compare, manifest)
     params = infer_params(out, manifest)
     built = rows(out, manifest, records, params)
     pairable = check_pairable(records)
@@ -1557,17 +1610,17 @@ def main(argv: list[str] | None = None) -> int:
     # One map for every block, built from the same rows the dispatch census printed, so
     # the flag and the census cannot disagree about what an arm ran.
     arithmetic = {row["label"]: arithmetic_of(row) for row in built}
-    head = print_comparisons("head to head, at matched bytes", HEAD_TO_HEAD, records, arithmetic)
+    head = print_comparisons("head to head, at matched bytes", head_family, records, arithmetic)
     print()
     labels, why_not = load_sources(out, args.sources, records)
-    blocks = print_partition_blocks(labels, why_not, records, arithmetic)
-    spread = print_heterogeneity(blocks)
+    blocks = print_partition_blocks(labels, why_not, records, arithmetic, family=head_family)
+    spread = print_heterogeneity(blocks, head_family)
     # The row above raises a question it cannot answer: this panel's sources differ in
     # difficulty as much as in identity, so a heterogeneous margin has two readings. These
     # two blocks are the same six comparisons on the axis that tells them apart. The first
     # does not need `--sources` -- it is read off the ceiling's own hits, which every panel
     # has -- so a run without labels still gets the stratification, just not the cross.
-    difficulty = difficulty_labels(records)
+    difficulty = difficulty_labels(records, family=head_family)
     difficulty_blocks = print_partition_blocks(
         difficulty,
         None,
@@ -1575,9 +1628,11 @@ def main(argv: list[str] | None = None) -> int:
         arithmetic,
         question="head to head, by difficulty",
         closing=BY_DIFFICULTY_NOTE,
+        family=head_family,
     )
     difficulty_spread = print_heterogeneity(
         difficulty_blocks,
+        head_family,
         question="is the margin the same at both difficulties?",
     )
     both_blocks = print_partition_blocks(
@@ -1587,9 +1642,11 @@ def main(argv: list[str] | None = None) -> int:
         arithmetic,
         question="head to head, by source and difficulty",
         closing=BY_BOTH_NOTE,
+        family=head_family,
     )
     both_spread = print_heterogeneity(
         both_blocks,
+        head_family,
         question="is the margin the same in every source-difficulty cell?",
     )
     ceiling = print_comparisons("what each method cost", AGAINST_CEILING, records, arithmetic)
@@ -1629,7 +1686,7 @@ def main(argv: list[str] | None = None) -> int:
     agreed = agreement_records(records)
     fidelity_head = print_comparisons(
         f"the same comparisons, on agreement with {CEILING} instead of accuracy",
-        HEAD_TO_HEAD,
+        head_family,
         agreed,
         arithmetic,
         explain_arithmetic=False,
@@ -1645,9 +1702,11 @@ def main(argv: list[str] | None = None) -> int:
         arithmetic,
         question=f"agreement with {CEILING}",
         closing=FIDELITY_BY_SOURCE_NOTE,
+        family=head_family,
     )
     fidelity_spread = print_heterogeneity(
         fidelity_blocks,
+        head_family,
         question="is the fidelity margin the same on every source?",
     )
     for line in (

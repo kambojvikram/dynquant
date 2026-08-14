@@ -576,6 +576,47 @@ def test_an_arm_that_did_not_run_is_a_missing_row_and_not_a_missing_comparison(
     assert printed.count("a short family, so these adjusted p can only rise") == 5
 
 
+def test_a_named_comparison_joins_the_family_and_a_misnamed_one_is_refused(
+    table: Any, tmp_path: Path
+) -> None:
+    """A control run after the panel has to be tested against it, not beside it.
+
+    The six standing rows are a constant because every campaign makes them. A control is
+    the other case -- one more arm at an anchor already scored, whose whole point is a
+    paired test against an arm already in the table. Left out, its number would be computed
+    in a script beside the panel and cited from there, which is the second copy of an
+    arithmetic nothing in the table could contradict.
+
+    Joining the family is the claim being tested, not merely appearing: it has to be
+    corrected with the others, or its p is read against a threshold nothing else in the
+    block was held to.
+
+    Turns red when: a named comparison stops reaching the block, stops entering the Holm
+    family, stops reaching the per-source and per-difficulty partitions, or an unknown
+    label starts printing the standing family's "(needs both arms)" placeholder -- which
+    for a comparison the caller asked for by name would read as a test that was run.
+    """
+    out = _write_panel(tmp_path / "arms", nulls=("shuffle",))
+
+    plain = _run(table, out)
+    assert "DynQuant vs its own shuffle" not in plain
+    assert "Holm-adjusted over 6 of 6 comparisons" in plain
+
+    named = _run(table, out, "--compare", "dq_3b:dq_3b_shuf:3b  DynQuant vs its own shuffle")
+    assert "3b  DynQuant vs its own shuffle" in named
+    assert "Holm-adjusted over 7 of 7 comparisons" in named
+    # The partitions run the same family, so the row is in the per-difficulty blocks too --
+    # one appearance would mean it reached the headline and none of the stratifications.
+    assert named.count("3b  DynQuant vs its own shuffle") > 1
+
+    for spec, expected in (
+        ("dq_3b:dq_3b_typo:whatever", "which the manifest does not"),
+        ("dq_3b:dq_3b_shuf", "is not LEFT:RIGHT:QUESTION"),
+    ):
+        with pytest.raises(SystemExit, match=expected):
+            table.main(["--arms", str(out), "--compare", spec])
+
+
 def test_a_block_reads_in_the_families_declared_order_however_much_of_it_ran(
     table: Any, tmp_path: Path
 ) -> None:
