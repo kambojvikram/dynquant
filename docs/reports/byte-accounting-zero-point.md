@@ -72,7 +72,7 @@ Zero, not a smaller one. And the asymmetric zero point is `pack_to_int32(zp, num
 along dim 0, so its 256 groups occupy `2 x 16 x 32 = 1024` bits — exactly `groups x bits`,
 not `groups x 16`. Both halves of the corrected arithmetic are measurements.
 
-This is the eighth instance of the duplicated-registry failure this campaign has recorded,
+This is the ninth instance of the duplicated-registry failure this campaign has recorded,
 and the second where the duplicated thing is a *dependency's* arithmetic — a copy nothing in
 this repository can contradict, which is why the probe exists and why `stored_meta_bits` is
 one function rather than two constants.
