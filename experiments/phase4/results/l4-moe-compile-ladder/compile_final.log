@@ -1,0 +1,208 @@
+COMMIT d92ee05
+##### lfm --arm bf16 compile=off mode=reduce-overhead 11:23:58Z #####
+  "resident_mib_loaded": 16151.2,
+  "disable_compile": true,
+  "cache_impl": "static",
+  "compile_mode": "reduce-overhead",
+  "warmup_s": 1.71,
+  "dynamo_unique_graphs": 0,
+  "decoded_cache_len": 26,
+      "decode_tok_s": 32.69,
+      "naive_tok_s": 32.26,
+      "decode_tok_s": 32.64,
+      "naive_tok_s": 32.21,
+  "decode_tok_s": 32.66,
+  "naive_tok_s": 32.23,
+  "peak_mib_total": 16246.7
+rc=0
+##### lfm --arm bf16 compile=auto mode=default 11:24:53Z #####
+  "resident_mib_loaded": 16151.2,
+  "disable_compile": false,
+  "cache_impl": "static",
+  "compile_mode": "default",
+  "warmup_s": 24.1,
+  "dynamo_unique_graphs": 2,
+  "decoded_cache_len": 26,
+      "decode_tok_s": 35.82,
+      "naive_tok_s": 35.38,
+      "decode_tok_s": 35.96,
+      "naive_tok_s": 35.37,
+  "decode_tok_s": 35.89,
+  "naive_tok_s": 35.38,
+  "peak_mib_total": 16218.7
+rc=0
+##### lfm --arm bf16 compile=auto mode=reduce-overhead 11:26:32Z #####
+  "resident_mib_loaded": 16151.2,
+  "disable_compile": false,
+  "cache_impl": "static",
+  "compile_mode": "reduce-overhead",
+  "warmup_s": 24.5,
+  "dynamo_unique_graphs": 2,
+  "decoded_cache_len": 26,
+      "decode_tok_s": 37.76,
+      "naive_tok_s": 37.2,
+      "decode_tok_s": 37.79,
+      "naive_tok_s": 37.07,
+  "decode_tok_s": 37.77,
+  "naive_tok_s": 37.14,
+  "peak_mib_total": 16218.9
+rc=0
+##### lfm --arm dynquant --bits 3 compile=off mode=reduce-overhead 11:28:09Z #####
+  "accounted_bits": 3.251,
+  "resident_mib_loaded": 3286.7,
+  "disable_compile": true,
+  "cache_impl": "static",
+  "compile_mode": "reduce-overhead",
+  "warmup_s": 2.29,
+  "dynamo_unique_graphs": 0,
+  "decoded_cache_len": 26,
+      "decode_tok_s": 31.58,
+      "naive_tok_s": 31.1,
+      "decode_tok_s": 31.57,
+      "naive_tok_s": 31.26,
+  "decode_tok_s": 31.57,
+  "naive_tok_s": 31.18,
+  "peak_mib_total": 7073.8
+rc=0
+##### lfm --arm dynquant --bits 3 compile=auto mode=default 11:30:42Z #####
+  "accounted_bits": 3.251,
+  "resident_mib_loaded": 3286.7,
+  "disable_compile": false,
+  "cache_impl": "static",
+  "compile_mode": "default",
+  "warmup_s": 8.93,
+  "dynamo_unique_graphs": 2,
+  "decoded_cache_len": 26,
+      "decode_tok_s": 98.68,
+      "naive_tok_s": 93.27,
+      "decode_tok_s": 98.06,
+      "naive_tok_s": 93.15,
+  "decode_tok_s": 98.37,
+  "naive_tok_s": 93.21,
+  "peak_mib_total": 7073.8
+rc=0
+##### lfm --arm dynquant --bits 3 compile=auto mode=reduce-overhead 11:33:07Z #####
+  "accounted_bits": 3.251,
+  "resident_mib_loaded": 3286.7,
+  "disable_compile": false,
+  "cache_impl": "static",
+  "compile_mode": "reduce-overhead",
+  "warmup_s": 9.03,
+  "dynamo_unique_graphs": 2,
+  "decoded_cache_len": 26,
+      "decode_tok_s": 156.87,
+      "naive_tok_s": 144.3,
+      "decode_tok_s": 156.28,
+      "naive_tok_s": 142.99,
+  "decode_tok_s": 156.57,
+  "naive_tok_s": 143.65,
+  "peak_mib_total": 7073.8
+rc=0
+##### lfm --arm dynquant --bits 3 compile=manual mode=reduce-overhead 11:35:28Z #####
+Traceback (most recent call last):
+RuntimeError: Error: accessing tensor output of CUDAGraphs that has been overwritten by a subsequent run. Stack trace: File "/venv/omni/lib/python3.12/site-packages/transformers/utils/generic.py", line 911, in wrapper
+rc=1
+##### olmoe --arm bf16 compile=off mode=reduce-overhead 11:37:41Z #####
+  "resident_mib_loaded": 13197.3,
+  "disable_compile": true,
+  "cache_impl": "static",
+  "compile_mode": "reduce-overhead",
+  "warmup_s": 1.52,
+  "dynamo_unique_graphs": 0,
+  "decoded_cache_len": 30,
+      "decode_tok_s": 40.67,
+      "naive_tok_s": 39.9,
+      "decode_tok_s": 40.42,
+      "naive_tok_s": 39.69,
+  "decode_tok_s": 40.55,
+  "naive_tok_s": 39.8,
+  "peak_mib_total": 13325.2
+rc=0
+##### olmoe --arm bf16 compile=auto mode=default 11:38:25Z #####
+  "resident_mib_loaded": 13197.3,
+  "disable_compile": false,
+  "cache_impl": "static",
+  "compile_mode": "default",
+  "warmup_s": 22.66,
+  "dynamo_unique_graphs": 2,
+  "decoded_cache_len": 30,
+      "decode_tok_s": 44.07,
+      "naive_tok_s": 43.35,
+      "decode_tok_s": 44.0,
+      "naive_tok_s": 43.09,
+  "decode_tok_s": 44.03,
+  "naive_tok_s": 43.22,
+  "peak_mib_total": 13325.1
+rc=0
+##### olmoe --arm bf16 compile=auto mode=reduce-overhead 11:39:51Z #####
+  "resident_mib_loaded": 13197.3,
+  "disable_compile": false,
+  "cache_impl": "static",
+  "compile_mode": "reduce-overhead",
+  "warmup_s": 22.44,
+  "dynamo_unique_graphs": 2,
+  "decoded_cache_len": 30,
+      "decode_tok_s": 46.33,
+      "naive_tok_s": 45.5,
+      "decode_tok_s": 46.4,
+      "naive_tok_s": 45.33,
+  "decode_tok_s": 46.36,
+  "naive_tok_s": 45.41,
+  "peak_mib_total": 13293.2
+rc=0
+##### olmoe --arm dynquant --bits 3 compile=off mode=reduce-overhead 11:41:18Z #####
+  "accounted_bits": 3.2515,
+  "resident_mib_loaded": 2685.4,
+  "disable_compile": true,
+  "cache_impl": "static",
+  "compile_mode": "reduce-overhead",
+  "warmup_s": 1.31,
+  "dynamo_unique_graphs": 0,
+  "decoded_cache_len": 30,
+      "decode_tok_s": 35.37,
+      "naive_tok_s": 35.03,
+      "decode_tok_s": 35.44,
+      "naive_tok_s": 35.13,
+  "decode_tok_s": 35.41,
+  "naive_tok_s": 35.08,
+  "peak_mib_total": 7254.3
+rc=0
+##### olmoe --arm dynquant --bits 3 compile=auto mode=default 11:43:24Z #####
+  "accounted_bits": 3.2515,
+  "resident_mib_loaded": 2685.4,
+  "disable_compile": false,
+  "cache_impl": "static",
+  "compile_mode": "default",
+  "warmup_s": 7.96,
+  "dynamo_unique_graphs": 2,
+  "decoded_cache_len": 30,
+      "decode_tok_s": 120.43,
+      "naive_tok_s": 115.49,
+      "decode_tok_s": 122.51,
+      "naive_tok_s": 116.07,
+  "decode_tok_s": 121.47,
+  "naive_tok_s": 115.78,
+  "peak_mib_total": 7254.3
+rc=0
+##### olmoe --arm dynquant --bits 3 compile=auto mode=reduce-overhead 11:45:25Z #####
+  "accounted_bits": 3.2515,
+  "resident_mib_loaded": 2685.4,
+  "disable_compile": false,
+  "cache_impl": "static",
+  "compile_mode": "reduce-overhead",
+  "warmup_s": 7.98,
+  "dynamo_unique_graphs": 2,
+  "decoded_cache_len": 30,
+      "decode_tok_s": 165.72,
+      "naive_tok_s": 155.05,
+      "decode_tok_s": 164.69,
+      "naive_tok_s": 152.83,
+  "decode_tok_s": 165.2,
+  "naive_tok_s": 153.94,
+  "peak_mib_total": 7254.3
+rc=0
+##### olmoe --arm dynquant --bits 3 compile=manual mode=reduce-overhead 11:47:24Z #####
+Traceback (most recent call last):
+RuntimeError: Error: accessing tensor output of CUDAGraphs that has been overwritten by a subsequent run. Stack trace: File "/venv/omni/lib/python3.12/site-packages/transformers/utils/generic.py", line 911, in wrapper
+rc=1
+COMPILE FINAL DONE 11:49:18Z

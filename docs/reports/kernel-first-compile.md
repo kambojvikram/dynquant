@@ -1171,10 +1171,10 @@ return getattr(out, "past_key_values", None)  # None means it decoded without on
 ```
 
 -- a four-token probe run once per arm outside the timed region, whose returned cache length goes
-into the record as `decoded_cache_len`. It reads **30** on all three arms: 26 prompt tokens plus
-4 generated. The static field is still recorded next to it, now correctly labelled as the
-checkpoint's declaration rather than the run's behaviour, and the two disagreeing is exactly the
-hazard this pair exists to make visible.
+into the record as `decoded_cache_len`. It reads **30** on all three arms: 27 prompt tokens plus
+the three writes a four-token generation makes. The static field is still recorded next to it, now
+correctly labelled as the checkpoint's declaration rather than the run's behaviour, and the two
+disagreeing is exactly the hazard this pair exists to make visible.
 
 ### What section 15 does not claim
 
@@ -1195,3 +1195,143 @@ hazard this pair exists to make visible.
 - **`--map-apply pack` still cannot reach this path.** Routers carry an 8-bit structural floor
   rather than an exclusion, so a DynQuant bit map naming them cannot be packed; the arms here
   quantize uniformly at 3 bits. That limitation is unchanged from section 12 and is still open.
+
+## 16. What compiling is worth, and to which arm
+
+Sections 12 through 15 timed the grouped kernel against the per-expert loop and against bf16
+*eager*. Section 14 then measured graph replay, on one model at one width, through
+`torch.compile`. Two things were never measured, and a serving decision turns on both: whether
+that 4.94x belongs to the packed path or is what `torch.compile` gives any model on this card, and
+how much of `reduce-overhead` is Inductor's fusion rather than the cudagraph.
+
+One run answers both. Fourteen arms at commit `d92ee05`, two MoE families x two arms x the compile
+ladder, `--reps 3 --cache-impl static` throughout so the cache is held fixed and the compiler is
+the only thing that moves. Twelve produced records; the two `manual` arms exited 1, which is the
+subsection after next.
+
+| family | arm | `--compile` | `--compile-mode` | tok/s | naive tok/s | warmup s | graphs |
+|---|---|---|---|---|---|---|---|
+| LFM2.5-8B-A1B | bf16 | off | -- | 32.66 | 32.23 | 1.71 | **0** |
+| LFM2.5-8B-A1B | bf16 | auto | default | 35.89 | 35.38 | 24.10 | 2 |
+| LFM2.5-8B-A1B | bf16 | auto | reduce-overhead | **37.77** | 37.14 | 24.50 | 2 |
+| LFM2.5-8B-A1B | dynquant 3b | off | -- | 31.57 | 31.18 | 2.29 | **0** |
+| LFM2.5-8B-A1B | dynquant 3b | auto | default | 98.37 | 93.21 | 8.93 | 2 |
+| LFM2.5-8B-A1B | dynquant 3b | auto | reduce-overhead | **156.57** | 143.65 | 9.03 | 2 |
+| OLMoE-1B-7B | bf16 | off | -- | 40.55 | 39.80 | 1.52 | **0** |
+| OLMoE-1B-7B | bf16 | auto | default | 44.03 | 43.22 | 22.66 | 2 |
+| OLMoE-1B-7B | bf16 | auto | reduce-overhead | **46.36** | 45.41 | 22.44 | 2 |
+| OLMoE-1B-7B | dynquant 3b | off | -- | 35.41 | 35.08 | 1.31 | **0** |
+| OLMoE-1B-7B | dynquant 3b | auto | default | 121.47 | 115.78 | 7.96 | 2 |
+| OLMoE-1B-7B | dynquant 3b | auto | reduce-overhead | **165.20** | 153.94 | 7.98 | 2 |
+
+`graphs` is `dynamo_unique_graphs`, read back from `torch._dynamo.utils.counters` rather than
+inferred from the flag. It is 0 on every arm that asked for eager and 2 on every arm that did not,
+which is the assertion that makes the `off` column a control instead of a label.
+
+### The compiled bf16 control, which is the point of the run
+
+bf16 gains **15.6%** on LFM2.5 and **14.3%** on OLMoE. The packed path gains **4.96x** and
+**4.67x**. Same card, same script, same static cache, same commit, same prompts. So section 14's
+speedup is not *`torch.compile` is fast on an L4*; it is the packed path carrying a per-step
+launch and Python surface, once per module, that eager pays and the compiler removes -- and bf16
+does not have to pay in the first place.
+
+The consequence a deployment reads off this is a sign change. **Uncompiled, DynQuant decodes
+slower than bf16**: 31.57 against 32.66 on LFM2.5 (**0.967x**) and 35.41 against 40.55 on OLMoE
+(**0.873x**). Compiled, it decodes **4.145x** and **3.563x** the *compiled* bf16 arm. Both
+readings are the same weights, the same kernel and the same card; the whole distance between
+*packing costs you 3-13% of decode rate* and *packing is four times faster* is one flag. Every
+earlier section in this file that quotes a ratio against bf16 -- 0.95x at section 12, 0.889x at
+section 15 -- is quoting the eager end of that pair.
+
+### Splitting the speedup: fusion against the graph
+
+`--compile-mode default` is Inductor without cudagraphs; `reduce-overhead` is Inductor plus
+cudagraphs. Running both against the same `off` baseline splits the total into what was fused and
+what was captured:
+
+| family | arm | fusion (off -> default) | cudagraphs (default -> RO) | total |
+|---|---|---|---|---|
+| LFM2.5-8B-A1B | bf16 | 1.099x | 1.052x | 1.156x |
+| LFM2.5-8B-A1B | dynquant 3b | **3.116x** | 1.592x | **4.959x** |
+| OLMoE-1B-7B | bf16 | 1.086x | 1.053x | 1.143x |
+| OLMoE-1B-7B | dynquant 3b | **3.430x** | 1.360x | **4.665x** |
+
+On the packed path fusion is the larger half in both families -- 3.12x and 3.43x against 1.59x and
+1.36x -- and on bf16 both halves are near-inert. Section 14 measured launch overhead at 76-82% of
+a packed decode step by capturing the step and timing the replay. This splits the same quantity
+the other way and says the *fusing* is worth more than the *capturing*, which a capture-only
+measurement had no way to see.
+
+**The two columns are not "work" and "launches".** `default` traces and fuses, and a fused
+dequant-into-GEMV removes launches as surely as a graph does; what the second column isolates is
+the launches still left *after* fusion. The honest statement is that the cudagraph is the smaller
+half of a win that fusion has already taken most of, not that launch overhead was overstated.
+
+### Memory does not move, and does not need to
+
+| family | bf16 resident | packed resident | ratio | `packed_bytes` | gap | peak over load |
+|---|---|---|---|---|---|---|
+| LFM2.5-8B-A1B | 16 151.2 MiB | **3 286.7 MiB** | 4.914x | 3 280.1 MiB | 6.6 MiB, 0.20% | 7 073.8 MiB |
+| OLMoE-1B-7B | 13 197.3 MiB | **2 685.4 MiB** | 4.914x | 2 679.8 MiB | 5.6 MiB, 0.21% | 7 254.3 MiB |
+
+Every figure is identical across all three compile settings within an arm, to the tenth of a MiB:
+compiling changes the rate and nothing else. The 4.914x is the same on both families to four
+figures because both land at the same width (`accounted_bits` 3.251 and 3.2515), which is
+arithmetic rather than a coincidence. The gap column is P6's *peak VRAM ~ manifest size* read
+against the allocator on two families at once, and `peak over load` is section 12's
+clipping-search workspace, unchanged and still the number not to quote as the serving cost.
+
+One column worth naming: `peak_mib_total` equals `peak_mib_loaded` on **every** packed arm and
+exceeds it on **every** bf16 arm. Generating never costs the packed model more than loading it
+did, which is what a decode that never materialises a dense weight should look like.
+
+### The cache probe reads the same number under every compiler
+
+`decoded_cache_len` is **26** on all six LFM2.5 arms and **30** on all six OLMoE arms: prompts of
+23 and 27 tokens plus the three writes a four-token generation makes, since prefill produces the
+first token and only the other three cost a decode step. Before `d92ee05` the same field on the
+same two families read **54** and **58** -- `prompt + 31`, the warmup's own 32-token fill.
+`generate` keeps one static cache on the model and hands the same object to every caller, so a
+reference held past the probe reported whatever the last generation had left in it, and the field
+named for the probe was measuring the timed run. Being constant across compile modes and across
+arms is the evidence that it now measures what it is named for; a field that moved with the
+compiler would be reporting the run again.
+
+### The manual arm fails on both families, and it is the useful failure
+
+Both `--compile manual` arms exit 1, at the same line, with the same error:
+
+```
+RuntimeError: Error: accessing tensor output of CUDAGraphs that has been overwritten by a subsequent run.
+  File "/venv/omni/lib/python3.12/site-packages/transformers/utils/generic.py", line 911, in wrapper
+```
+
+`manual` is section 14's arm rebuilt as a control on `auto`: `disable_compile=True`, then an
+explicit `torch.compile(model.forward, mode="reduce-overhead", fullgraph=True)`. Compiling
+`forward` underneath `generate`'s own loop leaves the loop holding tensors that the next replay
+overwrites, and reading one raises. Section 14's hand-rolled capture met the same hazard on a
+`DynamicCache` and **returned a wrong token with nothing raised**; here it raises. The supported
+path is the arm that neither lies nor raises, and it is also the fastest arm in the table -- the
+same conclusion section 14 reached, arrived at from the failure side rather than the timing side.
+
+This is not a regression in anything that ships. `manual` exists to check that `auto` lands where
+a hand compile would, and the answer is that on this transformers version it cannot be run at all
+under `generate`, so the check is unavailable rather than negative.
+
+### What section 16 does not claim
+
+- **Two families, one card.** L4, `sm_89`, torch 2.11.0+cu126, one prompt pair, three reps per
+  budget. The rate is the two-budget slope so prefill cancels exactly, but nothing here bounds
+  long context, and section 14's note that the removable fraction falls as the cursor grows
+  applies to every number above.
+- **These are not the panel's checkpoints.** The packed arms are a uniform 3-bit map with routers
+  left dense -- `accounted_bits` 3.251 and 3.2515, 111 and 98 modules packed -- not the phase 4
+  allocator's 3.1488. Nothing here revises any accuracy figure, and no accuracy was scored in this
+  run at all.
+- **The fusion/cudagraph split is a decomposition, not an attribution.** It divides one mode pair;
+  it does not assign milliseconds to causes.
+- **`warmup_s` is unexplained.** Compiling costs 22.4-24.5 s on the bf16 arms and 7.98-9.03 s on
+  the packed ones -- the packed model, with 111 or 98 substituted modules and a custom op in the
+  graph, compiles roughly three times *faster* in both families. It reproduces across both
+  families and both modes, and there is no account of it here.
