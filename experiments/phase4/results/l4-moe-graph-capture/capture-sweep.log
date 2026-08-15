@@ -1,0 +1,8 @@
+fused b3 t1 rc=0
+fused b3 t8 rc=0
+fused b3 t64 rc=0
+fused b4 t1 rc=0
+fused b4 t8 rc=0
+fused b4 t64 rc=0
+loop b4 t1 rc=0
+SWEEP_DONE

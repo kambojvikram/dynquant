@@ -1,0 +1,39 @@
+{
+  "arm": "ops",
+  "device": "NVIDIA L4",
+  "torch": "2.11.0+cu126",
+  "has_grouped_gemv": true,
+  "experts": 32,
+  "hidden": 2048,
+  "moe_intermediate": 1792,
+  "top_k": 4,
+  "bits": 4,
+  "tokens": 1,
+  "ops": [
+    {
+      "op": "bincount(minlength=E)",
+      "captured": false,
+      "error": "RuntimeError: Cannot copy between CPU and CUDA tensors during CUDA graph capture unless the CPU tensor is pinned. Please use tensor.pin_memory() or allocate the tensor with pin_memory=True."
+    },
+    {
+      "op": "bincount(minlength=2E)",
+      "captured": false,
+      "error": "RuntimeError: Cannot copy between CPU and CUDA tensors during CUDA graph capture unless the CPU tensor is pinned. Please use tensor.pin_memory() or allocate the tensor with pin_memory=True."
+    },
+    {
+      "op": "sort",
+      "captured": true
+    },
+    {
+      "op": "cumsum",
+      "captured": true
+    },
+    {
+      "op": "zeros.scatter_add_",
+      "captured": true
+    }
+  ]
+}
+rep2 dynquant rc=0
+rep2 eager rc=0
+CONFIRM-DONE

@@ -601,6 +601,16 @@ pays it once inside a launch that was already memory-bound. So the kernel's adva
 the width narrows, which is the direction that matters: 3-bit is where this project's margins are,
 and it is where the loop is worst.
 
+> **Corrected 2026-08-15.** *Width-independent* was the fence talking. Every number in the table
+> above was taken with a `torch.bincount` host read live inside `_segment_offsets`, one per bank
+> per layer — a fixed per-step cost paid identically at both widths, which is precisely what
+> flattens a width difference. With it removed the same harness on the same box reads
+> `31.58 -> 32.52`: **3 bits is 3.0% faster than 4**, the direction a memory-bound decode should
+> move. The rest of this subsection survives — the loop still loses 24% going 4 to 3, and the
+> grouped path's advantage still grows as the width narrows, from 1.95x to **2.66x**. See
+> [section 13](#13-the-capture-and-the-fence-counting-could-not-see) for the fix, the per-op
+> bisect that found it, and the re-run.
+
 Both 3-bit arms generate coherently. Asked for a SQL query over departments by average salary,
 the grouped 3-bit arm opens *"I need to write a SQL query that returns the three departments with
 the highest average salary... to get averages and order..."* and proceeds correctly; asked why
@@ -620,10 +630,138 @@ width-dependent error.
   the same prompts. That is enough to retire *"no end-to-end model ran through the grouped
   kernel"*; it is not an accuracy result, and the panels elsewhere in `docs/reports/` are what
   accuracy claims rest on.
-- **CUDA Graphs are not in this.** P8's gate also asks that graph replay remove measurable launch
-  overhead. Nothing here is captured, and the decode rates above are eager-mode launches. The
-  device-tensor `_segment_offsets` work in the packed-MoE report removed the host reads that made
-  capture impossible, but capture itself remains unmeasured.
+- **CUDA Graphs are not in this.** *(Superseded 2026-08-15 by section 13.)* P8's gate also asks
+  that graph replay remove measurable launch overhead. Nothing here is captured, and the decode
+  rates above are eager-mode launches. The device-tensor `_segment_offsets` work in the packed-MoE
+  report removed the host reads that made capture impossible, but capture itself remains
+  unmeasured. Both sentences turned out to be wrong in the same place: that work removed *a* host
+  read, not *the* host reads, and the first capture attempt refused on the fused path.
 - **The load-imbalance stress case is the sweep's, not this run's.** Routing here is whatever the
   model does on two prompts; the all-tokens-to-one-expert case is section 10's `band` column.
 
+
+## 13. The capture, and the fence counting could not see
+
+Section 12 closed with *"CUDA Graphs are not in this"* and an argument for why they would be easy:
+the packed-MoE report had removed `_segment_offsets`' `.tolist()`, a host read is the thing that
+makes capture impossible, therefore the forward was capturable. That is a syllogism, and it was
+built on a claim nothing had tested — the docstring's *"`bincount` and `cumsum` are both
+shape-determined, so the whole function traces."*
+
+The first capture attempt refused. Not the loop — **the fused path**, the one the removal was
+about:
+
+```
+RuntimeError: Cannot copy between CPU and CUDA tensors during CUDA graph capture
+unless the CPU tensor is pinned.
+```
+
+### `torch.bincount` reads its input on the host, and `minlength` does not spare it
+
+`bincount` sizes its output from `input.max()`, which it takes as a scalar on the host. Supplying
+`minlength` raises the floor on that size; it does not remove the read, because the op still has
+to know whether the data exceeds the floor. Bisected one primitive at a time, same ids, at
+`--arm ops`:
+
+| op | captures |
+|---|---|
+| `bincount(minlength=E)` | **no** |
+| `bincount(minlength=2E)` | **no** |
+| `sort` | yes |
+| `cumsum` | yes |
+| `zeros(E+1).scatter_add_` | yes |
+
+So the count is a `scatter_add_` into a fixed `[E + 1]` buffer now, and the extra bin is where the
+clamp sends the expert-parallel sentinels — dropped by the same `[:num_experts]` slice as before,
+so the semantics did not move, only the arithmetic that produced them.
+
+The interesting part is not the fix. It is that **this survived the section that was about it**.
+The packed-MoE report found the `.tolist()`, removed it, and asserted the absence by counting
+`.tolist()` calls — the only assertion available, since removing a fence changes no output. That
+counter is exact, and it answered a narrower question than its section claimed: `bincount` does
+not call `.tolist()`, so a second fence per bank per layer sat in the same function, on the same
+44-per-token budget, and passed every test in the file. Capture is what found it, because capture
+does not need to be told in advance what to look for.
+
+### What replay is worth, and it is a decode-shaped number
+
+One MoE block — `dynquant_experts_forward` over two `DynQuantExpertBank` projections at
+LFM2.5-8B-A1B's geometry (E=32, hidden 2048, moe-intermediate 1792, top-4). Eager is timed
+*after* the capture, on the same buffers, so nothing about the ordering favours replay. Every
+arm re-checks the graph's output against a fresh eager result on fresh inputs, because a graph
+holding stale pointers replays happily and returns the previous answer:
+
+| arm | bits | tokens | captured | eager ms | replay ms | removed ms | speedup |
+|---|---|---|---|---|---|---|---|
+| fused | 4 | 1 | yes | 0.53555 | 0.16486 | 0.37069 | **3.25x** |
+| fused | 4 | 8 | yes | 1.40074 | 1.22163 | 0.17911 | 1.15x |
+| fused | 4 | 64 | yes | 3.22605 | 3.20973 | 0.01632 | 1.00x |
+| fused | 3 | 1 | yes | 0.53851 | 0.14746 | 0.39105 | **3.65x** |
+| fused | 3 | 8 | yes | 1.28965 | 1.09349 | 0.19616 | 1.18x |
+| fused | 3 | 64 | yes | 4.12979 | 4.06830 | 0.06149 | 1.01x |
+| **loop** | 4 | 1 | **NO** | — | — | — | — |
+
+Read the *removed* column, not the ratio. It falls too — 0.371 ms at one token, 0.179 at eight,
+0.016 at sixty-four. What replay removes is therefore not the launch cost but **the launch cost
+not already hidden behind GPU work**. At batch 64 the CPU has finished issuing before the GPU
+has finished the first kernel, and a graph has nothing left to save. That is exactly the shape a
+launch-bound claim should have, and it is why this number belongs to decode and to nothing else.
+
+### The loop cannot be captured at any width
+
+The per-expert loop reads `.tolist()` to decide how many iterations to run. That is not a fence
+that tuning removes; it is the trip count. So the grouped path is not merely 1.95x faster than
+the loop at 4 bits — the two are on opposite sides of a capturability line, and no amount of work
+on the loop crosses it.
+
+### Re-running end to end, because the fence was on the fused path too
+
+Section 12's decode numbers were taken with the `bincount` fence live in every packed step. So
+they were re-taken, same harness, same box, same checkpoint, after the fix:
+
+| arm | bits | section 12 | re-run | rep 2 | change |
+|---|---|---|---|---|---|
+| `bf16` | — | 33.14 | 33.25 | — | +0.3% |
+| `eager` | 4 | 16.20 | 16.18 | — | -0.1% |
+| `dynquant` | 4 | 31.64 | 31.58 | — | -0.2% |
+| `eager` | 3 | 12.23 | 12.19 | 12.27 | +0.1% |
+| `dynquant` | 3 | 31.55 | **32.78** | **32.25** | **+3.1%** |
+
+`eager` is the control and it is a control the harness supplies rather than one this section
+constructed: it is the built-in expert loop, it never enters `_segment_offsets`, and it did not
+move — 0.7% spread across both widths. `bf16` did not move either. Only the packed 3-bit arm did.
+
+Two post-fix readings 1.6% apart, both above the single pre-fix reading. That is **suggestive,
+not settled**: with one measurement on the old side there is no paired test to run, and the
+honest statement is that the 3-bit arm moved by about the size of its own run-to-run spread plus
+a bit. Nothing else in this report depends on which end of that interval is right.
+
+**A section 12 claim is wrong and is corrected here.** Section 12 read `31.64 -> 31.55` across
+widths and called the grouped path *width-independent at decode*. Post-fix it reads
+`31.58 -> 32.52` (mean of the two 3-bit readings): **3 bits is 3.0% faster than 4**, which is
+what a memory-bound decode should do when it reads 25% fewer weight bytes. The fence was
+flattening the difference — a fixed per-step cost paid identically at both widths will do that.
+The corrected picture, against `bf16` at 33.25 tok/s:
+
+| arm | bits | tok/s | vs loop | vs bf16 | resident MiB | vs bf16 |
+|---|---|---|---|---|---|---|
+| `dynquant` | 4 | 31.58 | 1.95x | 0.950x | 4295.7 | 3.76x less |
+| `dynquant` | 3 | 32.52 | 2.66x | 0.978x | 3286.7 | 4.91x less |
+
+Resident memory is identical to section 12 to the tenth of a MiB in both re-runs, as it must be:
+the fix changes how a count is computed, not what is stored.
+
+### What section 13 does not claim
+
+- **One MoE block is not the model.** The 3.25x is a block-level replay number. The end-to-end
+  effect of capturing a *whole decode step* is not measured here, and the arithmetic that
+  suggests it — 22 MoE layers x 0.371 ms = 8.2 ms against a measured 31.67 ms step, so 26% — is
+  an **upper bound, not a prediction**. In the real model the CPU is issuing other layers' work
+  while the GPU runs these, so some of that latency is already hidden, exactly as it is at 8
+  tokens in the sweep above.
+- **The capture probe uses synthetic weights.** It measures launch structure, not accuracy;
+  accuracy lives in section 12's generations and in the parity suite.
+- **One card, one family.** L4, sm_89, torch 2.11.0+cu126, LFM2.5's MoE geometry. A
+  capturability result is architectural and should port; a 3.25x is not.
+- **The re-run does not re-open section 12's other findings.** Resident memory, the coherence
+  checks, and the load-imbalance stress case are unaffected by a fence.

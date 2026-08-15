@@ -201,11 +201,26 @@ def _segment_offsets(sorted_expert_ids: torch.Tensor, num_experts: int) -> torch
 
     Stays on device, and int32 because that is what the kernel's two loads per block
     read -- these are token counts, and a bank that overflowed int32 would have
-    overflowed the activation first. Nothing here reads a value: ``bincount`` and
-    ``cumsum`` are both shape-determined, so the whole function traces. The host read is
-    :func:`_grouped_linear_packed`'s, taken only when the loop is what runs.
+    overflowed the activation first.
+
+    Counted with ``scatter_add_`` rather than ``bincount``, and the difference is not
+    style. ``torch.bincount`` sizes its output from ``input.max()``, which it reads on
+    the host -- ``minlength`` raises the floor but does not spare the read, so a call
+    that could not possibly need it pays anyway. That read is invisible in every output
+    this function has, which is why an earlier version of this docstring asserted the
+    opposite and no test contradicted it; ``experiments/phase4/graph_capture_probe.py``
+    contradicted it by trying to capture the forward, and CUDA graph capture refused at
+    this line. ``scatter_add_`` into a fixed ``[E + 1]`` buffer is genuinely
+    shape-determined, and the extra bin is where the clamp sends the sentinels, so they
+    are dropped by the same slice as before rather than by a semantic that changed.
     """
-    counts = torch.bincount(sorted_expert_ids, minlength=num_experts)[:num_experts]
+    counts = torch.zeros(num_experts + 1, dtype=torch.long, device=sorted_expert_ids.device)
+    counts.scatter_add_(
+        0,
+        sorted_expert_ids.long().clamp(max=num_experts),
+        torch.ones_like(sorted_expert_ids, dtype=torch.long),
+    )
+    counts = counts[:num_experts]
     return torch.cat([counts.new_zeros(1), counts.cumsum(dim=0)]).to(torch.int32)
 
 

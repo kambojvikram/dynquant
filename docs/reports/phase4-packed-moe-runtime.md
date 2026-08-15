@@ -1602,13 +1602,27 @@ packed runtime needs next, and neither is reachable from a loop that asks the ho
 be.
 
 So the table stays on device. `_segment_offsets` now returns an `[E + 1]` **int32 tensor** built
-from `bincount` and `cumsum` — both shape-determined, so the whole function traces — and
-`grouped_quantized_matmul` hands it to the op unread. The kernel's grid is
+from `scatter_add_` and `cumsum` — both shape-determined, so the whole function traces — and
+`grouped_quantized_matmul` hands it to the op unread.
+
+> **Corrected 2026-08-15.** That sentence said `bincount` and `cumsum`, and it was wrong about
+> `bincount`. `torch.bincount` sizes its output from `input.max()`, read on the host, and
+> `minlength` raises the floor on that size without removing the read. So one fence per bank per
+> layer survived this section — the same 44 per token it is about — and survived it *on the fused
+> path*, where the `.tolist()` this section removed had never been. Nothing here could have seen
+> it: a host read changes no output, and the counter below counts `.tolist()`, which `bincount`
+> does not call. It was found by trying to capture the forward — the kernel report's
+> [section 13](kernel-first-compile.md#13-the-capture-and-the-fence-counting-could-not-see) —
+> and CUDA graph capture refused at this line. The count is a `scatter_add_` into a fixed
+> `[E + 1]` buffer now, the extra bin is where the clamp sends the sentinels, and the property is
+> pinned by two tests that ask it directly rather than by a docstring. The kernel's grid is
 `(ceil_div(out_features, 16), num_experts)`, derived from `seg_offsets.shape`; the values are read
 by two `__ldg` loads inside the block that needs them. int32 rather than `bincount`'s native int64
 because the device side reads that width and a wider table would hand it halves of neighbouring
 entries — and rejected rather than silently cast, because a cast here would reintroduce the host
-round trip in the middle of the path whose entire purpose is not to have one.
+round trip in the middle of the path whose entire purpose is not to have one. (int64 was
+`bincount`'s native width; the `scatter_add_` counter is built at that width for the same reason
+and narrowed at the same place.)
 
 ### Asserting the absence of something
 
@@ -1616,8 +1630,9 @@ Removing a synchronization changes no output. Every equality test in the file pa
 that computes the list and then ignores it, which means the property this work exists for is not
 in reach of an A/B on results.
 
-It is asserted by counting. `torch.Tensor.tolist` is monkeypatched to record every call on a 1-D
-int32 tensor, and the same fixture runs twice:
+It is asserted by counting — and counting turned out to answer a narrower question than it looked
+like, which the correction above is the consequence of. `torch.Tensor.tolist` is monkeypatched to
+record every call on a 1-D int32 tensor, and the same fixture runs twice:
 
 | path | reads of the segment table | by whom |
 |---|---|---|

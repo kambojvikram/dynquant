@@ -478,8 +478,11 @@ def test_the_segment_table_is_device_resident_int32_with_sentinels_dropped() -> 
     holds and every sentinel row sits beyond it.
 
     Turns red when: the table goes back to a list (the annotation would still say
-    Tensor), widens to int64 to match ``bincount``, or starts counting clamped ids --
-    which would widen one band and displace every band after it.
+    Tensor), widens to int64 to match the counter it is built from, or starts counting
+    clamped ids -- which would widen one band and displace every band after it.
+
+    Says nothing about whether the *construction* reads a value on the host, which is a
+    separate property with a separate cost and its own two tests below.
     """
     from dynquant.runtime.experts import _segment_offsets
 
@@ -737,3 +740,92 @@ def test_a_sentinel_never_widens_a_band_it_sorts_after() -> None:
     out = dynquant_experts_forward(experts, hidden, index, torch.ones(2, 2))
 
     assert torch.equal(out.reshape(-1), torch.tensor([5.0, 5.0]))
+
+
+def test_the_segment_table_is_built_without_reading_a_value_on_the_host() -> None:
+    """No op in ``_segment_offsets`` reads the tensor's contents to decide anything.
+
+    This is the property that had a docstring and no test, and the gap was not
+    academic: the claim said "``bincount`` and ``cumsum`` are both shape-determined",
+    and ``torch.bincount`` sizes its output from ``input.max()``, read on the host.
+    ``minlength`` raises the floor on that size but does not remove the read -- measured
+    both ways in ``experiments/phase4/graph_capture_probe.py``, which is what found it,
+    because a host read changes no output and so no value assertion can see it.
+
+    Checked through the dispatcher rather than by monkeypatching ``torch.bincount``, so
+    a rewrite that reaches the same kernel by another spelling is still caught.
+    ``_local_scalar_dense`` is on the list for the same reason under a different name:
+    it is what ``.item()`` lowers to, and a shape computed from it is a fence whatever
+    the Python looked like.
+
+    Turns red when: the counting goes back to ``bincount``, or anything else in here
+    starts sizing a tensor from a value. Its consequence is the test below, which needs
+    a GPU; this one runs everywhere and names the same defect.
+    """
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    from dynquant.runtime.experts import _segment_offsets
+
+    banned = {"aten::bincount", "aten::_local_scalar_dense", "aten::item", "aten::nonzero"}
+    seen: list[str] = []
+
+    class _Record(TorchDispatchMode):
+        def __torch_dispatch__(self, func: Any, types: Any, args: Any = (), kwargs: Any = None):  # type: ignore[no-untyped-def]
+            # The *schema* name, ``aten::bincount``, not ``str(func)``, which is the
+            # overload's ``aten.bincount.default``. A first draft of this test compared
+            # against the schema spelling while recording the overload spelling, so it
+            # passed with ``bincount`` restored -- caught only by putting the defect
+            # back and watching for red.
+            schema = getattr(func, "_schema", None)
+            seen.append(getattr(schema, "name", None) or str(func))
+            return func(*args, **(kwargs or {}))
+
+    ids = torch.tensor([0, 0, 1, 3, 4, 5])
+    with _Record():
+        seg = _segment_offsets(ids, num_experts=4)
+
+    assert seg.tolist() == [0, 2, 3, 3, 4]
+    offenders = sorted({name for name in seen if name in banned})
+    assert not offenders, f"{offenders} read a value on the host; seen: {sorted(set(seen))}"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph capture needs a GPU")
+def test_the_segment_table_captures_into_a_cuda_graph() -> None:
+    """The consequence of the test above, stated as the thing P8's gate actually asks.
+
+    A forward free of host reads is capturable; a forward with one is not, and CUDA
+    refuses it at the offending op rather than degrading. So capture is the sharpest
+    available assertion that no fence survived, and it is sharper than counting ops
+    because it does not need to know in advance what to count -- this is how the
+    ``bincount`` read was found after the ``.tolist()`` read had been removed and the
+    path was believed clean.
+
+    Replay is checked against a *fresh* input, because that is the failure this cannot
+    afford to miss. A graph that captured stale pointers replays without error and
+    returns the previous call's answer, which a timing-only check reads as a speedup.
+
+    Deliberately scoped to ``_segment_offsets`` and not to the whole dispatch: the loop
+    path genuinely cannot be captured -- it reads its bounds with ``.tolist()`` -- so a
+    forward-level capture test would pass or fail on whether the compiled kernel happens
+    to be installed, which is a different question from this one.
+    """
+    ids = torch.tensor([0, 0, 1, 3, 4, 5], device="cuda")
+
+    from dynquant.runtime.experts import _segment_offsets
+
+    side = torch.cuda.Stream()
+    side.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(side):
+        for _ in range(3):
+            _segment_offsets(ids, num_experts=4)
+    torch.cuda.current_stream().wait_stream(side)
+
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        captured = _segment_offsets(ids, num_experts=4)
+
+    ids.copy_(torch.tensor([0, 1, 1, 1, 2, 4], device="cuda"))
+    graph.replay()
+    torch.cuda.synchronize()
+
+    assert captured.tolist() == [0, 1, 4, 5, 5]
