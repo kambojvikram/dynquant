@@ -207,8 +207,10 @@ def _generate(
     force: bool = True,
     cache_impl: str | None = None,
     disable_compile: bool = False,
+    compile_mode: str = "reduce-overhead",
 ) -> tuple[float, str]:
     from transformers import GenerationConfig
+    from transformers.generation.configuration_utils import CompileConfig
 
     enc = tok(_render(tok, prompt), return_tensors="pt", add_special_tokens=False).to(device)
     # Built explicitly and passed per call: an unset field on transformers v5 is
@@ -237,6 +239,10 @@ def _generate(
         # arm that means eager has to say so. Left False the "uncompiled" arm silently
         # becomes a second compiled arm and the control disappears.
         disable_compile=disable_compile,
+        # Named so the automatic path can be run at `default` as well as at its own
+        # `reduce-overhead` default. The two differ by cudagraphs and nothing else, so
+        # the pair splits a speedup into what Inductor fused and what the graph removed.
+        compile_config=CompileConfig(mode=compile_mode),
         max_new_tokens=budget,
         min_new_tokens=budget if force else None,
         pad_token_id=tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id,
@@ -269,7 +275,13 @@ def _dynamo_graphs() -> int:
 
 
 def _probe_cache(
-    model: Any, tok: Any, prompt: str, device: str, cache_impl: str | None, disable_compile: bool
+    model: Any,
+    tok: Any,
+    prompt: str,
+    device: str,
+    cache_impl: str | None,
+    disable_compile: bool,
+    compile_mode: str,
 ) -> Any:
     """One short generation asked to hand its cache back, so presence is observed.
 
@@ -277,6 +289,7 @@ def _probe_cache(
     alive past the call and that is a memory cost the peak numbers should not carry.
     """
     from transformers import GenerationConfig
+    from transformers.generation.configuration_utils import CompileConfig
 
     enc = tok(_render(tok, prompt), return_tensors="pt", add_special_tokens=False).to(device)
     cfg = GenerationConfig(
@@ -288,6 +301,7 @@ def _probe_cache(
         use_cache=True,
         cache_implementation=cache_impl,
         disable_compile=disable_compile,
+        compile_config=CompileConfig(mode=compile_mode),
         max_new_tokens=4,
         min_new_tokens=4,
         return_dict_in_generate=True,
@@ -305,6 +319,7 @@ def _time_arm(
     reps: int,
     cache_impl: str | None = None,
     disable_compile: bool = False,
+    compile_mode: str = "reduce-overhead",
 ) -> dict[str, Any]:
     # Timed because on a compiled arm this call is where compilation and the
     # cudagraph warmup are paid, and a number that large should be reported rather
@@ -318,9 +333,12 @@ def _time_arm(
         device,
         cache_impl=cache_impl,
         disable_compile=disable_compile,
+        compile_mode=compile_mode,
     )
     warmup_s = time.perf_counter() - t0
-    cache_probe = _probe_cache(model, tok, PROMPTS[0], device, cache_impl, disable_compile)
+    cache_probe = _probe_cache(
+        model, tok, PROMPTS[0], device, cache_impl, disable_compile, compile_mode
+    )
     rows: list[dict[str, Any]] = []
     for prompt in PROMPTS:
 
@@ -333,6 +351,7 @@ def _time_arm(
                 device,
                 cache_impl=cache_impl,
                 disable_compile=disable_compile,
+                compile_mode=compile_mode,
             )[0]
 
         shorts = [gen(SHORT) for _ in range(reps)]
@@ -347,6 +366,7 @@ def _time_arm(
             force=False,
             cache_impl=cache_impl,
             disable_compile=disable_compile,
+            compile_mode=compile_mode,
         )[1]
         rows.append(
             {
@@ -363,6 +383,7 @@ def _time_arm(
     return {
         "prompt_style": "chat-template" if getattr(tok, "chat_template", None) else "raw",
         "cache_impl": cache_impl or "default",
+        "compile_mode": compile_mode,
         "warmup_s": round(warmup_s, 2),
         # Observed, not declared: 0 is what an eager arm has to show, and a non-zero
         # count next to `compile: off` would mean the flag did not reach `generate`.
@@ -401,6 +422,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=("off", "auto", "manual"),
         help="off: disable_compile=True. auto: whatever generate does unaided. "
         "manual: disable_compile=True plus an explicit torch.compile of forward.",
+    )
+    ap.add_argument(
+        "--compile-mode",
+        default="reduce-overhead",
+        choices=("reduce-overhead", "default"),
+        help="`default` is Inductor without cudagraphs, so the pair splits the speedup "
+        "into what was fused and what was launched",
     )
     ap.add_argument("--out", help="append the record to this JSON-lines file")
     args = ap.parse_args(argv)
@@ -444,13 +472,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.compile == "manual":
         # `model.forward` rather than the module: `generate` calls `forward` directly,
         # and wrapping the module would leave the decode loop running the original.
-        record["compile_mode"] = "reduce-overhead"
-        model.forward = torch.compile(model.forward, mode="reduce-overhead", fullgraph=True)
+        model.forward = torch.compile(model.forward, mode=args.compile_mode, fullgraph=True)
 
     # Generation is measured against its own baseline, so the decode footprint is not
     # hidden underneath a load-time peak it never reaches.
     torch.cuda.reset_peak_memory_stats()
-    record.update(_time_arm(model, tok, args.device, args.reps, args.cache_impl, disable_compile))
+    record.update(
+        _time_arm(
+            model, tok, args.device, args.reps, args.cache_impl, disable_compile, args.compile_mode
+        )
+    )
     record["peak_mib_generate"] = round(_peak_mib(), 1)
     record["peak_mib_total"] = max(record["peak_mib_loaded"], record["peak_mib_generate"])
 
