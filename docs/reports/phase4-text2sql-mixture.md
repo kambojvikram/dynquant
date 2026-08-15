@@ -2495,7 +2495,8 @@ three arms cost -23.53, -26.37 and **-4.40** points respectively. It is the only
 panel that is still a working text-to-SQL model: 213 unparseable generations against GPTQ's 1,008
 and AWQ's 1,523.
 
-**The +19.13 over GPTQ is held pending a scheme control, and the +21.98 over AWQ is not.**
+**The +19.13 over GPTQ spanned two differences and §13.5 below separates them; the +21.98
+over AWQ never did.**
 `git log -p` on `experiments/_llmc.py` shows `symmetric=(method != "awq")` hardcoded from that
 file's first commit, so this panel's `gptq_3b` was fitted on a *symmetric* grid while `awq_3b`
 and `dq_3b` were asymmetric. The same difference was measured on the S4 Mistral-7B panel at the
@@ -2504,13 +2505,18 @@ same 3-bit width, holding method, calibration, group size and byte anchor fixed:
 arm. This one did not collapse the same way -- 60.76% is a degraded model, not a broken one -- so
 the Mistral figure is not transferable and the gap here may be mostly allocation. But 23.53 points
 under the ceiling is the same shape of symptom, and until `gptq_3b` is re-run asymmetric at
-3,332,904,576 B the +19.13 spans two differences and attributes to neither.
+3,332,904,576 B the +19.13 spans two differences and attributes to neither. **That arm has
+since run.** §13.5 reports it: the flag alone is worth **+9.49**, GPTQ recovers to 70.25%, and
+DynQuant's margin at this width is **+9.64** rather than +19.13. Read every figure below that is
+expressed as a fraction of the margin against §13.5's number, not this one -- the rungs
+themselves are unaffected, because all four sit between DynQuant arms.
 
 What the control cannot touch is everything below. The four decomposition arms are all DynQuant
 arms at this same anchor, differing only in what the allocator was shown, so the +9.47 the signal
 earns and the +9.66 the signal-free allocator earns are measured inside one quantizer, one scheme
 and one set of bytes. A GPTQ arm re-fitted asymmetric would move the +19.13 the ladder is read
-*against*; it would not move a single rung of the ladder.
+*against*; it would not move a single rung of the ladder. That is what happened: every
+rung below is reported here at the value §13.5 reconciles against the recovered arm.
 
 **What the allocator did is legible, and it is not diffuse.** `experiments/phase4/map_roles.py`
 reads the two exported maps and prints role by width; the table below is generated, not
@@ -2639,13 +2645,16 @@ The maps here are not re-derived for it, and the next one built on this architec
 | `dq_3b` - `dq_3b_shuf` | which module of a role holds a width -- score and `dL` row together | +0.77 | [+0.27, +1.26] | 509/417 | 0.00277 |
 | `dq_3b_shuf` - `dq_3b_flat` | the score's magnitude, over a table permuted the same way | **-1.18** | [-1.62, -0.73] | 309/450 | 6.9e-07 |
 | `dq_3b_flat` - `dq_3b_unif` | the measured `dL` table, permuted but present | **+9.88** | [+9.16, +10.60] | 1568/382 | 1.9e-169 |
-| `dq_3b_unif` - `gptq_3b` | role floors and the knapsack, with no signal at all | +9.66 | [+8.74, +10.58] | 2164/1005 | 1.0e-95 |
+| `dq_3b_unif` - `gptq_3b` | role floors and the knapsack, against a *symmetric* GPTQ (§13.5) | +9.66 | [+8.74, +10.58] | 2164/1005 | 1.0e-95 |
 
 The four rungs partition the margin exactly, in raw counts and not just to two decimals:
 92 - 141 + 1186 + 1159 = 2296 items. **The fine-tune signal is worth +9.47 of the +19.13, or
-49.5%; the signal-free allocator is worth +9.66, or 50.5%.** A method with no training-time hook,
-given this package's role floors and soft-floor knapsack, would score 70.42% -- ten points over
-GPTQ and nine under DynQuant.
+49.5%; the signal-free allocator is worth +9.66, or 50.5% -- but that bottom rung is measured
+against a symmetric GPTQ, and §13.5 splits it into +9.49 of scheme and +0.17 of allocator
+shape.** A method with no training-time hook, given this package's role floors and soft-floor
+knapsack, scores 70.42%: ten points over a symmetric GPTQ, and **not separated** from a GPTQ
+allowed its own asymmetric grid (*p* = 0.706). Against that arm the signal's share is not
+49.5% but **98.3%**.
 
 **The middle rung is negative, and that is the result.** Setting every score to 1.0 does not cost
 accuracy against a permuted score; it *gains* 1.18 points, 450 items flipping to `dq_3b_flat`
@@ -2759,11 +2768,12 @@ good control.
 
 **What this does not move is the headline.** The ladder is nested, so the signal rungs sum to
 `dq_3b` - `dq_3b_unif` = **+9.47** whatever the seed: a draw that raises the first rung lowers the
-next by the same amount. The signal's total, and the 49.5% share, are fixed by two arms neither
-of which is a permutation. What the seed does move is the *boundary between* the rungs, by about
-+/-0.4 points, and with it the one-rung figure that the Ministral comparison below is read
-against: **2.1% at seed 3, 4.0% at seeds 0 and 1, 6.3% at seed 2.** So `56% against 4.0%` in that
-table is `56% against 2.1-6.3%`, which does not change its direction and does widen it.
+next by the same amount. The signal's total, and the share computed from it, are fixed by two arms
+neither of which is a permutation. What the seed does move is the *boundary between* the rungs, by
+about +/-0.4 points, and with it the one-rung figure that the Ministral comparison below is read
+against, now over §13.5's denominator: **4.1% at seed 3, 8.0% at seeds 0 and 1, 12.4% at seed
+2.** So `56% against 8.0%` in that table is `56% against 4.1-12.4%`, which does not change its
+direction and does widen it.
 
 **Three things this does not establish.** First, `flat` splits the old +8.71 rung into a score
 channel and a pricing channel, but it does not isolate the pricing cleanly: `apply_null` permutes
@@ -2794,8 +2804,8 @@ So there are two series of two, not one series of three:
 
 | signal term | earlier point | here |
 |---|---|---|
-| both rungs, `dq` - `uniform` -- placement, ranking and pricing together | **12%** on Qwen, over an allocator worth +22.62 | **49.5%**, over +9.66 |
-| one rung, `dq` - `shuffle` -- placement within role alone | **56%** on Ministral, over +1.91 | **4.0%**, over +18.36 |
+| both rungs, `dq` - `uniform` -- placement, ranking and pricing together | **12%** on Qwen, over an allocator worth +22.62 | **98.3%**, over +0.17 |
+| one rung, `dq` - `shuffle` -- placement within role alone | **56%** on Ministral, over +1.91 | **8.0%**, over +8.87 |
 
 Both rows run in the direction those reports predicted, the share growing as the allocator's
 structural advantage shrinks. Two points are monotone in some direction whatever they are, so that
@@ -2803,14 +2813,17 @@ is consistency rather than evidence, and it is worth noting that the two rows di
 campaign had the large allocator -- Qwen's is the biggest number in the top row and Ministral's the
 smallest in the bottom, with this campaign at the other extreme of both.
 
-**The denominators do not match, and the mismatch runs against this campaign.** Qwen and Ministral
-both divide by `dq` - `rtn`, uniform-width rounding at the anchor. This panel has no RTN arm: its
-ladder bottoms at `gptq_3b`, which is uniform width *plus* a Hessian sweep. Read the gap the same
-way both times: the signal-free allocator stands 9.66 points above this panel's floor and stood
-22.62 above Qwen's. Whether that is because the allocator is worth less on this architecture or
-because the floor is a stronger method cannot be told apart from these arms, and a smaller
-denominator inflates both shares in the right-hand column either way. What settles it is an RTN
-3-bit arm at 3 332 904 576 B, which has not been run.
+**The denominators do not match, and the mismatch runs harder against this campaign than it
+did.** Qwen and Ministral both divide by `dq` - `rtn`, uniform-width rounding at the anchor.
+This panel has no RTN arm: its ladder now bottoms at `gptq_3b_asym_noao`, which is uniform
+width *plus* an asymmetric grid *plus* a Hessian sweep -- a stronger floor than either earlier
+campaign's, and stronger than the symmetric arm this paragraph used to name. Read the gap the
+same way both times: the signal-free allocator stands **+0.17 points, not separated**, above this
+panel's floor and stood 22.62 above Qwen's. Whether that is because the allocator is worth less on
+this architecture or because the floor is a stronger method cannot be told apart from these arms
+-- and now that the numerator is nearly the whole margin, the 98.3% in the right-hand column is as
+inflated as a share can get. What settles it is an RTN 3-bit arm at 3 332 904 576 B, which has
+not been run and is the one arm this section most needs.
 
 And neither earlier campaign can supply the other end of its own ladder. Qwen never permuted;
 Ministral never flattened. So 12% cannot be split into its two rungs and 56% cannot be extended
@@ -2825,6 +2838,165 @@ the six. The flat arm is the exception and it is the arm this section turns on: 
 of all six and still runs longer than both `dq_3b` and `dq_3b_shuf`. Between arms this close the
 corroboration is worth less than it looked -- it separates the collapsed arms from the working
 ones cleanly and says nothing reliable inside the leading group.
+
+### 13.5 The scheme control: half the margin was a default, and the allocator's rung is zero
+
+§13.4 held the +19.13 over GPTQ pending one arm and named the flag it turned on. That arm has run.
+`gptq_3b_asym_noao` is the same checkpoint, the same calibration set, the same group size, the
+same 3,332,904,576-byte anchor, the same 12 000-item evaluation and the same expert dispatch as
+`gptq_3b`, changing exactly one thing: `symmetric=False`. Act-order stayed off -- the `noao` in
+the name records it -- so the arm prices the scheme and nothing else. It lands at 3.1488 bits per
+parameter and **3,332,904,576 B, 0.0000% off the anchor**, byte-identical to the symmetric arm,
+because the flag changes what the grid is fitted to and not how much of it is stored. The record
+carries `scheme.source = "recorded"` rather than `"method-default"`, which is how the panel knows
+the flag was set rather than inherited.
+
+**The flag is worth +9.49 points.** [+8.65, +10.33], 1 944 items flipping to the asymmetric arm
+against 805 the other way, Holm 8.0e-107. GPTQ goes from 60.76% to **70.25%** (8 430/12 000), and
+it does not get there by failing differently: SQL errors fall from 1 008 to 586, exact-string
+matches rise from 5 127 to 6 500, and the one unparseable generation becomes zero. Evaluation wall
+clock falls from 637 minutes to 446, which is the same direction §13.4's wall-clock corroboration
+predicts and carries the same weight it did there -- useful between a broken arm and a working
+one, unreliable inside the leading group.
+
+**The headline shrinks by that much and survives.** DynQuant's margin over GPTQ at 3 bits is
+**+9.64** rather than +19.13. The AWQ margin is untouched, because `awq_3b` was asymmetric
+already; so is every row against the bf16 ceiling, and so is every decomposition rung, all four of
+which sit between DynQuant arms.
+
+| comparison | delta | 95% CI | flips | p | p (Holm/9) | separated |
+|---|---:|---|---|---:|---:|---|
+| 3b DynQuant vs GPTQ asymmetric | **+9.64** | [+8.88, +10.41] | 1733/576 | 9.7e-134 | 6.8e-133 | yes |
+| 3b GPTQ asymmetric vs symmetric | **+9.49** | [+8.65, +10.33] | 1944/805 | 1.3e-107 | 8.0e-107 | yes |
+| 3b signal-free allocator vs GPTQ asymmetric | **+0.17** | [-0.66, +0.99] | 1280/1260 | **0.706** | 0.706 | **no** |
+
+**The third row falsifies a published sentence, and it is the one this section cared most about.**
+§13.4 said that a method with no training-time hook, given this package's role floors and
+soft-floor knapsack, would score 70.42% -- "ten points over GPTQ and nine under DynQuant." Ten
+points over a *symmetric* GPTQ. Against a GPTQ that was allowed its own asymmetric grid,
+`dq_3b_unif` scores 70.42% against 70.25%: **+0.17 points, 1 280 items each way, *p* = 0.706**,
+the least separated comparison anywhere in this panel. Fidelity agrees -- agreement with bf16 is
+81.84% against 81.43%, +0.42 [-0.41, +1.24], *p* = 0.33. The role floors and the knapsack, handed
+no signal at all, are worth nothing measurable against a competently configured GPTQ at this width
+on this task.
+
+**The ladder now reconciles against a recovered baseline, and it does so exactly.** Splicing the
+new rung onto the bottom of §13.4's clean chain gives every rung its own single change and the sum
+its own arithmetic check, in raw item counts as well as in points.
+
+| rung | what it puts back | delta | items |
+|---|---|---:|---:|
+| `dq_3b` - `dq_3b_tabl` | the plasticity-times-saliency score, over the real table | **-0.48** | -58 |
+| `dq_3b_tabl` - `dq_3b_unif` | the measured `dL` table, unpermuted | **+9.96** | +1 195 |
+| `dq_3b_unif` - `gptq_3b_asym_noao` | role floors and the knapsack, with no signal at all | **+0.17** | +20 |
+| | | **+9.64** | **+1 157** |
+
+The five-rung chain reconciles to the same place: -0.48 + 1.25 - 1.18 + 9.88 + 0.17 = **+9.64**,
+and -58 + 150 - 141 + 1 186 + 20 = **+1 157**, which is `dq_3b` - `gptq_3b_asym_noao` measured
+directly. The old bottom rung has not moved either; it has split. `dq_3b_unif` - `gptq_3b` is
+still +9.66, and +9.49 of it is the scheme flag with +0.17 left over.
+
+**So the share is not 49.5% and never was against a fair baseline: it is 98.3%.** The fine-tune
+signal is worth +9.47 of the +9.64, and the allocator's shape is worth the remaining +0.17. That
+is a stronger claim about the method's thesis on a smaller margin, and it is the direction the
+standing pattern across campaigns predicts -- the signal's share grows as the allocator's
+structural advantage shrinks. Here the advantage went to zero and the share went to nearly all of
+it. The published **49.5%** was arithmetically correct and its denominator was a handicapped arm.
+
+**§13.4's guess about what the control would find was wrong, and wrong twice.** It said the
+Mistral panel's +69.4-point recovery was not transferable and that "the gap here may be mostly
+allocation." The first half held: the recovery here is +9.49, an eighth of Mistral's, because this
+arm was degraded rather than broken and had less to recover. The second half did not. The gap was
+about half scheme, and what survives removing the scheme is not allocation but signal -- the
+allocator's own contribution, measured against a baseline allowed the same grid, does not separate
+from zero.
+
+**But the +0.17 is two opposite results cancelling, and that is the more interesting finding.**
+Split by source it is heterogeneous at Q = 123.66 on 1 degree of freedom, *p* = 1.0e-28 -- the
+largest heterogeneity anywhere in this panel, larger than any headline comparison's. The
+signal-free allocator is nearly eight points *behind* the recovered GPTQ on gretel and three ahead
+on wikisql, and this panel's mixture is 74.5% wikisql, so the two nearly annihilate.
+
+| comparison | gretel (3 063) | wikisql (8 937) | pooled | Q | heterogeneous |
+|---|---|---|---:|---:|---|
+| DynQuant vs GPTQ asymmetric | **+2.81** [+1.29, +4.33] | **+11.98** [+11.10, +12.87] | +9.64 | 104.88 | yes |
+| GPTQ asymmetric vs symmetric | **+7.61** [+6.06, +9.16] | **+10.14** [+9.14, +11.13] | +9.49 | 7.25 | yes |
+| signal-free vs GPTQ asymmetric | **-7.87** [-9.52, -6.22] | **+2.92** [+1.98, +3.86] | +0.17 | 123.66 | yes |
+
+In accuracies: on gretel the signal-free allocator scores 53.77% against the recovered GPTQ's
+61.64%; on wikisql, 76.12% against 73.20%. Both per-source deltas separate comfortably. So "not
+separated" is a statement about a mixture and not about a model: at this mixture the allocator's
+shape is worth nothing, at a gretel-only mixture it would be worth about -8, and at a wikisql-only
+mixture about +3. Nothing in the aggregate row says which of those a reader should generalise
+from, and §13.4's two-series table divides by exactly this quantity. (The stratified
+inverse-variance pooled estimates in the panel's heterogeneity block read +9.67, +9.40 and +0.27
+rather than the marginal +9.64, +9.49 and +0.17 above; the two estimators differ by construction
+and none of the three verdicts turns on the difference.)
+
+The top row is heterogeneous too, and it is not the same shape. DynQuant beats the recovered GPTQ
+on **both** sources -- +2.81 and +11.98 -- so the +9.64 is a margin whose size varies, not a
+cancellation. That distinction is the whole reason to read the split.
+
+**Split by difficulty the third row is the only consistent one of the three**, and consistently
+zero: +0.35 [-0.56, +1.26] where bf16 is right, -0.80 [-2.71, +1.12] where bf16 is wrong, Q =
+1.12, *p* = 0.291, neither stratum separating. The other two are both heterogeneous and both
+concentrated where the ceiling is right: DynQuant vs the recovered GPTQ is +10.75 against +3.71,
+and the scheme flag is +11.05 against **+1.11 (not separated)** -- so an asymmetric grid recovers
+items bf16 also gets right and does almost nothing for the hard tail, which is what a fidelity
+story predicts and §13.1 already measured at 4 bits.
+
+**Fidelity says the same three things in the same order.** Agreement with bf16: DynQuant 89.90%,
+recovered GPTQ 81.43%, signal-free allocator 81.84%, symmetric GPTQ 72.28%. DynQuant vs the
+recovered GPTQ is **+8.47** [+7.70, +9.25] at Holm 8.7e-102; the flag itself is **+9.14** [+8.30,
++9.98]; the signal-free allocator against the recovered GPTQ is **+0.42** [-0.41, +1.24] at *p* =
+0.33, not separated. Every accuracy conclusion in this section has a fidelity twin with the same
+verdict.
+
+**The Holm family grew from six to nine, and every previously published adjusted *p* in this panel
+moved.** The three new rows join the same head-to-head family, so the six standing rows are now
+corrected over nine hypotheses instead of six. No verdict flips, and the raw *p*-values are
+unchanged, but a reader comparing this section's table against §13.1's or §13.4's banked printout
+will find different numbers in the Holm column and should find them here rather than infer a
+re-run.
+
+| standing comparison | raw p | Holm/6 as published | Holm/9 now | separated |
+|---|---:|---:|---:|---|
+| 4b DynQuant vs GPTQ | 0.00177 | 0.00353 | **0.00530** | yes |
+| 4b DynQuant vs AWQ | 1.10e-05 | 3.31e-05 | **4.42e-05** | yes |
+| 4b GPTQ vs AWQ | 0.272 | 0.272 | **0.543** | no |
+| 3b DynQuant vs GPTQ | <1e-300 | 0 | 0 | yes |
+| 3b DynQuant vs AWQ | <1e-300 | 0 | 0 | yes |
+| 3b GPTQ vs AWQ | 4.51e-09 | 1.80e-08 | **2.26e-08** | yes |
+
+The by-source, by-difficulty and fidelity families grew the same way and are corrected over nine
+throughout this section.
+
+**One arm of the panel could not be paired until the reader was fixed, and the fix is worth naming
+because it changes which rows have a *p* at all.** Twelve of this panel's records were written
+before `task_options` carried the mixture, so the comparability guard saw a record that stated its
+sources against eleven that stated nothing and refused every pairing. `backfill_task_sources`
+fills a pre-contract record's mixture from *this panel's own per-item source labels*, in order of
+first appearance -- which is `resolve_sources`'s order, because `load_text2sql` interleaves the
+sources round-robin -- and only for records whose per-source breakdown `load_sources` has already
+reconciled against those labels. It fills nothing it has no evidence about, never overwrites a
+record that states its own mixture, and leaves the comparison itself to `problem_set_difference`,
+so a control run over a genuinely different mixture still refuses afterwards. The table prints a
+banner naming the mixture and every record it filled, and the JSON payload carries the same under
+`backfilled_task_sources`.
+
+**What this leaves open, and one thing it makes more urgent.** The arm prices the scheme with
+act-order off, and a GPTQ arm with act-order enabled is a further difference this panel has not
+measured. It would be wrong to assume it can only recover more. On the S4 Mistral-7B panel,
+act-order on top of the *same* asymmetric grid took the arm from 76.08% down to **3.99%** -- 98 of
+2 454, with 1 994 generations that would not run and only spider scoring above 0.2% -- so the flag
+is not monotone and an act-order arm here could move the +9.64 in either direction. §13.4 asked
+for an RTN arm at this anchor to fix the denominator both series divide by, and that request is
+now the load-bearing one rather than a tidiness item: with the allocator's shape measuring +0.17
+against a Hessian method, the only remaining way to put a number on what role floors and a
+knapsack are worth is to compare them against uniform-width rounding, which is what RTN is. And
+the control this campaign has now named three times without building -- GPTQ and AWQ handed
+DynQuant's own bit map -- would separate the allocator from the quantizer directly, which none of
+the arms here does.
 
 ## 14. Status
 
@@ -2914,26 +3086,33 @@ its way out of: it changes 0.85--1.76% of items, near symmetrically, and taking 
 margin **larger**. Both panels are in the repository -- `experiments/phase4/results/s4-lfm25-panel/`
 is the panel of record and `.../s4-lfm25-panel-grouped_mm/` keeps the three superseded records --
 so the comparison no longer depends on a box whose `/workspace` is not a volume. The headline is
-+0.78 over GPTQ at 4 bits and **+19.13 at 3**, against a 4.40-point cost from the ceiling.
++0.78 over GPTQ at 4 bits and **+9.64 at 3** -- +19.13 against the symmetric GPTQ arm the panel
+originally carried, and +9.64 against the asymmetric one §13.5 added -- with a 4.40-point cost
+from the ceiling.
 
-Not done, and it is the control the 3-bit number needs rather than a loose end: **a matched-byte
-mixed-width map allocated without the signal.** Shuffled scores, rank-product, or uniform-within-
-role at the same anchor -- any of the three decomposes +19.13 into what the allocator's structure
-is worth and what the plasticity-times-saliency score is worth on top of it. Nothing in this panel
-separates them, and prior campaigns say the split is not portable: 12% on Qwen3.5-2B, 56% on
-Ministral-8B. §13.4 states the claim at the strength the data supports. Also not done: GPTQ and
-AWQ given DynQuant's own bit map, which would price the allocator against the quantizer.
+Done since, and it was the control the 3-bit number needed rather than a loose end: **matched-byte
+mixed-width maps allocated without the signal.** Four of them -- `shuffle` at four seeds, `flat`,
+`table` and `uniform` -- decompose the margin into what the allocator's structure is worth and
+what the plasticity-times-saliency score is worth on top of it, and §13.4 reads the ladder off
+them: **+9.47 signal, and a score channel measuring -0.48.** Prior campaigns said the split was
+not portable and they were right, though not in the way either of them was quoted: 12% on
+Qwen3.5-2B and 56% on Ministral-8B turn out to be two different rungs of this ladder rather than
+two values of one. Still not done: GPTQ and AWQ given DynQuant's own bit map, which would price
+the allocator against the quantizer, and an RTN arm at this anchor to give both series the same
+denominator.
 
-And one control that was not on this list when the panel ran, because nobody had looked:
-**`gptq_3b` re-fitted asymmetric at 3,332,904,576 B.** Every GPTQ arm this project has published
-was fitted on a symmetric grid -- `symmetric=(method != "awq")`, hardcoded in `experiments/_llmc.py`
-from its first commit -- against asymmetric AWQ and DynQuant arms. On the S4 Mistral-7B panel that
-difference alone was measured at **+69.4 points** and turned a 6.68% arm into a 76.08% one that
-ties DynQuant. It does not follow that it is worth anything like that here, where GPTQ scores a
-degraded-but-working 60.76%; it does follow that the +19.13 has never been measured against a GPTQ
-arm configured the way a reader downloading one would get. The decomposition in §13.4 is unaffected
-either way -- every rung of it is a DynQuant arm at this anchor -- but the number the ladder is read
-against is provisional until that arm runs.
+And one control that was not on this list when the panel ran, because nobody had looked, has now
+run: **`gptq_3b` re-fitted asymmetric at 3,332,904,576 B.** Every GPTQ arm this project had
+published was fitted on a symmetric grid -- `symmetric=(method != "awq")`, hardcoded in
+`experiments/_llmc.py` from its first commit -- against asymmetric AWQ and DynQuant arms. On the
+S4 Mistral-7B panel that difference alone was measured at **+69.4 points**. Here it is worth
+**+9.49**, an eighth of that, because this arm was degraded rather than broken and had less to
+recover: GPTQ goes from 60.76% to **70.25%**, and DynQuant's margin at 3 bits goes from +19.13 to
+**+9.64**, still separated at Holm 6.8e-133. The decomposition in §13.4 is unaffected, as it was
+predicted to be -- every rung of it is a DynQuant arm at this anchor -- but one sentence built on
+top of it was wrong and is corrected in §13.5: the signal-free allocator does **not** stand ten
+points above GPTQ. Against a GPTQ allowed its own grid it stands **+0.17, *p* = 0.706, not
+separated**, which puts the fine-tune signal's share of the margin at 98.3% rather than 49.5%.
 
 One number in this report is now conditional on §11 rather than absolute. The fine-tuned model's
 accuracy is a claim about text-to-SQL only because the filter ran; before it, 38 of the 200 WikiSQL
