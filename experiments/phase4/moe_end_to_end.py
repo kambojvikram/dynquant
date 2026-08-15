@@ -18,16 +18,33 @@ weights, same bits, same group size, same prompts, one substitution at the dispa
 Each arm runs in its own process, because peak VRAM is one of the numbers and a
 process that has already held a bf16 copy cannot report the packed peak honestly.
 
-Two axes crossed with the arm
------------------------------
-`--cache-impl static` and `--compile` are independent switches so that the graph
-result can be read. Section 14 of the kernel report times one decode step and finds
-`torch.compile(mode="reduce-overhead")` removes 76-82% of it; that is a step, not a
-request, and the report says so. Turning it into tokens per second needs the static
-cache the compiled path requires -- and a static cache attends over its full capacity
-rather than over the tokens written so far, which is a cost the compiler did not
-cause. So `--cache-impl static` without `--compile` is the yardstick arm, and the
-compiled number is read against it rather than against the dynamic-cache default.
+Compilation is automatic, and the yardstick has to switch it off
+----------------------------------------------------------------
+Section 14 of the kernel report times one decode step and finds
+`torch.compile(mode="reduce-overhead")` removes 76-82% of it. That is a step, not a
+request. Turning it into tokens per second needs the static cache a graph requires --
+and a static cache attends over its full capacity rather than over the tokens written
+so far, which is a cost the compiler did not cause, so the yardstick must hold the
+cache fixed and vary only the compile.
+
+That yardstick is not the obvious one. `generate` in transformers 5.14 **compiles the
+forward by itself** whenever the cache is compileable and not a `DynamicCache`
+(`_valid_auto_compile_criteria`), at `mode="reduce-overhead"` -- the same mode section
+14 applied by hand. So `--cache-impl static` on its own is already a compiled arm, and
+the first reading taken through it (156.65 tok/s against a dynamic-cache 32.52) was
+measuring the compiler while claiming to be the control. The eager arm therefore has to
+ask for eager: `--compile off` sets `disable_compile=True`.
+
+Three arms result, and each one is *observed* rather than declared -- the record carries
+`dynamo_unique_graphs` read back from `torch._dynamo.utils.counters`, which is 0 exactly
+when nothing compiled:
+
+* `off`    -- static cache, `disable_compile=True`. The yardstick.
+* `auto`   -- static cache, whatever `generate` does unaided. What a user gets.
+* `manual` -- static cache, `disable_compile=True`, then `torch.compile(model.forward,
+  mode="reduce-overhead", fullgraph=True)`. Section 14's arm, and a check on `auto`:
+  transformers compiles with `fullgraph=False`, and section 14 measured zero graph
+  breaks, so the two should land in the same place.
 
 Why the rate is a slope and not a division
 ------------------------------------------
@@ -189,6 +206,7 @@ def _generate(
     *,
     force: bool = True,
     cache_impl: str | None = None,
+    disable_compile: bool = False,
 ) -> tuple[float, str]:
     from transformers import GenerationConfig
 
@@ -215,6 +233,10 @@ def _generate(
         # and not the compiler's, so comparing compiled-static against eager-dynamic
         # would price two changes as one.
         cache_implementation=cache_impl,
+        # `generate` compiles the forward unaided when the cache is compileable, so an
+        # arm that means eager has to say so. Left False the "uncompiled" arm silently
+        # becomes a second compiled arm and the control disappears.
+        disable_compile=disable_compile,
         max_new_tokens=budget,
         min_new_tokens=budget if force else None,
         pad_token_id=tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id,
@@ -233,7 +255,22 @@ def _generate(
     return elapsed, tok.decode(produced, skip_special_tokens=True)
 
 
-def _probe_cache(model: Any, tok: Any, prompt: str, device: str, cache_impl: str | None) -> Any:
+def _dynamo_graphs() -> int:
+    """Graphs dynamo actually compiled, or -1 if the counter cannot be read.
+
+    The point of reading it is the same as `_cache_len`'s: a flag says what was asked
+    for and this says what happened. 0 is the assertion an eager arm needs to make.
+    """
+    try:
+        from torch._dynamo.utils import counters
+    except ImportError:
+        return -1
+    return int(counters["stats"].get("unique_graphs", 0))
+
+
+def _probe_cache(
+    model: Any, tok: Any, prompt: str, device: str, cache_impl: str | None, disable_compile: bool
+) -> Any:
     """One short generation asked to hand its cache back, so presence is observed.
 
     Separate from the timed calls because `return_dict_in_generate` keeps the cache
@@ -250,6 +287,7 @@ def _probe_cache(model: Any, tok: Any, prompt: str, device: str, cache_impl: str
         num_beams=1,
         use_cache=True,
         cache_implementation=cache_impl,
+        disable_compile=disable_compile,
         max_new_tokens=4,
         min_new_tokens=4,
         return_dict_in_generate=True,
@@ -261,25 +299,55 @@ def _probe_cache(model: Any, tok: Any, prompt: str, device: str, cache_impl: str
 
 
 def _time_arm(
-    model: Any, tok: Any, device: str, reps: int, cache_impl: str | None = None
+    model: Any,
+    tok: Any,
+    device: str,
+    reps: int,
+    cache_impl: str | None = None,
+    disable_compile: bool = False,
 ) -> dict[str, Any]:
     # Timed because on a compiled arm this call is where compilation and the
     # cudagraph warmup are paid, and a number that large should be reported rather
     # than absorbed into a warmup nobody looks at.
     t0 = time.perf_counter()
-    _generate(model, tok, PROMPTS[0], SHORT, device, cache_impl=cache_impl)
+    _generate(
+        model,
+        tok,
+        PROMPTS[0],
+        SHORT,
+        device,
+        cache_impl=cache_impl,
+        disable_compile=disable_compile,
+    )
     warmup_s = time.perf_counter() - t0
-    cache_probe = _probe_cache(model, tok, PROMPTS[0], device, cache_impl)
+    cache_probe = _probe_cache(model, tok, PROMPTS[0], device, cache_impl, disable_compile)
     rows: list[dict[str, Any]] = []
     for prompt in PROMPTS:
 
         def gen(budget: int, prompt: str = prompt) -> float:
-            return _generate(model, tok, prompt, budget, device, cache_impl=cache_impl)[0]
+            return _generate(
+                model,
+                tok,
+                prompt,
+                budget,
+                device,
+                cache_impl=cache_impl,
+                disable_compile=disable_compile,
+            )[0]
 
         shorts = [gen(SHORT) for _ in range(reps)]
         longs = [gen(LONG) for _ in range(reps)]
         t_short, t_long = statistics.median(shorts), statistics.median(longs)
-        text = _generate(model, tok, prompt, 160, device, force=False, cache_impl=cache_impl)[1]
+        text = _generate(
+            model,
+            tok,
+            prompt,
+            160,
+            device,
+            force=False,
+            cache_impl=cache_impl,
+            disable_compile=disable_compile,
+        )[1]
         rows.append(
             {
                 "prompt": prompt,
@@ -296,6 +364,9 @@ def _time_arm(
         "prompt_style": "chat-template" if getattr(tok, "chat_template", None) else "raw",
         "cache_impl": cache_impl or "default",
         "warmup_s": round(warmup_s, 2),
+        # Observed, not declared: 0 is what an eager arm has to show, and a non-zero
+        # count next to `compile: off` would mean the flag did not reach `generate`.
+        "dynamo_unique_graphs": _dynamo_graphs(),
         # `model.config.use_cache` is the checkpoint's static field and says nothing
         # about the run -- OLMoE-1B-7B ships it False while `generate` decodes with a
         # cache anyway, because the GenerationConfig passed per call is what governs.
@@ -326,8 +397,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     ap.add_argument(
         "--compile",
-        action="store_true",
-        help="wrap forward in torch.compile(mode='reduce-overhead'), the supported graph path",
+        default="off",
+        choices=("off", "auto", "manual"),
+        help="off: disable_compile=True. auto: whatever generate does unaided. "
+        "manual: disable_compile=True plus an explicit torch.compile of forward.",
     )
     ap.add_argument("--out", help="append the record to this JSON-lines file")
     args = ap.parse_args(argv)
@@ -347,12 +420,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         "has_grouped_gemv": bool(ops.has_grouped_gemv()),
     }
 
-    if args.compile and args.cache_impl != "static":
+    if args.compile == "manual" and args.cache_impl != "static":
         # Refused rather than silently corrected: `torch.compile(mode="reduce-overhead")`
         # captures cudagraphs, a cudagraph records addresses, and a `DynamicCache` grows
         # by `torch.cat`. Inductor's guard catches that -- see section 14 -- but the arm
         # that would have been measured is not the arm that was asked for.
-        raise SystemExit("--compile requires --cache-impl static")
+        raise SystemExit("--compile manual requires --cache-impl static")
+    # `auto` on the default cache is not an error, it is just a no-op: the criteria
+    # exclude `DynamicCache` by type. Recorded so the record says which it was.
+    disable_compile = args.compile != "auto"
 
     tok, model = _load(args.model, torch.bfloat16)
     record["params"] = sum(p.numel() for p in model.parameters())
@@ -363,8 +439,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     record.update(_set_dispatch(model, args.arm))
     record["peak_mib_loaded"] = round(_peak_mib(), 1)
     record["resident_mib_loaded"] = round(_live_mib(), 1)
-    record["compiled"] = bool(args.compile)
-    if args.compile:
+    record["compile"] = args.compile
+    record["disable_compile"] = disable_compile
+    if args.compile == "manual":
         # `model.forward` rather than the module: `generate` calls `forward` directly,
         # and wrapping the module would leave the decode loop running the original.
         record["compile_mode"] = "reduce-overhead"
@@ -373,7 +450,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Generation is measured against its own baseline, so the decode footprint is not
     # hidden underneath a load-time peak it never reaches.
     torch.cuda.reset_peak_memory_stats()
-    record.update(_time_arm(model, tok, args.device, args.reps, args.cache_impl))
+    record.update(_time_arm(model, tok, args.device, args.reps, args.cache_impl, disable_compile))
     record["peak_mib_generate"] = round(_peak_mib(), 1)
     record["peak_mib_total"] = max(record["peak_mib_loaded"], record["peak_mib_generate"])
 
