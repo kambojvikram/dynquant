@@ -230,6 +230,17 @@ deleted, with the reason it was wrong kept next to it.
   `sm_90a` or Blackwell, and no wheel from this build has been published.
 - **No end-to-end model ran through the grouped kernel here.** That is the packed-MoE report's
   measurement, and it used the Python loop.
+  **Superseded 2026-08-15.** `LiquidAI/LFM2.5-8B-A1B` decodes through `grouped_gemv.cu` at 3 and
+  at 4 bits, coherently, in `experiments/phase4/results/l4-moe-end-to-end/` -- see
+  [section 12](#12-the-end-to-end-run-that-closes-the-third-bullet). The model-level speedup over
+  the per-expert loop is **1.95x at 4 bits and 2.58x at 3**, not the 8.55x the nearest swept
+  geometry gives, and the difference is Amdahl rather than a shortfall: the expert banks are
+  roughly half a decode step. Two things the run produced that the benchmark could not. The
+  memory figure it nearly published was **67% pack-time workspace** -- peak over load-and-pack is
+  7167.5 MiB where resident is 4295.7, and only the second is what a server pays; measured
+  properly it lands **6.4 MiB** from the byte accounting, which is P6's VRAM gate. And
+  `dynquant eval --map-apply pack` **cannot reach this path on this model family at all**: the
+  router is in every map, by floor or by uniform width, and `pack_model` refuses it by class.
 - **`compute-sanitizer` was not re-run on this build.** The 0-error, 0-hazard result recorded for
   the packed runtime predates `grouped_gemv.cu` ever being compiled, so it does not cover it.
   **Superseded 2026-08-15.** All four tools ran on this build over a 108-launch grouped workload
@@ -432,3 +443,187 @@ One card, one architecture, `89-real` only. Four tools is not all of them, and a
 `compute-sanitizer` is evidence about memory safety, initialization, synchronization and shared
 memory races — not about numerical correctness, which is what section 10's `worst_ratio` and the
 parity suite are for.
+
+---
+
+*Section 12 was added on 2026-08-15, closing the third bullet of section 9. It is the first time
+a whole model has decoded through `grouped_gemv.cu`.*
+
+## 12. The end-to-end run that closes the third bullet
+
+Sections 10 and 11 timed and sanitized the kernel against synthetic banks. Section 9's third
+bullet asked for something the benchmark cannot answer: whether a real model, loaded from a real
+checkpoint, decodes through this kernel and comes back coherent — and what the speedup is worth
+once the rest of a transformer is in the loop.
+
+The vehicle is `LiquidAI/LFM2.5-8B-A1B`: 8,467,856,128 parameters, 24 layers of which **22 are
+MoE**, 32 experts routed top-4, hidden 2048, expert intermediate 1792. It is chosen because it is
+the model whose genuine `Lfm2MoeExperts` the packed runtime was verified against in the packed-MoE
+report, and because its expert bank is a bare three-dimensional `nn.Parameter` — the exact case
+`DynQuantExpertBank` exists to stand in front of.
+
+`experiments/phase4/moe_end_to_end.py` runs one arm per process, so peak VRAM is a property of
+that arm and not of whatever ran before it. The decode rate is a **slope** between two budgets, 32
+and 96 new tokens, rather than a division of one generation by its token count: prefill, tokenizer
+and sampling setup are identical at both budgets and cancel exactly in the difference. Both are
+reported, and they differ by under 2%, which is itself the evidence that prefill was never the
+thing being measured.
+
+### The three arms
+
+| arm | dispatch | decode tok/s | slope-free tok/s | resident MiB | peak MiB, load+pack | peak MiB, generate |
+|---|---|---:|---:|---:|---:|---:|
+| `bf16` | `grouped_mm` | **33.14** | 32.70 | 16151.2 | 16151.2 | 16246.7 |
+| `eager`, 4-bit | `eager` | **16.20** | 15.66 | 4295.7 | 7167.5 | 4332.9 |
+| `dynquant`, 4-bit | `dynquant` | **31.64** | 31.47 | 4295.7 | 7167.5 | 4332.9 |
+
+The `dispatch` column is recorded, not assumed. An arm named `dynquant` on a build where the op is
+missing silently becomes the loop and reports a speedup of 1.0x — which reads as *the kernel not
+helping* rather than as *the kernel not running*, and those are opposite conclusions from the same
+number. `has_grouped_gemv` is `true` in all three records and `experts_impl_after` is `dynquant`
+on the last arm, `eager` on the arm that exists to be beaten.
+
+The whole run was repeated end to end after the memory accounting was corrected (below). The two
+independent runs agree to within **0.4%** on every rate: 33.14 / 16.13 / 31.66 the first time,
+33.14 / 16.20 / 31.64 the second.
+
+### The grouped kernel is 1.95x the loop end-to-end, not 8.55x
+
+Against the per-expert loop over the same packed weights, the grouped path is
+**31.64 / 16.20 = 1.95x**. The nearest geometry in section 10's sweep — 32 experts, 4 bits, 4
+rows, which is precisely this model's decode regime of one token routed to four of thirty-two —
+measures **8.55x**. Both numbers are right and the gap between them is the finding.
+
+A decode step is not only expert GEMMs. Attention, the 18 convolutional layers, the norms, the
+router itself, sampling and the Python driving all of it are identical across the two packed arms,
+so the kernel can only take back the part of the step it owns. Solving
+`1 / ((1 - f) + f/8.55) = 1.95` for that share puts the expert banks at roughly **55%** of the
+eager-packed decode step. That figure is an inference, not a measurement — it assumes the swept
+geometry's ratio transfers to banks of `[32, 3584, 2048]` and `[32, 2048, 1792]`, which are wider
+than the `[32, 1024, 2048]` that was swept — and it is written here as an inference because the
+alternative is to quote 8.55x next to a model and let a reader assume it is the model's number.
+
+The claim P8's gate makes is about the path, and the sweep meets it. The claim a person deploying
+this cares about is the model's, and it is 1.95x. Neither substitutes for the other.
+
+### What it costs against bf16
+
+The grouped 4-bit arm decodes at **0.955x** the bf16 model's rate — 4.5% slower — while holding
+**3.76x** less weight memory. The per-expert loop at the same memory decodes at 0.49x, so on this
+model the choice the kernel actually removes is *not* between fast and small: without it, packing
+this model costs half the decode rate.
+
+### The memory number this section nearly published was 67% workspace
+
+The first run recorded one memory figure per arm, `torch.cuda.max_memory_allocated` sampled after
+load: **7167.5 MiB** for the packed arms against bf16's 16151.2. Written up as it stood, that is a
+2.25x reduction and it is wrong — not as arithmetic but as a description of what a served model
+costs.
+
+Packing runs the clipping search on the GPU -- `compute_device` defaults to the accelerator
+independently of where the model sits, which is what makes packing a CPU-resident model cheap.
+While a module's packed form is being built, a dense copy of that module and the search's
+candidate reconstructions are resident, so the peak over load-and-pack carries a workspace that a
+server loading an exported checkpoint never pays. The size is consistent with that reading: the
+largest expert bank here is `[32, 3584, 2048]` at bf16, **447.9 MiB**, and the excess over
+resident is 2871.8 MiB, or about six working copies of it. The peak is a real number about this
+harness; it is not the model's footprint, and only the harness knows the difference.
+
+Recording `torch.cuda.memory_allocated` separately — currently allocated rather than
+high-water — splits them:
+
+| quantity | bf16 | packed 4-bit |
+|---|---:|---:|
+| resident after load | 16151.2 MiB | **4295.7 MiB** |
+| peak over load and pack | 16151.2 MiB | 7167.5 MiB |
+| peak during generation | 16246.7 MiB | 4332.9 MiB |
+| `packed_bytes`, from the tensors that exist | — | 4289.4 MiB |
+
+Resident sits **6.3 MiB above** the byte accounting on a 4.3 GB model, and the residue is
+accounted for: the 22 dense routers are 2.75 MiB and the norms are most of the rest. That is P6's
+gate — *peak VRAM ≈ manifest size, not fp16 size* — measured against the allocator rather than
+predicted from the bit map. The two are separate claims and this report has been careful elsewhere
+about the difference; the honest one is the smaller one, and it is the one that agrees.
+
+The reduction is **3.76x** resident, against `fp16_bytes / packed_bytes = 3.765x` predicted. The
+prediction was right; the first measurement of it was not.
+
+### The router is left dense, and the shipped path cannot do that
+
+`pack_model` refuses `Lfm2MoeTopKRouter` by class: it owns a weight and calls `F.linear` on it
+without being an `nn.Linear`, so the packed runtime has no forward to stand in for. The refusal is
+correct and its message names the alternatives. It is also what the allocator's own floors want —
+a top-k decision is discrete, and a router that rounds to a different argmax has not lost
+precision, it has lost the token.
+
+So this harness drops routers from the map before packing and reports what that costs rather than
+asserting it is small: **22 routers, 1,441,792 parameters, 0.017%** of the model, 2.75 MiB at
+bf16.
+
+That is a caller-side fix, and the shipped path does not have it.
+[`evaluate.py::_pack`](../../packages/dynquant-core/src/dynquant/commands/evaluate.py#L925)
+reads the bit map from file and hands it to `pack_model` unfiltered. The router is in that map
+whichever way the map was made: `--uniform` gives it the uniform width, and the role-aware
+allocator gives it 8 bits, because `MOE_ROUTER` is a `STRUCTURAL_ROLE` with an 8-bit floor rather
+than an exclusion. **`dynquant eval --map --map-apply pack` therefore refuses on any
+LFM2.5-family MoE**, and the packed runtime — which is to say every VRAM figure in this
+section — is reachable on this family only through `--map-apply encode`, `dynquant export`, or a
+caller that filters the map itself. This was found by running the thing rather than by reading it,
+which is the argument for having run it.
+
+### Two mistakes the harness made first
+
+**A missing chat template.** The first bf16 arm returned fluent, grammatical, entirely contentless
+loops — *"the problem is that the issue is that the problem is that"* — because a bare instruction
+went to an instruct-tuned model. Timing was unaffected and the arm would have passed any check
+this harness makes. A coherence claim read off that output would have been a claim about the
+harness. `_render()` applies the checkpoint's own template now, and the reasoning is recorded in
+its docstring rather than here, because the next person to add an arm needs it there.
+
+**A figure written before it was measured.** The comment explaining why routers stay dense
+originally asserted that they are *0.05% of this model*. Nothing had measured that. It says
+`router_params` now and the record carries the number, which is 0.017%.
+
+### At 3 bits the loop gets worse and the kernel does not
+
+P8's gate names 3-bit coherence, and the run above is 4-bit, so the pair was repeated at 3.
+
+| bits | `eager` loop | `dynquant` grouped | grouped / loop | grouped / bf16 | resident | vs bf16 |
+|---|---:|---:|---:|---:|---:|---:|
+| 4 | 16.20 tok/s | 31.64 tok/s | **1.95x** | 0.955x | 4295.7 MiB | 3.76x smaller |
+| 3 | 12.23 tok/s | **31.55 tok/s** | **2.58x** | 0.952x | 3286.7 MiB | 4.91x smaller |
+
+The grouped path is effectively **width-independent** at decode — 31.64 against 31.55, three parts
+in a thousand — while the per-expert loop loses **24%** going from 4 bits to 3. Narrower codes are
+more expensive to unpack, 3-bit most of all because thirty-two values span three words and the
+shifts cross word boundaries, and the loop pays that per expert per call where the grouped kernel
+pays it once inside a launch that was already memory-bound. So the kernel's advantage *grows* as
+the width narrows, which is the direction that matters: 3-bit is where this project's margins are,
+and it is where the loop is worst.
+
+Both 3-bit arms generate coherently. Asked for a SQL query over departments by average salary,
+the grouped 3-bit arm opens *"I need to write a SQL query that returns the three departments with
+the highest average salary... to get averages and order..."* and proceeds correctly; asked why
+memory bandwidth rather than FLOPs limits decoding, it answers on topic. Byte accounting holds at
+the narrower width too: resident **3286.7 MiB** against `packed_bytes` of 3280.1 MiB, a gap of
+**6.6 MiB**, matching the 6.4 MiB gap at 4 bits — the same dense routers and norms, not a
+width-dependent error.
+
+### What section 12 does not claim
+
+- **One model family.** P8's gate names Mixtral-8x7B and Qwen3-MoE; this is LFM2.5-8B-A1B. The
+  bank layout `DynQuantExpertBank` stands in front of is shared across the 49 transformers
+  `*Experts` classes that index a single parameter, but shared layout is not a measurement, and
+  no Mixtral or Qwen3-MoE has run through this kernel.
+- **One card.** Still `sm_89`, still one L4, as in sections 10 and 11.
+- **Coherence is read, not scored.** Two prompts, eyeballed against the bf16 arm's own answers to
+  the same prompts. That is enough to retire *"no end-to-end model ran through the grouped
+  kernel"*; it is not an accuracy result, and the panels elsewhere in `docs/reports/` are what
+  accuracy claims rest on.
+- **CUDA Graphs are not in this.** P8's gate also asks that graph replay remove measurable launch
+  overhead. Nothing here is captured, and the decode rates above are eager-mode launches. The
+  device-tensor `_segment_offsets` work in the packed-MoE report removed the host reads that made
+  capture impossible, but capture itself remains unmeasured.
+- **The load-imbalance stress case is the sweep's, not this run's.** Routing here is whatever the
+  model does on two prompts; the all-tokens-to-one-expert case is section 10's `band` column.
+

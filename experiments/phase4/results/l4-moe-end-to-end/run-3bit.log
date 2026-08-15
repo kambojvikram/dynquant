@@ -1,0 +1,109 @@
+=== arm eager 3bit 2026-08-15T07:00:26Z ===
+Loading weights:   0%|          | 0/234 [00:00<?, ?it/s]Loading weights:   9%|▊         | 20/234 [00:00<00:03, 69.74it/s]Loading weights:  15%|█▍        | 35/234 [00:00<00:04, 49.61it/s]Loading weights:  19%|█▉        | 44/234 [00:00<00:04, 40.93it/s]Loading weights:  23%|██▎       | 53/234 [00:01<00:04, 37.17it/s]Loading weights:  25%|██▌       | 59/234 [00:01<00:05, 31.49it/s]Loading weights:  32%|███▏      | 74/234 [00:01<00:03, 40.77it/s]Loading weights:  35%|███▌      | 83/234 [00:02<00:04, 37.54it/s]Loading weights:  39%|███▉      | 92/234 [00:02<00:04, 35.30it/s]Loading weights:  42%|████▏     | 98/234 [00:02<00:04, 30.65it/s]Loading weights:  48%|████▊     | 113/234 [00:02<00:03, 40.13it/s]Loading weights:  52%|█████▏    | 122/234 [00:03<00:03, 36.92it/s]Loading weights:  56%|█████▌    | 131/234 [00:03<00:02, 35.08it/s]Loading weights:  59%|█████▊    | 137/234 [00:03<00:03, 30.59it/s]Loading weights:  65%|██████▍   | 152/234 [00:03<00:02, 40.08it/s]Loading weights:  69%|██████▉   | 161/234 [00:04<00:01, 37.43it/s]Loading weights:  73%|███████▎  | 170/234 [00:04<00:01, 38.29it/s]Loading weights:  75%|███████▌  | 176/234 [00:04<00:01, 32.92it/s]Loading weights:  82%|████████▏ | 191/234 [00:04<00:01, 42.51it/s]Loading weights:  85%|████████▌ | 200/234 [00:05<00:00, 39.22it/s]Loading weights:  88%|████████▊ | 206/234 [00:05<00:00, 36.18it/s]Loading weights:  94%|█████████▍| 221/234 [00:05<00:00, 41.69it/s]Loading weights:  98%|█████████▊| 230/234 [00:05<00:00, 41.59it/s]Loading weights: 100%|██████████| 234/234 [00:06<00:00, 38.85it/s]
+[transformers] The following generation flags are not valid and may be ignored: ['temperature', 'top_k']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
+{
+  "arm": "eager",
+  "model": "/dev/shm/lfm",
+  "device": "NVIDIA L4",
+  "capability": "8.9",
+  "torch": "2.11.0+cu126",
+  "has_grouped_gemv": true,
+  "params": 8467856128,
+  "modules_packed": 111,
+  "routers_left_dense": 22,
+  "router_params": 1441792,
+  "pack_seconds": 98.5,
+  "accounted_bytes": 3441102848,
+  "accounted_bits": 3.251,
+  "fp16_bytes": 16932405248,
+  "packed_bytes": 3439394816,
+  "modules_replaced": 111,
+  "modules_tied": 1,
+  "modules_skipped": 0,
+  "pack_moved_experts_from": "grouped_mm",
+  "pack_moved_experts_to": "dynquant",
+  "bits": 3,
+  "experts_impl_before": "dynquant",
+  "experts_impl_after": "eager",
+  "peak_mib_loaded": 7073.8,
+  "resident_mib_loaded": 3286.7,
+  "prompt_style": "chat-template",
+  "rows": [
+    {
+      "prompt": "Write a SQL query returning the three departments with the highest average salary.",
+      "short_s": 2.9133,
+      "long_s": 8.1559,
+      "decode_tok_s": 12.21,
+      "naive_tok_s": 11.77,
+      "text": "<think>\nOkay, I need to write a SQL query that returns the three departments with the highest average salary. Let me think about how to approach this.\n\nFirst, I remember that to get averages and order them, you can use the AVG() function along with GROUP BY on department. Then, using ORDER BY the average salary in descending order and LIMIT 3 to get the top three. But wait, sometimes people might forget to include the table name or alias the columns. Also, there's the possibility of duplicate values if not grouped properly, but assuming each row is a unique employee in a department, grouping by department should be correct.\n\nWait, what if there are multiple employees in the same department? The problem doesn't specify any constraints, so maybe it's safe to assume that each row"
+    },
+    {
+      "prompt": "Explain in two sentences why memory bandwidth rather than FLOPs limits decoding.",
+      "short_s": 2.9327,
+      "long_s": 8.1547,
+      "decode_tok_s": 12.26,
+      "naive_tok_s": 11.77,
+      "text": "<think>\nWe need to answer: \"Explain in two sentences why memory bandwidth rather than FLOPs limits decoding.\" So we need a concise explanation, presumably about how memory bandwidth is the limiting factor for decoding (maybe referring to decoding of data structures or algorithms). The question asks: \"Explain in two sentences why memory bandwidth rather than FLOPs limits decoding.\" So we need exactly two sentences.\n\nThus we must produce a response that contains exactly two sentences. It should explain why memory bandwidth, not FLOPs, limits decoding. Possibly mention that decoding requires reading/writing data from memory, and that the amount of data moved per unit time is limited by memory bandwidth, which is typically lower than compute capacity measured by FLOPs. Also perhaps talk about data dependencies"
+    }
+  ],
+  "decode_tok_s": 12.23,
+  "naive_tok_s": 11.77,
+  "peak_mib_generate": 3323.9,
+  "peak_mib_total": 7073.8
+}
+arm=eager rc=0
+=== arm dynquant 3bit 2026-08-15T07:03:58Z ===
+Loading weights:   0%|          | 0/234 [00:00<?, ?it/s]Loading weights:   9%|▊         | 20/234 [00:00<00:03, 57.35it/s]Loading weights:  15%|█▍        | 35/234 [00:00<00:03, 51.32it/s]Loading weights:  19%|█▉        | 44/234 [00:01<00:05, 37.68it/s]Loading weights:  23%|██▎       | 53/234 [00:01<00:05, 35.45it/s]Loading weights:  25%|██▌       | 59/234 [00:01<00:05, 32.74it/s]Loading weights:  32%|███▏      | 74/234 [00:01<00:04, 38.97it/s]Loading weights:  35%|███▌      | 83/234 [00:02<00:04, 36.45it/s]Loading weights:  39%|███▉      | 92/234 [00:02<00:04, 34.60it/s]Loading weights:  42%|████▏     | 98/234 [00:02<00:04, 30.31it/s]Loading weights:  48%|████▊     | 113/234 [00:02<00:03, 39.43it/s]Loading weights:  52%|█████▏    | 122/234 [00:03<00:03, 36.90it/s]Loading weights:  56%|█████▌    | 131/234 [00:03<00:02, 35.37it/s]Loading weights:  59%|█████▊    | 137/234 [00:03<00:02, 33.10it/s]Loading weights:  65%|██████▍   | 152/234 [00:04<00:02, 39.13it/s]Loading weights:  69%|██████▉   | 161/234 [00:04<00:01, 39.55it/s]Loading weights:  73%|███████▎  | 170/234 [00:04<00:01, 37.03it/s]Loading weights:  75%|███████▌  | 176/234 [00:04<00:01, 31.75it/s]Loading weights:  82%|████████▏ | 191/234 [00:05<00:01, 41.30it/s]Loading weights:  85%|████████▌ | 200/234 [00:05<00:00, 38.27it/s]Loading weights:  88%|████████▊ | 206/234 [00:05<00:00, 35.52it/s]Loading weights:  94%|█████████▍| 221/234 [00:05<00:00, 41.04it/s]Loading weights:  98%|█████████▊| 230/234 [00:06<00:00, 41.01it/s]Loading weights: 100%|██████████| 234/234 [00:06<00:00, 38.31it/s]
+[transformers] The following generation flags are not valid and may be ignored: ['temperature', 'top_k']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
+{
+  "arm": "dynquant",
+  "model": "/dev/shm/lfm",
+  "device": "NVIDIA L4",
+  "capability": "8.9",
+  "torch": "2.11.0+cu126",
+  "has_grouped_gemv": true,
+  "params": 8467856128,
+  "modules_packed": 111,
+  "routers_left_dense": 22,
+  "router_params": 1441792,
+  "pack_seconds": 98.9,
+  "accounted_bytes": 3441102848,
+  "accounted_bits": 3.251,
+  "fp16_bytes": 16932405248,
+  "packed_bytes": 3439394816,
+  "modules_replaced": 111,
+  "modules_tied": 1,
+  "modules_skipped": 0,
+  "pack_moved_experts_from": "grouped_mm",
+  "pack_moved_experts_to": "dynquant",
+  "bits": 3,
+  "experts_impl_before": "dynquant",
+  "experts_impl_after": "dynquant",
+  "peak_mib_loaded": 7073.8,
+  "resident_mib_loaded": 3286.7,
+  "prompt_style": "chat-template",
+  "rows": [
+    {
+      "prompt": "Write a SQL query returning the three departments with the highest average salary.",
+      "short_s": 1.0384,
+      "long_s": 3.0714,
+      "decode_tok_s": 31.48,
+      "naive_tok_s": 31.26,
+      "text": "<think>\nOkay, I need to write a SQL query that returns the three departments with the highest average salary. Let me think about how to approach this.\n\nFirst, I remember that to get averages and order them, you use the AVG() function along with GROUP BY on department. Then, you might need to sort them in descending order by salary and limit the results to three rows. But wait, different databases handle LIMIT differently. For example, MySQL uses LIMIT 3, while PostgreSQL uses top 3 with OFFSET 2 or using a subquery with ORDER BY... ROWS... LIMIT 3. However, since the question doesn't specify the database, maybe they just want a general approach assuming standard syntax, so perhaps using LIMIT 3.\n\nSo the steps would be"
+    },
+    {
+      "prompt": "Explain in two sentences why memory bandwidth rather than FLOPs limits decoding.",
+      "short_s": 1.0426,
+      "long_s": 3.0675,
+      "decode_tok_s": 31.61,
+      "naive_tok_s": 31.3,
+      "text": "<think>\nWe need to answer: \"Explain in two sentences why memory bandwidth rather than FLOPs limits decoding.\" So we need a concise explanation, presumably about the fact that decoding of data (e.g., in computer architecture) is limited by memory bandwidth not by floating point operations. The question asks for an explanation in two sentences.\n\nThus we need to produce exactly two sentences. Possibly something like:\n\n\"Memory bandwidth limits decoding because each bit of data must be fetched from slower memory, resulting in a lower throughput than what can be achieved through arithmetic operations; while FLOPs measure the number of floating-point operations performed, which are not directly constrained by the same bottleneck.\" Or similar.\n\nWe need to ensure it's two sentences. No extra punctuation that would be considered separate"
+    }
+  ],
+  "decode_tok_s": 31.55,
+  "naive_tok_s": 31.28,
+  "peak_mib_generate": 3323.9,
+  "peak_mib_total": 7073.8
+}
+arm=dynquant rc=0
+E2E3B-DONE
