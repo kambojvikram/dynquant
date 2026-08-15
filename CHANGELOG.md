@@ -19,6 +19,41 @@ ones that invalidate artifacts a user has already produced.
 
 ## [Unreleased]
 
+### Fixed — every symmetric baseline was charged for a zero point it never stores
+
+Both baseline stages priced group metadata with `meta_bits = 16 + bits`, charged to every arm.
+`compressed-tensors` writes `weight_zero_point` **only when the grid is asymmetric**, so every
+GPTQ and RTN arm this project has published was over-charged `bits / group_size` per weight
+— 0.7% of a 3-bit checkpoint, in the direction that makes the baseline look more expensive.
+
+Two copies of the line, and the second carried a comment defending it: charging only the
+asymmetric arm would make the baselines differ by a *convention* rather than by their weights.
+The argument runs backwards. Arms differ in a size column because they **store** different
+things; charging both the maximum is what imposes a convention.
+
+[`_llmc.stored_meta_bits`](experiments/_llmc.py) is now the single definition, taking
+`symmetric` and `actorder` and charging `weight_g_idx` as an `int32` per input column under
+`actorder=group` — which exactly one shipped arm used and none accounted for. Both stages call
+it; neither keeps a local rate. `--symmetric auto` resolves **once** per run into
+`resolved_symmetric`, read by both the arm record and the size column, because the record
+saying `symmetric: false` while the accounting priced `true` is the split that produced this.
+
+[`arms_lfm2.anchor_bytes`](experiments/phase4/arms_lfm2.py) returned one budget per width, so
+every DynQuant arm in phase 4 was sized on the asymmetric figure and scored against a symmetric
+GPTQ arm — 0.65% to 0.71% more bytes, 6.5–7.1× the panels' own tolerance, one way. It now
+returns the cheaper scheme, so DynQuant is pinned under every baseline rather than between
+them, and `check_matched` holds each baseline to the size its own scheme predicts while
+printing its distance from the anchor.
+
+Ground truth is measured rather than read: [`probe_zero_point_storage.py`](experiments/probe_zero_point_storage.py)
+quantizes one tiny model twice with RTN and enumerates the safetensors keys — 0 zero-point
+tensors symmetric, 186 asymmetric at exactly `groups × bits`. The arithmetic being corrected is
+a dependency's, so its source establishes intent and only the file establishes fact.
+
+No accuracy figure moves and nothing was re-quantized. The restatements, the byte-match
+consequence and the corrected sentences are in
+[`docs/reports/byte-accounting-zero-point.md`](docs/reports/byte-accounting-zero-point.md).
+
 ### Added — `table`, the null that isolates the score channel
 
 `--score-null flat` was reached for as "the real pricing with a constant score" and is not

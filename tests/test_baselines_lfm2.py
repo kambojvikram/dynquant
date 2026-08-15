@@ -218,7 +218,9 @@ def test_a_group_size_that_does_not_divide_the_weight_is_refused(driver: Any) ->
         _account(driver, _Odd(), bits=4)
 
 
-def _account(driver: Any, model: Any, *, bits: int, group_size: int = 128) -> Any:
+def _account(
+    driver: Any, model: Any, *, bits: int, group_size: int = 128, symmetric: bool = False
+) -> Any:
     """Run the driver's accounting against an already-built module tree.
 
     ``accounted_bytes`` builds its own reference from a checkpoint path, which a unit test has
@@ -234,7 +236,7 @@ def _account(driver: Any, model: Any, *, bits: int, group_size: int = 128) -> An
     saved = sys.modules.get("transformers")
     sys.modules["transformers"] = fake_transformers  # type: ignore[assignment]
     try:
-        return driver.accounted_bytes("unused", bits, group_size)
+        return driver.accounted_bytes("unused", bits, group_size, symmetric=symmetric)
     finally:
         if saved is None:
             del sys.modules["transformers"]
@@ -278,6 +280,13 @@ def test_the_expert_mass_is_charged_rather_than_left_at_fp16(driver: Any) -> Non
     assert record["fp16_bits_share"] == 0.0
     # 4 bits of payload plus one fp16 scale and one 4-bit zero point per group of 128.
     assert record["accounted_bits"] == pytest.approx(4 + 20 / 128, abs=1e-4)
+
+    # And the same banks under a symmetric grid, which stores no zero point at all. The
+    # expert mass is where this bites hardest: it is most of the model, so a phantom zero
+    # point charged across it is a phantom 0.03 bits on the arm's whole width.
+    symmetric = _account(driver, _Model(), bits=4, symmetric=True)
+    assert symmetric["accounted_bits"] == pytest.approx(4 + 16 / 128, abs=1e-4)
+    assert symmetric["accounted_bytes"] < record["accounted_bytes"]
 
 
 # --- saving ---------------------------------------------------------------------------
@@ -1553,9 +1562,17 @@ def test_the_scheme_a_control_names_reaches_the_recipe_and_is_recorded(driver: A
     # filed under a scheme it did not have, with nothing in the artifacts to contradict
     # it. Asserted as the call rather than as the rule for exactly that reason.
     assert (
-        '"symmetric": default_symmetric(args.method) if symmetric is None else symmetric,'
-        in quantize
+        "    resolved_symmetric = default_symmetric(args.method) "
+        "if symmetric is None else symmetric" in quantize
     )
+    assert '"symmetric": resolved_symmetric,' in quantize
+    # Resolved once and read twice. The size column needs the same answer the record does,
+    # because a symmetric grid stores no zero point and an asymmetric one stores a packed
+    # one per group; charging both the same was how two arms 22 accuracy points apart came
+    # to account to an identical width, and how the control that varies this flag was left
+    # measuring nothing.
+    assert quantize.count("resolved_symmetric = ") == 1
+    assert "symmetric=resolved_symmetric," in quantize
     assert '"actorder": actorder,' in quantize
 
     signature = inspect.signature(_llmc.build_recipe)

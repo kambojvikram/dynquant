@@ -221,7 +221,7 @@ def test_an_arm_that_missed_its_budget_is_refused_rather_than_reported(arms: Any
 
     arms.check_matched(arms.Arm("dq_4b", "dq", 4, anchor, nbytes=tolerated))
 
-    with pytest.raises(SystemExit, match="off its anchor"):
+    with pytest.raises(SystemExit, match="off the size its format predicts"):
         arms.check_matched(arms.Arm("dq_4b", "dq", 4, anchor, nbytes=breached))
 
     # The ceiling has neither number and must not be compared to itself.
@@ -536,7 +536,16 @@ def test_a_moved_problem_set_still_stops_it_when_the_dispatch_moved_too(
     assert "experts.ran" not in str(caught.value)
 
 
-ANCHORS = {4: 4_399_629_312, 3: 3_332_904_576}
+#: Both of `compressed-tensors`' sizes at each width on the real LFM2.5-8B-A1B, which is
+#: the fixture the driver's seam now takes. A single number per width is what this file
+#: used to hold, and it is the shape of the defect rather than a simplification of it: the
+#: asymmetric figure was standing in for both schemes, so an awq arm and a gptq arm looked
+#: interchangeable to every test here.
+SCHEMES = {
+    4: {True: 4_366_552_576, False: 4_399_629_312},
+    3: {True: 3_308_097_024, False: 3_332_904_576},
+}
+ANCHORS = {width: min(sizes.values()) for width, sizes in SCHEMES.items()}
 PANEL = ("bf16", "gptq_4b", "awq_4b", "dq_4b", "gptq_3b", "awq_3b", "dq_3b")
 
 
@@ -565,7 +574,7 @@ def _resumable(
 
     spent: list[str] = []
     monkeypatch.setattr(arms, "require_one_stack", lambda: None)
-    monkeypatch.setattr(arms, "anchor_bytes", lambda model, group_size: ANCHORS)
+    monkeypatch.setattr(arms, "scheme_bytes", lambda model, group_size: SCHEMES)
     monkeypatch.setattr(arms, "_run", lambda cmd, what: spent.append(what))
     return out, spent
 
@@ -589,15 +598,19 @@ def test_a_resumed_arm_is_weighed_even_though_it_is_not_run(
 
     manifest = json.loads((out / "arms.json").read_text(encoding="utf-8"))
     priced = {arm["label"]: arm["nbytes"] for arm in manifest["arms"]}
+    # Not one number per width. `awq` stores a zero point per group and `gptq` does not,
+    # so the two baselines at a width are 0.7% apart and the anchor is the cheaper of them.
+    # Reading this as `{width: one size}` is the defect these three kinds now separate.
     assert priced == {
         "bf16": None,
-        "gptq_4b": 4_399_629_312,
-        "awq_4b": 4_399_629_312,
-        "dq_4b": 4_399_629_312,
-        "gptq_3b": 3_332_904_576,
-        "awq_3b": 3_332_904_576,
-        "dq_3b": 3_332_904_576,
+        "gptq_4b": SCHEMES[4][True],
+        "awq_4b": SCHEMES[4][False],
+        "dq_4b": ANCHORS[4],
+        "gptq_3b": SCHEMES[3][True],
+        "awq_3b": SCHEMES[3][False],
+        "dq_3b": ANCHORS[3],
     }
+    assert priced["awq_4b"] > priced["gptq_4b"] == priced["dq_4b"]
     assert all(arm["record"] for arm in manifest["arms"])
 
 
@@ -1566,3 +1579,78 @@ def test_a_run_refuses_to_take_an_arm_out_of_the_panel_behind_the_manifest(
 
     (out / "dq_3b_unif.json").unlink()
     assert arms.do_run(_args(arms, eight)) == 0
+
+
+def test_the_two_baselines_at_one_width_are_not_the_same_size(arms: Any) -> None:
+    """A width does not name a size, and treating it as one hid a 0.7% handicap.
+
+    `compressed-tensors` stores `weight_zero_point` only on an asymmetric grid. GPTQ runs
+    symmetric here and AWQ asymmetric, so the two baselines at one width differ by
+    `bits / group_size` per parameter -- 0.7% of a 3-bit checkpoint, seven times the
+    tolerance this panel enforces. `anchor_bytes` returned one number for both until
+    2026-08-15, taken from the asymmetric rule, so every DynQuant arm was sized above the
+    symmetric arm it was scored against.
+
+    Turns red when: the two kinds are given one expected size again, at either width.
+    """
+    planned = {arm.label: arm for arm in arms.plan_arms(ANCHORS, schemes=SCHEMES)}
+    for width in (4, 3):
+        symmetric = planned[f"gptq_{width}b"].expected_bytes
+        asymmetric = planned[f"awq_{width}b"].expected_bytes
+        assert symmetric == SCHEMES[width][True]
+        assert asymmetric == SCHEMES[width][False]
+        assert asymmetric > symmetric, "an asymmetric grid stores a zero point"
+
+
+def test_dynquant_is_pinned_under_every_baseline_it_is_compared_with(arms: Any) -> None:
+    """The budget is the cheapest arm in the panel, not the average of them and not either.
+
+    Pinned to the dearer scheme, DynQuant carries bytes no baseline spends and the margin
+    is confounded in DynQuant's favour. Pinned to the cheaper, an arm that wins wins with
+    no more bytes than anything it beat, and one that loses is not owed a size excuse.
+
+    Turns red when: the anchor is taken from a scheme instead of from the minimum over them.
+    """
+    planned = {arm.label: arm for arm in arms.plan_arms(ANCHORS, schemes=SCHEMES)}
+    for width in (4, 3):
+        budget = planned[f"dq_{width}b"].target_bytes
+        assert budget == min(SCHEMES[width].values())
+        for kind in ("gptq", "awq"):
+            assert budget <= planned[f"{kind}_{width}b"].expected_bytes
+
+
+def test_the_scheme_a_baseline_is_priced_at_is_the_scheme_it_will_run(arms: Any) -> None:
+    """The budget and the recipe must read one answer, not two that agree today.
+
+    `_llmc.default_symmetric` is what hands the recipe its `symmetric` flag. A second table
+    here mapping kind to scheme would be a ninth copy of a registry in this campaign, and
+    the copies do not fail by disagreeing on the day they are written.
+
+    Turns red when: a literal scheme map appears in the driver, or the two stop agreeing.
+    """
+    assert arms.default_symmetric("gptq") is True
+    assert arms.default_symmetric("awq") is False
+
+    planned = {arm.label: arm for arm in arms.plan_arms(ANCHORS, schemes=SCHEMES)}
+    for kind in ("gptq", "awq"):
+        expected = SCHEMES[4][arms.default_symmetric(kind)]
+        assert planned[f"{kind}_4b"].expected_bytes == expected
+
+
+def test_an_asymmetric_baseline_is_not_failed_for_storing_its_zero_point(arms: Any) -> None:
+    """The tolerance asks whether the arm is the size its own format predicts.
+
+    Held to the anchor, a correct AWQ arm fails by 0.75%. Held to nothing, an arm that came
+    back the wrong width sails through and the difference arrives as accuracy. It is held to
+    its scheme's own number, and the distance from the anchor is printed beside it.
+
+    Turns red when: the check reverts to the anchor, or stops running on baselines at all.
+    """
+    anchor, asymmetric = ANCHORS[3], SCHEMES[3][False]
+    honest = arms.Arm("awq_3b", "awq", 3, anchor, nbytes=asymmetric, expected_bytes=asymmetric)
+    arms.check_matched(honest)
+
+    with pytest.raises(SystemExit, match="off the size its format predicts"):
+        arms.check_matched(
+            arms.Arm("awq_3b", "awq", 3, anchor, nbytes=anchor, expected_bytes=asymmetric)
+        )

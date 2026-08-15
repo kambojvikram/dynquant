@@ -61,6 +61,65 @@ def default_symmetric(method: str) -> bool:
     return method != "awq"
 
 
+def stored_meta_bits(
+    numel: int,
+    in_features: int,
+    *,
+    bits: int,
+    group_size: int,
+    symmetric: bool,
+    actorder: str | None = None,
+) -> int:
+    """Bits ``compressed-tensors`` stores *beside* one quantized weight, from its own rules.
+
+    Read out of ``PackedQuantizationCompressor`` and ``initialize`` at 0.17.1 rather than
+    reasoned about, because this is a dependency's arithmetic and nothing in this repository
+    can contradict it:
+
+    * ``weight_scale`` -- one per group, at the observed dtype, so 16 bits here.
+    * ``weight_zero_point`` -- **only when asymmetric**. ``compression_param_names`` adds it
+      to the state dict under ``if not weights.symmetric``, and ``_remove_symmetric_zp``
+      strips it otherwise. It is packed by ``pack_to_int32(zp, num_bits)``, so it costs
+      ``bits`` per group, not 16.
+    * ``weight_g_idx`` -- only under ``actorder=group``: an ``int32`` per *input column*,
+      which is per-tensor rather than per-group and is why this returns a total instead of a
+      per-group rate.
+
+    Why it is a function and not two constants
+    ------------------------------------------
+    Both baseline stages previously wrote ``meta_bits = 16 + bits`` and charged the zero
+    point to every arm. The lfm2 copy defended it: charging only the asymmetric arm would
+    supposedly make the two baselines "differ in the size column by a convention rather than
+    by their weights". That inverts. The arms differ in the size column because they differ
+    in what they store, which is the entire purpose of a size column; charging both the
+    maximum does not remove a convention, it imposes one. GPTQ and RTN are symmetric by
+    default and every arm this project has published under them was over-charged
+    ``bits/group_size`` per weight -- 0.023 bits at 3-bit g128, 0.74% of the width -- in the
+    direction that makes the baseline look more expensive than it is, which is the direction
+    that flatters DynQuant.
+
+    It was not found by review. It was found by the phase-2 asymmetric control refusing to
+    print, because that control's premise is that the scheme costs something and the
+    accounting said it cost nothing: two arms whose accuracies differed by 22 points
+    accounted to the same 3.1522 bits. A size column blind to the very axis a control varies
+    cannot measure that control.
+    """
+    if in_features % group_size:
+        raise ValueError(
+            f"a weight's contracted dimension is {in_features}, not a multiple of the group "
+            f"size {group_size}. compressed-tensors ceil-divides and pads in that case "
+            "(`strategy_cdiv`), and this accounting does not model the padding, so the "
+            "number would come out low. Pick a group size that divides it, or extend this."
+        )
+    groups = numel // group_size
+    total = groups * 16
+    if not symmetric:
+        total += groups * bits
+    if actorder == "group":
+        total += in_features * 32
+    return total
+
+
 def quant_args(bits: int, group_size: int, *, symmetric: bool, actorder: str | None = None) -> Any:
     """The weight-quantization contract shared by every recipe below.
 

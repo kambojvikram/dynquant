@@ -96,7 +96,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from _llmc import METHODS, build_recipe, default_symmetric
+from _llmc import METHODS, build_recipe, default_symmetric, stored_meta_bits
 from common import RUN_DIR, SEED, TASK, load_task, model_slug, run_eval, set_seed
 
 IGNORE = ["lm_head"]
@@ -164,7 +164,14 @@ def _unique_params(model: Any) -> list[Any]:
     return list(seen.values())
 
 
-def accounted_bytes(source: str, bits: int, group_size: int) -> dict[str, Any]:
+def accounted_bytes(
+    source: str,
+    bits: int,
+    group_size: int,
+    *,
+    symmetric: bool,
+    actorder: str | None = None,
+) -> dict[str, Any]:
     """What this checkpoint costs, counted the way stage 5 counts DynQuant's.
 
     Needed because on-disk size is only available for arms that can actually be packed,
@@ -205,12 +212,18 @@ def accounted_bytes(source: str, bits: int, group_size: int) -> dict[str, Any]:
 
     quantized = 0
     counted: set[int] = set()
-    meta_bits = 16 + (bits if bits < 16 else 0)
     for name, module in ref.named_modules():
         if not isinstance(module, nn.Linear) or any(name.endswith(p) for p in IGNORE):
             continue
         numel = module.weight.numel()
-        quantized += numel * bits + (numel // group_size) * meta_bits
+        quantized += numel * bits + stored_meta_bits(
+            numel,
+            module.weight.shape[-1],
+            bits=bits,
+            group_size=group_size,
+            symmetric=symmetric,
+            actorder=actorder,
+        )
         counted.add(id(module.weight))
 
     # Everything else at 16 bits, deduplicated by identity so a tied embedding/LM-head
@@ -352,6 +365,11 @@ def quantize(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
 
     symmetric = {"auto": None, "yes": True, "no": False}[getattr(args, "symmetric", "auto")]
     actorder = None if getattr(args, "actorder", "none") == "none" else args.actorder
+    # Resolved once, here, because two things downstream need the answer and not the
+    # request: the arm record, which has to say what ran, and `accounted_bytes`, which
+    # charges a zero point only to the scheme that stores one. Resolving it twice is how
+    # the record and the size column come to disagree about the same arm.
+    resolved_symmetric = default_symmetric(args.method) if symmetric is None else symmetric
 
     set_seed()
     tokenizer = AutoTokenizer.from_pretrained(args.model)
@@ -391,7 +409,7 @@ def quantize(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
         "group_size": args.group_size,
         # Resolved, not requested: `auto` is a different scheme per method, and an arm
         # that records the flag rather than the answer cannot say what it ran.
-        "symmetric": default_symmetric(args.method) if symmetric is None else symmetric,
+        "symmetric": resolved_symmetric,
         "actorder": actorder,
         "ignore": IGNORE,
         "calib_samples": len(dataset),
@@ -399,7 +417,13 @@ def quantize(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
         "source": str(args.model),
         "quantize_seconds": round(time.time() - started, 1),
         **applied,
-        **accounted_bytes(args.model, args.bits, args.group_size),
+        **accounted_bytes(
+            args.model,
+            args.bits,
+            args.group_size,
+            symmetric=resolved_symmetric,
+            actorder=actorder,
+        ),
     }
     print(json.dumps(meta, indent=2), flush=True)
     return model, meta

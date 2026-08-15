@@ -85,7 +85,13 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "packages/dynquant-core/src"))
 
-from _llmc import METHODS, build_recipe, default_symmetric, materialize_quantization
+from _llmc import (
+    METHODS,
+    build_recipe,
+    default_symmetric,
+    materialize_quantization,
+    stored_meta_bits,
+)
 
 IGNORE: list[str] = []
 """Nothing is left in fp16. See the module docstring: on a tied model there is no such thing
@@ -145,7 +151,14 @@ def _unique_params(model: Any) -> list[Any]:
     return list(seen.values())
 
 
-def accounted_bytes(source: str, bits: int, group_size: int) -> dict[str, Any]:
+def accounted_bytes(
+    source: str,
+    bits: int,
+    group_size: int,
+    *,
+    symmetric: bool,
+    actorder: str | None = None,
+) -> dict[str, Any]:
     """What this checkpoint costs, counted the way the DynQuant arms are counted.
 
     On-disk size is not available for every arm: ``compressed-tensors`` packs 4 and 8 bits,
@@ -179,11 +192,10 @@ def accounted_bytes(source: str, bits: int, group_size: int) -> dict[str, Any]:
     with torch.device("meta"):
         ref = AutoModelForCausalLM.from_config(config)
 
-    # An fp16 scale per group, plus a zero point at the weight's own width when asymmetric.
-    # The zero point is counted for every arm: AWQ is asymmetric, and charging only the
-    # asymmetric arm for it would make the two baselines differ in the size column by a
-    # convention rather than by their weights.
-    meta_bits = 16 + bits
+    # Group metadata comes from `_llmc.stored_meta_bits`, which charges the zero point only
+    # to the scheme that stores one. This used to be a local `16 + bits` charged to every
+    # arm, on the grounds that charging only AWQ for it would make the baselines differ by a
+    # convention; see that function for why the argument runs backwards.
     quantized = 0
     counted: set[int] = set()
 
@@ -196,7 +208,14 @@ def accounted_bytes(source: str, bits: int, group_size: int) -> dict[str, Any]:
                 "Pick a group size that divides it, or extend this function."
             )
         counted.add(id(param))
-        return param.numel() * bits + (param.numel() // group_size) * meta_bits
+        return param.numel() * bits + stored_meta_bits(
+            param.numel(),
+            tail,
+            bits=bits,
+            group_size=group_size,
+            symmetric=symmetric,
+            actorder=actorder,
+        )
 
     for name, module in ref.named_modules():
         if isinstance(module, nn.Linear) and not any(name.endswith(p) for p in IGNORE):
@@ -686,6 +705,8 @@ def quantize(
     # than the flag it was spelled with -- `auto` in a record says nothing about which
     # scheme ran, and the whole point of the override is that the scheme is the variable.
     symmetric = {"auto": None, "yes": True, "no": False}[args.symmetric]
+    # Resolved once: the arm record and the size column must not answer this separately.
+    resolved_symmetric = default_symmetric(args.method) if symmetric is None else symmetric
     actorder = None if args.actorder == "none" else args.actorder
 
     started = time.time()
@@ -714,7 +735,7 @@ def quantize(
         "method": args.method,
         "bits": args.bits,
         "group_size": args.group_size,
-        "symmetric": default_symmetric(args.method) if symmetric is None else symmetric,
+        "symmetric": resolved_symmetric,
         "actorder": actorder,
         "ignore": list(IGNORE),
         "calib_samples": len(dataset),
@@ -724,7 +745,13 @@ def quantize(
         "linearization": linearization,
         **({"awq_smoothing": smoothing} if smoothing is not None else {}),
         **applied,
-        **accounted_bytes(args.model, args.bits, args.group_size),
+        **accounted_bytes(
+            args.model,
+            args.bits,
+            args.group_size,
+            symmetric=resolved_symmetric,
+            actorder=actorder,
+        ),
     }
     print(json.dumps(meta, indent=2), flush=True)
     return model, meta
@@ -818,9 +845,16 @@ def score(args: argparse.Namespace, model: Any, meta: dict[str, Any]) -> int:
 
 def do_plan(args: argparse.Namespace) -> int:
     """What the recipe can see and what each width would cost -- no GPU, no weights."""
-    report = {"visibility": visibility(args.model)}
+    report: dict[str, Any] = {"visibility": visibility(args.model)}
+    # Both schemes at each width, because the scheme is a real term in the cost -- an
+    # asymmetric grid stores a zero point per group and a symmetric one does not -- and a
+    # plan that reported a single number would be planning for whichever method it silently
+    # assumed. GPTQ and RTN default symmetric here, AWQ asymmetric.
     for bits in (4, 3):
-        report[f"{bits}bit"] = accounted_bytes(args.model, bits, args.group_size)
+        for scheme, sym in (("sym", True), ("asym", False)):
+            report[f"{bits}bit_{scheme}"] = accounted_bytes(
+                args.model, bits, args.group_size, symmetric=sym
+            )
     print(json.dumps(report, indent=2))
     return 0
 

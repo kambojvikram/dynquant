@@ -50,7 +50,9 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from _llmc import default_symmetric
 from baselines_lfm2 import accounted_bytes
 
 #: 4 and 3 because those are the two regimes phase 2 separated, and because
@@ -88,17 +90,58 @@ class Arm:
     null_seed: int = 0
     """Ignored unless ``null_mode`` is ``"shuffle"``, which is the only stochastic one."""
 
+    expected_bytes: int | None = None
+    """What this arm's own format predicts it will weigh, or ``None`` to reuse the budget.
 
-def anchor_bytes(model: str, group_size: int) -> dict[int, int]:
-    """The byte budget each width implies, read off the baselines' own format rules.
+    Not the same question as :attr:`target_bytes`, and conflating them is what hid the zero
+    point for four panels. The budget is what DynQuant is *told* to spend; this is what a
+    method that takes a width rather than a size will land on. They differ for exactly one
+    kind: an asymmetric baseline stores a zero point per group, so ``awq`` weighs
+    ``bits / group_size`` per parameter more than the budget and is right to. Checking such
+    an arm against the budget would fail a correct run; checking it against nothing is how
+    a size difference gets read as accuracy.
+    """
+
+
+def scheme_bytes(model: str, group_size: int) -> dict[int, dict[bool, int]]:
+    """What each width costs under each of ``compressed-tensors``' two schemes.
+
+    Keyed by ``symmetric``, the same boolean :func:`_llmc.default_symmetric` hands the
+    recipe, so an arm's budget and an arm's recipe are answering the same question from the
+    same place rather than from two copies that agree until one of them is edited.
 
     Computed against a meta-device copy of the architecture, so it costs no weights and no
     GPU -- see :func:`baselines_lfm2.accounted_bytes` for why it must not be measured off
     the model llm-compressor hands back.
     """
     return {
-        width: int(accounted_bytes(model, width, group_size)["accounted_bytes"])
+        width: {
+            sym: int(accounted_bytes(model, width, group_size, symmetric=sym)["accounted_bytes"])
+            for sym in (True, False)
+        }
         for width in ANCHOR_WIDTHS
+    }
+
+
+def anchor_bytes(model: str, group_size: int) -> dict[int, int]:
+    """The budget DynQuant is pinned to at each width: the cheapest arm the panel runs.
+
+    There is no single number per width, which is the correction this function carries.
+    ``compressed-tensors`` stores a zero point only on an *asymmetric* grid, so GPTQ and AWQ
+    at one width are genuinely different sizes -- ``bits / group_size`` per parameter apart,
+    0.7% of a 3-bit checkpoint. Until 2026-08-15 this returned one budget for both, taken
+    from the asymmetric rule, and every DynQuant arm was therefore sized 0.7% above the
+    symmetric GPTQ arm it was scored against: seven times :data:`MATCH_TOLERANCE`, in
+    DynQuant's favour, on every phase-4 panel. See ``docs/reports/byte-accounting-zero-
+    point.md``.
+
+    The budget is the *minimum* over schemes rather than either scheme in particular, so
+    DynQuant sits under every baseline it is compared with instead of between them. A
+    baseline is not pinned here at all: it takes a width, and :func:`check_matched` holds it
+    to the size its own scheme predicts.
+    """
+    return {
+        width: min(schemes.values()) for width, schemes in scheme_bytes(model, group_size).items()
     }
 
 
@@ -119,6 +162,7 @@ def null_label(anchor: int, mode: str, seed: int) -> str:
 def plan_arms(
     budgets: dict[int, int],
     *,
+    schemes: dict[int, dict[bool, int]] | None = None,
     nulls: Sequence[str] = (),
     null_anchor: int = 3,
     null_seeds: Sequence[int] = (0,),
@@ -147,6 +191,11 @@ def plan_arms(
             the margin needing decomposition is: at 4 bits DynQuant is +0.78 over GPTQ and
             a control could not separate from either, while at 3 bits it is +19.13 and the
             question of what earned it is the whole reason for the arm.
+        schemes: Both of ``compressed-tensors``' sizes at each width, from
+            :func:`scheme_bytes`. Fills each baseline's :attr:`Arm.expected_bytes` from the
+            scheme that method actually runs. Omitted, every arm is held to the budget --
+            which is right for the ``dq`` arms and for any caller that is planning labels
+            rather than weighing a run.
         null_seeds: One control arm per seed, for the modes that read one. Several
             draws of the same permutation are what turn that rung from a point estimate
             into one carrying permutation variance, and they have to be planned
@@ -157,7 +206,23 @@ def plan_arms(
     for width in ANCHOR_WIDTHS:
         budget = budgets[width]
         for kind in ("gptq", "awq", "dq"):
-            arms.append(Arm(label=f"{kind}_{width}b", kind=kind, anchor=width, target_bytes=budget))
+            # `dq` takes the budget and is weighed against it. A baseline takes a width, so
+            # what it will weigh is a property of its scheme -- read from the same
+            # `default_symmetric` the recipe reads, not from a table here.
+            expected = (
+                budget
+                if schemes is None or kind == "dq"
+                else schemes[width][default_symmetric(kind)]
+            )
+            arms.append(
+                Arm(
+                    label=f"{kind}_{width}b",
+                    kind=kind,
+                    anchor=width,
+                    target_bytes=budget,
+                    expected_bytes=expected,
+                )
+            )
     # Seeds outside and modes inside, with a deterministic mode planned only on the first
     # seed. That ordering is what makes a further draw an *append*: asking for seed 1 on
     # top of a directory that already banked `shuffle,uniform` at seed 0 leaves both of
@@ -299,21 +364,29 @@ def check_matched(arm: Arm) -> None:
     lands under it. Two arms a percent apart are not a comparison of assignments; the
     larger one has a size advantage that will be read as accuracy. This is what makes "at
     matched bytes" a fact about the run rather than a sentence in the report.
+
+    The tolerance is applied to :attr:`Arm.expected_bytes` -- what this arm's own format
+    predicts -- and the distance from the anchor is *printed* alongside rather than
+    enforced. An asymmetric baseline really does store a zero point the budget does not
+    cover, so holding it to the budget would fail a correct run, and holding it to nothing
+    would let a genuine size difference arrive as accuracy. Printed, it is neither.
     """
     if arm.target_bytes is None or arm.nbytes is None:
         return
-    drift = abs(arm.nbytes - arm.target_bytes) / arm.target_bytes
+    expected = arm.expected_bytes if arm.expected_bytes is not None else arm.target_bytes
+    drift = abs(arm.nbytes - expected) / expected
+    over_anchor = (arm.nbytes - arm.target_bytes) / arm.target_bytes
     print(
-        f"  {arm.label}: {arm.nbytes - arm.target_bytes:+d} B off the {arm.anchor}-bit "
-        f"anchor ({drift:.5%})",
+        f"  {arm.label}: {arm.nbytes - expected:+d} B off its own format's "
+        f"{expected} ({drift:.5%}), {over_anchor:+.5%} against the {arm.anchor}-bit anchor",
         flush=True,
     )
     if drift > MATCH_TOLERANCE:
         raise SystemExit(
-            f"{arm.label} is {drift:.3%} off its anchor ({arm.nbytes} vs "
-            f"{arm.target_bytes} bytes), over the {MATCH_TOLERANCE:.3%} tolerance. These "
-            f"arms are not byte-matched and any accuracy difference between them is "
-            f"confounded with size."
+            f"{arm.label} is {drift:.3%} off the size its format predicts ({arm.nbytes} vs "
+            f"{expected} bytes), over the {MATCH_TOLERANCE:.3%} tolerance. Either the arm "
+            f"is not the width it was asked for or the accounting does not describe it, "
+            f"and an accuracy difference under either is confounded with size."
         )
 
 
@@ -554,9 +627,11 @@ def map_nbytes(save_map: Path, key: str) -> int:
 
 def do_plan(args: argparse.Namespace) -> int:
     """The budgets and the panel, with no weights loaded and no GPU touched."""
-    budgets = anchor_bytes(args.model, args.group_size)
+    schemes = scheme_bytes(args.model, args.group_size)
+    budgets = {width: min(sizes.values()) for width, sizes in schemes.items()}
     arms = plan_arms(
         budgets,
+        schemes=schemes,
         nulls=check_null_modes(args.score_null),
         null_anchor=args.null_anchor,
         null_seeds=check_null_seeds(args.null_seed),
@@ -568,7 +643,9 @@ def do_plan(args: argparse.Namespace) -> int:
                     str(width): {
                         "bytes": budget,
                         "gib": round(budget / 2**30, 4),
-                        "source": "gptq/awq under compressed-tensors' own rules",
+                        "source": "the cheaper of compressed-tensors' two schemes",
+                        "symmetric_bytes": schemes[width][True],
+                        "asymmetric_bytes": schemes[width][False],
                     }
                     for width, budget in budgets.items()
                 },
@@ -841,6 +918,7 @@ def write_manifest(
                         "kind": arm.kind,
                         "anchor": arm.anchor,
                         "target_bytes": arm.target_bytes,
+                        "expected_bytes": arm.expected_bytes,
                         "nbytes": arm.nbytes,
                         "record": arm.record,
                         **arm.extra,
@@ -862,9 +940,11 @@ def do_run(args: argparse.Namespace) -> int:
     maps = out / "maps"
     maps.mkdir(exist_ok=True)
 
-    budgets = anchor_bytes(args.model, args.group_size)
+    schemes = scheme_bytes(args.model, args.group_size)
+    budgets = {width: min(sizes.values()) for width, sizes in schemes.items()}
     arms = plan_arms(
         budgets,
+        schemes=schemes,
         nulls=check_null_modes(args.score_null),
         null_anchor=args.null_anchor,
         null_seeds=check_null_seeds(args.null_seed),
@@ -924,9 +1004,14 @@ def do_run(args: argparse.Namespace) -> int:
             if not reused:
                 _run(dq_eval_cmd(args, arm, save_map, record), what=arm.label)
         else:
-            # The baselines' size is fixed by their format, so it *is* the anchor -- there
-            # is nothing for `check_matched` to catch and nothing to read back.
-            arm.nbytes = arm.target_bytes
+            # A baseline's size is fixed by its format, and this line used to conclude "so
+            # it *is* the anchor". Its format has two sizes, one per scheme, and the anchor
+            # is the cheaper: an asymmetric arm stores a zero point per group and weighs
+            # `bits / group_size` per parameter more. So the size recorded is the one this
+            # arm's own scheme predicts, and it is still not read back off disk -- the 3-bit
+            # arms are never written -- which is why `check_matched` runs on it too.
+            arm.nbytes = arm.expected_bytes if arm.expected_bytes is not None else arm.target_bytes
+            check_matched(arm)
             if not reused:
                 _run(baseline_cmd(args, arm, record), what=arm.label)
         arm.record = str(record)

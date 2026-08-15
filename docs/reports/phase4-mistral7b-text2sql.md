@@ -206,6 +206,14 @@ Whole-model averages, which is what "matched bytes" actually equalizes:
 Both DynQuant arms land *under* their anchor. The tolerance is 0.1% and the realised drift is
 an order of magnitude inside it, in the direction that cannot flatter DynQuant.
 
+> **Correction, 2026-08-15.** Against the *anchors*, that paragraph is still arithmetic. Against
+> the GPTQ arms, it runs backwards. The anchors charge a zero point that symmetric GPTQ never
+> stores, so the baseline column is over-stated: 4-bit is **3 936 886 784 B** (4.3453 b) and
+> 3-bit is **3 047 694 336 B** (3.3639 b). Measured against those, DynQuant carries
+> **+27 262 976 B (+0.693%)** at 4 bits and **+19 922 944 B (+0.654%)** at 3 -- 7x the tolerance,
+> in the direction that does flatter DynQuant. The AWQ arms store a zero point, so that
+> comparison is matched as stated. [byte-accounting-zero-point.md](byte-accounting-zero-point.md).
+
 ## 7. The two allocations
 
 Allocator `sensitivity`, quantity **"measured dL(2b) − dL(8b) per parameter"**, group size 128.
@@ -337,6 +345,11 @@ Everything below comes out of `panel_table.py --json-out`; none of it is typed.
 | GPTQ 3-bit | 3 068 534 784 | 3.3869 | **6.68%** | 164 | 69 | **1796** | 23 290 |
 | AWQ 3-bit | 3 068 534 784 | 3.3869 | **74.16%** | 1820 | 1088 | 57 | 2 302 |
 | DynQuant 3-bit | 3 067 617 280 | 3.3859 | **75.22%** | 1846 | 1069 | 62 | 655 |
+
+> **Correction, 2026-08-15.** The two GPTQ rows' bytes and bits are the asymmetric figures; the
+> arms ran symmetric and are **3 936 886 784 B / 4.3453 b** and **3 047 694 336 B / 3.3639 b**.
+> Nothing else in the table moves, and the DynQuant-vs-AWQ rows stay byte-matched;
+> [byte-accounting-zero-point.md](byte-accounting-zero-point.md).
 
 Unparseable is 0 and unfinished-reasoning is 0 for every arm, including the collapsed one — the
 decode budget was never the binding constraint, so nothing here is a censoring artifact.

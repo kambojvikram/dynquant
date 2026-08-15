@@ -539,8 +539,14 @@ bf16 matmuls and pays no dequantization at all.
 paragraph written a day earlier offered the 18% between `gptq_4b` and `awq_4b` as the ceiling —
 "kernel choice alone, at identical dispatch and identical shapes," so differences of that order
 exist and are an order below the gap. The two manifests say otherwise. Both arms are 4 bits at
-`group_size` 128 over the same 2,201 modules for the same 4,399,629,312 bytes, which is not two
-kernels; it is one. What actually differs is that AWQ is asymmetric where GPTQ is symmetric, so one
+`group_size` 128 over the same 2,201 modules through one kernel, not two. (This originally read
+"for the same 4,399,629,312 bytes." They are not the same bytes -- symmetric GPTQ stores no zero
+point, so it is 4,366,552,576 B against AWQ's 4,399,629,312, and the identity was an artifact of
+the accounting rather than a fact about the arms. Note what the next sentence does: it names
+asymmetric-against-symmetric as the difference, on the same line where the byte column was blind
+to it. The conclusion survives, since both arms really are 4-bit g128 through the same
+`compressed-tensors` path; [byte-accounting-zero-point.md](byte-accounting-zero-point.md).) What
+actually differs is that AWQ is asymmetric where GPTQ is symmetric, so one
 dequant subtracts a zero point the other does not, and that AWQ's smoothing moved every one of the
 2,201 weights (`max_weight_delta: 2.89`), which changes what the model writes and therefore how long
 it writes for against a 1,024-token cap. So the 18% prices one dequant scheme against another, plus
@@ -1422,8 +1428,14 @@ are the proof:
 | `weights_moved` | **0** | **2,201** |
 | `max_weight_delta` | **0.0** | **2.890625** |
 
-Every number describing how large the result is agrees to the byte, because both are the same
-architecture at the same width and the same group size. Publishing one arm's weights under the
+Every number describing how large the result is agrees to the byte -- and two of them should not.
+`accounted_bits` and `accounted_bytes` are the asymmetric figures for both arms; symmetric
+`gptq_4b` is **4.1253 b / 4,366,552,576 B**, so the two rows differ by 33,076,736 B. The
+parameter and module counts do agree, and the argument this table is making rests on those:
+publishing one arm's weights under the other's manifest is undetectable from *counts*, which is
+why the fingerprints exist. [byte-accounting-zero-point.md](byte-accounting-zero-point.md).
+The rest of this paragraph stands: both are the same architecture at the same width and the same
+group size. Publishing one arm's weights under the
 other's row would leave all of it intact, and a size check would pass. What separates them is what
 the recipe *did* to the weights: AWQ's smoothing moves all 2,201 modules by up to 2.89 before
 quantizing, GPTQ moves none. So the three fingerprint fields are load-bearing rather than

@@ -679,12 +679,24 @@ rather than `16 + bits`. Per parameter at a group of 128:
 
 | | payload | per group | bits/param @4 | bits/param @3 |
 |---|---|---|---|---|
-| `compressed-tensors` (GPTQ, AWQ) | `bits` | `16 + bits` | 4.15625 | 3.1484 |
+| `compressed-tensors`, asymmetric (AWQ) | `bits` | `16 + bits` | 4.15625 | 3.1484 |
+| `compressed-tensors`, symmetric (GPTQ) | `bits` | `16` | 4.125 | 3.125 |
 | DynQuant (`quant/pack.py:stored_bits`) | `bits`, word-aligned | 32 | 4.25 | 3.25 |
 | | | | **+2.26%** | **+3.23%** |
 
 Whole-model, through `baselines_lfm2.accounted_bytes`, that is **4,399,629,312 B** at 4 bits and
 **3,332,904,576 B** at 3 -- the numbers in §10, and now the anchors.
+
+> **Correction, 2026-08-15.** The symmetric row was not in the original of this table, and both
+> anchors above are the asymmetric figure. `compressed-tensors` stores a zero point **only when
+> the grid is asymmetric**, and GPTQ ran symmetric on every arm in this report, so `gptq_4b` and
+> `gptq_3b` are really **4,366,552,576 B** and **3,308,097,024 B**. The anchors are therefore
+> ~0.7% larger than the arms they were derived from, and every DynQuant arm in this panel carries
+> that 0.7% -- 7x the 0.1% tolerance this section leans on, in DynQuant's favour. Against AWQ,
+> which does store a zero point, the matching is exactly what it says. The **+2.26%/+3.23%** row
+> compares DynQuant to the asymmetric row; against the symmetric row it is **+3.03%** and
+> **+4.00%**. Full accounting in
+> [byte-accounting-zero-point.md](byte-accounting-zero-point.md).
 
 Anchoring on DynQuant's uniform arm instead would have handed DynQuant 2.3% more bytes at 4 bits
 and 3.2% more at 3 **inside the arm whose accuracy is the claim**. Nothing in the run would have
@@ -2224,6 +2236,14 @@ same expert arithmetic. Bytes are what the manifest stores, divided by 8 467 856
 | `awq_3b` | 3.104 | 3.1488 | +0.0000% | 57.92% | 6 950 | 4 517 | 1 523 | 57.5% | 58.1% |
 | **`dq_3b`** | 3.103 | 3.1475 | -0.0413% | **79.89%** | 9 587 | 7 854 | 213 | 64.4% | 85.2% |
 
+> **Correction, 2026-08-15.** The two `gptq_*` rows are over-stated. Symmetric GPTQ stores no zero
+> point, so `gptq_4b` is **4.1253 b / 4,366,552,576 B** and `gptq_3b` is
+> **3.1253 b / 3,308,097,024 B**. The anchors -- and so the DynQuant arms sized against them --
+> came from the asymmetric figure, so `dq_4b` carries **+0.713%** and `dq_3b` **+0.708%** more
+> bytes than the GPTQ arms they are compared with, 7x the tolerance in the `off anchor` column
+> beside them. The `awq_*` rows are right as printed and DynQuant-against-AWQ is byte-matched. No
+> accuracy in this table moves. [byte-accounting-zero-point.md](byte-accounting-zero-point.md).
+
 3.85x compression at 4 bits and 5.08x at 3, with the DynQuant arms landing *under* their anchors
 rather than over -- §12 sets the anchor from the baselines' format precisely so that the arm whose
 accuracy is the claim cannot be handed the spare bytes. `unfinished_reasoning` is 0 on every arm, so no
@@ -2846,8 +2866,15 @@ ones cleanly and says nothing reliable inside the leading group.
 same 3,332,904,576-byte anchor, the same 12 000-item evaluation and the same expert dispatch as
 `gptq_3b`, changing exactly one thing: `symmetric=False`. Act-order stayed off -- the `noao` in
 the name records it -- so the arm prices the scheme and nothing else. It lands at 3.1488 bits per
-parameter and **3,332,904,576 B, 0.0000% off the anchor**, byte-identical to the symmetric arm,
-because the flag changes what the grid is fitted to and not how much of it is stored. The record
+parameter and **3,332,904,576 B, 0.0000% off the anchor**. That sentence originally
+continued "byte-identical to the symmetric arm, because the flag changes what the grid is fitted
+to and not how much of it is stored," and the flag changes both. A zero point is stored only when
+the grid is asymmetric, so `gptq_3b` is 3,308,097,024 B and this arm is **24,807,552 B larger**.
+The paragraph above names asymmetric-against-symmetric as the axis the control varies, and the
+size column could not see that axis at all -- which is how a control ends up holding constant
+something that is not constant. The arm still prices the scheme, and the +9.49 stands, but it
+prices it at +0.75% bytes rather than at none; see
+[byte-accounting-zero-point.md](byte-accounting-zero-point.md). The record
 carries `scheme.source = "recorded"` rather than `"method-default"`, which is how the panel knows
 the flag was set rather than inherited.
 
