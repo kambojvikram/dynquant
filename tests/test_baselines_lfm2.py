@@ -1355,13 +1355,16 @@ def llmc(monkeypatch: pytest.MonkeyPatch) -> Any:
     return _llmc
 
 
-def _quantized_module(*values: float, g_idx: Any = None) -> Any:
+def _quantized_module(*values: float, g_idx: Any = None, dtype: Any = None) -> Any:
     """One quantized ``Linear``-alike carrying only what the function under test reads.
 
     The stub rounds to a scale of 1, so the values are the whole lever over ``weights_moved``:
     integers come back unchanged and a module built from them counts as *not moved*, anything
     else counts as moved. That is what lets each case below choose which side of the
     per-method contract it lands on without reaching into the function.
+
+    ``dtype`` is the second lever: the threshold is one ULP of the *storage* dtype, so a
+    bfloat16 module tolerates a drift a float32 one would refuse.
     """
     import torch
 
@@ -1374,7 +1377,7 @@ def _quantized_module(*values: float, g_idx: Any = None) -> Any:
     class Module:
         def __init__(self) -> None:
             self.quantization_scheme = Scheme()
-            self.weight = torch.nn.Parameter(torch.tensor([list(values)]))
+            self.weight = torch.nn.Parameter(torch.tensor([list(values)], dtype=dtype))
             self.weight_scale = torch.tensor(1.0)
             self.weight_zero_point = None
             if g_idx is not None:
@@ -1462,6 +1465,49 @@ def test_a_method_that_moves_the_wrong_number_of_weights_is_refused(llmc: Any) -
     assert source.index("expected = {") < source.index("Fixed-point check"), (
         "the count check has to run before the probe, which agrees with a wrong mapping"
     )
+
+
+def test_a_drift_under_one_storage_ulp_is_not_a_moved_weight(llmc: Any) -> None:
+    """The activation-ordered arm, reduced to one module.
+
+    Forwarding ``g_idx`` is exactly right: on a float32 weight the requantization
+    round-trip is bit-identical. A bfloat16 checkpoint is not the float32 value GPTQ
+    computed though, it is that value cast down, and requantizing the cast lands up to a
+    ULP away from it. Activation ordering is what exposes it -- permuting the columns
+    changes which values share a group and so which sit near a rounding boundary -- and
+    against a bit-exact threshold that read a *correct* act-ordered arm as 225 of 225
+    weights scrambled, seven minutes of calibration after it started.
+
+    Measured against the real GPTQ path on a 512x64 linear, the true mapping sits at
+    0.62 ULP and a shuffled or omitted one at 35. Both sides of that are pinned here, so a
+    later tightening back to bit-exactness fails on the first case and a loosening that
+    would let a wrong grid through fails on the second.
+    """
+    import torch
+
+    forward = sys.modules["compressed_tensors.quantization.lifecycle.forward"]
+    drift = [0.0]
+
+    def nudge(x: Any, scale: Any, zero_point: Any, args: Any, **_kwargs: Any) -> Any:
+        return x + drift[0] * x.abs().max()
+
+    forward.fake_quantize = nudge
+    eps = torch.finfo(torch.bfloat16).eps
+
+    def one() -> Any:
+        return _quantized_model(_on_grid(dtype=torch.bfloat16))
+
+    drift[0] = eps / 4
+    stats = llmc.materialize_quantization(one(), method="gptq", probes=1)
+    assert stats["weights_moved"] == 0, "a sub-ULP cast artifact is not a re-round"
+    assert 0.0 < stats["max_weight_ulps"] < 1.0, stats
+    # That call returning at all is the probe reading the same threshold: it re-quantizes
+    # what was just written, so a bit-exact probe would have refused the same correct arm
+    # one check later, with a different message.
+
+    drift[0] = eps * 4
+    with pytest.raises(SystemExit, match="gptq moved 1 of 1 weights"):
+        llmc.materialize_quantization(one(), method="gptq", probes=1)
 
 
 def test_the_scheme_a_control_names_reaches_the_recipe_and_is_recorded(driver: Any) -> None:
@@ -2242,6 +2288,16 @@ def test_the_activation_linearize_moe_reads_is_supplied_without_touching_the_che
 # The two 4-bit arms as the panel actually recorded them, trimmed to the fields the check
 # reads. They are transcribed rather than invented because the point of the fourth test is
 # a coincidence in the real numbers, and a fixture free to differ would not have it.
+MISSING_FROM_TRANSCRIBED = ("max_weight_ulps",)
+"""Fingerprint fields the two transcribed records below could not have carried.
+
+``max_weight_ulps`` arrived with the activation-ordered control, after these arms ran. The
+check skips a field the record does not carry, so full coverage *for these* is the
+fingerprint minus this tuple -- and fabricating a value to close the gap would throw away
+the only reason they are transcribed rather than invented.
+"""
+
+
 SCORED_GPTQ_4B: dict[str, Any] = {
     "method": "gptq",
     "bits": 4,
@@ -2289,7 +2345,7 @@ def test_a_pass_that_reproduces_the_scored_arm_publishes_and_one_that_does_not_i
     is reachable from a bare "did not match".
     """
     covered = driver.check_matches_scored(dict(SCORED_GPTQ_4B), SCORED_GPTQ_4B, "arm.json")
-    assert covered == len(driver.SCORED_WEIGHTS)
+    assert covered == len(driver.SCORED_WEIGHTS) - len(MISSING_FROM_TRANSCRIBED)
 
     drifted = {**SCORED_GPTQ_4B, "max_weight_delta": 0.0001}
     with pytest.raises(SystemExit) as refusal:
@@ -2371,7 +2427,7 @@ def test_a_field_the_scored_record_does_not_carry_is_counted_and_not_matched(
 
     assert driver.scored_weight_disagreements(republished, older) == {}
     assert driver.check_matches_scored(republished, older, "arm.json") == (
-        len(driver.SCORED_WEIGHTS) - 2
+        len(driver.SCORED_WEIGHTS) - len(MISSING_FROM_TRANSCRIBED) - 2
     )
 
 

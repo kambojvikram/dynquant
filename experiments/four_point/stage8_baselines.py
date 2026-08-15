@@ -318,7 +318,7 @@ def materialize_quantization(model: Any, *, probes: int = 8) -> dict[str, Any]:
             "and scoring this model would measure the unquantized checkpoint"
         )
 
-    moved, max_delta = 0, 0.0
+    moved, max_delta, max_ulps = 0, 0.0, 0.0
     for _, module in targets:
         weights = module.quantization_scheme.weights
         with align_module_device(module):
@@ -335,9 +335,22 @@ def materialize_quantization(model: Any, *, probes: int = 8) -> dict[str, Any]:
                 g_idx=getattr(module, "weight_g_idx", None),
             )
             delta = (rounded.float() - original.float()).abs().max().item()
-        if delta > 0.0:
+            # One ULP of the *storage* dtype at this tensor's own scale, not zero. GPTQ
+            # dequantizes in float32 and casts the result down to the checkpoint dtype;
+            # requantizing that cast value in bfloat16 lands up to a ULP away from it. The
+            # difference only shows up when activation ordering is on, because the
+            # permutation changes which columns share a group and therefore which values
+            # sit near a rounding boundary -- so a bit-exact test reads a correct
+            # act-ordered checkpoint as scrambled. Measured on a 512x64 linear against the
+            # real GPTQ path: the true mapping sits at 0.62 ULP and is exactly 0 when the
+            # weight is float32, while omitting g_idx or shuffling it sits at 35 ULP. The
+            # threshold separates those by a factor of 57 and still catches a wrong grid,
+            # whose weights move by half a quantization step -- thousands of ULPs.
+            ulp = torch.finfo(original.dtype).eps * original.abs().max().float().item()
+        if delta > ulp:
             moved += 1
-            max_delta = max(max_delta, delta)
+        max_delta = max(max_delta, delta)
+        max_ulps = max(max_ulps, delta / ulp if ulp else 0.0)
         update_offload_parameter(module, "weight", rounded.to(module.weight.dtype))
 
     # Fixed-point check on a spread of modules, re-reading the parameter rather than the
@@ -355,7 +368,8 @@ def materialize_quantization(model: Any, *, probes: int = 8) -> dict[str, Any]:
                 module.quantization_scheme.weights,
                 g_idx=getattr(module, "weight_g_idx", None),
             )
-            if not torch.equal(again, stored):
+            drift = (again.float() - stored.float()).abs().max().item()
+            if drift > torch.finfo(stored.dtype).eps * stored.abs().max().float().item():
                 off_grid.append(name)
             unique_per_row.append(int(torch.unique(stored[0].float()).numel()))
     if off_grid:
@@ -369,6 +383,7 @@ def materialize_quantization(model: Any, *, probes: int = 8) -> dict[str, Any]:
         "materialized_modules": len(targets),
         "weights_moved": moved,
         "max_weight_delta": round(max_delta, 6),
+        "max_weight_ulps": round(max_ulps, 3),
         "probe_unique_values_per_row": unique_per_row,
     }
     print(json.dumps(stats), flush=True)

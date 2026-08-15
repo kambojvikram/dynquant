@@ -152,6 +152,14 @@ def materialize_quantization(
     group's scale to the wrong columns and scrambles the weights. The fixed-point probe below
     cannot see this: it re-quantizes under the same wrong mapping and finds it idempotent.
     What does see it is ``weights_moved``, which goes from GPTQ's expected 0 to every module.
+
+    Which is why ``weights_moved`` counts against one ULP of the storage dtype rather than
+    against zero. Forwarding ``g_idx`` is exactly right -- on a float32 weight the
+    round-trip is bit-identical -- but a bfloat16 checkpoint is not the float32 value GPTQ
+    computed, it is that value cast down, and requantizing the cast lands up to a ULP away.
+    Activation ordering is what exposes it, because permuting the columns changes which
+    values share a group and so which sit near a rounding boundary. Bit-exactness would
+    therefore have reported a correct act-ordered arm as 225 of 225 scrambled -- and did.
     """
     import torch
     from compressed_tensors.quantization.lifecycle.forward import fake_quantize
@@ -169,7 +177,7 @@ def materialize_quantization(
             "and scoring this model would measure the unquantized checkpoint"
         )
 
-    moved, max_delta = 0, 0.0
+    moved, max_delta, max_ulps = 0, 0.0, 0.0
     for _, module in targets:
         weights = module.quantization_scheme.weights
         with align_module_device(module):
@@ -182,9 +190,22 @@ def materialize_quantization(
                 g_idx=getattr(module, "weight_g_idx", None),
             )
             delta = (rounded.float() - original.float()).abs().max().item()
-        if delta > 0.0:
+            # One ULP of the *storage* dtype at this tensor's own scale, not zero. GPTQ
+            # dequantizes in float32 and casts the result down to the checkpoint dtype;
+            # requantizing that cast value in bfloat16 lands up to a ULP away from it. The
+            # difference only shows up when activation ordering is on, because the
+            # permutation changes which columns share a group and therefore which values
+            # sit near a rounding boundary -- so a bit-exact test reads a correct
+            # act-ordered checkpoint as scrambled. Measured on a 512x64 linear against the
+            # real GPTQ path: the true mapping sits at 0.62 ULP and is exactly 0 when the
+            # weight is float32, while omitting g_idx or shuffling it sits at 35 ULP. The
+            # threshold separates those by a factor of 57 and still catches a wrong grid,
+            # whose weights move by half a quantization step -- thousands of ULPs.
+            ulp = torch.finfo(original.dtype).eps * original.abs().max().float().item()
+        if delta > ulp:
             moved += 1
-            max_delta = max(max_delta, delta)
+        max_delta = max(max_delta, delta)
+        max_ulps = max(max_ulps, delta / ulp if ulp else 0.0)
         update_offload_parameter(module, "weight", rounded.to(module.weight.dtype))
 
     # Each method's own shape, refused rather than recorded. GPTQ rounds as it calibrates,
@@ -224,7 +245,8 @@ def materialize_quantization(
                 module.quantization_scheme.weights,
                 g_idx=getattr(module, "weight_g_idx", None),
             )
-            if not torch.equal(again, stored):
+            drift = (again.float() - stored.float()).abs().max().item()
+            if drift > torch.finfo(stored.dtype).eps * stored.abs().max().float().item():
                 off_grid.append(name)
             unique_per_row.append(int(torch.unique(stored[0].float()).numel()))
     if off_grid:
@@ -238,6 +260,7 @@ def materialize_quantization(
         "materialized_modules": len(targets),
         "weights_moved": moved,
         "max_weight_delta": round(max_delta, 6),
+        "max_weight_ulps": round(max_ulps, 3),
         "probe_unique_values_per_row": unique_per_row,
     }
     print(json.dumps(stats), flush=True)

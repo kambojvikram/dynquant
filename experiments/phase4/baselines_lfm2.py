@@ -1175,6 +1175,7 @@ SCORED_WEIGHTS = (
     "materialized_modules",
     "weights_moved",
     "max_weight_delta",
+    "max_weight_ulps",
     "probe_unique_values_per_row",
     "accounted_bits",
     "accounted_bytes",
