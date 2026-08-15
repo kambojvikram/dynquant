@@ -260,7 +260,17 @@ def test_a_writable_destination_is_accepted_and_its_parent_made(tmp_path: Path) 
     nested = tmp_path / "arms" / "s4" / "gptq_3b_asym.json"
     evaluate.check_out_is_writable(str(nested))
     assert nested.parent.is_dir()
-    assert not nested.exists() or nested.read_text(encoding="utf-8") == ""
+    # And the probe leaves nothing behind. ``arms_lfm2``'s ``--resume`` skips an arm whose
+    # record ``is_file()``, so an empty file here would let a crashed arm be skipped as
+    # done -- and be found much later as a corrupt record rather than a missing one.
+    assert not nested.exists()
+
+    # An existing record is left exactly as it was, because append mode is a probe here
+    # and not a write, and because deleting one would destroy the arm it belongs to.
+    kept = tmp_path / "already.json"
+    kept.write_text('{"accuracy": 0.5}', encoding="utf-8")
+    evaluate.check_out_is_writable(str(kept))
+    assert kept.read_text(encoding="utf-8") == '{"accuracy": 0.5}'
 
     blocked = tmp_path / "notadir"
     blocked.write_text("", encoding="utf-8")

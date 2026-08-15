@@ -41,6 +41,7 @@ to one dispatch and the record says which one ran. See ``--experts-impl``.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import random
 import time
@@ -396,6 +397,12 @@ def check_out_is_writable(out: str | None) -> None:
     ``os.access`` answer questions about a moment that has passed by the time the write
     happens, and they do not agree with the write on read-only mounts, on a full filesystem,
     or on a dangling symlink. Opening it is the same syscall the write will make.
+
+    Opening it also *creates* it, and an empty file where a record belongs is its own hazard:
+    ``arms_lfm2``'s ``--resume`` skips an arm whose record ``is_file()``, so a probe that left
+    its file behind would let a crashed arm be skipped as done and surface later as a corrupt
+    record rather than a missing one. So the probe puts back what it found: if the destination
+    did not exist beforehand, it does not exist afterwards either.
     """
     from dynquant.errors import DynQuantError
 
@@ -407,12 +414,16 @@ def check_out_is_writable(out: str | None) -> None:
             f"--out {out} is a directory. It names the record file itself and not the "
             f"directory to write it into, so pass a path to a file inside it"
         )
+    existed = destination.exists()
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
         with destination.open("a", encoding="utf-8"):
             pass
     except OSError as exc:
         raise DynQuantError(f"--out {out} cannot be written: {exc}") from exc
+    if not existed:
+        with contextlib.suppress(OSError):
+            destination.unlink()
 
 
 def run(args: argparse.Namespace, *, model: Any = None) -> int:
