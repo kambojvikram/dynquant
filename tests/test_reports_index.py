@@ -117,6 +117,45 @@ def test_the_intro_counts_phase_fours_share_of_them_twice(index: str) -> None:
     )
 
 
+def _campaigns(text: str) -> list[str]:
+    """One entry per distinct record the table points at, in the order first cited.
+
+    A campaign is a document, not a question: six rows cite `phase4-text2sql-mixture.md` and
+    they are one campaign between them. So the last cell of each row is reduced to its first
+    link target -- the section markers that distinguish those six sit outside the link, which
+    is why deduplicating on the target is the same thing as deduplicating on the record.
+    """
+    seen: list[str] = []
+    for line in text.splitlines():
+        if not re.match(r"^\| \d+ \|", line):
+            continue
+        cell = line.rstrip("|").rsplit("|", 1)[-1]
+        target = re.search(r"\]\(([^)]+)\)", cell)
+        assert target, f"a numbered row cites no record: {line[:60]!r}"
+        if target.group(1) not in seen:
+            seen.append(target.group(1))
+    return seen
+
+
+def test_the_intro_counts_the_campaigns_the_table_cites(index: str) -> None:
+    """The third count in that sentence, and the one the other two tests do not reach.
+
+    It was already stale when this test was written: the intro said fifteen over sixteen
+    records, because a campaign can be added without adding a question and the question count
+    is what a writer checks. Counting rows or sections cannot catch that -- both were correct
+    -- so the quantity has to be derived from the column nobody edits when extending the prose.
+
+    Turns red when: a new report is linked from the table without the sentence following it,
+    or a row is repointed at a record that already had one and the count is not reduced.
+    """
+    campaigns = _campaigns(index)
+    assert len(campaigns) > 1, "no records parsed from the table -- the last column changed"
+    stated = _spelled(index, r"There are (\S+) campaigns", "how many campaigns there are")
+    assert stated == len(campaigns), (
+        f"the intro says {stated} campaigns and the table cites {len(campaigns)}: {campaigns}"
+    )
+
+
 def test_every_question_has_a_row_and_a_section(index: str) -> None:
     """Turns red when: a row is added without its write-up, or a write-up without its row."""
     rows = set(_rows(index))

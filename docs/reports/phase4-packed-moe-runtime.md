@@ -1696,6 +1696,12 @@ the whole table in hand and is the composition the CUDA path replaces, refuses.
 - **`grouped_gemv.cu` has never been compiled.** Everything above is the dispatch, the marshalling
   and the contract; none of it is evidence about the kernel. The five parity tests are written and
   skip locally behind `importorskip("dynquant_kernels")`.
+  **Superseded 2026-08-15.** It compiles, and the five tests are **23 passed** on an L4 at
+  `sm_89` at first run — see [`kernel-first-compile.md`](kernel-first-compile.md). The other two
+  clauses of this status block stand: there is still no vectorized grouped variant and still no
+  speedup measurement, so what changed is that the kernel is now known to be *correct*, not that
+  it is known to be fast. The compile also found a defect, and it was in the CPU reference both
+  this suite and the gemv suite compare against, not in either kernel.
 - The `.cu` header claimed numerical identity with `dynquant::gemv` band for band, and **it was
   wrong about which thing it was identical to** — found by reading, before the compile, which is
   the only reason it is not a red GPU test tomorrow. `dynquant::gemv` is *two* kernels. The
