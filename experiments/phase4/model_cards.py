@@ -346,6 +346,53 @@ def comparison_table(entries: list[dict[str, Any]]) -> tuple[str, int]:
     return NL.join(lines), flagged
 
 
+def isolating_control(table: dict[str, Any]) -> str:
+    """How the scheme caveat ends: naming the control, or admitting it is absent.
+
+    The sentence used to assert the absence -- "two arms of the same scheme at the same byte
+    anchor is not in this panel" -- which was true of the seven-arm panel and would have
+    stayed on the card unchanged after the control was run and appended to it. A card is
+    regenerated from the table, so a claim about what the table does not contain has to be
+    read out of it rather than written into the generator.
+
+    The bar is deliberately strict: same method, same anchor, and every other recipe field
+    equal, so the two rows differ in the scheme and in nothing else. An asymmetric arm that
+    also turns activation ordering on does not qualify -- it changes two things at once,
+    which is the error this caveat exists to refuse. A panel can hold both, and then the one
+    with the matching `actorder` is the control and the other is a second question.
+    """
+    scored = [
+        arm for arm in published(table) if arm.get("scheme") and arm.get("accuracy") is not None
+    ]
+    for sym in scored:
+        if not sym["scheme"]["symmetric"]:
+            continue
+        # `actorder` and nothing else: `source` records whether the scheme was read or
+        # recovered, which is provenance rather than recipe, and comparing it would
+        # refuse a real control whose two arms merely differ in how well they were
+        # documented.
+        for asym in scored:
+            if asym["scheme"]["symmetric"]:
+                continue
+            if (asym.get("kind"), asym.get("anchor")) != (sym.get("kind"), sym.get("anchor")):
+                continue
+            if asym["scheme"]["actorder"] != sym["scheme"]["actorder"]:
+                continue
+            return (
+                "The comparison that isolates it is in this panel: `"
+                + str(sym["label"])
+                + "` and `"
+                + str(asym["label"])
+                + "` are the same method at the same byte anchor and differ in the scheme "
+                "alone, so the difference between those two rows is the scheme and nothing "
+                "else."
+            )
+    return (
+        "The comparison that would isolate it, two arms of the same method at the same byte "
+        "anchor differing only in scheme, is not in this panel."
+    )
+
+
 def caveats(table: dict[str, Any], row: dict[str, Any], flagged: int) -> str:
     """Everything true about this arm that a reader would otherwise have to discover.
 
@@ -388,8 +435,7 @@ def caveats(table: dict[str, Any], row: dict[str, Any], flagged: int) -> str:
             "a symmetric arm against an asymmetric one its delta spans two differences at "
             "once -- how the bits were allocated, and whether a zero point was stored per "
             "group -- so a large gap between those two arms is not on its own evidence "
-            "about allocation. The comparison that would isolate it, two arms of the same "
-            "scheme at the same byte anchor, is not in this panel."
+            "about allocation. " + isolating_control(table)
         )
 
     if flagged:

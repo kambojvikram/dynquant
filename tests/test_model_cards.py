@@ -636,3 +636,56 @@ def test_the_frontmatter_carries_no_tag_twice_and_invents_no_licence(
     assert "license_link: https://huggingface.co/LiquidAI/LFM2.5-8B-A1B" in front
     for invented in ("apache-2.0", "mit", "llama"):
         assert invented not in front
+
+
+def test_the_card_names_the_isolating_control_only_when_the_panel_holds_one(
+    cards: Any, table_mod: Any, tmp_path: Path
+) -> None:
+    """The caveat's last sentence is a claim about the panel, so it has to read the panel.
+
+    It used to assert the absence outright -- "two arms of the same scheme at the same byte
+    anchor is not in this panel" -- which was true of the seven arms it was written for and
+    would have stayed on the card word for word after the control was run and appended. A
+    card is regenerated from the table on every push, so a sentence about what the table does
+    not contain is the one kind of sentence that must not be written into the generator.
+
+    The bar is same method, same anchor, same activation ordering, opposite scheme. The
+    act-ordered arm is in the panel too and is deliberately *not* the one named: it changes
+    the scheme and the column order together, which is the two-differences-at-once error the
+    whole caveat exists to refuse, so naming it would have the card commit the mistake it is
+    warning about.
+
+    Turns red when: the sentence goes back to asserting either answer unconditionally, or
+    the pairing loosens enough to accept the act-ordered arm.
+    """
+    seven = _write_panel(tmp_path / "seven")
+    table, _ = _built(table_mod, seven)
+    assert "is not in this panel" in cards.card(table, "dq_3b", FINETUNE, repo_prefix=None)
+
+    anchor = next(arm for arm in table["arms"] if arm["label"] == "gptq_3b")["target_bytes"]
+    controls = tuple(
+        {
+            "label": label,
+            "kind": "gptq",
+            "anchor": 3,
+            "target_bytes": anchor,
+            "nbytes": anchor,
+        }
+        for label in ("gptq_3b_asym", "gptq_3b_asym_noao")
+    )
+    with_control = _write_panel(
+        tmp_path / "controls",
+        extra_arms=controls,
+        schemes={
+            "gptq_3b_asym": {"symmetric": False, "actorder": "group"},
+            "gptq_3b_asym_noao": {"symmetric": False, "actorder": None},
+        },
+    )
+    table, _ = _built(table_mod, with_control)
+    card = cards.card(table, "dq_3b", FINETUNE, repo_prefix=None)
+
+    assert "is not in this panel" not in card
+    assert "`gptq_3b` and `gptq_3b_asym_noao` are the same method" in card
+    # The act-ordered arm is listed first in `extra_arms`, so a pairing that merely looked
+    # for any asymmetric sibling at the same anchor would have found it first and named it.
+    assert "and `gptq_3b_asym` are the same method" not in card

@@ -89,6 +89,13 @@ CORE_SRC = Path(__file__).resolve().parents[2] / "packages" / "dynquant-core" / 
 if str(CORE_SRC) not in sys.path:  # pragma: no cover - import bootstrap
     sys.path.insert(0, str(CORE_SRC))
 
+# And `experiments/`, for `_llmc.default_symmetric`. Same reasoning, different reader:
+# `scheme_of` recovers the scheme of an arm quantized before the flags existed, and it
+# has to do that through the recipe builder's own rule rather than a copy of it.
+EXPERIMENTS = Path(__file__).resolve().parents[1]
+if str(EXPERIMENTS) not in sys.path:  # pragma: no cover - import bootstrap
+    sys.path.insert(0, str(EXPERIMENTS))
+
 #: Head-to-head at matched bytes. This is the claim, and the family it is corrected in.
 HEAD_TO_HEAD: tuple[tuple[str, str, str], ...] = (
     ("dq_4b", "gptq_4b", "4b  DynQuant vs GPTQ"),
@@ -538,6 +545,55 @@ def linearization_of(out: Path, arm: dict[str, Any]) -> dict[str, Any] | None:
     return report if isinstance(report, dict) else None
 
 
+def scheme_of(out: Path, arm: dict[str, Any]) -> dict[str, Any] | None:
+    """Which grid this baseline was fitted on, from the run that fitted it -- or its default.
+
+    ``symmetric`` and ``actorder`` are recipe inputs, not results, so nothing downstream can
+    recover them from the weights: a symmetric arm and an asymmetric one at the same anchor
+    are the same size, the same width and the same shape. The driver writes both into the
+    ``.quant.json`` side file, and this carries them into the row so a reader can tell a
+    scheme difference from an allocation difference without being told which arm was which.
+
+    A missing field is not always a missing fact -- the same distinction `dispatch_of` draws
+    a few functions down. Both flags postdate the panel that needed them, so the arms that
+    motivated the control have a side file with no ``symmetric`` key at all, and reading that
+    as "unknown" would leave the panel unable to name the pair it now contains. What those
+    arms ran is knowable: they ran at the method's own default, which is what having no flag
+    meant. So it is recovered through `default_symmetric` -- the same function the recipe
+    builder resolves ``auto`` with, not a second copy of its rule -- and ``source`` says
+    ``method-default`` rather than ``recorded``, because an arm that could not state its own
+    scheme should not read as though it did.
+
+    ``None`` for an arm with no side file: the ceiling, and every arm this repository
+    quantizes itself. A DynQuant arm is asymmetric by construction, but that is a property
+    of the encoder rather than something this run recorded, and there is no method default
+    to recover it from either.
+    """
+    record = resolve_stored(out, arm.get("record"))
+    if record is None:
+        return None
+    side = record.with_suffix(".quant.json")
+    if not side.is_file():
+        return None
+    payload = json.loads(side.read_text(encoding="utf-8"))
+    method = payload.get("method")
+    if "symmetric" in payload:
+        return {
+            "symmetric": bool(payload["symmetric"]),
+            "actorder": payload.get("actorder"),
+            "source": "recorded",
+        }
+    from _llmc import default_symmetric
+
+    try:
+        symmetric = default_symmetric(str(method))
+    except ValueError:
+        return None
+    # `actorder` is absent for the same reason `symmetric` is, and its default is the one
+    # llm-compressor applies when the recipe names none: no reordering.
+    return {"symmetric": symmetric, "actorder": None, "source": "method-default"}
+
+
 def allocation_of(out: Path, arm: dict[str, Any]) -> dict[str, Any] | None:
     """The allocator's own account of a DynQuant arm: widths and breached floors.
 
@@ -611,6 +667,9 @@ def rows(
                 # What the quantizer did to this arm's banks, from the record it wrote in
                 # the same process. Recovers the dispatch when the eval record cannot.
                 "linearization": linearization_of(out, arm),
+                # Recipe inputs rather than measurements, and the only fields that
+                # separate a scheme difference from an allocation one. See `scheme_of`.
+                "scheme": scheme_of(out, arm),
                 "allocation": allocation_of(out, arm),
                 "seconds": (record or {}).get("seconds"),
             }

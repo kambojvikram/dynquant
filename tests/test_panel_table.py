@@ -200,6 +200,8 @@ def _write_panel(
     ceiling_correct: int = 320,
     nulls: tuple[str, ...] = (),
     draws: tuple[tuple[str, int], ...] = (),
+    schemes: dict[str, dict[str, Any]] | None = None,
+    extra_arms: tuple[dict[str, Any], ...] = (),
 ) -> Path:
     """A full seven-arm panel on disk, in the shape ``arms_lfm2 run`` writes.
 
@@ -281,6 +283,22 @@ def _write_panel(
             }
         )
 
+    # An extra arm needs hits before the loop below asks for them. Built on the same
+    # ladder as a control's -- a little better than `gptq_3b` and short of `dq_3b` --
+    # so a scheme arm added here is a live row in every comparison it appears in and
+    # not a degenerate one that would let a dropped row still pass.
+    for index, entry in enumerate(extra_arms):
+        share = 3 + len(controls) + index
+        hits.setdefault(
+            entry["label"],
+            [
+                base if (mine and not base and position % share) else mine
+                for position, (mine, base) in enumerate(
+                    zip(hits["dq_3b"], hits["gptq_3b"], strict=True)
+                )
+            ],
+        )
+    arms.extend(dict(entry) for entry in extra_arms)
     for arm in arms:
         label = arm["label"]
         if label in omit:
@@ -290,10 +308,16 @@ def _write_panel(
         record.write_text(json.dumps(_record(label, hits[label]), indent=2), encoding="utf-8")
         arm["record"] = str(record)
         if arm["kind"] in ("gptq", "awq"):
-            record.with_suffix(".quant.json").write_text(
-                json.dumps({"method": arm["kind"], "bits": arm["anchor"], "params": PARAMS}),
-                encoding="utf-8",
-            )
+            # No `symmetric` key unless a test asks for one, because the arms this
+            # panel was built from have none: both scheme flags postdate them. That
+            # absence is the case `scheme_of` recovers, so it is the fixture default.
+            payload: dict[str, Any] = {
+                "method": arm["kind"],
+                "bits": arm["anchor"],
+                "params": PARAMS,
+            }
+            payload.update((schemes or {}).get(label, {}))
+            record.with_suffix(".quant.json").write_text(json.dumps(payload), encoding="utf-8")
 
     driver = _load("_dq_arms_lfm2", DRIVER)
     driver.write_manifest(
@@ -2538,3 +2562,49 @@ def test_a_third_control_lengthens_the_ladder_and_still_partitions_the_margin(
     assert block.count("shape:") == 1
     assert "shape: uniform vs GPTQ" in block
     assert "signal: shuffle vs flat" in block and "signal: flat vs uniform" in block
+
+
+def test_a_scheme_is_read_when_recorded_and_recovered_from_the_method_when_not(
+    table: Any, tmp_path: Path
+) -> None:
+    """A scheme is a recipe input, so nothing downstream can measure it back off the weights.
+
+    A symmetric arm and an asymmetric one at the same anchor are the same size, the same
+    width and the same shape -- the only place the difference survives is the side file the
+    driver wrote. So the row carries it, and a comparison between two arms can say whether
+    it spans the scheme as well as the allocation.
+
+    Both flags postdate the panel that needed them, so the arms that motivated the control
+    have no `symmetric` key at all. Reading that as unknown would leave the table unable to
+    name a pair it does contain, and what those arms ran is knowable: the method's default.
+    The recovery is labelled `method-default` rather than passed off as `recorded`, and it
+    goes through `_llmc.default_symmetric` -- the recipe builder's own rule, not a copy --
+    so a change to what a method defaults to cannot leave this reading the old answer.
+
+    Turns red when: the field stops being carried, the recovery starts claiming it was
+    recorded, or the default is re-spelled here instead of imported.
+    """
+    out = _write_panel(
+        tmp_path / "arms", schemes={"gptq_3b": {"symmetric": False, "actorder": "group"}}
+    )
+    dest = tmp_path / "table.json"
+    _run(table, out, "--json-out", str(dest))
+    built = json.loads(dest.read_text(encoding="utf-8"))
+    schemes = {arm["label"]: arm["scheme"] for arm in built["arms"]}
+
+    assert schemes["gptq_3b"] == {
+        "symmetric": False,
+        "actorder": "group",
+        "source": "recorded",
+    }
+    assert schemes["gptq_4b"] == {"symmetric": True, "actorder": None, "source": "method-default"}
+    assert schemes["awq_4b"] == {"symmetric": False, "actorder": None, "source": "method-default"}
+    # Nothing to read and nothing to recover: the ceiling and the arms this repository
+    # quantizes itself have no side file, and DynQuant's asymmetry is a property of the
+    # encoder rather than something any run here wrote down.
+    assert schemes["bf16"] is None
+    assert schemes["dq_3b"] is None
+
+    driver = _load("_dq_llmc_default", REPO_ROOT / "experiments" / "_llmc.py")
+    assert schemes["gptq_4b"]["symmetric"] == driver.default_symmetric("gptq")
+    assert schemes["awq_4b"]["symmetric"] == driver.default_symmetric("awq")

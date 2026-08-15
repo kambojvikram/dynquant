@@ -36,6 +36,26 @@ from typing import Any
 METHODS = ("gptq", "awq", "rtn")
 
 
+def default_symmetric(method: str) -> bool:
+    """Whether ``method`` fits a symmetric grid when nothing asks it to do otherwise.
+
+    GPTQ and RTN default to symmetric, AWQ to asymmetric, and those are the libraries' own
+    choices rather than this repository's -- which is why an arm run at the default is the
+    arm a reader downloading a checkpoint under that name would get, and why the panel runs
+    them that way by default.
+
+    It lives here, at one definition, because three callers need it and each one that copied
+    it would be a copy that stays green while the original changes: the recipe builder that
+    resolves ``--symmetric auto``, the side file that records what the recipe resolved to,
+    and `panel_table.scheme_of`, which has to say what an arm quantized *before* the flag
+    existed was fitted on. That last one is a recovery, not a record, and it is labelled as
+    one at the point of use.
+    """
+    if method not in METHODS:
+        raise ValueError(f"unknown method {method!r}; expected one of {', '.join(METHODS)}")
+    return method != "awq"
+
+
 def quant_args(bits: int, group_size: int, *, symmetric: bool, actorder: str | None = None) -> Any:
     """The weight-quantization contract shared by every recipe below.
 
@@ -96,14 +116,22 @@ def build_recipe(
             "Hessian and has no activation order to sort by"
         )
 
+    # Before `default_symmetric`, which raises its own ValueError on an unknown method
+    # and would otherwise pre-empt the SystemExit this function ends with.
+    if method not in METHODS:
+        raise SystemExit(f"unknown method {method!r}; choose from {', '.join(METHODS)}")
+
     from compressed_tensors.quantization import QuantizationScheme
     from llmcompressor.modifiers.quantization import GPTQModifier, QuantizationModifier
     from llmcompressor.modifiers.transform.awq import AWQModifier
 
-    # Asymmetric for AWQ, symmetric otherwise -- each method's own published default,
-    # unless the caller names one. Forcing one convention on all three would make the
-    # arms differ from the checkpoints a reader would download under those names.
-    sym = (method != "awq") if symmetric is None else symmetric
+    # Each method's own published default unless the caller names one; forcing one
+    # convention on all three would make the arms differ from the checkpoints a reader
+    # would download under those names. Through `default_symmetric` rather than spelled
+    # out, because the side file records the same decision a few frames up the stack and
+    # two copies of it can disagree about what an arm was -- one deciding what runs and
+    # one deciding what is written down is the worst possible pair to let drift.
+    sym = default_symmetric(method) if symmetric is None else symmetric
     scheme = QuantizationScheme(
         targets=["Linear"],
         weights=quant_args(bits, group_size, symmetric=sym, actorder=actorder),
@@ -126,7 +154,10 @@ def build_recipe(
         # calibration-driven correction at all. It is the floor the other two have to beat
         # to have earned their calibration pass.
         return [QuantizationModifier(config_groups=groups, ignore=ignore)]
-    raise SystemExit(f"unknown method {method!r}; choose from {', '.join(METHODS)}")
+    raise SystemExit(  # pragma: no cover - unreachable until METHODS grows
+        f"{method!r} is in METHODS but has no recipe here; a method was added to the "
+        "registry without a modifier list to run it"
+    )
 
 
 def materialize_quantization(

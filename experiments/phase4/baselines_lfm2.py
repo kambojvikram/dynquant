@@ -85,7 +85,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "packages/dynquant-core/src"))
 
-from _llmc import METHODS, build_recipe, materialize_quantization
+from _llmc import METHODS, build_recipe, default_symmetric, materialize_quantization
 
 IGNORE: list[str] = []
 """Nothing is left in fp16. See the module docstring: on a tied model there is no such thing
@@ -714,7 +714,7 @@ def quantize(
         "method": args.method,
         "bits": args.bits,
         "group_size": args.group_size,
-        "symmetric": (args.method != "awq") if symmetric is None else symmetric,
+        "symmetric": default_symmetric(args.method) if symmetric is None else symmetric,
         "actorder": actorder,
         "ignore": list(IGNORE),
         "calib_samples": len(dataset),

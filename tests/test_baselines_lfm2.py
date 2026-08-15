@@ -1545,16 +1545,30 @@ def test_the_scheme_a_control_names_reaches_the_recipe_and_is_recorded(driver: A
     assert 'actorder = None if args.actorder == "none" else args.actorder' in quantize
     assert "            symmetric=symmetric," in quantize
     assert "            actorder=actorder," in quantize
-    # What lands in the record is the resolved scheme, including under `auto`, where it is
-    # the method's own default rather than the word the caller typed.
-    assert '"symmetric": (args.method != "awq") if symmetric is None else symmetric,' in quantize
+    # What lands in the record is the resolved scheme, including under `auto`, where it
+    # is the method's own default rather than the word the caller typed -- and it is
+    # resolved through the same function the recipe resolves it with. Two spellings of
+    # that rule is the pair least able to afford drift: one decides what runs and the
+    # other decides what the record says ran, so a disagreement between them is an arm
+    # filed under a scheme it did not have, with nothing in the artifacts to contradict
+    # it. Asserted as the call rather than as the rule for exactly that reason.
+    assert (
+        '"symmetric": default_symmetric(args.method) if symmetric is None else symmetric,'
+        in quantize
+    )
     assert '"actorder": actorder,' in quantize
 
     signature = inspect.signature(_llmc.build_recipe)
     assert signature.parameters["symmetric"].default is None
     assert signature.parameters["actorder"].default is None
     source = inspect.getsource(_llmc.build_recipe)
-    assert 'sym = (method != "awq") if symmetric is None else symmetric' in source
+    assert "sym = default_symmetric(method) if symmetric is None else symmetric" in source
+    # And the rule itself, once, where both of them read it from.
+    assert _llmc.default_symmetric("gptq") is True
+    assert _llmc.default_symmetric("rtn") is True
+    assert _llmc.default_symmetric("awq") is False
+    with pytest.raises(ValueError, match="unknown method"):
+        _llmc.default_symmetric("gptq2")
     assert "symmetric=sym, actorder=actorder" in source
 
     # Refused before the lazy imports, so the refusal fires on a box without
