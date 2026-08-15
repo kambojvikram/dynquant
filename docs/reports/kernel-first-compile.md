@@ -765,3 +765,276 @@ the fix changes how a count is computed, not what is stored.
   capturability result is architectural and should port; a 3.25x is not.
 - **The re-run does not re-open section 12's other findings.** Resident memory, the coherence
   checks, and the load-imbalance stress case are unaffected by a fence.
+
+## 14. The whole model, and what one block could not predict
+
+Section 13's first disclaimer was arithmetic dressed as a caveat: 22 MoE layers x 0.371 ms of
+removed launch latency is 8.2 ms, against a measured 31.67 ms decode step, so 26% — *an upper
+bound, not a prediction*. An upper bound stated that plainly is an invitation to test it, and the
+L4 was already rented and otherwise idle, so `experiments/phase4/graph_capture_model.py` tests it
+on the real packed checkpoint rather than on one synthetic block.
+
+Three arms, each capturing something different, on LFM2.5-8B-A1B packed to 4 and to 3 bits:
+
+- `stack` — the full 24-layer forward at sequence length 1 with `use_cache=False`. Every module
+  the model owns, in the order the model calls them, and nothing else. It is **not a decode
+  step** and is never quoted as one; it has no cache to read and no attention history to attend
+  over. What it measures is the *launch structure* of the whole model.
+- `step` — one real decode step, cache built by an actual prefill, captured by hand.
+- `compile` — the same step under `torch.compile(mode="reduce-overhead")`, which is the way a
+  user would reach for graphs without writing capture code.
+
+### The whole-model launch overhead is 75% of a sequence-length-1 forward
+
+| bits | eager ms | replay ms | removed ms | speedup | max abs delta | argmax agrees |
+|---|---|---|---|---|---|---|
+| 4 | 29.633 | 7.438 | 22.196 | **3.98x** | 0.0 | yes |
+| 3 | 29.522 | 6.798 | 22.724 | **4.34x** | 0.0 | yes |
+
+Both captured, both bit-identical to a fresh eager forward after a new token was written into the
+captured input buffer — so the graph is reading the token it was given, not replaying a memorized
+answer. Resident memory was 4295.7 MiB at 4 bits, the same figure to the tenth of a MiB that
+sections 12 and 13 report.
+
+The internal consistency check is the interesting part, and it is the reason these two rows are
+worth more than either alone. **The removed time is width-invariant and the remaining time is
+not.** 22.196 against 22.724 ms is a 2.3% spread; 7.438 against 6.798 ms is 8.6%. That is exactly
+the pattern a launch-overhead story predicts and no other story does: issuing 111 packed modules
+plus norms, routers and convolutions costs the CPU the same regardless of how many bits the
+weights are stored in, while the work the GPU then does is cheaper at 3 bits than at 4. Had the
+graph been removing *work* rather than *launches*, the removed column would have tracked width
+and the remaining column would have been flat. It is the other way around.
+
+It also puts a number on something section 12 could only see through a fence. At 4 bits the
+end-to-end decode advantage of 3 bits over 4 measured 3.0%; with launches removed, the same
+comparison on the same checkpoint is 8.6%. Both are real: the first is what a user gets today,
+the second is what the arithmetic underneath is worth once the launch tax is paid off.
+
+### A real decode step on a `DynamicCache` captures, replays four times faster, and is wrong
+
+`stack` is a proxy. The `step` arm is not: it runs a real prefill of a real prompt, takes the
+cache `generate` hands back, and captures one decode step at position 255 with
+`cache_position` pinned. It captured. It replayed at **4.034x** — 30.769 ms eager against 7.628
+ms replayed, 23.141 ms removed. Every number in that sentence is a number a serving stack would
+want.
+
+The step it replayed produces the wrong token. `max_abs_delta` is **15.33** and
+`argmax_agrees` is **false**.
+
+Nothing raised. Capture returned cleanly, replay ran, and the timings are excellent, because a
+CUDA graph is a recording of *addresses* and the cache transformers gives this model is a
+`DynamicCache`, which grows by `torch.cat` and therefore hands back a newly allocated pair of
+tensors on every step. The graph faithfully replays reads of the buffers that were live during
+capture; by replay time the cache has abandoned them. The failure is invisible to every check
+except the one that compares the replayed output against a fresh eager forward — which is why
+that comparison is in the record next to the speedup and not in a follow-up.
+
+The cache census printed at prefill says the same thing structurally. It was also, for two
+drafts of this section, evidence for a claim it could not support:
+
+```
+[prefill] prompt=25 warm=231 cache=DynamicCache {'(1, 8, 255, 64)': [12]}
+```
+
+Twelve tensors, all the same shape: 6 attention layers x (K, V), 8 KV heads, head dim 64, and
+nothing else. That was read here as "the other 18 layers contribute nothing to
+`past_key_values`," and then used to argue that a capture of this model reads a container
+describing a quarter of it. **They contribute all of it.** A `LinearAttentionLayer` keeps its
+convolution state in a `{0: tensor}` dict, and the walk that produced this census descended
+into lists, tuples and `__dict__` but not into plain dicts, so it could not see inside one. A
+later diagnostic that enumerated `cache.layers` directly found all 24 layers present and
+initialized, each convolution layer holding its `conv_states`. The walk is now dict-aware and
+the claim is withdrawn — the census above is left exactly as printed, because what it shows
+is what a partial walk shows.
+
+Two things follow, and they should not be run together. The **timing** is representative: the
+replay issues the same kernels over the same shapes in the same order as a correct one would, so
+4.034x bounds what a correct capture is worth on this model and this card. The **capture** is
+not deliverable *on this container*: a hand-captured decode step cannot be made correct
+without a cache whose storage does not move. Getting one turned out to take three more
+subsections than expected.
+
+It is also a second, independent reading of the same launch structure, and it agrees with the
+first. `step` eager is 30.769 ms against `stack` eager 29.633 ms, 3.8% apart, the difference
+being attention over 255 positions that `stack` does not do; removed is 23.141 against 22.196
+ms, 4.3% apart. Two arms built differently, measuring the same tax.
+### The static cache was full, and four explanations of that were wrong
+
+The static arm asserted on device at both widths, in both the hand-captured and the compiled
+arm. A device-side assert is asynchronous, so the traceback it produces names the next
+synchronization point rather than the op that failed; `CUDA_LAUNCH_BLOCKING=1` and one process
+per configuration are what make it localizable at all, because a poisoned context turns every
+later arm in the same process into a measurement of the poisoning.
+
+Four explanations were written down before the right one. Each is worth recording, because each
+was refuted by a specific observation and not by argument:
+
+* **The model's hybrid layer mix.** LFM2.5-8B-A1B is 18 short-convolution layers to 6 attention
+  layers, and the failing `index_copy_` ran in a single block of about 96 threads, which reads
+  like a per-layer structure that a uniform static cache would not have. Refuted by enumerating
+  `cache.layers`: all 24 are present and initialized, each convolution layer holding its
+  `conv_states`. The composite is built correctly.
+* **This file's own arithmetic.** The decode position came from `sequences.shape[1] - 1`, and
+  the cache is one slot shorter than that sequence, so 255 looked like one past the end of 255
+  slots. Refuted by fixing it: at position 254, in bounds by inspection, the assert survived
+  unchanged at both widths.
+* **The graph.** Refuted by taking one **eager** step at the same position with no capture
+  anywhere in the process. It asserts identically, which means `captured: false` had been
+  labelling the wrong stage.
+* **The packed runtime.** One of the failures came back as `RuntimeError: DynQuant CUDA
+  error: ...`, which puts our own kernels in the call path. Refuted by running the same step on
+  a dense bf16 model with nothing packed: byte-identical traceback, same two frames in
+  `cache_utils.py`.
+
+What it actually is takes two lines of `transformers` to state. `generation/utils.py` sizes a
+generation's static cache at `max_length - 1` -- 255 slots for the 256-token sequence it
+returns, because the last token emitted is never fed back. And `StaticLayer.update` does not
+take a write position from its caller at all:
+
+```python
+cache_position = torch.arange(kv_length, device=self.device) + self.cumulative_length
+self.cumulative_length.add_(kv_length)
+self.keys.index_copy_(2, cache_position, key_states)
+```
+
+The `cache_position` a caller passes is used for the causal mask and for RoPE; the slot the key
+lands in comes from a device-resident cursor that the layer advances itself. So a prefill of N
+tokens leaves a static cache both N long and exactly N full, and the next step runs off the end
+**at any position**. There was never a position that worked. A `DynamicCache` has no capacity to
+run off, which is exactly why it hid this for three rounds and offered a wrong answer instead.
+
+The fix is one argument: ask `generate` for `max_cache_len` above what the prefill will fill.
+With 192 spare slots the prefill reports `capacity=448 cursor=255 seq=256` and the step has
+somewhere to go.
+
+That cursor is not free, and the arm records what it costs. `cache_writes` is **115** for a run
+of 50 timed replays: every call advances it -- three capture warmups, five timing warmups, fifty
+eager timings, fifty replays, and the correctness forwards. A replayed graph increments the
+cursor because the increment is a device op inside the recording. **A captured decode step on a
+static cache is replayable only as many times as the cache has spare slots**, which is a real
+constraint on shipping one and is not visible from the speedup.
+
+### With headroom, the supported path captures the whole model
+
+`torch.compile(mode="reduce-overhead")` is how a serving stack reaches CUDA Graphs without
+writing capture code, so it is the arm that decides whether any of this is reachable in
+practice. Against a `DynamicCache` it did not produce a number at either width. Both raised the
+same thing:
+
+```
+RuntimeError: Error: accessing tensor output of CUDAGraphs that has been overwritten
+by a subsequent run.
+```
+
+Inductor's `cudagraph_trees` has a guard for precisely the failure the hand capture produced
+silently, and the guard fired. Against a static cache with spare slots, the same call goes
+through:
+
+| bits | eager ms | compiled ms | removed ms | speedup | graph breaks | compile s |
+|---|---|---|---|---|---|---|
+| 4 | 32.463 | 6.577 | 25.886 | **4.936x** | **0** | 6.3 |
+| 3 | 32.382 | 5.940 | 26.442 | **5.452x** | **0** | 6.1 |
+
+**Zero graph breaks** across the whole packed model: 111 DynQuant modules, the grouped MoE
+kernel, 18 short-convolution layers and 6 attention layers, all inside one graph. Nothing in the
+packed runtime forces a fallback to eager -- which is the property `torch.library.custom_op`
+plus `register_fake` was built for, and the first evidence that it holds at model scale rather
+than at block scale. Compilation costs about six seconds, once.
+
+This retires the previous draft of this section, which read the `DynamicCache` refusal as a
+statement about the model and concluded that the straightforward way to turn graphs on does not
+work here. It works. What did not work was handing it a container whose storage moves, and the
+refusal was the guard doing its job on an input this file had chosen badly.
+
+### The delta needed a yardstick before it could be read
+
+Every static arm captured, replayed, and agreed with eager on the argmax. None of them agreed
+to zero. `max_abs_delta` came back between 0.375 and 2.906 -- small against logits of order 20,
+but not the exact 0.0 the cacheless `stack` arm produces, and this report has already once read
+a nonzero number as a statement about capture when it was a statement about the container.
+
+So the arms were re-run with a control: after taking the graph's output and the eager reference,
+take **a second eager forward** on the same input and compare the two eager runs to each other.
+A decode step mutates the cache it reads -- a static layer advances its write cursor, a
+convolution layer shifts its window -- so two consecutive eager forwards are not required to
+agree either, and until it is known by how much they disagree, a graph-vs-eager delta cannot be
+attributed to the graph.
+
+| bits | arm | graph vs eager | **eager vs eager** | argmax, both comparisons |
+|---|---|---|---|---|
+| 4 | `step` | 1.6875 | **2.3125** | agrees |
+| 4 | `compile` | 0.3750 | **0.2500** | agrees |
+| 3 | `step` | 1.1875 | **2.0000** | agrees |
+| 3 | `compile` | 2.9062 | **2.2773** | agrees |
+
+On three of the four arms **the control is at least as large as the quantity it controls**: the
+graph is no further from eager than eager is from itself. On the fourth, 3-bit compiled, the
+graph delta is 2.906 against a control of 2.277 -- 28% larger, the same order of magnitude, and
+not a separation this measurement can resolve. In every arm both comparisons select the same
+token.
+
+That is what a correct capture looks like on a model whose cache is mutable state, and it is the
+strongest statement the measurement supports. It is not bit-exactness -- nothing here is
+bit-exact, including eager against itself -- and it does not extend past the one step captured.
+What it rules out is the failure the `DynamicCache` arm exhibits, where the delta is 15.33 and
+the argmax flips. That is two orders of magnitude away and needs no control to see.
+
+### What captures, what does not, and what it costs
+
+Six configurations, one model, one card. `stack` and the `DynamicCache` rows come from the
+earlier sweep; the four static rows come from the re-run that carries the control.
+
+| arm | cache | captured | correct | 4-bit | 3-bit |
+|---|---|---|---|---|---|
+| `stack` | none (`use_cache=False`) | yes | delta 0.0, argmax agrees | 3.984x | 4.343x |
+| `step` | `DynamicCache` | yes | **no** -- delta 15.33 / 18.38, argmax flips | 4.030x | 4.338x |
+| `compile` | `DynamicCache` | **no** -- guard raises | n/a | n/a | n/a |
+| `step` | `static`, no headroom | **no** -- device assert | n/a | n/a | n/a |
+| `step` | `static`, 192 spare | yes | within the eager-vs-eager control | **4.207x** | **4.556x** |
+| `compile` | `static`, 192 spare | yes | within the control at 4-bit | **4.936x** | **5.452x** |
+
+Two things fall out of the column pair that did not fall out of section 13.
+
+**The removed time is width-invariant; the remaining time is not.** Across all four static arms
+removed is 24.76, 25.89, 25.22, 26.44 ms -- a 6.8% spread with no ordering by width. The
+remaining time is 7.72, 6.58, 7.09, 5.94 ms, and there the 3-bit arms are consistently the
+faster. That is the signature of removing *launches* rather than *work*: launch cost does not
+know how many bits a weight is stored in, and the arithmetic left running after the launches are
+gone does. Section 13 measured this on one block and put an upper bound of 26% on it. At model
+scale it is 76-82%, because a block has a handful of launches around real arithmetic and a model
+has 24 layers of them around the same arithmetic.
+
+**The supported path beats the hand-rolled one at both widths** -- 4.936x against 4.207x, 5.452x
+against 4.556x. The hand capture wraps one `model(...)` call in a graph and leaves everything
+around it in Python; Inductor fuses inside the graph as well as capturing it, so it removes
+launches the hand capture never had a way to reach. The arm written to be the reference is the
+one that loses, which is the outcome that makes it worth shipping the compiled path rather than
+capture code.
+
+One comparison that is **not** available: static eager against dynamic eager. Static eager is
+32.3-32.5 ms and dynamic eager is 30.7, because a static cache runs attention over all 448
+allocated slots while the dynamic one runs over the 255 it holds. The speedup ratios are each
+internally consistent -- eager and replay measured on the same container -- but the two
+containers are not measuring the same step, and the 4.207x should not be read as an improvement
+on the 4.030x.
+
+### What section 14 does not claim
+
+* **Not a tokens-per-second number.** One decode step is timed in isolation, 50 iterations, on a
+  cache that already holds 255 tokens. A generation loop pays prefill, sampling, detokenization
+  and a cursor that keeps advancing; none of that is here. 4.94x on a step is not 4.94x on a
+  request.
+* **Not a claim about long context.** Capacity is 448 slots. Attention cost grows with the
+  cursor and launch cost does not, so the fraction of a step that graphs can remove **falls** as
+  context grows. This measurement is at the short end, where the ratio is most favourable.
+* **Not a replayable-forever step.** `cache_writes` is 116 for a 50-iteration run: every call
+  advances the static cursor, replays included, because the increment is a device op inside the
+  recording. A shipped decode loop must re-capture or re-allocate before the cache fills.
+* **Not bit-exactness.** The control establishes that the graph is no further from eager than
+  eager is from itself, on this step, at this position. It does not establish agreement to zero,
+  which does not hold for eager either.
+* **Not a statement about other cache implementations.** `StaticCache` was the container tested.
+  The hybrid `Mamba`-style and quantized caches transformers also ships were not.
+* **Not generalized past this model and this card.** LFM2.5-8B-A1B on one L4. The launch-bound
+  regime that makes the number large is a property of a small-batch decode on a card with modest
+  SM count; a larger card or a batched server sits somewhere else on that curve.
