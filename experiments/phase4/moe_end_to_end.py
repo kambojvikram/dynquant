@@ -282,11 +282,19 @@ def _probe_cache(
     cache_impl: str | None,
     disable_compile: bool,
     compile_mode: str,
-) -> Any:
+) -> int:
     """One short generation asked to hand its cache back, so presence is observed.
 
     Separate from the timed calls because `return_dict_in_generate` keeps the cache
     alive past the call and that is a memory cost the peak numbers should not carry.
+
+    The length is read here rather than returned as an object, because under a static
+    cache `generate` keeps one cache on the model and hands the same object back to
+    every call. Held across the timed reps, the reference is live and reports whatever
+    the last generation left in it: both families read `prompt + 32 - 1`, the capacity
+    of the cache the warmup sized, not the four tokens this probe asked for. Reading it
+    at the point of measurement also drops the reference, which is what the paragraph
+    above claims to be doing.
     """
     from transformers import GenerationConfig
     from transformers.generation.configuration_utils import CompileConfig
@@ -309,7 +317,7 @@ def _probe_cache(
     )
     with torch.no_grad():
         out = model.generate(**enc, generation_config=cfg)
-    return getattr(out, "past_key_values", None)
+    return _cache_len(getattr(out, "past_key_values", None))
 
 
 def _time_arm(
@@ -336,7 +344,7 @@ def _time_arm(
         compile_mode=compile_mode,
     )
     warmup_s = time.perf_counter() - t0
-    cache_probe = _probe_cache(
+    cache_len = _probe_cache(
         model, tok, PROMPTS[0], device, cache_impl, disable_compile, compile_mode
     )
     rows: list[dict[str, Any]] = []
@@ -394,7 +402,7 @@ def _time_arm(
         # So this asks `generate` for the cache back and reports what came: -1 means
         # it decoded without one, which is quadratic in the budget and would make
         # every arm equally wrong in a way the speedup ratio would survive.
-        "decoded_cache_len": _cache_len(cache_probe),
+        "decoded_cache_len": cache_len,
         "config_use_cache": bool(getattr(model.config, "use_cache", True)),
         "rows": rows,
         "decode_tok_s": round(statistics.median([r["decode_tok_s"] for r in rows]), 2),
