@@ -28,6 +28,7 @@ from dynquant.errors import DynQuantError  # noqa: E402
 from dynquant.integration import hf_quantizer  # noqa: E402
 from dynquant.quant.checkpoint import export_packed_checkpoint  # noqa: E402
 from dynquant.quant.quantizer import quantize_model  # noqa: E402
+from dynquant.runtime import linear as linear_mod  # noqa: E402
 from dynquant.runtime.experts import DISPATCH_NAME  # noqa: E402
 from dynquant.runtime.linear import (  # noqa: E402
     DynQuantExpertBank,
@@ -939,3 +940,44 @@ def test_an_fp32_bank_survives_the_round_trip_through_a_checkpoint(tmp_path) -> 
     with torch.no_grad():
         probe = torch.randn(6, HIDDEN)
         assert (loaded(probe) - reference(probe)).abs().max().item() == 0.0
+
+
+def test_indexing_a_bank_goes_through_the_dispatcher_not_the_reference(monkeypatch) -> None:
+    """``bank[e]`` must ask ``runtime.ops``, which is where the CUDA kernel lives.
+
+    ``QuantTensor.dequantize`` documents itself as the reference implementation: it
+    materialises the codes in fp32 and walks five elementwise passes. ``ops.dequantize``
+    routes the identical arithmetic to one kernel when the extension is loaded and falls
+    back to that same reference when it is not. So on CPU the two are numerically
+    indistinguishable, and a test that compared outputs would stay green through a
+    revert. This one asserts the *call*.
+
+    Measured cost of getting it wrong, on an L4 across 54 bank geometries: the loop paid
+    2.81x-46.13x more than it needed to, median 4.01x, and every fused-vs-loop speedup timed
+    against it was overstated by that factor.
+
+    Turns red when: ``__getitem__`` reaches for ``weight_qt.rows(...).dequantize(...)``
+    again, or for any other path that skips the backend dispatcher.
+    """
+    model = _fresh()
+    pack_model(model, {BANKS[0]: 4}, compute_device=None)
+    bank = model.block.experts.gate_up_proj
+
+    seen: list[tuple[int, int, torch.dtype | None]] = []
+    real = linear_mod.ops.dequantize
+
+    def spy(qt, *, dtype=None):
+        seen.append((qt.logical_shape[0], qt.in_features, dtype))
+        return real(qt, dtype=dtype)
+
+    monkeypatch.setattr(linear_mod.ops, "dequantize", spy)
+    got = bank[2]
+
+    assert len(seen) == 1, f"one expert, one dispatch; got {len(seen)}"
+    band, in_features, dtype = seen[0]
+    assert (band, in_features) == (bank.out_features, bank.in_features), (
+        "the dispatcher was handed the wrong band -- one expert is "
+        f"[{bank.out_features}, {bank.in_features}], it saw [{band}, {in_features}]"
+    )
+    assert dtype is bank.out_dtype, "the parent's compute dtype has to survive the hop"
+    assert got.shape == (bank.out_features, bank.in_features)

@@ -1,0 +1,8 @@
+=== A. direct, --target-processes all  (must report errors or nothing below means anything)
+OOB gather raised: AcceleratorError
+========= ERROR SUMMARY: 3 errors
+=== B. one subprocess away, --target-processes application-only  (the default)
+OOB gather raised: AcceleratorError
+=== C. one subprocess away, --target-processes all
+OOB gather raised: AcceleratorError
+========= ERROR SUMMARY: 3 errors

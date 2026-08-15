@@ -393,8 +393,22 @@ class DynQuantExpertBank(_PackedModule):
         if not 0 <= expert < self.num_experts:
             raise IndexError(f"expert {int(index)} out of range for a bank of {self.num_experts}")
         band = self.out_features
-        return self.weight_qt.rows(expert * band, (expert + 1) * band).dequantize(
-            dtype=self.out_dtype
+        # `ops.dequantize`, not `QuantTensor.dequantize`. The latter says in its own body
+        # that it is the reference implementation: it materialises the codes in fp32 and
+        # walks five elementwise passes, so a 67M-element bank moves about 1.3 GB per
+        # expert-slice. `ops` dispatches the identical arithmetic to one CUDA kernel when
+        # the extension is loaded and falls through to that same reference when it is not,
+        # so this is free on every backend that had no kernel to begin with.
+        #
+        # Measured on an L4 (sm_89, fp16) across 54 bank geometries: the reference cost the
+        # loop 2.81x-46.13x more than this does, median 4.01x, and the two dequantizers
+        # agreed to 0.0 of the fp16 tolerance in every one -- not "within tolerance",
+        # exactly equal, because both accumulate in fp32 and round once. See
+        # `experiments/phase4/bench_grouped_gemv.py`, whose `loop_ref_ms` column exists
+        # precisely because this line used to be the slow one, and timing the fused kernel
+        # against a loop carrying an unnecessary 4x overstates the fused kernel.
+        return ops.dequantize(
+            self.weight_qt.rows(expert * band, (expert + 1) * band), dtype=self.out_dtype
         )
 
     def __len__(self) -> int:

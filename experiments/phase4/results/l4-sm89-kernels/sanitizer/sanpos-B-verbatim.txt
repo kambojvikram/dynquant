@@ -1,0 +1,7 @@
+### B verbatim: --target-processes application-only, one subprocess away
+========= COMPUTE-SANITIZER
+/pytorch/aten/src/ATen/native/cuda/Indexing.cu:1515: indexSelectSmallIndex: block: [0,0,0], thread: [0,0,0] Assertion `srcIndex < srcSelectDimSize` failed.
+OOB gather raised: AcceleratorError
+========= Error: Target application terminated before first instrumented API call
+========= Tracking kernels launched by child processes requires the --target-processes all option.
+### rc=255
