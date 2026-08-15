@@ -1,0 +1,72 @@
+##### prompt lengths 11:13:18Z #####
+PROMPTLEN lfm rendered_tokens=23 plus3=26 twice_minus1=52
+PROMPTLEN olmoe rendered_tokens=27 plus3=30 twice_minus1=60
+##### lfm compile=auto compile-mode=default 11:13:26Z #####
+  "accounted_bits": 3.251,
+  "resident_mib_loaded": 3286.7,
+  "disable_compile": false,
+  "cache_impl": "static",
+  "compile_mode": "default",
+  "warmup_s": 29.68,
+  "dynamo_unique_graphs": 2,
+  "decoded_cache_len": 54,
+      "decode_tok_s": 98.14,
+      "naive_tok_s": 93.87,
+      "decode_tok_s": 98.89,
+      "naive_tok_s": 93.81,
+  "decode_tok_s": 98.52,
+  "naive_tok_s": 93.84,
+  "peak_mib_total": 7073.8
+rc=0
+##### lfm compile=auto compile-mode=reduce-overhead 11:16:35Z #####
+  "accounted_bits": 3.251,
+  "resident_mib_loaded": 3286.7,
+  "disable_compile": false,
+  "cache_impl": "static",
+  "compile_mode": "reduce-overhead",
+  "warmup_s": 8.91,
+  "dynamo_unique_graphs": 2,
+  "decoded_cache_len": 54,
+      "decode_tok_s": 155.26,
+      "naive_tok_s": 143.31,
+      "decode_tok_s": 156.75,
+      "naive_tok_s": 143.26,
+  "decode_tok_s": 156.0,
+  "naive_tok_s": 143.28,
+  "peak_mib_total": 7073.8
+rc=0
+##### olmoe compile=auto compile-mode=default 11:18:55Z #####
+  "accounted_bits": 3.2515,
+  "resident_mib_loaded": 2685.4,
+  "disable_compile": false,
+  "cache_impl": "static",
+  "compile_mode": "default",
+  "warmup_s": 26.4,
+  "dynamo_unique_graphs": 2,
+  "decoded_cache_len": 58,
+      "decode_tok_s": 124.34,
+      "naive_tok_s": 115.66,
+      "decode_tok_s": 122.56,
+      "naive_tok_s": 115.84,
+  "decode_tok_s": 123.45,
+  "naive_tok_s": 115.75,
+  "peak_mib_total": 7254.3
+rc=0
+##### olmoe compile=auto compile-mode=reduce-overhead 11:21:34Z #####
+  "accounted_bits": 3.2515,
+  "resident_mib_loaded": 2685.4,
+  "disable_compile": false,
+  "cache_impl": "static",
+  "compile_mode": "reduce-overhead",
+  "warmup_s": 8.55,
+  "dynamo_unique_graphs": 2,
+  "decoded_cache_len": 58,
+      "decode_tok_s": 167.1,
+      "naive_tok_s": 155.3,
+      "decode_tok_s": 168.99,
+      "naive_tok_s": 153.68,
+  "decode_tok_s": 168.05,
+  "naive_tok_s": 154.49,
+  "peak_mib_total": 7254.3
+rc=0
+COMPILE ARMS3 DONE 11:23:34Z

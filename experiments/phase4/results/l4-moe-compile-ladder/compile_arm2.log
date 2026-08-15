@@ -1,0 +1,75 @@
+##### lfm compile=off 10:49:40Z #####
+  "accounted_bits": 3.251,
+  "resident_mib_loaded": 3286.7,
+  "disable_compile": true,
+  "cache_impl": "static",
+  "warmup_s": 1.43,
+  "dynamo_unique_graphs": 0,
+  "decoded_cache_len": 54,
+      "decode_tok_s": 31.63,
+      "naive_tok_s": 31.23,
+      "decode_tok_s": 31.48,
+      "naive_tok_s": 31.17,
+  "decode_tok_s": 31.55,
+  "naive_tok_s": 31.2,
+  "peak_mib_total": 7073.8
+rc=0
+##### lfm compile=auto 10:52:12Z #####
+  "accounted_bits": 3.251,
+  "resident_mib_loaded": 3286.7,
+  "disable_compile": false,
+  "cache_impl": "static",
+  "warmup_s": 8.91,
+  "dynamo_unique_graphs": 2,
+  "decoded_cache_len": 54,
+      "decode_tok_s": 155.51,
+      "naive_tok_s": 143.82,
+      "decode_tok_s": 156.71,
+      "naive_tok_s": 143.42,
+  "decode_tok_s": 156.11,
+  "naive_tok_s": 143.62,
+  "peak_mib_total": 7073.8
+rc=0
+##### lfm compile=manual 10:54:32Z #####
+Traceback (most recent call last):
+    record.update(_time_arm(model, tok, args.device, args.reps, args.cache_impl, disable_compile))
+RuntimeError: Error: accessing tensor output of CUDAGraphs that has been overwritten by a subsequent run. Stack trace: File "/venv/omni/lib/python3.12/site-packages/transformers/utils/generic.py", line 911, in wrapper
+rc=0
+##### olmoe compile=off 10:57:17Z #####
+  "accounted_bits": 3.2515,
+  "resident_mib_loaded": 2685.4,
+  "disable_compile": true,
+  "cache_impl": "static",
+  "warmup_s": 1.33,
+  "dynamo_unique_graphs": 0,
+  "decoded_cache_len": 58,
+      "decode_tok_s": 35.11,
+      "naive_tok_s": 35.1,
+      "decode_tok_s": 36.29,
+      "naive_tok_s": 35.76,
+  "decode_tok_s": 35.7,
+  "naive_tok_s": 35.43,
+  "peak_mib_total": 7254.3
+rc=0
+##### olmoe compile=auto 10:59:23Z #####
+  "accounted_bits": 3.2515,
+  "resident_mib_loaded": 2685.4,
+  "disable_compile": false,
+  "cache_impl": "static",
+  "warmup_s": 27.04,
+  "dynamo_unique_graphs": 2,
+  "decoded_cache_len": 58,
+      "decode_tok_s": 165.34,
+      "naive_tok_s": 154.97,
+      "decode_tok_s": 165.66,
+      "naive_tok_s": 153.19,
+  "decode_tok_s": 165.5,
+  "naive_tok_s": 154.08,
+  "peak_mib_total": 7254.3
+rc=0
+##### olmoe compile=manual 11:01:58Z #####
+Traceback (most recent call last):
+    record.update(_time_arm(model, tok, args.device, args.reps, args.cache_impl, disable_compile))
+RuntimeError: Error: accessing tensor output of CUDAGraphs that has been overwritten by a subsequent run. Stack trace: File "/venv/omni/lib/python3.12/site-packages/transformers/utils/generic.py", line 911, in wrapper
+rc=0
+COMPILE ARMS2 DONE 11:04:18Z
