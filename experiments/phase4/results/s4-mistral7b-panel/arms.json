@@ -66,6 +66,22 @@
       "nbytes": 3067617280,
       "record": "/workspace/runs/s4/panel-mistral/dq_3b.json",
       "map": "/workspace/runs/s4/panel-mistral/maps/dq_3b.json"
+    },
+    {
+      "label": "gptq_3b_asym_noao",
+      "kind": "gptq",
+      "anchor": 3,
+      "target_bytes": 3068534784,
+      "nbytes": 3068534784,
+      "record": "/workspace/runs/s4/panel-mistral/gptq_3b_asym_noao.json"
+    },
+    {
+      "label": "gptq_3b_asym",
+      "kind": "gptq",
+      "anchor": 3,
+      "target_bytes": 3068534784,
+      "nbytes": 3068534784,
+      "record": "/workspace/runs/s4/panel-mistral/gptq_3b_asym.json"
     }
   ]
 }

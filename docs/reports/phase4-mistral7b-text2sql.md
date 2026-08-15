@@ -18,13 +18,21 @@ expert banks and the dominant findings — the proxy pricing, the packed-bank pu
 dispatch, so this panel's margins are a difference in quantization and nothing else.
 
 **The result, up front.** At the 4-bit anchor nothing separates — all six comparisons return an
-adjusted p of 1.000, and the quantized arms are indistinguishable from the unquantized ceiling.
-At the 3-bit anchor DynQuant scores **75.22%** against AWQ's **74.16%** at the same byte budget,
-and that **+1.06 does not clear significance** (McNemar p = 0.149, adjusted 0.595). GPTQ at the
-same anchor collapses to **6.68%**, but it is symmetric where the other two are asymmetric, so
-that 68-point gap is not attributable to allocation and **must not be cited as a win** (§8.3).
-What DynQuant 3-bit does establish standing alone: **4.73× compression retaining 96.2% of the
-fine-tuned model's accuracy**, with 35% of the model allocated below its role floors.
+adjusted p of 1.000, and the quantized arms are indistinguishable from the unquantized ceiling. At
+the 3-bit anchor DynQuant scores **75.22%** against AWQ's **74.16%** at the same byte budget, and
+that **+1.06 does not clear significance** (McNemar p = 0.149, adjusted 0.744). GPTQ at the same
+anchor collapsed to **6.68%** — and the control §10 asked for has now been run. The same method at
+the same anchor with **an asymmetric grid and nothing else changed** scores **76.08%**: **+69.4
+points from the zero point alone**, which is more than the whole gap this panel first reported.
+Against that arm DynQuant is **−0.86 at p = 0.186**, and AWQ is −1.92 at p = 0.0054. Activation
+ordering on top of the same grid recovers nothing and collapses the arm again, to **3.99%**, below
+the symmetric default it was meant to improve on. So one of three GPTQ configurations at this
+anchor produces a working model, and among the arms that do: **DynQuant separates from nothing —
+not from AWQ, not from the recovered GPTQ — while AWQ does separate, below the recovered GPTQ**
+(§8.3). On agreement with bf16 DynQuant is the arm that loses: 90.30% against the recovered GPTQ's
+93.36%, −3.06 at p = 8.1e−07. What DynQuant 3-bit establishes standing alone: **4.73× compression
+retaining 96.2% of the fine-tuned model's accuracy**, with 35% of the model allocated below its
+role floors.
 
 ## 1. The run
 
@@ -355,16 +363,22 @@ the budget is too loose for any allocator to matter.
 |---|---|---|---|---|---|---|
 | DynQuant vs GPTQ | **+68.541** | [+66.659, +70.423] | 1708 (1695/13) | ~0 | ~0 | **yes** |
 | GPTQ vs AWQ | −67.482 | [−69.393, −65.571] | 1690 (17/1673) | ~0 | ~0 | **yes** |
-| **DynQuant vs AWQ** | **+1.059** | **[−0.323, +2.442]** | 300 (163/137) | **0.149** | **0.595** | **no** |
-| DynQuant vs bf16 | −2.934 | [−4.161, −1.707] | 238 (83/155) | 3.6e−06 | 1.4e−05 | yes |
-| AWQ vs bf16 | −3.993 | [−5.286, −2.700] | 266 (84/182) | 1.8e−09 | 9.0e−09 | yes |
-| GPTQ vs bf16 | −71.475 | [−73.301, −69.650] | 1776 (11/1765) | ~0 | ~0 | yes |
+| **DynQuant vs AWQ** | **+1.059** | [−0.323, +2.442] | 300 (163/137) | 0.1488 | 0.744 | **no** |
+| **DynQuant vs GPTQ asym** | **−0.856** | [−2.064, +0.352] | 229 (104/125) | 0.1862 | 0.7447 | **no** |
+| AWQ vs GPTQ asym | −1.915 | [−3.238, −0.593] | 275 (114/161) | 0.005443 | 0.03266 | **yes** |
+| DynQuant vs GPTQ asym+ao | +71.231 | [+69.394, +73.067] | 1774 (1761/13) | ~0 | ~0 | **yes** |
+| DynQuant vs bf16 | −2.934 | [−4.161, −1.707] | 238 (83/155) | 3.6e−06 | 1.4e−05 | **yes** |
+| AWQ vs bf16 | −3.993 | [−5.286, −2.700] | 266 (84/182) | 1.8e−09 | 9.0e−09 | **yes** |
+| GPTQ vs bf16 | −71.475 | [−73.301, −69.650] | 1776 (11/1765) | ~0 | ~0 | **yes** |
 
 **The +1.06 over AWQ does not separate.** 163 items DynQuant answers and AWQ misses, 137 the
 other way, and a paired test on 2 454 items cannot call a 26-item margin. That is the result,
 and it is a weaker one than this project's earlier 3-bit campaigns produced.
 
-**The +68.5 over GPTQ is real but is not a statement about allocation.** See §8.3.
+**The +68.5 over GPTQ is not a statement about allocation, and the control now says what it *is* a
+statement about.** The same method, the same anchor, an asymmetric grid and nothing else changed,
+scores 76.08%: the grid alone is worth **+69.4 points**, and against that arm DynQuant does not
+separate. See §8.3.
 
 The one place DynQuant looks better with significance attached is the gap to the ceiling:
 −2.93 against AWQ's −3.99, both separated from bf16 at p < 1e−05. It is tempting to read those
@@ -377,50 +391,152 @@ What DynQuant 3-bit does establish on its own terms: **4.73× compression — 14
 3 067 617 280 B — retaining 96.2% of the fine-tuned model's accuracy** (75.22 of 78.16), with
 `lm_head` at half its floor and 35% of the model below role floors.
 
-### 8.3 The GPTQ 3-bit collapse, and why it must not be cited as a win
+### 8.3 The collapse was the grid, and the other flag collapses it again
 
-GPTQ at the 3-bit anchor scores 6.68% and **1796 of 2454 generations fail to execute** — 73% of
-the benchmark. By source it is wikisql 5/818 (0.61%), spider 49/818 (5.99%), gretel 110/818
-(13.45%). The eval took 23 290 s against the same arm's 1 839 s at 4 bits, because a model
-emitting non-executing SQL runs its batches toward the decode cap.
+Both halves of §10's first control have now been run at the full 2 454 items, at the same 3 068
+534 784 B anchor, on the same problems in the same order. The panel's `gptq_3b` differs from an
+asymmetric arm in *two* ways at once — the grid and the column order — so it was run as two arms
+rather than one, and the report can say which change bought what.
 
-The first question is whether the arm is real, and the instrumentation says it is:
+| arm | grid | act-order | exec match | correct | agrees with bf16 | exact |
+|---|---|---|---|---|---|---|
+| `gptq_3b` | symmetric | none | 6.68% | 164/2454 | 27.63% | 69 |
+| `gptq_3b_asym_noao` | **asymmetric** | none | **76.08%** | 1867/2454 | **93.36%** | 1132 |
+| `gptq_3b_asym` | asymmetric | group | 3.99% | 98/2454 | 25.10% | 29 |
+| `dq_3b` | asymmetric | — | 75.22% | 1846/2454 | 90.30% | 1069 |
+| `awq_3b` | asymmetric | — | 74.16% | 1820/2454 | 89.16% | 1088 |
+| `bf16` | — | — | 78.16% | 1918/2454 | 100% | 1144 |
 
-- `weights_moved: 0`, `max_weight_delta: 0.0` — the documented expected shape for GPTQ, whose
-  scales are fitted and whose weights are already on the grid when `materialize_quantization`
-  re-reads them. The fixed-point check passed on all 8 probes or it would have raised.
-- `probe_unique_values_per_row: [169, 181, 172, 168, 159, 176, 175, 163]`. A 4096-wide row at
-  group 128 has 32 groups; at 3 bits that is at most 256 distinct values, at 4 bits at most 512.
-  The same probe on `gptq_4b` returned 298–350. **These weights are genuinely 3-bit.**
-- `accounted_bytes: 3 068 534 784` — byte-identical to `awq_3b`.
+**The grid alone is worth 69.4 points.** `gptq_3b` against `gptq_3b_asym_noao` is −69.397, 1 725
+discordant split 11/1 714, McNemar *p* ~ 0. Nothing else about the two arms differs: same
+calibration set, same 256 samples at 1 024 tokens, same group size, same empty `ignore` list, same
+anchor to the byte, same 225 materialized modules, `weights_moved: 0` on both. Every point of the
+68.5-point gap this panel reported against GPTQ is the zero point, and none of it is allocation.
 
-So the collapse is not a broken arm. But it is also **not evidence that DynQuant's allocation
-beats GPTQ's**, for a reason visible in the recipe rather than the results. `_llmc.py` builds
-`GPTQModifier(config_groups=groups, ignore=ignore, dampening_frac=0.01)` — each method at its
-own published default, which for GPTQ means **symmetric** quantization and **no activation
-ordering**, and for AWQ means **asymmetric**. DynQuant is asymmetric too: min/max with a stored
-zero point.
+**The other half of the control recovers nothing; it finishes the model off.** Activation ordering
+on top of the same asymmetric grid takes the arm from 76.08% to **3.99%**, −72.086 points at *p* =
+~0, separated — below the symmetric default it was supposed to improve on. 1 994 of 2 454
+generations fail to execute and 116 produce no query at all, a failure mode no other arm in this
+panel shows once; by source it is 0.2% on gretel, 11.5% on Spider and 0.2% on wikisql, so what
+little survives is on the one source whose prompts carry a schema. Two of the three GPTQ
+configurations at this anchor are unusable, and they are unusable in different ways. That is what
+makes *GPTQ at 3 bits* not a number on this model: the same library, the same calibration set and
+the same anchor to the byte span 72 points across two flags. DynQuant separates from the
+act-ordered arm by +71.231 at *p* = ~0 the same way it separates from the symmetric one — a
+statement about that arm, not about allocation, and recorded here so it is not read as one.
 
-At 4 bits that difference is worth nothing — GPTQ symmetric is the best arm in the panel. At 3
-bits a symmetric grid has 8 levels pinned around zero against an asymmetric grid's 8 levels
-fitted to the actual range, and that is a large handicap on weight distributions that are not
-centered. The 67.5-point gap between two arms that differ in *both* allocation and grid
-symmetry cannot be attributed to either one.
+**At a matched grid, GPTQ is the best 3-bit arm in this panel.**
 
-**The comparison that is apples-to-apples at 3 bits is DynQuant vs AWQ** — both asymmetric,
-both group-128, both at the same byte anchor, differing only in how bits are distributed across
-modules. That comparison is +1.06 points, p_adj = 0.595.
+| comparison | Δ points | 95% CI | discordant | *p* | *p* adjusted | separated |
+|---|---|---|---|---|---|---|
+| `dq_3b` vs `gptq_3b_asym_noao` | **−0.856** | [−2.064, +0.352] | 229 (104/125) | 0.1862 | 0.7447 | **no** |
+| `awq_3b` vs `gptq_3b_asym_noao` | −1.915 | [−3.238, −0.593] | 275 (114/161) | 0.005443 | 0.03266 | yes |
+| `bf16` vs `gptq_3b_asym_noao` | +2.078 | [+1.062, +3.095] | 163 (107/56) | 7.9e−05 | — | yes |
+| `gptq_3b_asym_noao` vs `gptq_3b_asym` | +72.086 | [+70.280, +73.893] | 1787 (1778/9) | ~0 | ~0 | yes |
 
-Two controls would settle what the GPTQ number means, and neither has been run:
+The `bf16` row carries no adjusted *p* and is marked so. `AGAINST_CEILING` is a fixed six-row
+family, and declaring the control arms in it would make every *complete* panel report six computed
+of eight and print the short-family warning forever — a warning that fires on a finished panel is
+one a reader learns to skip. The control's distance from the ceiling is read off the fidelity
+block below instead, which is built per arm from whatever the panel holds and is corrected.
 
-1. **GPTQ 3-bit asymmetric, with activation ordering.** If it recovers to AWQ's neighbourhood,
-   the collapse was the grid and the default, not the method.
-2. **GPTQ and AWQ handed DynQuant's own bit map**, already on this project's backlog. That
-   isolates allocation from everything else by holding the quantizer fixed.
+DynQuant does not beat it and is not beaten by it: −0.86 points, 104 items DynQuant answers that
+GPTQ misses against 125 the other way, and a paired test on 2 454 items cannot call a 21-item
+margin. **The honest 3-bit result on this model is that among the three arms that produce a
+working model, the only separated comparison is AWQ below a correctly-configured GPTQ.** DynQuant
+separates from neither of them: +1.06 over AWQ at *p* = 0.149 and −0.86 against GPTQ at *p* =
+0.186 are the same verdict twice, and the arm this panel was built to distinguish sits between two
+it cannot be told apart from. It does separate from both collapsed GPTQ arms, by +68.5 and +71.2,
+and neither of those numbers is a comparison of allocators.
 
-Until at least the first is run, this report's position is that **GPTQ 3-bit at
-llm-compressor's defaults collapses on this model**, which is a useful thing to know about a
-default, and not that DynQuant beats GPTQ by 68 points.
+**On fidelity the tie breaks, and not in DynQuant's favour.** The panel also scores how often each
+arm answers the way bf16 did. `gptq_3b_asym_noao` agrees with the ceiling on 93.36% of items
+against DynQuant's 90.30% — **−3.06 points, 77/152 flips, *p* = 8.1e−07, separated** even after
+Holm. Its exact-string match is 1 132 against DynQuant's 1 069, on a ceiling of 1 144. The
+accuracy tie is real, but it is a tie in which DynQuant's errors happen to land on problems bf16
+also got wrong. As an *approximation of this fine-tune at 3 bits*, the asymmetric GPTQ arm is
+measurably the better one, and the by-source table says the same thing: it leads on Spider (487 of
+818 against DynQuant's 480), which §8.4 had credited to DynQuant alone.
+
+**Why a symmetric grid is survivable at 4 bits and fatal at 3.** `gptq_4b` is the *best* arm in
+the panel at 78.28%, symmetric and all. The grid loses one level to the sign — a symmetric `n`-bit
+grid spends its range on `[-max, +max]` whether or not the weights live there — so at 4 bits it is
+16 levels against 16 asymmetric ones fitted to the actual range, and the fine-tuned weight
+distributions are close enough to centred that the difference is inside the noise. At 3 bits it is
+8 levels against 8, and 8 levels is the point where a grid that spends half its range on a tail
+that is not there stops being able to represent the tail that is. What comes out is a model that
+emits plausible-looking SQL that does not execute: 1 796 of 2 454 generations fail, 73% of the
+benchmark, against 56 for the asymmetric arm.
+
+**Three defects were found on the way to this control, and each one had already produced a number
+somebody could have believed.**
+
+1. **`--out` names a file, not a directory.** The first attempt at this arm pointed it at the
+   panel directory. It quantized for seven minutes, generated for **eleven hours**, printed its
+   accuracy to stdout and died in `write_text`. `check_out_is_writable` now refuses that before
+   the model loads.
+2. **`g_idx` was not forwarded into requantization.** Activation ordering permutes columns and
+   records the permutation in `weight_g_idx`; `materialize_quantization` re-read the weights
+   without it, requantized against the *unpermuted* grouping, and reported `gptq moved 225 of 225
+   weights, expected 0` — a correct arm read as a scrambled one. The arm was held for a day on
+   that reading.
+3. **A bit-exact fixed-point test is wrong for a checkpoint that was cast.** GPTQ rounds in
+   float32 and writes `W.to(bfloat16)`; requantizing that cast value in bf16 lands up to one
+   storage ULP away. Measured on one 512x64 linear: real `g_idx` in float32 gave max delta
+   **exactly 0**, real `g_idx` in bf16 gave 2.44e−04 (**0.62 ULP**), `g_idx=None` gave 1.39e−02
+   (35.25 ULP) and a shuffled `g_idx` 1.42e−02 (35.86 ULP). The threshold is now one ULP, which
+   separates the true cases from the false ones by 57x. This arm passed it at **`max_weight_ulps:
+   0.962`** with `weights_moved: 0` — the same arm that failed the exact test outright.
+
+The pattern is the same in all three: an instrument that fails *loudly* on a correct input is
+cheaper than one that fails quietly, but only if the failure is read as a question rather than as
+an answer. Defect 2 was diagnosed as a broken arm before it was diagnosed as a broken check.
+
+**What this costs the campaign.** §8.2's 3-bit ordering was DynQuant, then AWQ, then a collapsed
+GPTQ. It is now a correctly-configured GPTQ on top, DynQuant and AWQ under it in that order but
+neither separated from DynQuant, and the collapsed arm reclassified as a measurement of a default
+rather than of a method. The one separated pair at 3 bits is AWQ below the recovered GPTQ. The two
+claims that survive unchanged are the compression — 4.73x retaining 96.2% of the fine-tune — and
+the 4-bit null result. The claim that does not survive is any ordering against GPTQ at 3 bits, in
+either direction.
+
+**And it is not only this campaign.** `git log -p` on `experiments/_llmc.py` shows
+`quant_args(bits, group_size, symmetric=(method != "awq"))` hardcoded from that file's first
+commit, and every banked `*.quant.json` carries no `symmetric` key at all because the flag
+postdates the arms. So **every GPTQ arm this project has ever published was fitted on a symmetric
+grid, and every DynQuant arm it was compared against was asymmetric.** Two other results rest on
+that comparison:
+
+- **The LFM2.5 MoE panel, which has since run its own control.** `gptq_3b` scored 60.76% against a
+  bf16 ceiling of 84.29% and a DynQuant 3-bit of 79.89%. Re-fitted asymmetric at the same anchor
+  it scores **70.25%** — **+9.49** [+8.65, +10.33], 1 944/805 flips — so DynQuant's margin there
+  is **+9.64** [+8.88, +10.41] rather than +19.13, and still separated. Half that panel's gap was
+  the flag; the other half survived it. What did not survive is the *signal-free* allocator's
+  margin over GPTQ, which was ten points and is now **+0.17** at *p* = **0.706**.
+- **Phase 2 on Qwen3.5-2B/CaseHOLD**, the project's headline 3-bit claim: `p2_rb_agg` 89.57%
+  against `gptq_3b_head` 88.03%, **+1.54 at *p* < 0.0001**. The arithmetic there is not in doubt;
+  the attribution is. `gptq_3b_head` sits **1.71 points under that panel's fp16 ceiling of
+  89.74%**, and the claimed margin over it is **1.54**. An asymmetric GPTQ arm does not have to do
+  anything dramatic to erase the claim — it has to recover 1.54 of the 1.71 points that are
+  already sitting on the table.
+
+None of that makes the earlier numbers wrong. It makes them unattributed, which is a different and
+more fixable problem: `--symmetric yes|no|auto` now exists, the scheme is recorded in every arm's
+side file, `panel_table` carries it into the table, and arms that predate the flag are recovered
+through `_llmc.default_symmetric` and labelled `source: "method-default"` rather than guessed at
+silently. The control has since run on the LFM2.5 panel and survives there; phase 2 is the one
+panel still uncontrolled. **Until it runs, the phase-2 headline may not be cited as "DynQuant
+beats GPTQ at 3 bits."**
+
+One correction to the recipe builder's own documentation came out of this. `default_symmetric`
+claimed all three defaults were the libraries' choices; only two are. compressed_tensors 0.17.1
+`QuantizationArgs()` is `symmetric=True`, and its shipped `W4A16` preset is symmetric while
+`W4A16_ASYM` is the one that is not, so GPTQ and RTN do inherit it. But llmcompressor 0.12's
+`AWQModifier` carries no scheme at all — no `scheme`, no `config_groups`, not even `targets`,
+because it is only the activation-scaling transform. **AWQ's asymmetry is this repository's
+choice**, tracking AutoAWQ's `zero_point=True`. A default inherited from a dependency moves when
+the dependency moves; a default chosen here is ours to defend. The docstring said the first over
+something that was the second.
 
 ### 8.4 By source
 
@@ -433,6 +549,8 @@ Correct out of 818 per source, every arm on the same items:
 | AWQ 4-bit | 630 (77.02%) | 516 (63.08%) | 766 (93.64%) |
 | DynQuant 4-bit | 630 (77.02%) | 516 (63.08%) | **770 (94.13%)** |
 | GPTQ 3-bit | 110 (13.45%) | 49 (5.99%) | 5 (0.61%) |
+| **GPTQ 3-bit asym** | 618 (75.55%) | 487 (59.54%) | 762 (93.15%) |
+| **GPTQ 3-bit asym+ao** | 2 (0.24%) | 94 (11.49%) | 2 (0.24%) |
 | AWQ 3-bit | 618 (75.55%) | 446 (54.52%) | 756 (92.42%) |
 | DynQuant 3-bit | 607 (74.21%) | **480 (58.68%)** | 759 (92.79%) |
 
@@ -530,14 +648,23 @@ widths for 98.15% of the parameters. Both anchors reconcile to the byte from the
 format rule. Both DynQuant arms land inside 0.03% of their anchor, under it. Spider is a
 genuinely unseen third of the evaluation.
 
-**Does not settle.** Four controls this panel does not contain:
+**Does not settle.** Four controls this panel does not contain, and one it now does:
 
-1. **A GPTQ 3-bit arm that is not handicapped by its own default.** The panel's GPTQ collapsed
-   to 6.68% at the 3-bit anchor, and §8.3 shows the arm is genuinely 3-bit — but it is also
-   *symmetric* and without activation ordering, against an asymmetric AWQ and an asymmetric
-   DynQuant. The 68-point gap spans two differences at once and attributes to neither. A GPTQ
-   3-bit asymmetric arm with act-order is the control, and it has not been run. **Nothing in
-   this campaign should be cited as "DynQuant beats GPTQ at 3 bits."**
+1. **The GPTQ 3-bit arm was handicapped by its own default, and the control now says by how
+   much.** Both halves were run at the full 2 454 items. Asymmetry alone takes GPTQ from 6.68% to
+   **76.08%** — **+69.4 points, *p* ~ 0**, at the same anchor to the byte — and activation
+   ordering on top of it recovers nothing and collapses the arm again, to 3.99% — below the
+   symmetric default it was meant to improve on, −72.086 points at *p* = ~0, separated. Against
+   the one recovered arm DynQuant is **−0.86, *p* = 0.186, not separated**, and AWQ is −1.92 at
+   *p* = 0.0054; against the collapsed act-ordered arm DynQuant is +71.231 at *p* = ~0, which is a
+   statement about that arm and not about allocation. So the control settles the question in the
+   direction that costs this campaign a claim: at 3 bits on this model, **among the arms that
+   produce a working model DynQuant separates from nothing — not from AWQ, not from the recovered
+   GPTQ — while AWQ does separate, below the recovered GPTQ.** The 68-point gap was the zero
+   point. On agreement with bf16 there is a separated result and it goes against DynQuant: 90.30%
+   to the recovered GPTQ's 93.36%, −3.06 at *p* = 8.1e−07. §8.3 has the full decomposition,
+   including the three instrumentation defects found on the way and the two other campaigns that
+   rest on the same uncontrolled comparison.
 2. **The null.** No `--score-null` arm ran, so this campaign cannot say what share of any
    DynQuant margin is the *signal* rather than the shape of the map. The two campaigns that
    have measured it disagree by construction — 12% on Qwen3.5-2B against a constant-score
@@ -547,6 +674,14 @@ genuinely unseen third of the evaluation.
    they are, "allocation beats uniform" and "DynQuant's encoder beats theirs" are not separated.
 4. **RTN.** No round-to-nearest arm at either anchor, so the panel has no floor to quote the
    margins against — and on Qwen3.5-2B at matched bytes, RTN *tied* DynQuant at 4 bits.
+5. **The same scheme control on the other two panels.** §8.3 establishes that every GPTQ arm this
+   project has published was fitted symmetric — hardcoded in `_llmc.py` from its first commit —
+   while every DynQuant arm compared against one was asymmetric. That is now measured at 69.4
+   points on *this* model and at 9.49 on the LFM2.5 MoE panel, where DynQuant's margin survives
+   the control at +9.64 and the signal-free allocator's does not (+0.17, *p* = 0.706). It is
+   unmeasured on phase 2's Qwen3.5-2B/CaseHOLD panel, where `gptq_3b_head` sits 1.71 points under
+   its fp16 ceiling and the claimed DynQuant margin over it is 1.54. The phase-2 headline is held
+   pending that arm.
 
 **A cost this campaign measured by accident.** The measured-moments allocation runs on CPU —
 `dynquant inspect` takes no device flag — and each anchor costs about **two hours** at ~24
