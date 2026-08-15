@@ -90,12 +90,14 @@ import argparse
 import json
 import os
 import random
+import sys
 from pathlib import Path
 from typing import Any
 
-from common import RUN_DIR, SEED, TASK, load_task, model_slug, run_eval, set_seed
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-METHODS = ("gptq", "awq", "rtn")
+from _llmc import METHODS, build_recipe, default_symmetric
+from common import RUN_DIR, SEED, TASK, load_task, model_slug, run_eval, set_seed
 
 IGNORE = ["lm_head"]
 """Left in fp16 by every published GPTQ and AWQ checkpoint, and by llm-compressor's own
@@ -145,63 +147,6 @@ def calibration_rows(tokenizer: Any, samples: int, seq_len: int) -> Any:
         rows.append({"input_ids": ids, "attention_mask": [1] * len(ids)})
 
     return Dataset.from_list(rows)
-
-
-def quant_args(bits: int, group_size: int, *, symmetric: bool) -> Any:
-    """The weight-quantization contract shared by all three recipes.
-
-    Built explicitly instead of naming the ``W4A16`` preset because the preset only
-    exists at 4 and 8 bits, and the 3-bit arm has to be expressible in the same terms as
-    the 4-bit one -- a 3-bit arm configured through a different code path would not be
-    comparable to its own 4-bit sibling, let alone to DynQuant's.
-    """
-    from compressed_tensors.quantization import (
-        QuantizationArgs,
-        QuantizationStrategy,
-        QuantizationType,
-    )
-
-    return QuantizationArgs(
-        num_bits=bits,
-        type=QuantizationType.INT,
-        symmetric=symmetric,
-        strategy=QuantizationStrategy.GROUP,
-        group_size=group_size,
-    )
-
-
-def build_recipe(method: str, bits: int, group_size: int) -> Any:
-    """One modifier list per method, identical in every respect except the method."""
-    from compressed_tensors.quantization import QuantizationScheme
-    from llmcompressor.modifiers.quantization import GPTQModifier, QuantizationModifier
-    from llmcompressor.modifiers.transform.awq import AWQModifier
-
-    # Asymmetric for AWQ, symmetric otherwise -- each method's own published default.
-    # Forcing one convention on all three would make the arms differ from the
-    # checkpoints a reader would download under those names.
-    scheme = QuantizationScheme(
-        targets=["Linear"],
-        weights=quant_args(bits, group_size, symmetric=(method != "awq")),
-    )
-    groups = {"group_0": scheme}
-
-    if method == "gptq":
-        # dampening_frac is llm-compressor's default; named here only so the 3-bit run
-        # cannot silently pick a different one if the default moves.
-        return [GPTQModifier(config_groups=groups, ignore=IGNORE, dampening_frac=0.01)]
-    if method == "awq":
-        # Two modifiers, not one: as of 0.12 AWQModifier applies only the activation-aware
-        # scaling transform, and the quantization itself is a separate step. The single
-        # combined AWQModifier still importable from llmcompressor.modifiers.awq is a
-        # deprecation shim.
-        return [AWQModifier(), QuantizationModifier(config_groups=groups, ignore=IGNORE)]
-    if method == "rtn":
-        # Round-to-nearest: the same grouping and the same ignore list, with no
-        # calibration-driven correction at all. It is the floor the other two have to
-        # beat to have earned their calibration pass, and stage 5's uniform arms are
-        # DynQuant's equivalent of it.
-        return [QuantizationModifier(config_groups=groups, ignore=IGNORE)]
-    raise SystemExit(f"unknown method {method!r}; choose from {', '.join(METHODS)}")
 
 
 def directory_bytes(path: Path) -> int:
@@ -405,6 +350,9 @@ def quantize(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
     if getattr(args, "include_head", False):
         IGNORE.clear()
 
+    symmetric = {"auto": None, "yes": True, "no": False}[getattr(args, "symmetric", "auto")]
+    actorder = None if getattr(args, "actorder", "none") == "none" else args.actorder
+
     set_seed()
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     if tokenizer.pad_token is None:
@@ -418,7 +366,14 @@ def quantize(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
         model=args.model,
         tokenizer=tokenizer,
         dataset=dataset,
-        recipe=build_recipe(args.method, args.bits, args.group_size),
+        recipe=build_recipe(
+            args.method,
+            args.bits,
+            args.group_size,
+            ignore=IGNORE,
+            symmetric=symmetric,
+            actorder=actorder,
+        ),
         num_calibration_samples=len(dataset),
         max_seq_length=args.seq_len,
         precision="bfloat16",
@@ -434,6 +389,10 @@ def quantize(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
         "method": args.method,
         "bits": args.bits,
         "group_size": args.group_size,
+        # Resolved, not requested: `auto` is a different scheme per method, and an arm
+        # that records the flag rather than the answer cannot say what it ran.
+        "symmetric": default_symmetric(args.method) if symmetric is None else symmetric,
+        "actorder": actorder,
         "ignore": IGNORE,
         "calib_samples": len(dataset),
         "seq_len": args.seq_len,
@@ -526,6 +485,17 @@ def main() -> None:
         # Sequential holds one submodule's activations at a time, so a 7B calibrates
         # without the whole model plus its Hessians resident at once.
         p.add_argument("--pipeline", default="sequential")
+        # `auto` is each method's own published default -- symmetric for GPTQ and RTN,
+        # asymmetric for AWQ -- which is what a reader downloading a checkpoint under
+        # that name would get, and so is what the panel arms run. The override exists so
+        # the control gets run instead: a delta between a symmetric arm and an
+        # asymmetric one spans the scheme as well as the allocation, and only an arm
+        # matching its opponent's scheme can say which of the two the delta belongs to.
+        p.add_argument("--symmetric", choices=("auto", "yes", "no"), default="auto")
+        # GPTQ only; `_llmc.build_recipe` refuses it on the other two rather than
+        # dropping it, because a flag silently ignored is a control a caller believes
+        # it ran.
+        p.add_argument("--actorder", choices=("none", "group", "weight"), default="none")
         # See IGNORE. Off by default because the default has to stay the recipe a reader
         # would run; on for the second panel of a tied-embedding model, where the default
         # leaves 27% of the weights untouched and the size columns stop being comparable.
