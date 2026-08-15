@@ -148,6 +148,15 @@ def extra_comparisons(
 
 
 #: What each method cost against the unquantized model it was built from.
+#:
+#: Deliberately not extended with the scheme-control arms. Two ``--compare`` rows naming
+#: bf16 would take the whole run down -- ``difficulty_labels`` refuses a family that names
+#: the ceiling -- and declaring them here instead would make every *complete* panel's
+#: ceiling block report six computed of eight declared, printing the short-family warning
+#: forever on a family that is not short. A warning that fires on a finished panel teaches
+#: the reader to skip it, which costs more than the two rows are worth. The control arms'
+#: distance from the ceiling is read off the fidelity block, which is built per arm from
+#: whatever the panel holds and needs no declaration.
 AGAINST_CEILING: tuple[tuple[str, str, str], ...] = (
     ("gptq_4b", "bf16", "4b  GPTQ vs bf16"),
     ("awq_4b", "bf16", "4b  AWQ vs bf16"),
