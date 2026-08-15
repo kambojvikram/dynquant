@@ -18,6 +18,17 @@ weights, same bits, same group size, same prompts, one substitution at the dispa
 Each arm runs in its own process, because peak VRAM is one of the numbers and a
 process that has already held a bf16 copy cannot report the packed peak honestly.
 
+Two axes crossed with the arm
+-----------------------------
+`--cache-impl static` and `--compile` are independent switches so that the graph
+result can be read. Section 14 of the kernel report times one decode step and finds
+`torch.compile(mode="reduce-overhead")` removes 76-82% of it; that is a step, not a
+request, and the report says so. Turning it into tokens per second needs the static
+cache the compiled path requires -- and a static cache attends over its full capacity
+rather than over the tokens written so far, which is a cost the compiler did not
+cause. So `--cache-impl static` without `--compile` is the yardstick arm, and the
+compiled number is read against it rather than against the dynamic-cache default.
+
 Why the rate is a slope and not a division
 ------------------------------------------
 `generate` time is prefill plus decode, and prefill is a GEMM that has nothing to
@@ -170,7 +181,14 @@ def _cache_len(cache: Any) -> int:
 
 
 def _generate(
-    model: Any, tok: Any, prompt: str, budget: int, device: str, *, force: bool = True
+    model: Any,
+    tok: Any,
+    prompt: str,
+    budget: int,
+    device: str,
+    *,
+    force: bool = True,
+    cache_impl: str | None = None,
 ) -> tuple[float, str]:
     from transformers import GenerationConfig
 
@@ -190,6 +208,13 @@ def _generate(
         # would be equally wrong, so the ratio would survive and the rate would
         # not, which is the kind of error a comparison hides.
         use_cache=True,
+        # `None` is `GenerationConfig`'s own default, so an uncompiled arm is
+        # unaffected. `"static"` is required by the compiled arm and is therefore
+        # also offered to an uncompiled one: a static cache attends over its full
+        # capacity rather than over the tokens written so far, which is a real cost
+        # and not the compiler's, so comparing compiled-static against eager-dynamic
+        # would price two changes as one.
+        cache_implementation=cache_impl,
         max_new_tokens=budget,
         min_new_tokens=budget if force else None,
         pad_token_id=tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id,
@@ -208,7 +233,7 @@ def _generate(
     return elapsed, tok.decode(produced, skip_special_tokens=True)
 
 
-def _probe_cache(model: Any, tok: Any, prompt: str, device: str) -> Any:
+def _probe_cache(model: Any, tok: Any, prompt: str, device: str, cache_impl: str | None) -> Any:
     """One short generation asked to hand its cache back, so presence is observed.
 
     Separate from the timed calls because `return_dict_in_generate` keeps the cache
@@ -224,6 +249,7 @@ def _probe_cache(model: Any, tok: Any, prompt: str, device: str) -> Any:
         top_k=None,
         num_beams=1,
         use_cache=True,
+        cache_implementation=cache_impl,
         max_new_tokens=4,
         min_new_tokens=4,
         return_dict_in_generate=True,
@@ -234,15 +260,26 @@ def _probe_cache(model: Any, tok: Any, prompt: str, device: str) -> Any:
     return getattr(out, "past_key_values", None)
 
 
-def _time_arm(model: Any, tok: Any, device: str, reps: int) -> dict[str, Any]:
-    _generate(model, tok, PROMPTS[0], SHORT, device)  # warm the allocator and any autotune
-    cache_probe = _probe_cache(model, tok, PROMPTS[0], device)
+def _time_arm(
+    model: Any, tok: Any, device: str, reps: int, cache_impl: str | None = None
+) -> dict[str, Any]:
+    # Timed because on a compiled arm this call is where compilation and the
+    # cudagraph warmup are paid, and a number that large should be reported rather
+    # than absorbed into a warmup nobody looks at.
+    t0 = time.perf_counter()
+    _generate(model, tok, PROMPTS[0], SHORT, device, cache_impl=cache_impl)
+    warmup_s = time.perf_counter() - t0
+    cache_probe = _probe_cache(model, tok, PROMPTS[0], device, cache_impl)
     rows: list[dict[str, Any]] = []
     for prompt in PROMPTS:
-        shorts = [_generate(model, tok, prompt, SHORT, device)[0] for _ in range(reps)]
-        longs = [_generate(model, tok, prompt, LONG, device)[0] for _ in range(reps)]
+
+        def gen(budget: int, prompt: str = prompt) -> float:
+            return _generate(model, tok, prompt, budget, device, cache_impl=cache_impl)[0]
+
+        shorts = [gen(SHORT) for _ in range(reps)]
+        longs = [gen(LONG) for _ in range(reps)]
         t_short, t_long = statistics.median(shorts), statistics.median(longs)
-        text = _generate(model, tok, prompt, 160, device, force=False)[1]
+        text = _generate(model, tok, prompt, 160, device, force=False, cache_impl=cache_impl)[1]
         rows.append(
             {
                 "prompt": prompt,
@@ -257,6 +294,8 @@ def _time_arm(model: Any, tok: Any, device: str, reps: int) -> dict[str, Any]:
         )
     return {
         "prompt_style": "chat-template" if getattr(tok, "chat_template", None) else "raw",
+        "cache_impl": cache_impl or "default",
+        "warmup_s": round(warmup_s, 2),
         # `model.config.use_cache` is the checkpoint's static field and says nothing
         # about the run -- OLMoE-1B-7B ships it False while `generate` decodes with a
         # cache anyway, because the GenerationConfig passed per call is what governs.
@@ -279,6 +318,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--group-size", type=int, default=128)
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument(
+        "--cache-impl",
+        default=None,
+        choices=("static",),
+        help="pass `cache_implementation` to every generation; required by --compile",
+    )
+    ap.add_argument(
+        "--compile",
+        action="store_true",
+        help="wrap forward in torch.compile(mode='reduce-overhead'), the supported graph path",
+    )
     ap.add_argument("--out", help="append the record to this JSON-lines file")
     args = ap.parse_args(argv)
 
@@ -297,6 +347,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "has_grouped_gemv": bool(ops.has_grouped_gemv()),
     }
 
+    if args.compile and args.cache_impl != "static":
+        # Refused rather than silently corrected: `torch.compile(mode="reduce-overhead")`
+        # captures cudagraphs, a cudagraph records addresses, and a `DynamicCache` grows
+        # by `torch.cat`. Inductor's guard catches that -- see section 14 -- but the arm
+        # that would have been measured is not the arm that was asked for.
+        raise SystemExit("--compile requires --cache-impl static")
+
     tok, model = _load(args.model, torch.bfloat16)
     record["params"] = sum(p.numel() for p in model.parameters())
     if args.arm != "bf16":
@@ -306,11 +363,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     record.update(_set_dispatch(model, args.arm))
     record["peak_mib_loaded"] = round(_peak_mib(), 1)
     record["resident_mib_loaded"] = round(_live_mib(), 1)
+    record["compiled"] = bool(args.compile)
+    if args.compile:
+        # `model.forward` rather than the module: `generate` calls `forward` directly,
+        # and wrapping the module would leave the decode loop running the original.
+        record["compile_mode"] = "reduce-overhead"
+        model.forward = torch.compile(model.forward, mode="reduce-overhead", fullgraph=True)
 
     # Generation is measured against its own baseline, so the decode footprint is not
     # hidden underneath a load-time peak it never reaches.
     torch.cuda.reset_peak_memory_stats()
-    record.update(_time_arm(model, tok, args.device, args.reps))
+    record.update(_time_arm(model, tok, args.device, args.reps, args.cache_impl))
     record["peak_mib_generate"] = round(_peak_mib(), 1)
     record["peak_mib_total"] = max(record["peak_mib_loaded"], record["peak_mib_generate"])
 
