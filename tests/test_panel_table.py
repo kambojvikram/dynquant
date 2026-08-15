@@ -135,6 +135,16 @@ def _record(
     }
 
 
+def _tally(hits: list[bool], labels: list[str]) -> dict[str, list[int]]:
+    """The per-source breakdown a run with these labels would have recorded."""
+    counts: dict[str, list[int]] = {}
+    for hit, name in zip(hits, labels, strict=True):
+        pair = counts.setdefault(name, [0, 0])
+        pair[0] += int(hit)
+        pair[1] += 1
+    return counts
+
+
 def _write_map(path: Path, width: int, nbytes: int, *, breach: bool) -> None:
     """One allocation file, written by the writer the allocator uses.
 
@@ -202,6 +212,7 @@ def _write_panel(
     draws: tuple[tuple[str, int], ...] = (),
     schemes: dict[str, dict[str, Any]] | None = None,
     extra_arms: tuple[dict[str, Any], ...] = (),
+    item_sources: list[str] | None = None,
 ) -> Path:
     """A full seven-arm panel on disk, in the shape ``arms_lfm2 run`` writes.
 
@@ -213,6 +224,12 @@ def _write_panel(
     out.mkdir(parents=True, exist_ok=True)
     maps = out / "maps"
     maps.mkdir(exist_ok=True)
+    if item_sources is not None:
+        # Written here rather than beside the test that asks for it, because the panel's
+        # per-source counts have to be *derived* from this vector or `load_sources` refuses
+        # it -- and a fixture whose labels and whose breakdown are written independently is
+        # a fixture that can hold a disagreement no run could produce.
+        (out / "sources.json").write_text(json.dumps(item_sources), encoding="utf-8")
 
     four, three = _trio(FOUR_BIT), _trio(THREE_BIT)
     hits = {
@@ -305,7 +322,12 @@ def _write_panel(
             arm["record"] = None
             continue
         record = out / f"{label}.json"
-        record.write_text(json.dumps(_record(label, hits[label]), indent=2), encoding="utf-8")
+        payload_record = _record(
+            label,
+            hits[label],
+            by_source=None if item_sources is None else _tally(hits[label], item_sources),
+        )
+        record.write_text(json.dumps(payload_record, indent=2), encoding="utf-8")
         arm["record"] = str(record)
         if arm["kind"] in ("gptq", "awq"):
             # No `symmetric` key unless a test asks for one, because the arms this
@@ -537,6 +559,196 @@ def test_records_scored_under_different_settings_are_not_paired(table: Any, tmp_
     assert "p (Holm)" in printed, "the block still prints, so the absence is visible"
     assert not _verdict(rows["4b  DynQuant vs GPTQ"]).endswith("separated"), (
         "no verdict is issued off unpaired vectors"
+    )
+
+
+#: A label vector whose alphabetical order is *not* its first-appearance order.
+#:
+#: The mixture is loaded round-robin over the sources as resolved, so first appearance is
+#: the order a run recorded and sorting is a different list. On a panel of gretel and
+#: wikisql the two happen to agree, which is exactly why the fixture starts with wikisql:
+#: a backfill that sorted would pass against the real panel and fail in production the
+#: first time a third source was added.
+INTERLEAVED = ["wikisql", "gretel"] * (TOTAL // 2)
+
+
+def _pre_contract(record: dict[str, Any]) -> dict[str, Any]:
+    """A record as it was banked before ``task_options`` existed: without the block."""
+    return {key: value for key, value in record.items() if key != "task_options"}
+
+
+def test_a_pre_contract_record_is_filled_from_its_own_items_in_arrival_order(
+    table: Any,
+) -> None:
+    """The mixture is derived from the label vector, not sorted and not assumed.
+
+    ``task_options`` postdates every arm of the LFM2.5 panel, so those records carry no
+    mixture at all while a control run after it does -- and the pairing contract refuses
+    over the difference. It is a recording gap, and the evidence that closes it is the
+    panel's own per-item source labels, which `load_sources` has already reconciled against
+    every arm's recorded per-source counts before this sees them.
+
+    Turns red when: the derived list is sorted rather than read in order of first
+    appearance. That is the failure with no local symptom -- on gretel and wikisql the two
+    orders coincide, so it would look correct until a source whose name sorts differently
+    joined the mixture, and then it would read as a real disagreement about what was
+    scored.
+    """
+    record = _pre_contract(_record("dq_3b", [True] * TOTAL))
+    mixture, filled = table.backfill_task_sources({"dq_3b": record}, INTERLEAVED)
+
+    assert mixture == ["wikisql", "gretel"]
+    assert filled == ["dq_3b"]
+    assert record["task_options"] == {"sources": ["wikisql", "gretel"]}
+
+
+def test_a_record_that_states_its_mixture_is_never_rewritten(table: Any) -> None:
+    """Fill an absence; do not correct a claim.
+
+    Turns red when: the backfill starts writing over a record that carries the block, which
+    is the version of this that could make two arms scored over different mixtures pair.
+    """
+    stated = _record("gptq_3b", [True] * TOTAL)
+    stated["task_options"] = {"sources": ["gretel", "wikisql", "spider"]}
+    _, filled = table.backfill_task_sources({"gptq_3b": stated}, INTERLEAVED)
+
+    assert filled == []
+    assert stated["task_options"] == {"sources": ["gretel", "wikisql", "spider"]}
+
+
+def test_no_labels_means_no_backfill_and_the_guard_keeps_refusing(table: Any) -> None:
+    """Without the evidence there is no fill, and the refusal is the correct outcome.
+
+    `load_sources` hands back ``None`` when there is no ``sources.json``, when it does not
+    parse, and -- the case that matters here -- when its labels disagree with any arm's own
+    per-source counts or are a different length from any arm's hits. Each of those is a
+    reason to believe the vector, and so anything derived from it, describes a different
+    problem set than the records do.
+
+    Turns red when: the fill acquires a fallback that invents a mixture from something
+    other than the reconciled labels, which would turn "no evidence" into "assume they
+    match" -- the assumption this whole change exists to avoid making silently.
+    """
+    record = _pre_contract(_record("dq_3b", [True] * TOTAL))
+    assert table.backfill_task_sources({"dq_3b": record}, None) == ([], [])
+    assert table.backfill_task_sources({"dq_3b": record}, []) == ([], [])
+    assert "task_options" not in record
+
+
+def test_an_arm_with_no_per_source_counts_is_not_filled(table: Any) -> None:
+    """`load_sources` skips an arm carrying no breakdown, so this has nothing on it.
+
+    The reconciliation is per arm and it is conditional: an arm without both hits and a
+    per-source breakdown is passed over there, so the labels surviving says nothing about
+    that arm. Filling it anyway would be the one case where the value written was never
+    checked against the record it was written into.
+
+    Turns red when: the fill loops over every record instead of over the ones the labels
+    were actually reconciled against.
+    """
+    record = _pre_contract(_record("dq_3b", [True] * TOTAL))
+    record["detail"] = {key: value for key, value in record["detail"].items() if key != "by_source"}
+    assert table.backfill_task_sources({"dq_3b": record}, INTERLEAVED) == (
+        ["wikisql", "gretel"],
+        [],
+    )
+    assert "task_options" not in record
+
+
+def test_the_fill_hands_the_guard_evidence_and_not_an_answer(table: Any) -> None:
+    """A filled record pairs against the same mixture and still refuses against another.
+
+    This is the property that separates a backfill from an override, and it is a property
+    of the pair rather than of the fill: the value written is derived from the panel's
+    items, never copied from the arm it will be compared against. So a control genuinely
+    run over another mixture -- or over the same sources in another order, which on an
+    interleaved load is another item sequence and so another problem set -- refuses exactly
+    as it did before.
+
+    Turns red when: the fill starts borrowing the other record's list, or the comparison
+    stops going through the eval command's contract and grows a second copy here.
+    """
+    from dynquant.commands.evaluate import problem_set_difference
+
+    filled = _pre_contract(_record("dq_3b", [True] * TOTAL))
+    table.backfill_task_sources({"dq_3b": filled}, INTERLEAVED)
+
+    same = _record("gptq_3b", [True] * TOTAL)
+    same["task_options"] = {"sources": ["wikisql", "gretel"]}
+    assert problem_set_difference(filled, same) == {}
+
+    reordered = _record("gptq_3b", [True] * TOTAL)
+    reordered["task_options"] = {"sources": ["gretel", "wikisql"]}
+    assert problem_set_difference(filled, reordered) == {
+        "task_options.sources": (["wikisql", "gretel"], ["gretel", "wikisql"])
+    }
+
+    wider = _record("gptq_3b", [True] * TOTAL)
+    wider["task_options"] = {"sources": ["wikisql", "gretel", "spider"]}
+    assert list(problem_set_difference(filled, wider)) == ["task_options.sources"]
+
+
+def test_a_panel_spanning_the_mixture_contract_compares_and_says_so(
+    table: Any, tmp_path: Path
+) -> None:
+    """End to end: the row gets a p-value, and the table discloses why it could.
+
+    The unit tests above pin the derivation; this pins that it reaches the table at all --
+    that the labels are read before anything pairs rather than beside the per-source blocks
+    they were originally read for, and that the fill is announced above the numbers it
+    changed. A reader diffing this printout against one banked before the change has to be
+    able to see that the difference is in the reading and not in the runs.
+
+    Turns red when: the fill happens after `check_pairable` or after the head-to-head block
+    (the row goes back to `not comparable`), or when it stops being disclosed and the table
+    silently starts pairing records that used to refuse.
+    """
+    out = _write_panel(tmp_path / "arms", item_sources=INTERLEAVED)
+    record = out / "gptq_3b.json"
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    payload["task_options"] = {"sources": ["wikisql", "gretel"]}
+    record.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    printed = _run(table, out)
+    rows = {
+        _question(line): line
+        for line in _aggregate_block(printed).splitlines()
+        if line.startswith("3b ")
+    }
+    assert "backfilled task_options.sources=['wikisql', 'gretel']" in printed
+    assert "dq_3b" in printed.split("per-item labels: ")[1].splitlines()[0]
+    assert "not comparable" not in rows["3b  DynQuant vs GPTQ"]
+    assert "not comparable" not in rows["3b  GPTQ vs AWQ"]
+
+
+def test_a_control_run_over_another_mixture_still_refuses_after_the_backfill(
+    table: Any, tmp_path: Path
+) -> None:
+    """The disclosure is not a licence: an arm that names a different mixture is unpaired.
+
+    Same panel as above with the control's own list changed, so the only difference is what
+    that record says it scored. The fill is derived from the items and does not move, so
+    the contract sees two different mixtures and refuses -- which is what should happen
+    when the difference is real rather than a recording gap.
+
+    Turns red when: the backfill is widened into "make the panel pair", at which point this
+    row would silently acquire a p-value over two different problem sets.
+    """
+    out = _write_panel(tmp_path / "arms", item_sources=INTERLEAVED)
+    record = out / "gptq_3b.json"
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    payload["task_options"] = {"sources": ["gretel", "wikisql"]}
+    record.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    printed = _run(table, out)
+    rows = {
+        _question(line): line
+        for line in _aggregate_block(printed).splitlines()
+        if line.startswith("3b ")
+    }
+    assert "not comparable: task_options.sources" in rows["3b  DynQuant vs GPTQ"]
+    assert "not comparable" not in rows["3b  DynQuant vs AWQ"], (
+        "neither arm of this row is the one that disagrees"
     )
 
 

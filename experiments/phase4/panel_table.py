@@ -1179,6 +1179,64 @@ def load_sources(
     return labels, None
 
 
+def backfill_task_sources(
+    records: dict[str, dict[str, Any]], labels: list[str] | None
+) -> tuple[list[str], list[str]]:
+    """Give a record written before the mixture contract the mixture its own items name.
+
+    ``task_options`` arrived with :data:`dynquant.commands.evaluate.TASK_PAIRING_FIELDS`
+    and every text-to-SQL run has written it since. A record banked before that carries no
+    such block, so a panel spanning both vintages refuses to pair over a field only one
+    side has ever been able to write -- and refuses it for every comparison the older arm
+    appears in, which on a panel whose controls arrive last is all of them.
+
+    The absence is a recording gap rather than a difference in what was scored, and this
+    closes it from evidence instead of from that belief. ``sources.json`` is the per-item
+    source label vector, and :func:`load_sources` has already checked it against every
+    arm's own ``detail.by_source``: a vector that disagrees with any arm, or that is a
+    different length from any arm's hits, is refused there and arrives here as ``None``.
+    So this runs only over records the labels have been reconciled against one by one.
+
+    The order is derived too, not sorted. ``load_text2sql`` interleaves the mixture
+    round-robin over the sources ``resolve_sources`` returned (its ``zip_longest``), so the
+    order in which names *first appear* in the label vector is the order that call returned
+    them in -- which is exactly the list ``_load_options`` would have written. Sorting
+    instead would be right on this panel by accident of the alphabet and wrong on the next
+    one, and wrong in the direction that reads as a real disagreement.
+
+    Two things keep this from being an override. It fills only a record carrying no
+    ``sources`` at all, so a record that states its own mixture is never contradicted; and
+    it leaves the comparison itself to ``problem_set_difference``. The filled value is not
+    copied from the arm it will be compared against, so a control genuinely run over
+    another mixture, or over the same sources in another order, still refuses -- this hands
+    the guard evidence, it does not hand it an answer.
+
+    Returns the derived mixture and the labels of the records it was written into, for the
+    caller to disclose above the table it changes.
+    """
+    if not labels:
+        return [], []
+    order: list[str] = []
+    for name in labels:
+        if name not in order:
+            order.append(name)
+
+    filled: list[str] = []
+    for label, record in sorted(records.items()):
+        options = record.get("task_options")
+        options = options if isinstance(options, dict) else {}
+        if options.get("sources") is not None:
+            continue
+        # Only the records `load_sources` had something to check: it skips an arm carrying
+        # no per-source breakdown, and an arm it never reconciled is one this has no
+        # evidence about.
+        if not record.get("hits") or not (record.get("detail") or {}).get("by_source"):
+            continue
+        record["task_options"] = {**options, "sources": list(order)}
+        filled.append(label)
+    return order, filled
+
+
 def restrict(
     records: dict[str, dict[str, Any]], labels: list[str], name: str
 ) -> dict[str, dict[str, Any]]:
@@ -1648,6 +1706,10 @@ def main(argv: list[str] | None = None) -> int:
 
     out = Path(args.arms)
     manifest, records = load_panel(out)
+    # Read here rather than beside the per-source blocks it feeds, because the backfill
+    # below needs it and the backfill has to happen before anything pairs.
+    labels, why_not = load_sources(out, args.sources, records)
+    mixture, backfilled = backfill_task_sources(records, labels)
     head_family = HEAD_TO_HEAD + extra_comparisons(args.compare, manifest)
     params = infer_params(out, manifest)
     built = rows(out, manifest, records, params)
@@ -1660,6 +1722,15 @@ def main(argv: list[str] | None = None) -> int:
     anchors = manifest.get("anchors") or {}
     ordered = sorted(anchors.items(), key=lambda kv: int(kv[0]), reverse=True)
     print("anchors: " + ", ".join(f"{w}b -> {int(b):,} B" for w, b in ordered))
+    if backfilled:
+        # Above the table rather than in a log, because it changes which rows have a
+        # p-value at all, and a reader comparing this printout against a banked one needs
+        # to see that the difference is in the reading and not in the runs.
+        print(
+            f"backfilled task_options.sources={mixture} into {len(backfilled)} record(s) "
+            f"written before the mixture contract, from this panel's own per-item labels: "
+            f"{', '.join(backfilled)}"
+        )
     print()
     print_sizes(built, params, tolerance)
     print()
@@ -1680,7 +1751,6 @@ def main(argv: list[str] | None = None) -> int:
     arithmetic = {row["label"]: arithmetic_of(row) for row in built}
     head = print_comparisons("head to head, at matched bytes", head_family, records, arithmetic)
     print()
-    labels, why_not = load_sources(out, args.sources, records)
     blocks = print_partition_blocks(labels, why_not, records, arithmetic, family=head_family)
     spread = print_heterogeneity(blocks, head_family)
     # The row above raises a question it cannot answer: this panel's sources differ in
@@ -1799,6 +1869,10 @@ def main(argv: list[str] | None = None) -> int:
         "params": params,
         "pairable": pairable is None,
         "pairing_error": pairable,
+        # What the banner above said, in the payload, so a downstream card built from a
+        # panel whose arms span the mixture contract records that it was assembled that
+        # way. Empty on a panel that needed nothing.
+        "backfilled_task_sources": {"sources": mixture, "arms": backfilled} if backfilled else {},
         "arms": built,
         "head_to_head": as_json(head),
         "head_to_head_by_source": {name: as_json(entries) for name, entries in blocks.items()},
