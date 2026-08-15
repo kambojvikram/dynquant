@@ -39,10 +39,15 @@ METHODS = ("gptq", "awq", "rtn")
 def default_symmetric(method: str) -> bool:
     """Whether ``method`` fits a symmetric grid when nothing asks it to do otherwise.
 
-    GPTQ and RTN default to symmetric, AWQ to asymmetric, and those are the libraries' own
-    choices rather than this repository's -- which is why an arm run at the default is the
-    arm a reader downloading a checkpoint under that name would get, and why the panel runs
-    them that way by default.
+    GPTQ and RTN default to symmetric because ``QuantizationArgs()`` does -- verified against
+    compressed_tensors 0.17.1, whose shipped ``W4A16`` preset is symmetric and whose
+    ``W4A16_ASYM`` is the one that is not. AWQ's asymmetry is *this repository's* choice and
+    not llm-compressor's: ``AWQModifier`` in 0.12 carries no scheme at all, only the
+    activation-scaling transform, and the asymmetry here tracks AutoAWQ's ``zero_point=True``
+    -- which is what a reader downloading a checkpoint named "AWQ" would get. The distinction
+    is written down because a default inherited from a dependency and a default chosen here
+    fail differently: the first moves when the dependency moves and takes every unpinned arm
+    with it, and only the second is ours to defend.
 
     It lives here, at one definition, because three callers need it and each one that copied
     it would be a copy that stays green while the original changes: the recipe builder that
