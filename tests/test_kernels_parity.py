@@ -180,6 +180,14 @@ def test_gemv_matches_dequant_then_matmul(device, m, bits, out_features, in_feat
     it in cuBLAS's order, so the two differ by floating-point reassociation. That is
     a real difference and it is bounded by the accumulation width -- both are fp32 --
     not by the weight precision, which is why the tolerance does not vary with bits.
+
+    That reasoning was true of the CUDA path and false of the CPU one until the
+    reference stopped going through the fp16 ``dequant`` op: rounding each weight
+    element to fp16 before a sum over ``in_features`` of them is bounded by the
+    *weight* precision and grows like sqrt(K), so the margin here was a function of
+    the geometry after all and this test failed at the widest one on an L4 while
+    passing on a Windows CPU. :func:`test_gemv_margin_is_the_kernels_not_the_references`
+    is what keeps the docstring true.
     """
     quantized, _ = _quantized(out_features, in_features, group_size, bits, device, torch.float16)
     geom = quantized.geometry
@@ -201,6 +209,48 @@ def test_gemv_matches_dequant_then_matmul(device, m, bits, out_features, in_feat
     assert got.shape == (m, out_features)
     assert got.dtype == torch.float16
     torch.testing.assert_close(got, expected, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_gemv_margin_is_the_kernels_not_the_references(device):
+    """How much of the tolerance the op actually spends, at the geometry that spends most.
+
+    The test above passes or fails; this one reports the margin, because a parity test
+    sitting at 98% of its allowed error passes and is telling you almost nothing. The
+    diff this turns red is the one that reverts ``gemv_cpu`` to dequantizing through
+    the fp16 op and upcasting afterwards: measured over every geometry, width and row
+    count in this file on an L4, that route runs at 0.03 to 0.98 of the combined
+    tolerance and reaches 1.04 here, while the kernel -- which never materialises the
+    weight and applies scale and offset in fp32 -- stays under 0.043 throughout. A
+    quarter of the budget is therefore far above anything either device does and far
+    below the failure, so this is a guard on the arithmetic rather than a second copy
+    of the threshold above.
+
+    65x3072 at 8 bits is the worst case for a reason that is not incidental: the error
+    the fp16 route adds is per weight element, so it grows with the reduction width,
+    and 3072 is the widest reduction here that is also a whole number of groups.
+    """
+    out_features, in_features, group_size, bits, rows = 65, 3072, 128, 8, 4
+    quantized, _ = _quantized(out_features, in_features, group_size, bits, device, torch.float16)
+    geom = quantized.geometry
+    torch.manual_seed(rows)
+    x = torch.randn(rows, in_features, dtype=torch.float16, device=device)
+
+    got = torch.ops.dynquant.gemv(
+        x,
+        quantized.packed,
+        quantized.scales,
+        quantized.offsets,
+        bits,
+        geom.effective_group,
+        in_features,
+    )
+    expected = (x.to(torch.float32) @ quantized.dequantize(dtype=torch.float32).t()).to(
+        torch.float16
+    )
+    allowed = 2e-2 + 2e-2 * expected.float().abs()
+    spent = ((got.float() - expected.float()).abs() / allowed).max().item()
+    assert spent <= 0.25, f"{device} gemv spends {spent:.3f} of the parity tolerance"
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="determinism is a GPU property here")

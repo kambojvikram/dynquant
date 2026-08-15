@@ -154,6 +154,33 @@ at::Tensor dequant_cpu(const at::Tensor& packed, const at::Tensor& scales,
   return out;
 }
 
+// The reference dequantizes in fp32, and both callers below go through this rather
+// than through the `dequant` op itself.
+//
+// `dequant_cpu` dispatches on the scales' dtype and rounds its *store* to that dtype,
+// so calling it with fp16 scales and upcasting afterwards puts one fp16 rounding on
+// every weight element in front of a sum over `in_features` of them. That error grows
+// like sqrt(in_features) while the parity test's tolerance is flat -- and it is not an
+// error the CUDA kernel has, because `gemv_kernel` never materialises the weight and
+// applies scale and offset in fp32 (`fmaf(scale[r], qacc[r][m], ...)`). Measured on an
+// L4 across the parametrized geometries, the fp16 route runs at 0.03 to 0.98 of the
+// allowed tolerance and crosses it at 65x3072 8-bit, while the CUDA path stays under
+// 0.043 everywhere. A reference less accurate than the kernel it defines is the wrong
+// way round, and a tolerance that holds on one CPU and not another is a test that gets
+// deleted rather than fixed.
+//
+// `dequant` itself keeps returning the storage dtype: its own test asserts bit-exact
+// equality against `QuantTensor.dequantize()` in fp16, so widening the op would break
+// the contract this only widens the *use* of.
+at::Tensor dequant_reference_fp32(const at::Tensor& packed, const at::Tensor& scales,
+                                  const std::optional<at::Tensor>& offsets, int64_t bits,
+                                  int64_t group_values, int64_t in_features) {
+  const std::optional<at::Tensor> wide =
+      offsets.has_value() ? std::optional<at::Tensor>(offsets->to(at::kFloat)) : std::nullopt;
+  return dequant_cpu(packed, scales.to(at::kFloat), wide, bits, group_values, in_features);
+}
+
+
 // --- gemv ------------------------------------------------------------------
 //
 // Dequantize, then matmul. That materialises the dense weight, which is precisely
@@ -175,8 +202,9 @@ at::Tensor gemv_cpu(const at::Tensor& x, const at::Tensor& packed, const at::Ten
               " activation rows exceeds the kernel's limit of ", DYNQUANT_GEMV_MAX_ROWS,
               ". Above this a quantized matmul is compute-bound and the dequant + cuBLASLt "
               "path is faster; dispatch there instead.");
-  const auto weight = dequant_cpu(packed, scales, offsets, bits, group_values, in_features);
-  return at::matmul(x.to(at::kFloat), weight.to(at::kFloat).t()).to(x.scalar_type());
+  const auto weight =
+      dequant_reference_fp32(packed, scales, offsets, bits, group_values, in_features);
+  return at::matmul(x.to(at::kFloat), weight.t()).to(x.scalar_type());
 }
 
 
@@ -230,11 +258,11 @@ at::Tensor moe_grouped_gemv_cpu(const at::Tensor& x, const at::Tensor& packed,
     const std::optional<at::Tensor> band_offsets =
         offsets.has_value() ? std::optional<at::Tensor>(offsets->narrow(0, band, out_features))
                             : std::nullopt;
-    const auto weight =
-        dequant_cpu(band_packed, band_scales, band_offsets, bits, group_values, in_features);
+    const auto weight = dequant_reference_fp32(band_packed, band_scales, band_offsets, bits,
+                                              group_values, in_features);
     const auto rows = x.narrow(0, start, stop - start);
     out.narrow(0, start, stop - start)
-        .copy_(at::matmul(rows.to(at::kFloat), weight.to(at::kFloat).t()).to(x.scalar_type()));
+        .copy_(at::matmul(rows.to(at::kFloat), weight.t()).to(x.scalar_type()));
   }
   return out;
 }
