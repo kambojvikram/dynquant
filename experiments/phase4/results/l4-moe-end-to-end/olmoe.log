@@ -1,0 +1,150 @@
+5257dcc Observe the decode cache instead of reading the checkpoint's config field
+===== arm=bf16 bits=3 =====
+Loading weights:   0%|          | 0/179 [00:00<?, ?it/s]Loading weights:   2%|▏         | 4/179 [00:00<00:08, 21.54it/s]Loading weights:   4%|▍         | 7/179 [00:00<00:17, 10.07it/s]Loading weights:   9%|▉         | 16/179 [00:01<00:10, 15.69it/s]Loading weights:  15%|█▌        | 27/179 [00:01<00:07, 20.48it/s]Loading weights:  21%|██        | 38/179 [00:01<00:06, 23.05it/s]Loading weights:  27%|██▋       | 49/179 [00:02<00:05, 24.63it/s]Loading weights:  34%|███▎      | 60/179 [00:02<00:04, 25.77it/s]Loading weights:  40%|███▉      | 71/179 [00:03<00:04, 26.37it/s]Loading weights:  46%|████▌     | 82/179 [00:03<00:03, 26.91it/s]Loading weights:  52%|█████▏    | 93/179 [00:03<00:03, 27.14it/s]Loading weights:  58%|█████▊    | 104/179 [00:04<00:02, 27.13it/s]Loading weights:  64%|██████▍   | 115/179 [00:04<00:02, 27.42it/s]Loading weights:  70%|███████   | 126/179 [00:05<00:01, 27.48it/s]Loading weights:  77%|███████▋  | 137/179 [00:05<00:01, 29.25it/s]Loading weights:  83%|████████▎ | 148/179 [00:05<00:01, 28.97it/s]Loading weights:  89%|████████▉ | 159/179 [00:06<00:00, 28.58it/s]Loading weights:  95%|█████████▍| 170/179 [00:06<00:00, 28.31it/s]Loading weights: 100%|██████████| 179/179 [00:06<00:00, 27.38it/s]
+{
+  "arm": "bf16",
+  "model": "/dev/shm/olmoe",
+  "device": "NVIDIA L4",
+  "capability": "8.9",
+  "torch": "2.11.0+cu126",
+  "has_grouped_gemv": true,
+  "params": 6919161856,
+  "experts_impl_before": "grouped_mm",
+  "experts_impl_after": "grouped_mm",
+  "peak_mib_loaded": 13197.3,
+  "resident_mib_loaded": 13197.3,
+  "prompt_style": "chat-template",
+  "decoded_cache_len": 30,
+  "config_use_cache": false,
+  "rows": [
+    {
+      "prompt": "Write a SQL query returning the three departments with the highest average salary.",
+      "short_s": 0.8151,
+      "long_s": 2.3573,
+      "decode_tok_s": 41.5,
+      "naive_tok_s": 40.72,
+      "text": "Assuming you have a table named \"Employees\" with columns \"Department\", \"Salary\", and \"Id\", the SQL query would look like this:\n\n```sql\nSELECT Department, AVG(Salary) as Average_Salary\nFROM Employees\nGROUP BY Department\nORDER BY Average_Salary DESC\nLIMIT 3;\n```\n\nThis query does the following:\n\n1. `SELECT Department, AVG(Salary) as Average_Salary`: It selects the \"Department\" and calculates the average \"Salary\" for each \"Department\".\n\n2. `FROM Employees`: It specifies the table from which to retrieve data.\n\n3. `GROUP BY Department`: It groups the results by \"Department\" so that the average salary"
+    },
+    {
+      "prompt": "Explain in two sentences why memory bandwidth rather than FLOPs limits decoding.",
+      "short_s": 0.8148,
+      "long_s": 2.3588,
+      "decode_tok_s": 41.45,
+      "naive_tok_s": 40.7,
+      "text": "Memory bandwidth limits decoding because it determines how much data can be read from memory per unit of time, which is crucial for fetching the necessary instruction and data for each operation. While FLOPs (floating-point operations per second) measure computational power, memory bandwidth constraints dictate the actual speed at which these operations are executed, especially when dealing with large datasets or complex calculations that require frequent memory access."
+    }
+  ],
+  "decode_tok_s": 41.48,
+  "naive_tok_s": 40.71,
+  "peak_mib_generate": 13328.6,
+  "peak_mib_total": 13328.6
+}
+===== arm=eager bits=3 =====
+Loading weights:   0%|          | 0/179 [00:00<?, ?it/s]Loading weights:   3%|▎         | 5/179 [00:00<00:16, 10.74it/s]Loading weights:   8%|▊         | 15/179 [00:00<00:05, 30.51it/s]Loading weights:  12%|█▏        | 21/179 [00:00<00:06, 22.68it/s]Loading weights:  15%|█▌        | 27/179 [00:01<00:08, 17.57it/s]Loading weights:  21%|██        | 38/179 [00:01<00:06, 22.27it/s]Loading weights:  27%|██▋       | 49/179 [00:02<00:05, 24.40it/s]Loading weights:  34%|███▎      | 60/179 [00:02<00:04, 25.63it/s]Loading weights:  40%|███▉      | 71/179 [00:02<00:04, 26.24it/s]Loading weights:  46%|████▌     | 82/179 [00:03<00:03, 26.49it/s]Loading weights:  52%|█████▏    | 93/179 [00:03<00:03, 27.15it/s]Loading weights:  58%|█████▊    | 104/179 [00:04<00:02, 27.15it/s]Loading weights:  64%|██████▍   | 115/179 [00:04<00:02, 27.34it/s]Loading weights:  70%|███████   | 126/179 [00:04<00:01, 27.57it/s]Loading weights:  77%|███████▋  | 137/179 [00:05<00:01, 27.29it/s]Loading weights:  83%|████████▎ | 148/179 [00:05<00:01, 27.51it/s]Loading weights:  89%|████████▉ | 159/179 [00:06<00:00, 27.74it/s]Loading weights:  95%|█████████▍| 170/179 [00:06<00:00, 27.49it/s]Loading weights: 100%|██████████| 179/179 [00:06<00:00, 27.31it/s]
+{
+  "arm": "eager",
+  "model": "/dev/shm/olmoe",
+  "device": "NVIDIA L4",
+  "capability": "8.9",
+  "torch": "2.11.0+cu126",
+  "has_grouped_gemv": true,
+  "params": 6919161856,
+  "modules_packed": 98,
+  "routers_left_dense": 16,
+  "router_params": 2097152,
+  "pack_seconds": 79.9,
+  "accounted_bytes": 2812166144,
+  "accounted_bits": 3.2515,
+  "fp16_bytes": 13833863168,
+  "packed_bytes": 2810003456,
+  "modules_replaced": 98,
+  "modules_tied": 0,
+  "modules_skipped": 0,
+  "pack_moved_experts_from": "grouped_mm",
+  "pack_moved_experts_to": "dynquant",
+  "bits": 3,
+  "experts_impl_before": "dynquant",
+  "experts_impl_after": "eager",
+  "peak_mib_loaded": 7254.3,
+  "resident_mib_loaded": 2685.4,
+  "prompt_style": "chat-template",
+  "decoded_cache_len": 30,
+  "config_use_cache": false,
+  "rows": [
+    {
+      "prompt": "Write a SQL query returning the three departments with the highest average salary.",
+      "short_s": 3.1085,
+      "long_s": 8.6434,
+      "decode_tok_s": 11.56,
+      "naive_tok_s": 11.11,
+      "text": "Assuming you have a table named \"employees\" with columns \"department\" and \"salary\", the SQL query to return the three departments with the highest average salary would look something like this:\n\n```sql\nSELECT department, AVG(salary) as average_salary\nFROM employees\nGROUP BY department\nORDER BY average_salary DESC\nLIMIT 3;\n```\n\nHere's what each part of this query does:\n\n1. **SELECT department, AVG(salary) as average_salary**: This selects the `department` column and calculates the average `salary` for each group of rows that have the same `department` value.\n\n2. **FROM employees**: Specifies the table from which to"
+    },
+    {
+      "prompt": "Explain in two sentences why memory bandwidth rather than FLOPs limits decoding.",
+      "short_s": 3.1468,
+      "long_s": 8.6528,
+      "decode_tok_s": 11.62,
+      "naive_tok_s": 11.09,
+      "text": "Memory bandwidth is prioritized over FLOPs (floating-point operations per second) in decoding processes because higher bandwidth ensures that data needed for decoding, which is stored in memory, is quickly and efficiently fetched, minimizing bottlenecks that can slow down the decoding process. This prioritization is crucial for maintaining the performance of memory-intensive tasks, such as video decoding, where fetching large amounts of data is common."
+    }
+  ],
+  "decode_tok_s": 11.59,
+  "naive_tok_s": 11.1,
+  "peak_mib_generate": 2728.7,
+  "peak_mib_total": 7254.3
+}
+===== arm=dynquant bits=3 =====
+Loading weights:   0%|          | 0/179 [00:00<?, ?it/s]Loading weights:   3%|▎         | 5/179 [00:00<00:15, 11.03it/s]Loading weights:   8%|▊         | 15/179 [00:00<00:05, 30.84it/s]Loading weights:  12%|█▏        | 21/179 [00:00<00:06, 22.95it/s]Loading weights:  15%|█▌        | 27/179 [00:01<00:08, 17.55it/s]Loading weights:  21%|██        | 38/179 [00:01<00:06, 21.55it/s]Loading weights:  27%|██▋       | 49/179 [00:02<00:05, 25.02it/s]Loading weights:  34%|███▎      | 60/179 [00:02<00:04, 25.78it/s]Loading weights:  40%|███▉      | 71/179 [00:02<00:04, 26.50it/s]Loading weights:  46%|████▌     | 82/179 [00:03<00:03, 26.80it/s]Loading weights:  52%|█████▏    | 93/179 [00:03<00:03, 26.99it/s]Loading weights:  58%|█████▊    | 104/179 [00:04<00:02, 27.19it/s]Loading weights:  64%|██████▍   | 115/179 [00:04<00:02, 27.57it/s]Loading weights:  70%|███████   | 126/179 [00:04<00:01, 27.48it/s]Loading weights:  77%|███████▋  | 137/179 [00:05<00:01, 27.41it/s]Loading weights:  83%|████████▎ | 148/179 [00:05<00:01, 27.41it/s]Loading weights:  89%|████████▉ | 159/179 [00:06<00:00, 27.71it/s]Loading weights:  95%|█████████▍| 170/179 [00:06<00:00, 27.61it/s]Loading weights: 100%|██████████| 179/179 [00:06<00:00, 27.40it/s]
+{
+  "arm": "dynquant",
+  "model": "/dev/shm/olmoe",
+  "device": "NVIDIA L4",
+  "capability": "8.9",
+  "torch": "2.11.0+cu126",
+  "has_grouped_gemv": true,
+  "params": 6919161856,
+  "modules_packed": 98,
+  "routers_left_dense": 16,
+  "router_params": 2097152,
+  "pack_seconds": 81.9,
+  "accounted_bytes": 2812166144,
+  "accounted_bits": 3.2515,
+  "fp16_bytes": 13833863168,
+  "packed_bytes": 2810003456,
+  "modules_replaced": 98,
+  "modules_tied": 0,
+  "modules_skipped": 0,
+  "pack_moved_experts_from": "grouped_mm",
+  "pack_moved_experts_to": "dynquant",
+  "bits": 3,
+  "experts_impl_before": "dynquant",
+  "experts_impl_after": "dynquant",
+  "peak_mib_loaded": 7254.6,
+  "resident_mib_loaded": 2685.4,
+  "prompt_style": "chat-template",
+  "decoded_cache_len": 30,
+  "config_use_cache": false,
+  "rows": [
+    {
+      "prompt": "Write a SQL query returning the three departments with the highest average salary.",
+      "short_s": 0.8743,
+      "long_s": 2.5899,
+      "decode_tok_s": 37.31,
+      "naive_tok_s": 37.07,
+      "text": "Assuming you have a table named \"employees\" with columns \"department\" and \"salary\", the SQL query to return the three departments with the highest average salary would look something like this:\n\n```sql\nSELECT department, AVG(salary) as average_salary\nFROM employees\nGROUP BY department\nORDER BY average_salary DESC\nLIMIT 3;\n```\n\nHere's what each part of this query does:\n\n1. **SELECT department, AVG(salary) as average_salary**: This selects the `department` column and calculates the average `salary` for each group of rows that have the same `department` value.\n\n2. **FROM employees**: Specifies the table from which to"
+    },
+    {
+      "prompt": "Explain in two sentences why memory bandwidth rather than FLOPs limits decoding.",
+      "short_s": 0.8711,
+      "long_s": 2.6291,
+      "decode_tok_s": 36.41,
+      "naive_tok_s": 36.51,
+      "text": "Memory bandwidth is a critical factor in decoding because it determines how efficiently data can be transferred from storage to the processor, directly influencing the speed and efficiency of the decoding process. FLOPs (floating-point operations per second) measure computational power but do not directly affect the rate at which data is transferred, which is a key consideration in decoding performance."
+    }
+  ],
+  "decode_tok_s": 36.86,
+  "naive_tok_s": 36.79,
+  "peak_mib_generate": 2721.5,
+  "peak_mib_total": 7254.6
+}
+OLMOE2 DONE

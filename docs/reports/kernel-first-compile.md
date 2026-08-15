@@ -1038,3 +1038,160 @@ on the 4.030x.
 * **Not generalized past this model and this card.** LFM2.5-8B-A1B on one L4. The launch-bound
   regime that makes the number large is a property of a small-batch decode on a card with modest
   SM count; a larger card or a batched server sits somewhere else on that curve.
+
+## 15. A second MoE family, and the loop gets worse exactly where the kernel does not
+
+Every number in sections 12 through 14 came off one checkpoint. P8's gate names *Mixtral-8x7B /
+Qwen3-MoE*, and every one of those sections closes by saying so: **one model family**. Neither
+named model fits an L4 -- Mixtral-8x7B is 47B parameters and Qwen3-30B-A3B is 30B, against 23 GB
+of card -- so the clause was answered with the nearest thing that is genuinely a different test
+rather than the nearest thing that shares a name.
+
+### The geometry that makes it a different test
+
+`allenai/OLMoE-1B-7B-0125-Instruct`, 6,919,161,856 parameters, against LFM2.5-8B-A1B's
+8,467,856,128:
+
+| | LFM2.5-8B-A1B | OLMoE-1B-7B |
+|---|---|---|
+| experts / top-k | 32 / 4 | **64 / 8** |
+| MoE layers | 22 | 16 |
+| expert intermediate | 1792 | **1024** |
+| attention | 6 full + 18 short-convolution | **16 full, no convolution** |
+| router | `Lfm2MoeTopKRouter` (not an `nn.Linear`) | `mlp.gate`, a plain `nn.Linear` |
+| embeddings | tied | **untied** |
+| expert bank share of params | 91.5% | 93.1% |
+
+Different expert count, different top-k, different expert width, a different layer mix, a
+different router class, and a different embedding arrangement. What it shares is the batched
+`[E, out, in]` bank layout, which is what the grouped kernel actually consumes -- so it tests
+the dispatch against a second router and a second routing density without changing the thing
+under test.
+
+The packer needed nothing added for it: **98 modules packed, 16 routers left dense** (2,097,152
+parameters, 0.030% of the model), 0 tied, 0 skipped, `accounted_bits` **3.2515**, and the expert
+banks moved from `grouped_mm` to `dynquant` exactly as they do on LFM2.5. The generic structural
+classifier reached `mlp.gate` through `out_features == num_experts` with an `experts` sibling,
+which is the test P3 was written around and the first time a family it was not developed against
+has exercised it end to end.
+
+### 3.18x the per-expert loop, on a family the kernel was not tuned against
+
+Same harness as section 12 (`experiments/phase4/moe_end_to_end.py`), same L4, same two prompts,
+128 new tokens, greedy, chat template applied, three arms in one process:
+
+| arm | decode tok/s | vs loop | vs bf16 | resident MiB | peak loaded MiB | experts run by |
+|---|---|---|---|---|---|---|
+| `bf16` | 41.48 | 3.58x | 1.000x | 13197.3 | 13197.3 | `grouped_mm` |
+| `eager` | 11.59 | 1.00x | 0.279x | 2685.4 | 7254.3 | per-expert loop |
+| `dynquant` | **36.86** | **3.180x** | 0.889x | 2685.4 | 7254.6 | grouped kernel |
+
+**3.180x clears P8's >=3x gate on a second family**, and a first run before the cache probe was
+added measured 3.167x, so the figure reproduces across processes. Both packed arms hold the
+same weights -- the only difference between them is one call swapping `_experts_implementation`
+after the pack, which is why they are directly comparable in a way two separate runs would not be.
+
+Memory lands where P6 says it should. Resident after load is **2685.4 MiB** against a manifest
+`packed_bytes` of 2,810,003,456 B = **2679.8 MiB**: **5.6 MiB apart, 0.21%**. The ratio
+against bf16 is **4.914x**, the same ratio LFM2.5 gets at 3 bits to four significant figures --
+not a coincidence, since both land at `accounted_bits` 3.2515 and 16/3.2515 = 4.921. The
+`peak_mib_loaded` of 7254.3 is again the clipping search's transient dense GPU copy during
+packing, not a steady state.
+
+Coherent at 3 bits on both prompts in all three arms -- the SQL prompt produces a correct
+`GROUP BY ... ORDER BY AVG(salary) DESC LIMIT 3` in every arm. The `eager` and `dynquant`
+generations are **byte-identical on the first prompt** and diverge partway through the second,
+which is the expected signature of substituting one kernel at the dispatch: identical inputs,
+identical weights, floating-point differences below the argmax margin until greedy decoding
+amplifies one of them.
+
+### Where the two families disagree, and why the disagreement is the point
+
+Reading the two grouped-vs-loop numbers side by side is more informative than either alone:
+
+| | LFM2.5, 3 bits | OLMoE, 3 bits |
+|---|---|---|
+| `bf16` tok/s | 33.25 | 41.48 |
+| loop tok/s | 12.23 | **11.59** |
+| grouped tok/s | 32.52 | 36.86 |
+| **grouped / loop** | 2.66x | **3.18x** |
+| grouped / bf16 | 0.978x | 0.889x |
+| expert matmuls launched per token | 22 x 4 x 3 = **264** | 16 x 8 x 3 = **384** |
+| parameters per expert matmul | 3,670,016 | **2,097,152** |
+| active expert parameters per token | 968,884,224 | 805,306,368 |
+
+OLMoE is the smaller model, and its bf16 arm is correspondingly faster -- 41.48 against 33.25.
+Its per-expert loop is nevertheless **slower in absolute terms**, 11.59 against 12.23, while
+reading 17% fewer expert parameters per token. A loop that does less work and takes more time is
+launch-bound, and the two rows underneath say by how much: 45% more launches, each doing 43% less
+arithmetic, so roughly 1.75x the launch overhead per unit of work.
+
+That is the same effect section 14 measured directly, arriving from the other side. There,
+freezing a whole decode step into one graph removed 76-82% of it. Here, a geometry that issues
+more and smaller expert calls pays more of that overhead in the loop -- and the grouped kernel,
+which issues **one** launch per layer regardless of expert count, does not pay it at all. The gap
+between the two paths therefore widens exactly where the launches get smaller, which is what a
+launch-bound explanation predicts and a bandwidth-bound one does not.
+
+The other column moves the opposite way, and honestly. Against `bf16`, OLMoE's grouped path
+recovers 0.889x where LFM2.5 recovers 0.978x. Smaller expert matrices give the quantized GEMV
+less arithmetic to hide the dequantization behind, so the fraction of bf16 it can reach is lower
+-- the cost of 3-bit weights is more visible on a 2048x1024 matrix than on a 2048x1792 one.
+Both statements are about the same geometry, and both are what the memory-bound decode model
+says should happen.
+
+### The checkpoint said `use_cache: false`, and the run used one anyway
+
+OLMoE-1B-7B ships `"use_cache": false` in its `config.json`. LFM2.5 ships `true`. The harness had
+been building an explicit `GenerationConfig` -- `do_sample=False`, `temperature=None`,
+`top_p=None`, `top_k=None` -- for the reasons section 12 gives, and had simply not named
+`use_cache`, so on this checkpoint it was inherited. Decoding 128 tokens without a KV cache is
+quadratic in the budget. All three arms would have paid it equally, so the **ratio** would have
+survived and the **rate** would not: 3.18x would still have been 3.18x, and 36.86 tok/s would
+have been a number about a configuration nobody runs. That is precisely the kind of error a
+comparison hides, which is why it is worth naming rather than quietly fixing.
+
+The fix was one line, `use_cache=True` in the config. The instrumentation added alongside it was
+wrong, and the second attempt is the part worth recording:
+
+```python
+"config_use_cache": bool(getattr(model.config, "use_cache", True)),   # measures nothing
+```
+
+That field reports the checkpoint's static declaration. It read `False` on all three OLMoE arms
+*after* the fix, while all three demonstrably decoded with a cache -- because `generate` is
+governed by the per-call `GenerationConfig`, not by `model.config`. A field that reads `False`
+next to a run that is manifestly `True` is worse than no field: it invites the reader to conclude
+the fix did not take. It was replaced with an observation instead of a declaration --
+
+```python
+cfg = GenerationConfig(..., use_cache=True, max_new_tokens=4, return_dict_in_generate=True)
+out = model.generate(**enc, generation_config=cfg)
+return getattr(out, "past_key_values", None)  # None means it decoded without one
+```
+
+-- a four-token probe run once per arm outside the timed region, whose returned cache length goes
+into the record as `decoded_cache_len`. It reads **30** on all three arms: 26 prompt tokens plus
+4 generated. The static field is still recorded next to it, now correctly labelled as the
+checkpoint's declaration rather than the run's behaviour, and the two disagreeing is exactly the
+hazard this pair exists to make visible.
+
+### What section 15 does not claim
+
+- **OLMoE is not Mixtral-8x7B or Qwen3-30B-A3B.** P8's gate names those two. Neither fits on an
+  L4 at bf16 for the baseline arm, so the second-family evidence is a family that fits, not the
+  family the gate names. What generalises is the mechanism -- batched `[E, out, in]` banks, a
+  generically classified router, one launch per layer -- not the constant.
+- **Two families are not a trend.** 2.66x and 3.18x are two points, and the launch-count
+  explanation drawn through them is a reading consistent with both plus section 14's direct
+  measurement, not a fitted model. A third geometry could move it either way.
+- **The cross-family arithmetic is a sanity check, not a controlled comparison.** LFM2.5 and
+  OLMoE differ in attention (18 short-convolution layers against none), vocabulary (128k against
+  50k), depth, and embedding tying. Only the within-model ratios -- grouped against loop, on the
+  same weights in the same process -- are controlled.
+- **No accuracy claim.** Three arms generating coherently on two prompts is a smoke test for
+  3-bit viability on a second family. It is not an evaluation, and nothing here revises the
+  panel numbers in the phase 4 reports.
+- **`--map-apply pack` still cannot reach this path.** Routers carry an 8-bit structural floor
+  rather than an exclusion, so a DynQuant bit map naming them cannot be packed; the arms here
+  quantize uniformly at 3 bits. That limitation is unchanged from section 12 and is still open.
