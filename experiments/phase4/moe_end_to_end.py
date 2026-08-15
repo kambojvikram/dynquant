@@ -165,6 +165,12 @@ def _generate(
         top_p=None,
         top_k=None,
         num_beams=1,
+        # Set here rather than left to default because a checkpoint can carry
+        # `use_cache: false` in its own config -- OLMoE-1B-7B does -- and a run
+        # that decodes without a KV cache is quadratic in the budget. Both arms
+        # would be equally wrong, so the ratio would survive and the rate would
+        # not, which is the kind of error a comparison hides.
+        use_cache=True,
         max_new_tokens=budget,
         min_new_tokens=budget if force else None,
         pad_token_id=tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id,
@@ -205,6 +211,9 @@ def _time_arm(model: Any, tok: Any, device: str, reps: int) -> dict[str, Any]:
         )
     return {
         "prompt_style": "chat-template" if getattr(tok, "chat_template", None) else "raw",
+        # Read back off the loaded model rather than off the argument, so the record
+        # says what the run did instead of what it asked for.
+        "config_use_cache": bool(getattr(model.config, "use_cache", True)),
         "rows": rows,
         "decode_tok_s": round(statistics.median([r["decode_tok_s"] for r in rows]), 2),
         "naive_tok_s": round(statistics.median([r["naive_tok_s"] for r in rows]), 2),
