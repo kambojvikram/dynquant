@@ -150,6 +150,25 @@ def _render(tok: Any, prompt: str) -> str:
     return str(rendered)
 
 
+def _cache_len(cache: Any) -> int:
+    """Tokens the returned cache actually holds, or -1 if there is no cache at all.
+
+    `generate` returns `past_key_values=None` when it decoded without one, so the
+    distinction this reports is presence, not size. Size is here as well because a
+    cache that exists and holds one token would be a different bug than no cache.
+    """
+    if cache is None:
+        return -1
+    for attr in ("get_seq_length", "__len__"):
+        fn = getattr(cache, attr, None)
+        if callable(fn):
+            try:
+                return int(fn())
+            except (TypeError, IndexError, AttributeError):
+                continue
+    return 0
+
+
 def _generate(
     model: Any, tok: Any, prompt: str, budget: int, device: str, *, force: bool = True
 ) -> tuple[float, str]:
@@ -189,8 +208,35 @@ def _generate(
     return elapsed, tok.decode(produced, skip_special_tokens=True)
 
 
+def _probe_cache(model: Any, tok: Any, prompt: str, device: str) -> Any:
+    """One short generation asked to hand its cache back, so presence is observed.
+
+    Separate from the timed calls because `return_dict_in_generate` keeps the cache
+    alive past the call and that is a memory cost the peak numbers should not carry.
+    """
+    from transformers import GenerationConfig
+
+    enc = tok(_render(tok, prompt), return_tensors="pt", add_special_tokens=False).to(device)
+    cfg = GenerationConfig(
+        do_sample=False,
+        temperature=None,
+        top_p=None,
+        top_k=None,
+        num_beams=1,
+        use_cache=True,
+        max_new_tokens=4,
+        min_new_tokens=4,
+        return_dict_in_generate=True,
+        pad_token_id=tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id,
+    )
+    with torch.no_grad():
+        out = model.generate(**enc, generation_config=cfg)
+    return getattr(out, "past_key_values", None)
+
+
 def _time_arm(model: Any, tok: Any, device: str, reps: int) -> dict[str, Any]:
     _generate(model, tok, PROMPTS[0], SHORT, device)  # warm the allocator and any autotune
+    cache_probe = _probe_cache(model, tok, PROMPTS[0], device)
     rows: list[dict[str, Any]] = []
     for prompt in PROMPTS:
         shorts = [_generate(model, tok, prompt, SHORT, device)[0] for _ in range(reps)]
@@ -211,8 +257,13 @@ def _time_arm(model: Any, tok: Any, device: str, reps: int) -> dict[str, Any]:
         )
     return {
         "prompt_style": "chat-template" if getattr(tok, "chat_template", None) else "raw",
-        # Read back off the loaded model rather than off the argument, so the record
-        # says what the run did instead of what it asked for.
+        # `model.config.use_cache` is the checkpoint's static field and says nothing
+        # about the run -- OLMoE-1B-7B ships it False while `generate` decodes with a
+        # cache anyway, because the GenerationConfig passed per call is what governs.
+        # So this asks `generate` for the cache back and reports what came: -1 means
+        # it decoded without one, which is quadratic in the budget and would make
+        # every arm equally wrong in a way the speedup ratio would survive.
+        "decoded_cache_len": _cache_len(cache_probe),
         "config_use_cache": bool(getattr(model.config, "use_cache", True)),
         "rows": rows,
         "decode_tok_s": round(statistics.median([r["decode_tok_s"] for r in rows]), 2),
