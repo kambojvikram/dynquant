@@ -346,6 +346,56 @@ def comparison_table(entries: list[dict[str, Any]]) -> tuple[str, int]:
     return NL.join(lines), flagged
 
 
+def describe_scheme(scheme: dict[str, Any]) -> str:
+    """One arm's recipe as a reader meets it: the grid, and the column order."""
+    grid = "symmetric" if scheme["symmetric"] else "asymmetric"
+    order = scheme.get("actorder")
+    return f"{grid} with {'no' if order is None else order} activation reordering"
+
+
+def oxford(items: list[str]) -> str:
+    if len(items) < 3:
+        return " and ".join(items)
+    return ", ".join(items[:-1]) + ", and " + items[-1]
+
+
+def scheme_census(table: dict[str, Any]) -> str:
+    """Which schemes each method actually ran here, counted off the arms.
+
+    The sentence this replaces named one scheme per method -- "GPTQ here is symmetric with
+    no activation reordering; AWQ and DynQuant are asymmetric" -- which was true of the
+    seven-arm panel it was written for and false the moment that panel's own control
+    appended a second and a third GPTQ arm to it. It is the same failure `isolating_control`
+    exists to refuse, one sentence later: a claim about the table's contents, written into
+    the generator instead of read out of the table.
+
+    An arm with no recorded scheme is not counted as agreeing with the others. DynQuant's
+    arms carry none because its asymmetry is not a recipe field, and that is said outright
+    rather than folded into a list of things the panel measured.
+    """
+    seen: dict[str, list[str]] = {}
+    for arm in published(table):
+        scheme = arm.get("scheme")
+        if not scheme:
+            continue
+        described = describe_scheme(scheme)
+        if described not in seen.setdefault(str(arm["kind"]), []):
+            seen[str(arm["kind"])].append(described)
+    census = "; ".join(f"{METHOD_NAMES[kind]} runs {oxford(runs)}" for kind, runs in seen.items())
+    unrecorded = any(
+        arm["kind"] == "dq" and not arm.get("scheme") and arm.get("accuracy") is not None
+        for arm in published(table)
+    )
+    tail = (
+        " DynQuant's quantizer is asymmetric and does not reorder columns, which is a "
+        "property of the method rather than a recipe flag, so the panel records no scheme "
+        "for its arms."
+        if unrecorded
+        else ""
+    )
+    return f"In this panel {census}.{tail}"
+
+
 def isolating_control(table: dict[str, Any]) -> str:
     """How the scheme caveat ends: naming the control, or admitting it is absent.
 
@@ -429,13 +479,12 @@ def caveats(table: dict[str, Any], row: dict[str, Any], flagged: int) -> str:
     kinds = {arm["kind"] for arm in table["arms"]}
     if "gptq" in kinds and kinds & {"awq", "dq"}:
         bullets.append(
-            "**The baselines run at their own libraries' defaults, and those defaults "
-            "are not the same scheme.** GPTQ here is symmetric with no activation "
-            "reordering; AWQ and DynQuant are asymmetric. Where a comparison above pairs "
-            "a symmetric arm against an asymmetric one its delta spans two differences at "
-            "once -- how the bits were allocated, and whether a zero point was stored per "
-            "group -- so a large gap between those two arms is not on its own evidence "
-            "about allocation. " + isolating_control(table)
+            "**The arms above are not all the same scheme.** "
+            + scheme_census(table)
+            + " Where a comparison above pairs a symmetric arm against an asymmetric one "
+            "its delta spans two differences at once -- how the bits were allocated, and "
+            "whether a zero point was stored per group -- so a large gap between those two "
+            "arms is not on its own evidence about allocation. " + isolating_control(table)
         )
 
     if flagged:

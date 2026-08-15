@@ -236,8 +236,10 @@ def test_a_panel_that_mixes_two_schemes_says_so_and_one_that_does_not_stays_quie
     row = next(arm for arm in table["arms"] if arm["label"] == "dq_3b")
 
     mixed = cards.card(table, "dq_3b", FINETUNE, repo_prefix=None)
-    assert "are not the same scheme" in mixed
-    assert "symmetric with no activation reordering" in mixed
+    assert "not all the same scheme" in mixed
+    assert "GPTQ runs symmetric with no activation reordering" in mixed
+    assert "AWQ runs asymmetric with no activation reordering" in mixed
+    assert "records no scheme for its arms" in mixed
 
     one_scheme = dict(table)
     one_scheme["arms"] = [arm for arm in table["arms"] if arm["kind"] != "gptq"]
@@ -689,3 +691,54 @@ def test_the_card_names_the_isolating_control_only_when_the_panel_holds_one(
     # The act-ordered arm is listed first in `extra_arms`, so a pairing that merely looked
     # for any asymmetric sibling at the same anchor would have found it first and named it.
     assert "and `gptq_3b_asym` are the same method" not in card
+
+
+def test_the_scheme_caveat_counts_every_scheme_the_panel_ran(
+    cards: Any, table_mod: Any, tmp_path: Path
+) -> None:
+    """One method can appear three ways, and the card has to say so.
+
+    The sentence this guards used to read "GPTQ here is symmetric with no activation
+    reordering", asserted for every panel that held a GPTQ arm at all. It was true of the
+    seven-arm panel and false of the nine-arm one that came out of that panel's own control:
+    the same method at the same byte anchor also ran asymmetric, and asymmetric with
+    activation reordering, and those two arms differ from each other by 72 points. A card
+    that names one scheme for the method is then describing an arm the reader can see two
+    other rows of.
+
+    The census is per method and deduplicated, so a panel whose GPTQ arms all agree still
+    reads as one clause rather than three copies of it.
+
+    Turns red when: the caveat goes back to naming a fixed scheme per method, or the census
+    stops reading the arms and starts reading the kinds.
+    """
+    anchor = next(
+        arm
+        for arm in _built(table_mod, _write_panel(tmp_path / "base"))[0]["arms"]
+        if arm["label"] == "gptq_3b"
+    )["target_bytes"]
+    # In panel order, which is the order the card reads them in: the campaign ran the
+    # grid on its own first and added activation ordering to it second.
+    controls = tuple(
+        {"label": label, "kind": "gptq", "anchor": 3, "target_bytes": anchor, "nbytes": anchor}
+        for label in ("gptq_3b_asym_noao", "gptq_3b_asym")
+    )
+    table, _ = _built(
+        table_mod,
+        _write_panel(
+            tmp_path / "controls",
+            extra_arms=controls,
+            schemes={
+                "gptq_3b_asym": {"symmetric": False, "actorder": "group"},
+                "gptq_3b_asym_noao": {"symmetric": False, "actorder": None},
+            },
+        ),
+    )
+    card = cards.card(table, "dq_3b", FINETUNE, repo_prefix=None)
+
+    assert (
+        "GPTQ runs symmetric with no activation reordering, asymmetric with no activation "
+        "reordering, and asymmetric with group activation reordering" in card
+    )
+    # Three GPTQ arms, one AWQ clause: the census is over arms, and it deduplicates.
+    assert "AWQ runs asymmetric with no activation reordering." in card
