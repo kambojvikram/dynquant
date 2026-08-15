@@ -100,6 +100,21 @@ It stays ahead at 8.3\pct{} fewer bytes ($+1.05$, $p = 0.0026$) and level at 16.
 ($-0.19$, $p = 0.64$). The final arm gives up \textbf{0.17 points against full precision at 3.01
 stored bits}.
 \\[0.7em]
+\textbf{Held pending a control.} The \code{gptq\_3b\_head} arm above was fitted on a
+\emph{symmetric} grid and every DynQuant arm on an asymmetric one. That is not a choice this
+report made and recorded; it is hardcoded in \code{experiments/\_llmc.py} from that file's first
+commit --- the recipe builder asks for a symmetric grid for every method except AWQ --- so no
+GPTQ arm this project has published has ever been fitted the other way. On the phase-4
+Mistral-7B panel the same difference, holding method, calibration set, group size and byte
+anchor fixed, was worth \textbf{$+69.4$ points} and took a 6.68\pct{} arm to 76.08\pct{}. That
+figure is not transferable: \code{gptq\_3b\_head} did not collapse. What makes the control
+decisive anyway is the arithmetic --- it sits \textbf{1.71 points under this panel's fp16 ceiling
+of 89.74\pct{}}, and the margin claimed over it is $1.54$, so an asymmetric arm has only to
+recover 1.54 of the 1.71 points already on the table. Until that arm is run at
+741{,}475{,}927 bytes the $+1.54$ is \emph{unattributed} rather than wrong, and this report must
+not be cited as ``DynQuant beats GPTQ at 3 bits.'' Nothing below depends on it: all four levers
+are isolated at byte-identical budgets between DynQuant arms.
+
 The margin comes from four levers, each isolated at byte-identical budgets: a Gauss--Newton
 sensitivity model, a row-partitioned tied embedding, an $\mathbb{E}[x^2]$-weighted clip
 objective, and per-row body allocation. The last of those is also the report's central finding,

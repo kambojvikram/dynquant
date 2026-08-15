@@ -2495,6 +2495,23 @@ three arms cost -23.53, -26.37 and **-4.40** points respectively. It is the only
 panel that is still a working text-to-SQL model: 213 unparseable generations against GPTQ's 1,008
 and AWQ's 1,523.
 
+**The +19.13 over GPTQ is held pending a scheme control, and the +21.98 over AWQ is not.**
+`git log -p` on `experiments/_llmc.py` shows `symmetric=(method != "awq")` hardcoded from that
+file's first commit, so this panel's `gptq_3b` was fitted on a *symmetric* grid while `awq_3b`
+and `dq_3b` were asymmetric. The same difference was measured on the S4 Mistral-7B panel at the
+same 3-bit width, holding method, calibration, group size and byte anchor fixed: it was worth
+**+69.4 points**, and the arm it recovered went from 6.68% to 76.08%, above that panel's DynQuant
+arm. This one did not collapse the same way -- 60.76% is a degraded model, not a broken one -- so
+the Mistral figure is not transferable and the gap here may be mostly allocation. But 23.53 points
+under the ceiling is the same shape of symptom, and until `gptq_3b` is re-run asymmetric at
+3,332,904,576 B the +19.13 spans two differences and attributes to neither.
+
+What the control cannot touch is everything below. The four decomposition arms are all DynQuant
+arms at this same anchor, differing only in what the allocator was shown, so the +9.47 the signal
+earns and the +9.66 the signal-free allocator earns are measured inside one quantizer, one scheme
+and one set of bytes. A GPTQ arm re-fitted asymmetric would move the +19.13 the ladder is read
+*against*; it would not move a single rung of the ladder.
+
 **What the allocator did is legible, and it is not diffuse.** `experiments/phase4/map_roles.py`
 reads the two exported maps and prints role by width; the table below is generated, not
 transcribed. 133 quantized modules, four widths.
@@ -2906,6 +2923,17 @@ is worth and what the plasticity-times-saliency score is worth on top of it. Not
 separates them, and prior campaigns say the split is not portable: 12% on Qwen3.5-2B, 56% on
 Ministral-8B. §13.4 states the claim at the strength the data supports. Also not done: GPTQ and
 AWQ given DynQuant's own bit map, which would price the allocator against the quantizer.
+
+And one control that was not on this list when the panel ran, because nobody had looked:
+**`gptq_3b` re-fitted asymmetric at 3,332,904,576 B.** Every GPTQ arm this project has published
+was fitted on a symmetric grid -- `symmetric=(method != "awq")`, hardcoded in `experiments/_llmc.py`
+from its first commit -- against asymmetric AWQ and DynQuant arms. On the S4 Mistral-7B panel that
+difference alone was measured at **+69.4 points** and turned a 6.68% arm into a 76.08% one that
+ties DynQuant. It does not follow that it is worth anything like that here, where GPTQ scores a
+degraded-but-working 60.76%; it does follow that the +19.13 has never been measured against a GPTQ
+arm configured the way a reader downloading one would get. The decomposition in §13.4 is unaffected
+either way -- every rung of it is a DynQuant arm at this anchor -- but the number the ladder is read
+against is provisional until that arm runs.
 
 One number in this report is now conditional on §11 rather than absolute. The fine-tuned model's
 accuracy is a claim about text-to-SQL only because the filter ran; before it, 38 of the 200 WikiSQL

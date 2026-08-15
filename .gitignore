@@ -11,6 +11,17 @@
 *.pdf
 20710_*
 
+# latexmk's byproducts next to the report sources. The .tex is what gets reviewed and
+# the PDF is a release asset, so everything between the two is scratch -- and .xdv in
+# particular is the size of the PDF, which is the reason none of this is worth carrying.
+*.aux
+*.fdb_latexmk
+*.fls
+*.out
+*.toc
+*.xdv
+docs/reports/*.log
+
 # The research tree: the supplement's own source, which this package is derived
 # from but does not redistribute. Four reasons, any one of which is sufficient:
 #
