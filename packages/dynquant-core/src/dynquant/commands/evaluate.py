@@ -382,6 +382,39 @@ TASKS = {
 }
 
 
+def check_out_is_writable(out: str | None) -> None:
+    """Refuse an unusable ``--out`` now rather than after the run has been paid for.
+
+    The record is written on the last line of :func:`run`, so every way the destination can
+    be wrong is discovered after the decode sweep. That is not a theoretical ordering
+    problem: a control arm on this project pointed ``--out`` at the panel *directory*
+    instead of a file inside it, quantized for seven minutes, generated for eleven hours,
+    printed its accuracy to stdout, and then died in ``write_text`` with
+    ``IsADirectoryError`` -- eleven GPU-hours for a number that reached no file.
+
+    Checked by opening the path in append mode rather than by inspecting it. ``is_dir`` and
+    ``os.access`` answer questions about a moment that has passed by the time the write
+    happens, and they do not agree with the write on read-only mounts, on a full filesystem,
+    or on a dangling symlink. Opening it is the same syscall the write will make.
+    """
+    from dynquant.errors import DynQuantError
+
+    if not out:
+        return
+    destination = Path(out)
+    if destination.is_dir():
+        raise DynQuantError(
+            f"--out {out} is a directory. It names the record file itself and not the "
+            f"directory to write it into, so pass a path to a file inside it"
+        )
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with destination.open("a", encoding="utf-8"):
+            pass
+    except OSError as exc:
+        raise DynQuantError(f"--out {out} cannot be written: {exc}") from exc
+
+
 def run(args: argparse.Namespace, *, model: Any = None) -> int:
     """Score a model on a task and write the record.
 
@@ -411,6 +444,9 @@ def run(args: argparse.Namespace, *, model: Any = None) -> int:
     from dynquant._version import __version__
     from dynquant.errors import DynQuantError
     from dynquant.eval.harness import EvalConfig
+
+    # First, before the model, the dataset or a single token of decode.
+    check_out_is_writable(getattr(args, "out", None))
 
     spec = TASKS[args.task]
     split, shot_split, n_shots = _resolve_splits(spec, args)

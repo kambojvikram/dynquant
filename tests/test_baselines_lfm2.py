@@ -29,6 +29,7 @@ from typing import Any
 import pytest
 
 from dynquant.commands.evaluate import PAIRING_FIELDS, TASKS
+from dynquant.errors import DynQuantError
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVER = REPO_ROOT / "experiments" / "phase4" / "baselines_lfm2.py"
@@ -1279,6 +1280,188 @@ def test_the_mappings_reach_the_modifier_and_only_on_the_awq_arm(driver: Any) ->
         'if args.method == "awq":\n        mappings, smoothing = resolve_awq_mappings' in quantize
     )
     assert "mappings=mappings" in quantize
+
+
+def test_the_destination_is_checked_before_the_calibration_pass(
+    driver: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``do_run`` pays seven GPU-minutes before ``evaluate.run`` ever sees ``--out``.
+
+    The eval command checks its own destination, which is why this is not a second
+    implementation but the same function called earlier. Calling it earlier is the point: by
+    the time ``evaluate.run`` reaches its check the arm has already been quantized, and this
+    driver's ``--out`` is also where ``score`` puts the ``.quant.json`` side file, so a
+    destination that cannot hold one loses the calibration too.
+
+    Turns red when: the call moves below ``quantize``, or is dropped -- ``quantize`` raising
+    is what a check that ran too late would look like.
+    """
+
+    def refuse(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("quantize ran before the destination was checked")
+
+    monkeypatch.setattr(driver, "quantize", refuse)
+    args = argparse.Namespace(out=str(tmp_path))
+    with pytest.raises(DynQuantError, match="is a directory"):
+        driver.do_run(args)
+
+
+@pytest.fixture
+def llmc(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """``_llmc`` with ``compressed_tensors`` replaced by a recorder.
+
+    The real package is not in the base matrix, and installing it to test this would make the
+    test depend on the very library whose default is the hazard. What is stubbed is only the
+    boundary: ``fake_quantize`` records the keywords it was handed and rounds to the scale,
+    ``align_module_device`` is a null context, and ``update_offload_parameter`` writes back.
+    The arithmetic under test -- which modules are targeted, what is forwarded, and the
+    per-method count -- is ``_llmc``'s own and runs unstubbed.
+    """
+    import types
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_quantize(x: Any, scale: Any, zero_point: Any, args: Any, **kwargs: Any) -> Any:
+        calls.append({"g_idx": kwargs.get("g_idx", "NOT PASSED")})
+        return (x / scale).round() * scale
+
+    forward = types.ModuleType("compressed_tensors.quantization.lifecycle.forward")
+    forward.fake_quantize = fake_quantize  # type: ignore[attr-defined]
+    utils = types.ModuleType("compressed_tensors.utils")
+    utils.align_module_device = contextlib.nullcontext  # type: ignore[attr-defined]
+
+    def update_offload_parameter(module: Any, name: str, value: Any) -> None:
+        setattr(module, name, value)
+
+    utils.update_offload_parameter = update_offload_parameter  # type: ignore[attr-defined]
+    for name, mod in (
+        ("compressed_tensors", types.ModuleType("compressed_tensors")),
+        ("compressed_tensors.quantization", types.ModuleType("compressed_tensors.quantization")),
+        (
+            "compressed_tensors.quantization.lifecycle",
+            types.ModuleType("compressed_tensors.quantization.lifecycle"),
+        ),
+        ("compressed_tensors.quantization.lifecycle.forward", forward),
+        ("compressed_tensors.utils", utils),
+    ):
+        monkeypatch.setitem(sys.modules, name, mod)
+
+    sys.path.insert(0, str(REPO_ROOT / "experiments"))
+    try:
+        import _llmc
+    finally:
+        sys.path.pop(0)
+    _llmc._test_calls = calls  # type: ignore[attr-defined]
+    return _llmc
+
+
+def _quantized_module(*values: float, g_idx: Any = None) -> Any:
+    """One quantized ``Linear``-alike carrying only what the function under test reads.
+
+    The stub rounds to a scale of 1, so the values are the whole lever over ``weights_moved``:
+    integers come back unchanged and a module built from them counts as *not moved*, anything
+    else counts as moved. That is what lets each case below choose which side of the
+    per-method contract it lands on without reaching into the function.
+    """
+    import torch
+
+    class Weights:
+        pass
+
+    class Scheme:
+        weights = Weights()
+
+    class Module:
+        def __init__(self) -> None:
+            self.quantization_scheme = Scheme()
+            self.weight = torch.nn.Parameter(torch.tensor([list(values)]))
+            self.weight_scale = torch.tensor(1.0)
+            self.weight_zero_point = None
+            if g_idx is not None:
+                self.weight_g_idx = g_idx
+
+    return Module()
+
+
+def _on_grid(**kwargs: Any) -> Any:
+    return _quantized_module(0.0, 1.0, 2.0, 3.0, **kwargs)
+
+
+def _off_grid(**kwargs: Any) -> Any:
+    return _quantized_module(0.3, 0.7, 1.2, 1.8, **kwargs)
+
+
+def _quantized_model(*modules: Any) -> Any:
+    class Model:
+        def named_modules(self) -> Any:
+            return [(f"layer.{i}", m) for i, m in enumerate(modules)]
+
+    return Model()
+
+
+def test_the_activation_order_mapping_reaches_the_requantizer(llmc: Any) -> None:
+    """Both ``fake_quantize`` calls get ``g_idx``, or an act-order arm is scrambled.
+
+    GPTQ with activation ordering sorts each row's columns by a Hessian diagonal, so column
+    *i* belongs to group ``g_idx[i]``, not to ``i // group_size``. ``fake_quantize`` takes the
+    mapping as an optional keyword defaulting to ``None``, and ``None`` does not mean "absent"
+    -- it means the contiguous grouping. Omitting it therefore does not raise, it applies each
+    group's scale to columns it was never fitted on.
+
+    The fixed-point probe cannot catch this on its own: it re-quantizes under the same wrong
+    mapping and finds it idempotent, which is why the probe's call is asserted here too rather
+    than trusted to notice.
+
+    Turns red when: either call drops the keyword, or one is fixed and the other is not --
+    which would leave the probe checking a different grouping than the write used, and turn a
+    silent scramble into a confusing refusal.
+    """
+    import torch
+
+    g_idx = torch.tensor([0, 1, 0, 1])
+    llmc.materialize_quantization(_quantized_model(_on_grid(g_idx=g_idx)), probes=1)
+
+    calls = llmc._test_calls
+    assert len(calls) == 2, "expected one call for the write and one for the probe"
+    for call in calls:
+        assert call["g_idx"] is not None, "the mapping was not forwarded"
+        assert torch.equal(call["g_idx"], g_idx)
+
+
+def test_a_method_that_moves_the_wrong_number_of_weights_is_refused(llmc: Any) -> None:
+    """The docstring's contract, enforced instead of written down.
+
+    GPTQ rounds as it calibrates, so materialization is a no-op on it; RTN and AWQ leave every
+    weight unrounded, so a zero means the recipe never reached the model. Both halves were
+    already documented. Neither was checked, and an arm that violated the GPTQ half quantized,
+    generated for eleven hours, and scored 0.00% before anything noticed.
+
+    It has to run before the probe, because the probe agrees with a wrong mapping.
+
+    Turns red when: the counts stop being compared, the expectation is inverted, or the check
+    moves below the probe -- the last of which would restore the failure this exists to catch,
+    since the probe passes in exactly that case.
+    """
+    import inspect
+
+    with pytest.raises(SystemExit, match="gptq moved 1 of 1 weights, expected 0"):
+        llmc.materialize_quantization(_quantized_model(_off_grid()), method="gptq", probes=1)
+    with pytest.raises(SystemExit, match="weight_g_idx"):
+        llmc.materialize_quantization(_quantized_model(_off_grid()), method="gptq", probes=1)
+    with pytest.raises(SystemExit, match="rtn moved 0 of 1 weights, expected 1"):
+        llmc.materialize_quantization(_quantized_model(_on_grid()), method="rtn", probes=1)
+
+    # And the shape each method is supposed to have is accepted rather than merely tolerated.
+    llmc.materialize_quantization(_quantized_model(_on_grid()), method="gptq", probes=1)
+    llmc.materialize_quantization(_quantized_model(_off_grid()), method="awq", probes=1)
+    # An unnamed method stays unchecked, so a driver that does not know its own method still
+    # runs -- the check tightens the callers that can afford it, not every caller.
+    llmc.materialize_quantization(_quantized_model(_off_grid()), probes=1)
+
+    source = inspect.getsource(llmc.materialize_quantization)
+    assert source.index("expected = {") < source.index("Fixed-point check"), (
+        "the count check has to run before the probe, which agrees with a wrong mapping"
+    )
 
 
 def test_the_scheme_a_control_names_reaches_the_recipe_and_is_recorded(driver: Any) -> None:

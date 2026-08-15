@@ -708,7 +708,7 @@ def quantize(
         max_seq_length=args.seq_len,
         pipeline=args.pipeline,
     )
-    applied = materialize_quantization(model)
+    applied = materialize_quantization(model, method=args.method)
 
     meta = {
         "method": args.method,
@@ -838,6 +838,17 @@ def do_linearize(args: argparse.Namespace) -> int:
 
 
 def do_run(args: argparse.Namespace) -> int:
+    """Quantize, then score, then write -- with the write checked before the quantize.
+
+    ``check_out_is_writable`` is the eval command's, imported rather than repeated, and it
+    runs again inside ``evaluate.run``. Calling it here as well is not redundancy: the
+    calibration pass costs seven minutes before ``evaluate.run`` is reached, and this arm's
+    destination is also where ``score`` puts the ``.quant.json`` side file. Cheapest check
+    first, ahead of everything that costs a GPU.
+    """
+    from dynquant.commands.evaluate import check_out_is_writable
+
+    check_out_is_writable(args.out)
     model, meta = quantize(args)
     return score(args, model, meta)
 

@@ -189,7 +189,7 @@ def quantized_reference(
         recipe=build_recipe(method, bits, GROUP_SIZE, ignore=[], mappings=recipe_mappings),
         **kwargs,
     )
-    applied = materialize_quantization(model)
+    applied = materialize_quantization(model, method=method)
     applied["banks_linearized"] = banks_before
     if smoothing is not None:
         applied["smoothing"] = smoothing

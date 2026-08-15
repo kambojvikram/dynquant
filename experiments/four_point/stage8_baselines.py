@@ -324,7 +324,15 @@ def materialize_quantization(model: Any, *, probes: int = 8) -> dict[str, Any]:
         with align_module_device(module):
             original = module.weight.data
             rounded = fake_quantize(
-                original, module.weight_scale, getattr(module, "weight_zero_point", None), weights
+                original,
+                module.weight_scale,
+                getattr(module, "weight_zero_point", None),
+                weights,
+                # Absent under stage 8's recipes, which name no activation ordering. Passed
+                # regardless: `fake_quantize` reads a missing mapping as the contiguous one,
+                # so the day a recipe here grows `actorder` this omission would not raise,
+                # it would quietly quantize against the wrong columns. See `_llmc`.
+                g_idx=getattr(module, "weight_g_idx", None),
             )
             delta = (rounded.float() - original.float()).abs().max().item()
         if delta > 0.0:
@@ -345,6 +353,7 @@ def materialize_quantization(model: Any, *, probes: int = 8) -> dict[str, Any]:
                 module.weight_scale,
                 getattr(module, "weight_zero_point", None),
                 module.quantization_scheme.weights,
+                g_idx=getattr(module, "weight_g_idx", None),
             )
             if not torch.equal(again, stored):
                 off_grid.append(name)

@@ -225,6 +225,49 @@ def test_a_path_is_still_loaded_when_no_model_is_passed(monkeypatch: pytest.Monk
 # --- the comparability contract ---------------------------------------------------------
 
 
+def test_an_unusable_out_is_refused_before_anything_is_loaded(wired: _Spec, tmp_path: Path) -> None:
+    """The destination is checked first, because it is the last thing ``run`` uses.
+
+    The record is written on the final line of :func:`run`, so every way ``--out`` can be
+    wrong surfaces after the decode sweep has been paid for. That is not hypothetical: a
+    control arm on this campaign pointed ``--out`` at the panel *directory* rather than a file
+    inside it, quantized for seven minutes, generated for eleven hours, printed its accuracy
+    to stdout, and died in ``write_text`` -- eleven GPU-hours for a number that reached no
+    file.
+
+    ``wired`` makes ``_load_runtime`` raise, so the ordering is what is being asserted and not
+    just the message: a check that ran anywhere below the model load would surface as that
+    ``AssertionError`` instead of the refusal.
+
+    Turns red when: the call leaves the top of ``run``, or a directory stops being rejected.
+    """
+    with pytest.raises(DynQuantError, match="is a directory"):
+        evaluate.run(_args(out=str(tmp_path)))
+
+
+def test_a_writable_destination_is_accepted_and_its_parent_made(tmp_path: Path) -> None:
+    """The check has to be quiet on the paths the campaign actually uses.
+
+    ``run`` creates ``destination.parent`` itself, so a nested ``--out`` is legal and must not
+    be turned into an error by the guard that precedes it. The unwritable case is exercised
+    through a parent that is a file rather than through permissions, which do not mean the
+    same thing across the platforms this suite runs on.
+
+    Turns red when: the guard starts rejecting a path ``run`` would have written, or stops
+    reporting one it could not.
+    """
+    evaluate.check_out_is_writable(None)
+    nested = tmp_path / "arms" / "s4" / "gptq_3b_asym.json"
+    evaluate.check_out_is_writable(str(nested))
+    assert nested.parent.is_dir()
+    assert not nested.exists() or nested.read_text(encoding="utf-8") == ""
+
+    blocked = tmp_path / "notadir"
+    blocked.write_text("", encoding="utf-8")
+    with pytest.raises(DynQuantError, match="cannot be written"):
+        evaluate.check_out_is_writable(str(blocked / "arm.json"))
+
+
 def _record(**overrides: Any) -> dict[str, Any]:
     """A record shaped the way ``run`` writes one."""
     base: dict[str, Any] = {

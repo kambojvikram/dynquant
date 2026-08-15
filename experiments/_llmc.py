@@ -129,7 +129,9 @@ def build_recipe(
     raise SystemExit(f"unknown method {method!r}; choose from {', '.join(METHODS)}")
 
 
-def materialize_quantization(model: Any, *, probes: int = 8) -> dict[str, Any]:
+def materialize_quantization(
+    model: Any, *, method: str | None = None, probes: int = 8
+) -> dict[str, Any]:
     """Write the frozen scales into the weights, and prove they landed.
 
     See the module docstring for why. Applied uniformly rather than per method -- it is
@@ -139,7 +141,17 @@ def materialize_quantization(model: Any, *, probes: int = 8) -> dict[str, Any]:
 
     The returned counts are recorded with the arm. ``weights_moved`` is expected to be zero
     for GPTQ and equal to ``materialized_modules`` for RTN and AWQ; an arm whose counts do
-    not match that shape is reporting something other than what its label says.
+    not match that shape is reporting something other than what its label says. Pass
+    ``method`` and that sentence is enforced instead of merely written down -- it was
+    written down, and an arm violating it still ran for eleven hours and scored 0.00%.
+
+    ``g_idx`` is the reason it has to be enforced. GPTQ with activation ordering sorts each
+    row's columns by a Hessian diagonal, so column *i* belongs to group ``g_idx[i]`` and not
+    to ``i // group_size``. ``fake_quantize`` takes that mapping and defaults it to ``None``,
+    which silently means the contiguous one -- so omitting it does not fail, it applies every
+    group's scale to the wrong columns and scrambles the weights. The fixed-point probe below
+    cannot see this: it re-quantizes under the same wrong mapping and finds it idempotent.
+    What does see it is ``weights_moved``, which goes from GPTQ's expected 0 to every module.
     """
     import torch
     from compressed_tensors.quantization.lifecycle.forward import fake_quantize
@@ -163,13 +175,37 @@ def materialize_quantization(model: Any, *, probes: int = 8) -> dict[str, Any]:
         with align_module_device(module):
             original = module.weight.data
             rounded = fake_quantize(
-                original, module.weight_scale, getattr(module, "weight_zero_point", None), weights
+                original,
+                module.weight_scale,
+                getattr(module, "weight_zero_point", None),
+                weights,
+                g_idx=getattr(module, "weight_g_idx", None),
             )
             delta = (rounded.float() - original.float()).abs().max().item()
         if delta > 0.0:
             moved += 1
             max_delta = max(max_delta, delta)
         update_offload_parameter(module, "weight", rounded.to(module.weight.dtype))
+
+    # Each method's own shape, refused rather than recorded. GPTQ rounds as it calibrates,
+    # so materialization is a no-op on it and anything else means the scales are being
+    # applied to columns they were not fitted on; RTN and AWQ leave every weight unrounded,
+    # so a zero there means the recipe never reached the model. Checked before the probe
+    # because the probe agrees with a wrong mapping and this does not.
+    expected = {"gptq": 0, "awq": len(targets), "rtn": len(targets)}.get(method or "")
+    if expected is not None and moved != expected:
+        raise SystemExit(
+            f"{method} moved {moved} of {len(targets)} weights, expected {expected}. "
+            + (
+                "GPTQ leaves its weights on the grid, so a non-zero count means "
+                "materialization re-rounded them against a different grouping than the one "
+                "they were fitted under -- check that every recipe artifact the scheme "
+                "carries (weight_g_idx, above all) is being passed to fake_quantize"
+                if expected == 0
+                else "a count short of every module means the recipe did not reach them, "
+                "and the arm would be scored on unquantized weights"
+            )
+        )
 
     # Fixed-point check on a spread of modules, re-reading the parameter rather than the
     # value just computed. Quantizing a quantized weight must be a no-op; a tensor that was
@@ -186,6 +222,7 @@ def materialize_quantization(model: Any, *, probes: int = 8) -> dict[str, Any]:
                 module.weight_scale,
                 getattr(module, "weight_zero_point", None),
                 module.quantization_scheme.weights,
+                g_idx=getattr(module, "weight_g_idx", None),
             )
             if not torch.equal(again, stored):
                 off_grid.append(name)
