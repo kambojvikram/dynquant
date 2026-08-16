@@ -19,6 +19,27 @@ ones that invalidate artifacts a user has already produced.
 
 ## [Unreleased]
 
+### Fixed — phase 2's held claim: the asymmetric GPTQ control has been run
+
+Phase 2 reported DynQuant beating `gptq_3b_head` by +1.54 points at 3 bits, then held the claim:
+the GPTQ arm was fitted symmetric while every DynQuant arm was asymmetric, a knob worth 69.4
+points on a different panel. The original checkpoint no longer exists, so the control was run as
+a replicate — same recipe, fresh fine-tune. DynQuant beats the real asymmetric arm by **+1.13 at
+4.5% fewer bytes** (exact McNemar *p* = 0.000178), beats the symmetric arm by +1.90 at 3.79%
+fewer bytes, and statistically ties the fp16 ceiling at 5.32× fewer bytes.
+
+It also checks a prediction the byte-accounting fix below made: the original panel's
+`gptq_3b_head` byte figure was itself computed under the zero-point bug, and the fix predicted the
+replicate's true symmetric arm would land "~0.7% cheaper" — it lands at −0.741%.
+
+Getting here also surfaced an unrelated driver bug: `p2replicate.sh`'s freshness guard used
+bash's sub-second `-ot`/`-nt`, which read the training callback's moments file as older than the
+checkpoint it describes because the two land a fraction of a second apart within the same save
+sequence — both in the same whole second, wrong order at nanosecond resolution. The guard now
+compares whole seconds.
+
+Full writeup: [`docs/reports/phase2-asymmetric-control-replicate.md`](docs/reports/phase2-asymmetric-control-replicate.md).
+
 ### Fixed — every symmetric baseline was charged for a zero point it never stores
 
 Both baseline stages priced group metadata with `meta_bits = 16 + bits`, charged to every arm.

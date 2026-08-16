@@ -100,20 +100,25 @@ It stays ahead at 8.3\pct{} fewer bytes ($+1.05$, $p = 0.0026$) and level at 16.
 ($-0.19$, $p = 0.64$). The final arm gives up \textbf{0.17 points against full precision at 3.01
 stored bits}.
 \\[0.7em]
-\textbf{Held pending a control.} The \code{gptq\_3b\_head} arm above was fitted on a
-\emph{symmetric} grid and every DynQuant arm on an asymmetric one. That is not a choice this
-report made and recorded; it is hardcoded in \code{experiments/\_llmc.py} from that file's first
-commit --- the recipe builder asks for a symmetric grid for every method except AWQ --- so no
-GPTQ arm this project has published has ever been fitted the other way. On the phase-4
+\textbf{Settled (2026-08-15), by a replicate.} The \code{gptq\_3b\_head} arm above was fitted on
+a \emph{symmetric} grid and every DynQuant arm on an asymmetric one. That was not a choice this
+report made and recorded; it was hardcoded in \code{experiments/\_llmc.py} from that file's first
+commit --- the recipe builder asked for a symmetric grid for every method except AWQ --- so no
+GPTQ arm this project had published had ever been fitted the other way. On the phase-4
 Mistral-7B panel the same difference, holding method, calibration set, group size and byte
-anchor fixed, was worth \textbf{$+69.4$ points} and took a 6.68\pct{} arm to 76.08\pct{}. That
-figure is not transferable: \code{gptq\_3b\_head} did not collapse. What makes the control
-decisive anyway is the arithmetic --- it sits \textbf{1.71 points under this panel's fp16 ceiling
-of 89.74\pct{}}, and the margin claimed over it is $1.54$, so an asymmetric arm has only to
-recover 1.54 of the 1.71 points already on the table. Until that arm is run at
-741{,}475{,}927 bytes the $+1.54$ is \emph{unattributed} rather than wrong, and this report must
-not be cited as ``DynQuant beats GPTQ at 3 bits.'' Nothing below depends on it: all four levers
-are isolated at byte-identical budgets between DynQuant arms.
+anchor fixed, was worth \textbf{$+69.4$ points}. This report held its own headline pending the
+matching control on \emph{this} panel. The original checkpoint no longer exists, so the control
+was run as a \textbf{replicate}: same recipe, a fresh fine-tune, torch 2.12.0+cu130 /
+transformers 5.10.1 in place of the original's torch 2.13 / transformers 5.14. The real
+asymmetric arm scored \textbf{88.45\pct{} at 741{,}486{,}130 bytes}, and DynQuant still won:
+\textbf{$+1.13$, 155/95 discordant, exact $p = 0.000178$, CI $[+0.55, +1.71]$, at 4.5\pct{} fewer
+bytes.} Against the replicate's symmetric arm (87.67\pct{} at 735{,}981{,}792 bytes) the margin is
+$+1.90$ ($p = 2.0\mathrm{e}{-8}$) at 3.79\pct{} fewer bytes, and against the replicate's own bf16
+ceiling (89.42\pct{}) DynQuant is a statistical tie ($+0.15$, $p = 0.57$) at $5.32\times$ fewer
+bytes. Full account in \S\ref{sec:addendum}. Absolute figures in this replicate differ from the
+panel above at the decimal --- different checkpoint, different library versions --- so the two
+are not merged; every comparison inside \S\ref{sec:addendum} is arm-vs-arm within the replicate's
+own run, as everywhere else in this report.
 
 The margin comes from four levers, each isolated at byte-identical budgets: a Gauss--Newton
 sensitivity model, a row-partitioned tied embedding, an $\mathbb{E}[x^2]$-weighted clip
@@ -815,6 +820,98 @@ both cases.
 the format prices their metadata identically --- but each one needs its own shuffled control before
 any number from it is quoted.
 \end{itemize}
+
+%% ============================================================ 12
+\section{Addendum (2026-08-15): the asymmetric control, as a replicate}
+\label{sec:addendum}
+
+The checkpoint behind every number in \S1--\S11 no longer exists --- the box it was measured on
+has since been recycled --- so the control this report held itself pending could not be run on
+the same weights. It was run as a \textbf{replicate}: the same driver
+(\code{p2replicate.sh}), the same recipe (LoRA $r=32$, lr $10^{-4}$, 2 epochs, Qwen3.5-2B-Base /
+CaseHOLD, $n = 5{,}314$), a fresh fine-tune, on torch 2.12.0+cu130 / transformers 5.10.1 in place
+of the original panel's torch 2.13 / transformers 5.14. Every comparison below is therefore
+arm-vs-arm \emph{within this replicate's own run}, not against \S1--\S11's numbers, which stand
+as a record of what was measured then, under code corrected since (\S\ref{sec:addendum-bytes}).
+
+\subsection{The four-arm table}
+
+\begin{center}\small
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+arm & acc \% & correct/total & bytes & avg bits \\
+\midrule
+\rowcolor{winbg}
+\code{p2\_rb\_agg} (DynQuant) & \best{89.57} & 4760/5314 & 708{,}087{,}552 & 3.0102 \\
+\code{gptq\_3b\_head\_asym} (control) & 88.45 & 4700/5314 & 741{,}486{,}130 & 3.1522 \\
+\code{gptq\_3b\_head} (symmetric) & 87.67 & 4659/5314 & 735{,}981{,}792 & 3.1288 \\
+\code{bf16} (ceiling) & 89.42 & 4752/5314 & 3{,}763{,}692{,}048 & 16 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{center}\small
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+comparison & $\Delta$acc & discordant (b/c) & exact $p$ & 95\pct{} CI & $\Delta$bytes \\
+\midrule
+\rowcolor{winbg}
+\code{rb\_agg} vs asymmetric control & \best{$+1.13$} & 155/95 & \best{0.000178} & $[+0.55,+1.71]$ & \best{$-4.50\pct{}$} \\
+\rowcolor{winbg}
+\code{rb\_agg} vs symmetric arm & \best{$+1.90$} & 212/111 & \best{\e{2.0}{-8}} & $[+1.24,+2.56]$ & \best{$-3.79\pct{}$} \\
+\code{rb\_agg} vs bf16 ceiling & $+0.15$ & 81/73 & 0.573 (ns) & $[-0.31,+0.61]$ & $-81.19\pct{}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{The held claim is settled.} The asymmetric control this report said was missing now
+exists, and DynQuant beats it: $+1.13$ points at 4.5\pct{} \emph{fewer} bytes, not matched bytes.
+The 1.71 points of fp16 headroom the original abstract worried about only cost the claim 0.41 of
+its 1.54 points --- the real control closed less than a third of the gap it had room to close.
+DynQuant also statistically ties the bf16 ceiling at $5.32\times$ fewer bytes, a comparison
+\S1--\S11 did not make.
+
+\subsection{What the original panel's own number turns out to say}
+\label{sec:addendum-bytes}
+
+A separate audit (\code{byte-accounting-zero-point.md}) found that both baseline stages priced
+group metadata as \code{meta\_bits = 16 + bits} \emph{unconditionally} --- scale plus a zero
+point --- even for symmetric arms, which store no zero point. Every symmetric GPTQ/RTN arm this
+project has published was over-charged by that difference, about 0.7\pct{} of a 3-bit checkpoint.
+That audit could not correct \S1--\S11's own \code{gptq\_3b\_head} figure, because its checkpoint
+was already gone, but it predicted the direction: \emph{``the replicate's GPTQ arm will come in
+$\sim$0.7\pct{} cheaper than the destroyed panel's did.''}
+
+\begin{center}\small
+\begin{tabular}{@{}lrr@{}}
+\toprule
+ & bytes & $\Delta$ vs the original panel's 741{,}475{,}927 B \\
+\midrule
+this replicate's symmetric arm & 735{,}981{,}792 & \best{$-0.741\pct{}$} \\
+this replicate's asymmetric arm & 741{,}486{,}130 & $+0.0014\pct{}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The prediction lands almost exactly: $-0.741\pct{}$ against a forecast of $\sim\!-0.7\pct{}$.
+It also resolves something \S1--\S11 left unexplained: \code{gptq\_3b\_head} was fitted and
+labelled \emph{symmetric}, yet its byte figure sits within 10{,}203 bytes (0.0014\pct{}) of this
+replicate's true \emph{asymmetric} figure, and 5{,}494{,}135 bytes (0.75\pct{}) away from this
+replicate's true symmetric figure. The original number was a symmetric arm's weights, accounted
+through code that priced every arm as though it stored a zero point --- a symmetric-fit arm
+wearing an asymmetric-sized byte count. It also explains why \S1's abstract asked for the control
+to be run ``at 741{,}475{,}927 bytes'': under that accounting, symmetric and asymmetric were
+expected to cost the same, because the code never priced the difference between them. They do
+not. This replicate's own two controls show a genuine 0.75\pct{} gap between them, which is
+exactly the term the fix restored.
+
+\subsection{What this does not change}
+
+No number in \S1--\S11 is edited in place --- the checkpoint behind it cannot be re-measured, and
+its table stands as a record of what was true under code since corrected. The four-lever
+attribution in \S3 is untouched: every lever there was isolated at byte-identical budgets between
+DynQuant arms only, and nothing about the GPTQ control bears on those deltas. Scope is still one
+panel; \S\ref{sec:notoverturn} stands as written.
 
 \vspace{1.5em}
 \begin{center}

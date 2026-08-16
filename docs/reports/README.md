@@ -22,7 +22,7 @@ model of another family are ten separate failures:
 | 1 | Does a signal-driven allocator beat a same-size uniform one? | **Only after the score was replaced.** The published rank-product score *lost* by 2.03 pts; a measured Gauss–Newton sensitivity wins by **+10.29** | [`RESULTS.md`](../../experiments/four_point/RESULTS.md) |
 | 2 | Does that hold on a different model, scale, architecture and training regime? | **Yes, qualitatively; not in magnitude** | [`RESULTS-mistral7b-banking77.md`](../../experiments/four_point/RESULTS-mistral7b-banking77.md) |
 | 3 | Does it beat what people actually ship — GPTQ, AWQ, RTN, bnb-NF4? | **Wins at 2.42×, ties at 3.8×, lost at 4.9×** | [phase 1 PDF](https://github.com/kambojvikram/dynquant/releases/latest/download/dynquant-phase1-external-comparison.pdf) · [record](../../experiments/four_point/RESULTS-external-comparison.md) |
-| 4 | Can the 3-bit loss be reversed without adopting GPTQ's mechanism? | **Held pending a control.** +1.54 over GPTQ at 7.4 % fewer bytes, *p* < 0.0001 — but that GPTQ arm was fitted **symmetric** where DynQuant was asymmetric, and on Mistral-7B that difference alone was worth **69.4 points** (§23). `gptq_3b_head` sits 1.71 points under its own fp16 ceiling and the claimed margin over it is 1.54 | [phase 2 PDF](https://github.com/kambojvikram/dynquant/releases/latest/download/dynquant-phase2-beating-gptq-3bit.pdf) |
+| 4 | Can the 3-bit loss be reversed without adopting GPTQ's mechanism? | **Settled: yes.** The asymmetric control the original panel was missing has now been run (as a replicate — the original checkpoint no longer exists): DynQuant beats it by **+1.13** at **4.5 % fewer bytes** (*p* = 0.00018), beats the symmetric arm by +1.90 at 3.79 % fewer bytes, and statistically ties the fp16 ceiling at 5.32× fewer bytes | [phase 2 PDF](https://github.com/kambojvikram/dynquant/releases/latest/download/dynquant-phase2-beating-gptq-3bit.pdf) · [replicate](phase2-asymmetric-control-replicate.md) |
 | 5 | Do inference servers hold the same quantized weights the direct run holds? | **Yes, on both vLLM and SGLang** — after a real defect was found and fixed | [`serving-parity.md`](serving-parity.md) |
 | 6 | Do the phase-3 benchmarks have room for quantization damage to show? | **Yes, all four** — 54.5–83.2 %, no arm near ceiling; two harness defects caught | [`phase3-s1-headroom-screen.md`](phase3-s1-headroom-screen.md) |
 | 7 | Does the S2 fine-tune know which tokens are the assistant's? | **Yes on both tokenizers, ≤0.07 % unmaskable** — after the obvious method dropped 100 % of the data on one of them | [`phase3-s2-loss-masking.md`](phase3-s2-loss-masking.md) |
@@ -196,6 +196,20 @@ paired exact McNemar test on stored per-item hits.
 +2.87 points end to end at 7.4 % fewer bytes than the shipped arm. The fp16 ceiling on this
 panel is 89.74 %, so the final arm gives up **0.17 points against full precision at 3.01
 stored bits**.
+
+**The held claim is settled.** The table above records the original panel, which was fitted with
+`gptq_3b_head` **symmetric** while every DynQuant arm was asymmetric — a knob that measured 69.4
+points on Mistral-7B/text2sql, so the +1.54 above was held as unattributed pending an asymmetric
+control. That checkpoint no longer exists, so the control was run as a **replicate** (same
+recipe, fresh fine-tune, torch 2.12.0+cu130 / transformers 5.10.1): DynQuant beats the real
+asymmetric arm by **+1.13** at **4.5 % fewer bytes** (155/95 discordant, exact *p* = 0.000178, CI
+[+0.55, +1.71]), beats the symmetric arm by +1.90 at 3.79 % fewer bytes (*p* = 2.0e-8), and
+statistically ties the fp16 ceiling (+0.15, *p* = 0.57) at **5.32× fewer bytes**. It also confirms
+a prediction from [`byte-accounting-zero-point.md`](byte-accounting-zero-point.md): that report's
+fix meant the original panel's `gptq_3b_head` byte figure (741,475,927 B) was itself computed
+under the bug it corrected, and predicted the replicate's true symmetric arm would land "~0.7 %
+cheaper" — it lands at −0.741 %. Full writeup:
+[`phase2-asymmetric-control-replicate.md`](phase2-asymmetric-control-replicate.md).
 
 **The constraint.** The obvious fix for "rounds naively" is GPTQ's own — propagate each
 column's quantization error into the not-yet-quantized columns via an inverse Hessian. It was
@@ -1271,6 +1285,12 @@ arm that isolates it, emitted off the kinds actually present in the panel rather
 hardcoded list. The card generator also lost a sentence it had been carrying from the MoE
 campaign, which would have told a reader of a dense model that 91.5% of its parameters were
 batched expert banks.
+
+**Update: the control has since run** — as a replicate, since the original checkpoint no longer
+exists. DynQuant beats the asymmetric `gptq_3b_head` by +1.13 at 4.5% fewer bytes (*p* = 0.000178)
+and beats the symmetric arm by +1.90 at 3.79% fewer bytes; see row 4 of the table above and
+[`phase2-asymmetric-control-replicate.md`](phase2-asymmetric-control-replicate.md). The phase-2
+headline may now be cited, with the replicate caveat this document names throughout.
 
 **The 3-bit map in §7.2 was first read off the wrong checkpoint.** The feasibility dry run
 allocated over the *base* Hub model; the panel allocated over the fine-tuned merge. The first
