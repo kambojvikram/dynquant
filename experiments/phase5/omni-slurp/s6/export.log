@@ -1,0 +1,134 @@
+=== 4.00 -> /workspace/runs/omni-slurp/packed-4bit @ 2026-08-16T17:45:43+00:00 ===
+Loading weights:   0%|          | 0/1407 [00:00<?, ?it/s]Loading weights:  38%|███▊      | 529/1407 [00:00<00:00, 2171.22it/s]Loading weights:  53%|█████▎    | 747/1407 [00:06<00:06, 95.48it/s]  Loading weights:  60%|█████▉    | 839/1407 [00:08<00:07, 73.19it/s]Loading weights:  63%|██████▎   | 891/1407 [00:09<00:07, 68.01it/s]Loading weights:  66%|██████▌   | 924/1407 [00:10<00:07, 63.18it/s]Loading weights:  67%|██████▋   | 947/1407 [00:11<00:07, 59.44it/s]Loading weights:  69%|██████▊   | 964/1407 [00:11<00:07, 55.52it/s]Loading weights:  69%|██████▉   | 976/1407 [00:12<00:07, 54.16it/s]Loading weights:  70%|███████   | 986/1407 [00:12<00:08, 51.71it/s]Loading weights:  71%|███████   | 994/1407 [00:12<00:08, 48.01it/s]Loading weights:  71%|███████▏  | 1003/1407 [00:13<00:08, 45.13it/s]Loading weights:  72%|███████▏  | 1014/1407 [00:13<00:08, 44.19it/s]Loading weights:  73%|███████▎  | 1025/1407 [00:13<00:08, 43.06it/s]Loading weights:  74%|███████▎  | 1036/1407 [00:13<00:08, 42.15it/s]Loading weights:  74%|███████▍  | 1047/1407 [00:14<00:08, 41.51it/s]Loading weights: 100%|██████████| 1407/1407 [00:14<00:00, 99.52it/s]
+
+650 modules to pack, widths from /workspace/runs/omni-slurp/maps.json [4.00]
+  predicted 14.770 GiB at 3.9999 average bits (/workspace/runs/omni-slurp/maps.json [4.00], as recorded)
+  [pack] 25/650
+  [pack] 50/650
+  [pack] 75/650
+  [pack] 100/650
+  [pack] 125/650
+  [pack] 150/650
+  [pack] 175/650
+  [pack] 200/650
+  [pack] 225/650
+  [pack] 250/650
+  [pack] 275/650
+  [pack] 300/650
+  [pack] 325/650
+  [pack] 350/650
+  [pack] 375/650
+  [pack] 400/650
+  [pack] 425/650
+  [pack] 450/650
+  [pack] 475/650
+  [pack] 500/650
+  [pack] 525/650
+  [pack] 550/650
+  [pack] 575/650
+  [pack] 600/650
+  [pack] 625/650
+  [pack] 650/650
+
+650 modules packed at 3.9972 average bits: 14.770 GiB on disk (14.757 quantized + 0.013 left dense) across 5 file(s). 96 of the packed modules are batched expert banks: they load back packed and dequantize one expert per routing hit, until the grouped kernel lands
+  78s
+  note: packed weights came out -14,251,232 B against the map's prediction of 15,859,386,016 B
+-> wrote /workspace/runs/omni-slurp/packed-4bit (14.782 GiB on disk)
+   Serve it with `vllm serve /workspace/runs/omni-slurp/packed-4bit` -- the plugin registers itself, so no flag and no vLLM patch.
+   In transformers it takes two lines, and both are needed:
+     import dynquant; dynquant.register_hf_quantizer()
+     AutoModelForCausalLM.from_pretrained("/workspace/runs/omni-slurp/packed-4bit")
+   Without the first, transformers skips the quantization it does not recognise and hands back a randomly initialised model without raising.
+{
+  "dynquant_core": "0.4.0",
+  "model": "/workspace/runs/omni-slurp/merged",
+  "output": "/workspace/runs/omni-slurp/packed-4bit",
+  "allocator": "rank_product",
+  "group_size": 128,
+  "symmetric": false,
+  "modules": 650,
+  "tied": {},
+  "seconds": 77.6,
+  "average_bits": 3.9972489595021163,
+  "packed_nbytes": 15845134784,
+  "dense_nbytes": 14251232,
+  "directory_nbytes": 15871832943,
+  "files": [
+    "model-00001-of-00004.safetensors",
+    "model-00002-of-00004.safetensors",
+    "model-00003-of-00004.safetensors",
+    "model-00004-of-00004.safetensors",
+    "model.safetensors.index.json"
+  ]
+}
+=== 4.00 exit 0 @ 2026-08-16T17:47:33+00:00 ===
+=== 3.00 -> /workspace/runs/omni-slurp/packed-3bit @ 2026-08-16T17:47:33+00:00 ===
+Loading weights:   0%|          | 0/1407 [00:00<?, ?it/s]Loading weights:  38%|███▊      | 529/1407 [00:00<00:00, 2181.84it/s]Loading weights:  53%|█████▎    | 748/1407 [00:06<00:07, 92.20it/s]  Loading weights:  60%|█████▉    | 840/1407 [00:09<00:07, 71.41it/s]Loading weights:  63%|██████▎   | 892/1407 [00:10<00:07, 65.95it/s]Loading weights:  66%|██████▌   | 925/1407 [00:11<00:07, 61.37it/s]Loading weights:  67%|██████▋   | 948/1407 [00:11<00:08, 55.39it/s]Loading weights:  69%|██████▊   | 964/1407 [00:12<00:07, 55.38it/s]Loading weights:  69%|██████▉   | 977/1407 [00:12<00:07, 54.28it/s]Loading weights:  70%|███████   | 987/1407 [00:12<00:08, 51.59it/s]Loading weights:  71%|███████   | 995/1407 [00:13<00:08, 47.67it/s]Loading weights:  71%|███████▏  | 1003/1407 [00:13<00:09, 43.84it/s]Loading weights:  72%|███████▏  | 1014/1407 [00:13<00:09, 42.55it/s]Loading weights:  73%|███████▎  | 1025/1407 [00:13<00:09, 41.33it/s]Loading weights:  74%|███████▎  | 1036/1407 [00:14<00:09, 40.48it/s]Loading weights:  74%|███████▍  | 1047/1407 [00:14<00:09, 39.83it/s]Loading weights: 100%|██████████| 1407/1407 [00:14<00:00, 96.73it/s]
+
+650 modules to pack, widths from /workspace/runs/omni-slurp/maps.json [3.00]
+  predicted 11.078 GiB at 3.0000 average bits (/workspace/runs/omni-slurp/maps.json [3.00], as recorded)
+  400 floors breached to fit the budget:
+    model.layers.10.mlp.experts.gate_up_proj (moe.expert.gate_up) 4b -> 3b, 402.7M params
+    model.layers.11.mlp.experts.gate_up_proj (moe.expert.gate_up) 4b -> 3b, 402.7M params
+    model.layers.13.mlp.experts.gate_up_proj (moe.expert.gate_up) 4b -> 3b, 402.7M params
+    model.layers.14.mlp.experts.gate_up_proj (moe.expert.gate_up) 4b -> 2b, 402.7M params
+    model.layers.15.mlp.experts.gate_up_proj (moe.expert.gate_up) 4b -> 3b, 402.7M params
+  [pack] 25/650
+  [pack] 50/650
+  [pack] 75/650
+  [pack] 100/650
+  [pack] 125/650
+  [pack] 150/650
+  [pack] 175/650
+  [pack] 200/650
+  [pack] 225/650
+  [pack] 250/650
+  [pack] 275/650
+  [pack] 300/650
+  [pack] 325/650
+  [pack] 350/650
+  [pack] 375/650
+  [pack] 400/650
+  [pack] 425/650
+  [pack] 450/650
+  [pack] 475/650
+  [pack] 500/650
+  [pack] 525/650
+  [pack] 550/650
+  [pack] 575/650
+  [pack] 600/650
+  [pack] 625/650
+  [pack] 650/650
+
+650 modules packed at 2.9971 average bits: 11.078 GiB on disk (11.064 quantized + 0.013 left dense) across 4 file(s). 96 of the packed modules are batched expert banks: they load back packed and dequantize one expert per routing hit, until the grouped kernel lands
+  74s
+  note: packed weights came out -14,251,232 B against the map's prediction of 11,894,607,776 B
+-> wrote /workspace/runs/omni-slurp/packed-3bit (11.089 GiB on disk)
+   Serve it with `vllm serve /workspace/runs/omni-slurp/packed-3bit` -- the plugin registers itself, so no flag and no vLLM patch.
+   In transformers it takes two lines, and both are needed:
+     import dynquant; dynquant.register_hf_quantizer()
+     AutoModelForCausalLM.from_pretrained("/workspace/runs/omni-slurp/packed-3bit")
+   Without the first, transformers skips the quantization it does not recognise and hands back a randomly initialised model without raising.
+{
+  "dynquant_core": "0.4.0",
+  "model": "/workspace/runs/omni-slurp/merged",
+  "output": "/workspace/runs/omni-slurp/packed-3bit",
+  "allocator": "rank_product",
+  "group_size": 128,
+  "symmetric": false,
+  "modules": 650,
+  "tied": {},
+  "seconds": 73.8,
+  "average_bits": 2.9970551517157835,
+  "packed_nbytes": 11880356544,
+  "dense_nbytes": 14251232,
+  "directory_nbytes": 11907054143,
+  "files": [
+    "model-00001-of-00003.safetensors",
+    "model-00002-of-00003.safetensors",
+    "model-00003-of-00003.safetensors",
+    "model.safetensors.index.json"
+  ]
+}
+=== 3.00 exit 0 @ 2026-08-16T17:49:20+00:00 ===
+ALL DONE

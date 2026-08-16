@@ -68,6 +68,7 @@ def run(args: argparse.Namespace) -> int:
         device=args.device,
         dtype=args.dtype,
         trust_remote_code=args.trust_remote_code,
+        model_class=args.model_class,
     )
 
     resolved = _resolve_widths(model, args)

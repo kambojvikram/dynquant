@@ -260,6 +260,10 @@ jobs:
             tests/test_export_checkpoint.py \
             tests/test_baselines_lfm2.py \
             tests/test_eval_text2sql_sources.py \
+            tests/test_run_s3_omni_merge.py \
+            tests/test_eval_audio.py \
+            tests/test_processor_sidecars.py \
+            tests/test_shared_packed_load.py \
             | tee /tmp/gated.txt
           ! grep -q "skipped" /tmp/gated.txt
 

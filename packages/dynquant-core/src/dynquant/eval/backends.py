@@ -37,7 +37,7 @@ from dynquant.errors import DynQuantError
 from .harness import EvalBackend
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
     from .harness import EvalConfig
 
@@ -84,7 +84,16 @@ class VllmBackend(EvalBackend):
         config: EvalConfig,
         *,
         progress: Callable[[int, int], None] | None = None,
+        extras: Sequence[Mapping[str, Any] | None] | None = None,
     ) -> list[list[int]]:
+        if extras and any(extra is not None for extra in extras):
+            raise DynQuantError(
+                "these prompts carry encoder inputs and this engine was handed token ids "
+                "only. vLLM takes multi-modal inputs through its own `multi_modal_data` "
+                "field on the request, not through the processor tensors the transformers "
+                "path uses, so forwarding them is not a matter of renaming a key. Score "
+                "the audio arm through `--backend transformers`."
+            )
         if not prompt_ids:
             return []
 

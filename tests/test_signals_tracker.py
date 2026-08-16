@@ -491,6 +491,78 @@ def test_keys_are_canonical_through_a_peft_style_wrapper() -> None:
     assert stats.layers["model.layers.0.self_attn.q_proj"].grad_norm_count == 2
 
 
+def test_param_count_is_the_module_not_its_packed_storage() -> None:
+    """A 4-bit QLoRA base packs two values per byte, and stores the result flat.
+
+    ``bitsandbytes.nn.Linear4bit`` keeps its weight as ``(out * in / 2, 1)`` uint8,
+    so ``weight.numel()`` is exactly half the parameters -- and because a flat
+    ``(N, 1)`` tensor still has ``ndim == 2``, nothing upstream of this rejects it.
+    Measured on Qwen3-Omni-30B-A3B: 503 of 654 tracked modules reported half and 151
+    reported correctly, splitting cleanly along "did bnb replace this module".
+
+    The bias that produces is the reason this is a bug guard and not a rounding
+    note. The halved modules are attention and the dense MLPs; the intact ones are
+    the embedding, the LM head, the routers and the expert banks, so a consumer
+    sizing modules from this field sees attention at half price against experts at
+    full price. ``dynquant._legacy.allocator`` allocates from ``param_counts`` and
+    is the natural place for that to happen; it is fed shape-derived counts today,
+    which is why this guards the field at its source rather than at that caller.
+
+    The stub is deliberately not ``bitsandbytes``: the mechanism is "storage shape
+    is not the module's shape", and a stub states that without making the test
+    depend on a CUDA-only package to run.
+    """
+
+    class FakePacked4bit(nn.Module):
+        """Shaped like ``Linear4bit``: declared features, flat half-size storage."""
+
+        def __init__(self, base: nn.Linear) -> None:
+            super().__init__()
+            self.in_features = base.in_features
+            self.out_features = base.out_features
+            self.weight = nn.Parameter(
+                torch.zeros(base.in_features * base.out_features // 2, 1), requires_grad=False
+            )
+            # What the forward actually computes. Held apart from `weight` because
+            # that is the situation: the dequantized values the matmul uses are not
+            # the tensor the module stores.
+            self._dense = nn.Parameter(base.weight.detach().clone())
+
+        def forward(self, x: Tensor) -> Tensor:
+            return torch.nn.functional.linear(x, self._dense)
+
+    torch.manual_seed(0)
+    model = TinyVlm()
+    packed = model.model.layers[0].self_attn.q_proj
+    assert isinstance(packed, nn.Linear)
+    features = (packed.out_features, packed.in_features)
+    model.model.layers[0].self_attn.q_proj = FakePacked4bit(packed)  # type: ignore[assignment]
+
+    tracker = SignalTracker(model, TrackerConfig()).attach()
+    _train_steps(tracker, model, steps=2)
+    stats = tracker.snapshot()
+    tracker.detach()
+
+    entry = stats.layers["model.layers.0.self_attn.q_proj"]
+    stored = features[0] * features[1] // 2
+    assert entry.param_count == features[0] * features[1], (
+        f"reported {entry.param_count} for a {features[0]}x{features[1]} projection; "
+        f"{stored} would be the packed storage rather than the weight"
+    )
+    # The defect is silent, and this is why: every other field looks healthy. A
+    # reader checking that the module was measured would find nothing wrong.
+    assert entry.grad_norm_count == 2
+    assert entry.forward_calls > 0
+
+    # Controls, so the fix is "prefer the declaration" and not "double everything":
+    # an unpacked Linear is unchanged, and a module that declares no features -- an
+    # embedding, a batched expert bank -- still reports its stored tensor.
+    untouched = stats.layers["model.layers.1.self_attn.q_proj"]
+    assert untouched.param_count == features[0] * features[1]
+    embedding = stats.layers["model.embed_tokens"]
+    assert embedding.param_count == model.model.embed_tokens.weight.numel()
+
+
 def test_unexercised_modules_are_recorded_as_such_not_as_unimportant() -> None:
     """The vision-tower failure. Absence of evidence is not evidence of absence.
 

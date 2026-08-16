@@ -1,0 +1,101 @@
+# Packed SLURP evals, run 2026-08-16 on vast.ai 47855285, through the fixed loader.
+# The two prior arms scored 0.0% because nothing on the eval path called
+# register_hf_quantizer; the count at the bottom is the proof that is fixed.
+
+=== packed-4bit @ 2026-08-16T18:21:04+00:00 ===
+  [slurp] 200/500
+  [slurp] 400/500
+  [slurp] 500/500
+  "dynquant_core": "0.4.0",
+  "label": "slurp:omni-packed4",
+  "model": "/workspace/runs/omni-slurp/packed-4bit",
+  "task": "slurp",
+  "backend": "transformers",
+  "split": "test",
+  "shots": 4,
+  "shot_seed": 0,
+  "limit": 500,
+  "accuracy": 0.862,
+  "correct": 431,
+  "total": 500,
+  "unparseable": 0,
+  "detail": {
+    "scenario_accuracy": 0.904,
+    "action_accuracy": 0.878,
+    "n_intents": 60,
+    "intents_sha": "d04b663b407e9f5b5be80c9d11160c391c7b68f516c9da957aaca026138fc86d"
+  },
+  "chance": 0.016666666666666666,
+  "seconds": 497.2,
+  "decode": {
+    "max_new_tokens": 8,
+  "comparison": {
+    "label_a": "slurp:omni-packed4",
+    "label_b": "slurp:omni-dq4",
+    "accuracy_a": 0.862,
+    "accuracy_b": 0.862,
+    "delta_points": 0.0,
+    "standard_error_points": 0.0,
+    "ci_low_points": 0.0,
+    "ci_high_points": 0.0,
+    "both_right": 431,
+    "a_only": 0,
+    "b_only": 0,
+    "both_wrong": 69,
+    "discordant": 0,
+    "p_value": 1.0,
+    "separated": false
+  }
+}
+=== packed-4bit exit 0 @ 2026-08-16T18:29:41+00:00 ===
+=== packed-3bit @ 2026-08-16T18:29:41+00:00 ===
+  [slurp] 200/500
+  [slurp] 400/500
+  [slurp] 500/500
+  "dynquant_core": "0.4.0",
+  "label": "slurp:omni-packed3",
+  "model": "/workspace/runs/omni-slurp/packed-3bit",
+  "task": "slurp",
+  "backend": "transformers",
+  "split": "test",
+  "shots": 4,
+  "shot_seed": 0,
+  "limit": 500,
+  "accuracy": 0.25,
+  "correct": 125,
+  "total": 500,
+  "unparseable": 3,
+  "detail": {
+    "scenario_accuracy": 0.402,
+    "action_accuracy": 0.372,
+    "n_intents": 60,
+    "intents_sha": "d04b663b407e9f5b5be80c9d11160c391c7b68f516c9da957aaca026138fc86d"
+  },
+  "chance": 0.016666666666666666,
+  "seconds": 732.5,
+  "decode": {
+    "max_new_tokens": 8,
+  "comparison": {
+    "label_a": "slurp:omni-packed3",
+    "label_b": "slurp:omni-dq3",
+    "accuracy_a": 0.25,
+    "accuracy_b": 0.25,
+    "delta_points": 0.0,
+    "standard_error_points": 0.0,
+    "ci_low_points": 0.0,
+    "ci_high_points": 0.0,
+    "both_right": 125,
+    "a_only": 0,
+    "b_only": 0,
+    "both_wrong": 375,
+    "discordant": 0,
+    "p_value": 1.0,
+    "separated": false
+  }
+}
+=== packed-3bit exit 0 @ 2026-08-16T18:42:12+00:00 ===
+ALL DONE
+
+# "Unknown quantization type" warnings, this run vs the random-init run:
+packed_eval2.log:           0
+packed_eval_randominit.log: 2

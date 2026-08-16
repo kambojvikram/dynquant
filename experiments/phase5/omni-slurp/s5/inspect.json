@@ -1,0 +1,3302 @@
+{
+  "dynquant_core": "0.4.0",
+  "model": "/workspace/runs/omni-slurp/merged",
+  "stats": "/workspace/runs/omni-slurp/stats/dynquant_stats.json",
+  "allocator": "rank_product",
+  "group_size": 128,
+  "model_type": "qwen3_omni_moe_thinker",
+  "modules": {
+    "quantizable": 650,
+    "unquantized": 4,
+    "skipped": 753,
+    "unclassified": [
+      "audio_tower.conv2d1",
+      "audio_tower.conv2d2",
+      "audio_tower.conv2d3",
+      "audio_tower.conv_out",
+      "audio_tower.proj1",
+      "audio_tower.proj2",
+      "visual.blocks.0.attn.proj",
+      "visual.blocks.0.attn.qkv",
+      "visual.blocks.1.attn.proj",
+      "visual.blocks.1.attn.qkv",
+      "visual.blocks.10.attn.proj",
+      "visual.blocks.10.attn.qkv",
+      "visual.blocks.11.attn.proj",
+      "visual.blocks.11.attn.qkv",
+      "visual.blocks.12.attn.proj",
+      "visual.blocks.12.attn.qkv",
+      "visual.blocks.13.attn.proj",
+      "visual.blocks.13.attn.qkv",
+      "visual.blocks.14.attn.proj",
+      "visual.blocks.14.attn.qkv",
+      "visual.blocks.15.attn.proj",
+      "visual.blocks.15.attn.qkv",
+      "visual.blocks.16.attn.proj",
+      "visual.blocks.16.attn.qkv",
+      "visual.blocks.17.attn.proj",
+      "visual.blocks.17.attn.qkv",
+      "visual.blocks.18.attn.proj",
+      "visual.blocks.18.attn.qkv",
+      "visual.blocks.19.attn.proj",
+      "visual.blocks.19.attn.qkv",
+      "visual.blocks.2.attn.proj",
+      "visual.blocks.2.attn.qkv",
+      "visual.blocks.20.attn.proj",
+      "visual.blocks.20.attn.qkv",
+      "visual.blocks.21.attn.proj",
+      "visual.blocks.21.attn.qkv",
+      "visual.blocks.22.attn.proj",
+      "visual.blocks.22.attn.qkv",
+      "visual.blocks.23.attn.proj",
+      "visual.blocks.23.attn.qkv",
+      "visual.blocks.24.attn.proj",
+      "visual.blocks.24.attn.qkv",
+      "visual.blocks.25.attn.proj",
+      "visual.blocks.25.attn.qkv",
+      "visual.blocks.26.attn.proj",
+      "visual.blocks.26.attn.qkv",
+      "visual.blocks.3.attn.proj",
+      "visual.blocks.3.attn.qkv",
+      "visual.blocks.4.attn.proj",
+      "visual.blocks.4.attn.qkv",
+      "visual.blocks.5.attn.proj",
+      "visual.blocks.5.attn.qkv",
+      "visual.blocks.6.attn.proj",
+      "visual.blocks.6.attn.qkv",
+      "visual.blocks.7.attn.proj",
+      "visual.blocks.7.attn.qkv",
+      "visual.blocks.8.attn.proj",
+      "visual.blocks.8.attn.qkv",
+      "visual.blocks.9.attn.proj",
+      "visual.blocks.9.attn.qkv",
+      "visual.merger.mlp.0",
+      "visual.merger.mlp.2",
+      "visual.merger_list.0.mlp.0",
+      "visual.merger_list.0.mlp.2",
+      "visual.merger_list.1.mlp.0",
+      "visual.merger_list.1.mlp.2",
+      "visual.merger_list.2.mlp.0",
+      "visual.merger_list.2.mlp.2",
+      "visual.patch_embed.proj",
+      "visual.pos_embed"
+    ]
+  },
+  "params": {
+    "total": 31719205488,
+    "unique": 31712079872,
+    "unquantized": 5920992,
+    "skipped": 1204624
+  },
+  "scores": {
+    "missing_stats": [],
+    "unexercised": [
+      "audio_tower.conv_out",
+      "model.embed_tokens",
+      "visual.blocks.0.attn.proj",
+      "visual.blocks.0.attn.qkv",
+      "visual.blocks.0.mlp.linear_fc1",
+      "visual.blocks.0.mlp.linear_fc2",
+      "visual.blocks.1.attn.proj",
+      "visual.blocks.1.attn.qkv",
+      "visual.blocks.1.mlp.linear_fc1",
+      "visual.blocks.1.mlp.linear_fc2",
+      "visual.blocks.10.attn.proj",
+      "visual.blocks.10.attn.qkv",
+      "visual.blocks.10.mlp.linear_fc1",
+      "visual.blocks.10.mlp.linear_fc2",
+      "visual.blocks.11.attn.proj",
+      "visual.blocks.11.attn.qkv",
+      "visual.blocks.11.mlp.linear_fc1",
+      "visual.blocks.11.mlp.linear_fc2",
+      "visual.blocks.12.attn.proj",
+      "visual.blocks.12.attn.qkv",
+      "visual.blocks.12.mlp.linear_fc1",
+      "visual.blocks.12.mlp.linear_fc2",
+      "visual.blocks.13.attn.proj",
+      "visual.blocks.13.attn.qkv",
+      "visual.blocks.13.mlp.linear_fc1",
+      "visual.blocks.13.mlp.linear_fc2",
+      "visual.blocks.14.attn.proj",
+      "visual.blocks.14.attn.qkv",
+      "visual.blocks.14.mlp.linear_fc1",
+      "visual.blocks.14.mlp.linear_fc2",
+      "visual.blocks.15.attn.proj",
+      "visual.blocks.15.attn.qkv",
+      "visual.blocks.15.mlp.linear_fc1",
+      "visual.blocks.15.mlp.linear_fc2",
+      "visual.blocks.16.attn.proj",
+      "visual.blocks.16.attn.qkv",
+      "visual.blocks.16.mlp.linear_fc1",
+      "visual.blocks.16.mlp.linear_fc2",
+      "visual.blocks.17.attn.proj",
+      "visual.blocks.17.attn.qkv",
+      "visual.blocks.17.mlp.linear_fc1",
+      "visual.blocks.17.mlp.linear_fc2",
+      "visual.blocks.18.attn.proj",
+      "visual.blocks.18.attn.qkv",
+      "visual.blocks.18.mlp.linear_fc1",
+      "visual.blocks.18.mlp.linear_fc2",
+      "visual.blocks.19.attn.proj",
+      "visual.blocks.19.attn.qkv",
+      "visual.blocks.19.mlp.linear_fc1",
+      "visual.blocks.19.mlp.linear_fc2",
+      "visual.blocks.2.attn.proj",
+      "visual.blocks.2.attn.qkv",
+      "visual.blocks.2.mlp.linear_fc1",
+      "visual.blocks.2.mlp.linear_fc2",
+      "visual.blocks.20.attn.proj",
+      "visual.blocks.20.attn.qkv",
+      "visual.blocks.20.mlp.linear_fc1",
+      "visual.blocks.20.mlp.linear_fc2",
+      "visual.blocks.21.attn.proj",
+      "visual.blocks.21.attn.qkv",
+      "visual.blocks.21.mlp.linear_fc1",
+      "visual.blocks.21.mlp.linear_fc2",
+      "visual.blocks.22.attn.proj",
+      "visual.blocks.22.attn.qkv",
+      "visual.blocks.22.mlp.linear_fc1",
+      "visual.blocks.22.mlp.linear_fc2",
+      "visual.blocks.23.attn.proj",
+      "visual.blocks.23.attn.qkv",
+      "visual.blocks.23.mlp.linear_fc1",
+      "visual.blocks.23.mlp.linear_fc2",
+      "visual.blocks.24.attn.proj",
+      "visual.blocks.24.attn.qkv",
+      "visual.blocks.24.mlp.linear_fc1",
+      "visual.blocks.24.mlp.linear_fc2",
+      "visual.blocks.25.attn.proj",
+      "visual.blocks.25.attn.qkv",
+      "visual.blocks.25.mlp.linear_fc1",
+      "visual.blocks.25.mlp.linear_fc2",
+      "visual.blocks.26.attn.proj",
+      "visual.blocks.26.attn.qkv",
+      "visual.blocks.26.mlp.linear_fc1",
+      "visual.blocks.26.mlp.linear_fc2",
+      "visual.blocks.3.attn.proj",
+      "visual.blocks.3.attn.qkv",
+      "visual.blocks.3.mlp.linear_fc1",
+      "visual.blocks.3.mlp.linear_fc2",
+      "visual.blocks.4.attn.proj",
+      "visual.blocks.4.attn.qkv",
+      "visual.blocks.4.mlp.linear_fc1",
+      "visual.blocks.4.mlp.linear_fc2",
+      "visual.blocks.5.attn.proj",
+      "visual.blocks.5.attn.qkv",
+      "visual.blocks.5.mlp.linear_fc1",
+      "visual.blocks.5.mlp.linear_fc2",
+      "visual.blocks.6.attn.proj",
+      "visual.blocks.6.attn.qkv",
+      "visual.blocks.6.mlp.linear_fc1",
+      "visual.blocks.6.mlp.linear_fc2",
+      "visual.blocks.7.attn.proj",
+      "visual.blocks.7.attn.qkv",
+      "visual.blocks.7.mlp.linear_fc1",
+      "visual.blocks.7.mlp.linear_fc2",
+      "visual.blocks.8.attn.proj",
+      "visual.blocks.8.attn.qkv",
+      "visual.blocks.8.mlp.linear_fc1",
+      "visual.blocks.8.mlp.linear_fc2",
+      "visual.blocks.9.attn.proj",
+      "visual.blocks.9.attn.qkv",
+      "visual.blocks.9.mlp.linear_fc1",
+      "visual.blocks.9.mlp.linear_fc2",
+      "visual.merger.mlp.0",
+      "visual.merger.mlp.2",
+      "visual.merger_list.0.mlp.0",
+      "visual.merger_list.0.mlp.2",
+      "visual.merger_list.1.mlp.0",
+      "visual.merger_list.1.mlp.2",
+      "visual.merger_list.2.mlp.0",
+      "visual.merger_list.2.mlp.2",
+      "visual.pos_embed"
+    ],
+    "zero": []
+  },
+  "targets": {
+    "3.00": {
+      "target_label": "3.00 avg bits",
+      "average_bits": 2.9999762208419662,
+      "nbytes": 11894607776,
+      "quantity": "score",
+      "total_params": 31712079872,
+      "unordered": [],
+      "unordered_params": 0,
+      "pricing": {
+        "measured_modules": 0,
+        "proxied_modules": 650,
+        "measured_params": 0,
+        "proxied_params": 31712079872,
+        "proxied_share": 1.0,
+        "scale": 1.0
+      },
+      "widths": {
+        "2": {
+          "modules": 125,
+          "measured": 125,
+          "params": 13596426240,
+          "score_min": 0.00625,
+          "score_median": 0.13125,
+          "score_max": 0.9895833333333334
+        },
+        "3": {
+          "modules": 368,
+          "measured": 368,
+          "params": 12595818496,
+          "score_min": 0.18125,
+          "score_median": 0.5,
+          "score_max": 0.890625
+        },
+        "4": {
+          "modules": 109,
+          "measured": 109,
+          "params": 5507252224,
+          "score_min": 0.73125,
+          "score_median": 0.86875,
+          "score_max": 0.99375
+        },
+        "8": {
+          "modules": 48,
+          "measured": 48,
+          "params": 12582912,
+          "score_min": 0.010416666666666666,
+          "score_median": 0.5104166666666666,
+          "score_max": 0.9895833333333334
+        }
+      },
+      "concordance": {
+        "agree": 8791,
+        "total": 8791,
+        "value": 1.0,
+        "per_role": {
+          "other": {
+            "agree": 65,
+            "total": 65
+          },
+          "mlp.up": {
+            "agree": 225,
+            "total": 225
+          },
+          "mlp.down": {
+            "agree": 244,
+            "total": 244
+          },
+          "attn.k": {
+            "agree": 1892,
+            "total": 1892
+          },
+          "attn.o": {
+            "agree": 1892,
+            "total": 1892
+          },
+          "attn.q": {
+            "agree": 1892,
+            "total": 1892
+          },
+          "attn.v": {
+            "agree": 1892,
+            "total": 1892
+          },
+          "moe.expert.gate_up": {
+            "agree": 689,
+            "total": 689
+          }
+        }
+      },
+      "violations": [
+        {
+          "name": "audio_tower.conv_out",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 9830400
+        },
+        {
+          "name": "audio_tower.layers.0.fc1",
+          "role": "mlp.up",
+          "floor_bits": 3,
+          "assigned_bits": 2,
+          "num_params": 6553600
+        },
+        {
+          "name": "audio_tower.layers.0.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.0.self_attn.out_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.0.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.0.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.1.fc1",
+          "role": "mlp.up",
+          "floor_bits": 3,
+          "assigned_bits": 2,
+          "num_params": 6553600
+        },
+        {
+          "name": "audio_tower.layers.1.fc2",
+          "role": "mlp.down",
+          "floor_bits": 3,
+          "assigned_bits": 2,
+          "num_params": 6553600
+        },
+        {
+          "name": "audio_tower.layers.1.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.1.self_attn.out_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.1.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.1.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.10.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.10.self_attn.out_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.10.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.10.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.11.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.11.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.12.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.12.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.13.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.13.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.14.fc2",
+          "role": "mlp.down",
+          "floor_bits": 3,
+          "assigned_bits": 2,
+          "num_params": 6553600
+        },
+        {
+          "name": "audio_tower.layers.14.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.14.self_attn.out_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.14.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.14.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.15.fc2",
+          "role": "mlp.down",
+          "floor_bits": 3,
+          "assigned_bits": 2,
+          "num_params": 6553600
+        },
+        {
+          "name": "audio_tower.layers.15.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.15.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.16.fc1",
+          "role": "mlp.up",
+          "floor_bits": 3,
+          "assigned_bits": 2,
+          "num_params": 6553600
+        },
+        {
+          "name": "audio_tower.layers.16.fc2",
+          "role": "mlp.down",
+          "floor_bits": 3,
+          "assigned_bits": 2,
+          "num_params": 6553600
+        },
+        {
+          "name": "audio_tower.layers.16.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.16.self_attn.out_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.16.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.17.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.17.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.18.fc1",
+          "role": "mlp.up",
+          "floor_bits": 3,
+          "assigned_bits": 2,
+          "num_params": 6553600
+        },
+        {
+          "name": "audio_tower.layers.18.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.18.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.19.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.19.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.2.fc1",
+          "role": "mlp.up",
+          "floor_bits": 3,
+          "assigned_bits": 2,
+          "num_params": 6553600
+        },
+        {
+          "name": "audio_tower.layers.2.fc2",
+          "role": "mlp.down",
+          "floor_bits": 3,
+          "assigned_bits": 2,
+          "num_params": 6553600
+        },
+        {
+          "name": "audio_tower.layers.2.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.2.self_attn.out_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.2.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.2.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.20.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.20.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.21.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.21.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.22.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.22.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.3.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.3.self_attn.out_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.3.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.3.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.30.fc2",
+          "role": "mlp.down",
+          "floor_bits": 3,
+          "assigned_bits": 2,
+          "num_params": 6553600
+        },
+        {
+          "name": "audio_tower.layers.31.fc1",
+          "role": "mlp.up",
+          "floor_bits": 3,
+          "assigned_bits": 2,
+          "num_params": 6553600
+        },
+        {
+          "name": "audio_tower.layers.4.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.4.self_attn.out_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.4.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.4.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.5.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.5.self_attn.out_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.5.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.5.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.6.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.6.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.6.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.7.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.7.self_attn.out_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.7.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.7.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.8.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.8.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.9.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.layers.9.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "audio_tower.proj1",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1638400
+        },
+        {
+          "name": "lm_head",
+          "role": "lm_head",
+          "floor_bits": 8,
+          "assigned_bits": 3,
+          "num_params": 311427072
+        },
+        {
+          "name": "model.embed_tokens",
+          "role": "embedding",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 311427072
+        },
+        {
+          "name": "model.layers.0.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.0.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.0.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.0.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.1.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.1.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.1.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.1.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.10.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.10.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.10.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.10.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.11.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.11.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.11.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.11.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.12.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.12.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.12.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.12.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.13.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.13.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.13.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.13.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.13.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.14.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.14.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.14.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.15.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.15.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.15.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.15.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.15.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.16.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.16.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.16.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.16.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.16.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.17.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.17.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.17.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.17.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.18.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.18.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.18.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.19.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.19.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.19.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.19.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.19.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.2.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.2.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.2.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.2.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.2.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.20.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.20.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.20.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.20.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.21.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.21.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.21.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.21.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.22.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.22.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.22.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.23.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.23.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.23.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.24.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.24.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.24.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.24.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.24.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.25.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.25.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.25.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.25.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.26.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.26.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.26.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.26.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.26.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.27.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.27.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.27.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.27.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.27.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.28.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.28.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.28.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.28.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.28.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.29.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.29.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.29.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.3.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.3.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.3.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.3.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.30.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.30.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.30.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.30.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.31.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.31.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.31.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.31.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.32.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.32.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.32.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.33.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.33.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.33.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.34.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.34.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.34.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.35.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.35.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.35.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.35.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.36.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.36.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.36.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.36.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.37.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.37.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.37.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.37.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.37.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.38.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.38.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.38.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.38.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.38.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.39.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.39.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.39.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.39.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.39.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.4.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.4.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.4.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.4.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.40.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.40.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.40.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.40.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.40.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.41.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.41.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.41.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.41.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.42.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.42.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.42.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.42.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.43.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.43.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.43.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.43.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.44.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.44.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.44.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.44.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.45.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.45.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.45.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.45.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.45.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.46.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.46.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.46.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.46.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.47.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.47.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.47.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.47.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.5.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.5.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.5.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.5.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.6.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.6.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.6.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.6.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.7.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.7.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.7.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.7.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.7.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.8.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 2,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.8.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.8.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.8.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.8.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.9.mlp.experts.gate_up_proj",
+          "role": "moe.expert.gate_up",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 402653184
+        },
+        {
+          "name": "model.layers.9.self_attn.k_proj",
+          "role": "attn.k",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "model.layers.9.self_attn.o_proj",
+          "role": "attn.o",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.9.self_attn.q_proj",
+          "role": "attn.q",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 8388608
+        },
+        {
+          "name": "model.layers.9.self_attn.v_proj",
+          "role": "attn.v",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1048576
+        },
+        {
+          "name": "visual.blocks.0.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.0.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.0.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.0.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.1.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.1.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.1.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.1.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.10.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.10.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.10.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.10.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.11.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.11.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.11.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.11.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.12.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.12.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.12.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.12.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.13.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.13.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.13.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.13.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.14.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.14.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.14.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.14.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.15.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.15.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.15.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.15.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.16.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.16.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.16.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.16.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.17.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.17.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.17.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.17.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.18.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.18.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.18.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.18.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.19.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.19.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.19.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.19.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.2.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.2.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.2.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.2.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.20.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.20.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.20.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.20.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.21.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.21.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.21.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.21.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.22.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.22.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.22.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.22.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.23.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.23.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.23.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.23.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.24.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.24.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.24.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.24.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.25.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.25.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.25.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.25.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.26.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.26.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.26.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.26.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.3.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.3.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.3.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.3.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.4.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.4.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.4.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.4.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.5.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.5.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.5.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.5.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.6.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.6.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.6.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.6.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.7.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.7.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.7.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.7.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.8.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.8.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.8.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.8.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.9.attn.proj",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 1327104
+        },
+        {
+          "name": "visual.blocks.9.attn.qkv",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 3981312
+        },
+        {
+          "name": "visual.blocks.9.mlp.linear_fc1",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.blocks.9.mlp.linear_fc2",
+          "role": "vision.mlp",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 4958208
+        },
+        {
+          "name": "visual.merger.mlp.0",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 21233664
+        },
+        {
+          "name": "visual.merger.mlp.2",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 9437184
+        },
+        {
+          "name": "visual.merger_list.0.mlp.0",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 21233664
+        },
+        {
+          "name": "visual.merger_list.0.mlp.2",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 9437184
+        },
+        {
+          "name": "visual.merger_list.1.mlp.0",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 21233664
+        },
+        {
+          "name": "visual.merger_list.1.mlp.2",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 9437184
+        },
+        {
+          "name": "visual.merger_list.2.mlp.0",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 21233664
+        },
+        {
+          "name": "visual.merger_list.2.mlp.2",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 9437184
+        },
+        {
+          "name": "visual.pos_embed",
+          "role": "other",
+          "floor_bits": 4,
+          "assigned_bits": 3,
+          "num_params": 2654208
+        }
+      ],
+      "narrowest": [
+        {
+          "name": "audio_tower.layers.0.self_attn.k_proj",
+          "bits": 2,
+          "role": "attn.k",
+          "num_params": 1638400,
+          "score": 0.00625
+        },
+        {
+          "name": "audio_tower.layers.0.self_attn.q_proj",
+          "bits": 2,
+          "role": "attn.q",
+          "num_params": 1638400,
+          "score": 0.00625
+        },
+        {
+          "name": "model.layers.45.self_attn.v_proj",
+          "bits": 2,
+          "role": "attn.v",
+          "num_params": 1048576,
+          "score": 0.00625
+        },
+        {
+          "name": "model.layers.46.self_attn.o_proj",
+          "bits": 2,
+          "role": "attn.o",
+          "num_params": 8388608,
+          "score": 0.00625
+        },
+        {
+          "name": "model.layers.44.mlp.experts.down_proj",
+          "bits": 2,
+          "role": "moe.expert.down",
+          "num_params": 201326592,
+          "score": 0.010416666666666666
+        },
+        {
+          "name": "model.layers.44.mlp.experts.gate_up_proj",
+          "bits": 2,
+          "role": "moe.expert.gate_up",
+          "num_params": 402653184,
+          "score": 0.010416666666666666
+        },
+        {
+          "name": "audio_tower.layers.1.fc1",
+          "bits": 2,
+          "role": "mlp.up",
+          "num_params": 6553600,
+          "score": 0.015625
+        },
+        {
+          "name": "audio_tower.layers.1.fc2",
+          "bits": 2,
+          "role": "mlp.down",
+          "num_params": 6553600,
+          "score": 0.015625
+        }
+      ]
+    },
+    "4.00": {
+      "target_label": "4.00 avg bits",
+      "average_bits": 3.9999453383534256,
+      "nbytes": 15859386016,
+      "quantity": "score",
+      "total_params": 31712079872,
+      "unordered": [],
+      "unordered_params": 0,
+      "pricing": {
+        "measured_modules": 0,
+        "proxied_modules": 650,
+        "measured_params": 0,
+        "proxied_params": 31712079872,
+        "proxied_share": 1.0,
+        "scale": 1.0
+      },
+      "widths": {
+        "2": {
+          "modules": 9,
+          "measured": 9,
+          "params": 1811939328,
+          "score_min": 0.010416666666666666,
+          "score_median": 0.09375,
+          "score_max": 0.17708333333333334
+        },
+        "3": {
+          "modules": 67,
+          "measured": 67,
+          "params": 5697961984,
+          "score_min": 0.015625,
+          "score_median": 0.3854166666666667,
+          "score_max": 0.7395833333333334
+        },
+        "4": {
+          "modules": 524,
+          "measured": 524,
+          "params": 23877120000,
+          "score_min": 0.00625,
+          "score_median": 0.5,
+          "score_max": 0.99375
+        },
+        "8": {
+          "modules": 50,
+          "measured": 50,
+          "params": 325058560,
+          "score_min": 0.010416666666666666,
+          "score_median": 0.5104166666666666,
+          "score_max": 0.9895833333333334
+        }
+      },
+      "concordance": {
+        "agree": 1227,
+        "total": 1234,
+        "value": 0.9943273905996759,
+        "per_role": {
+          "mlp.up": {
+            "agree": 240,
+            "total": 240
+          },
+          "mlp.down": {
+            "agree": 240,
+            "total": 240
+          },
+          "attn.k": {
+            "agree": 72,
+            "total": 79
+          },
+          "moe.expert.down": {
+            "agree": 675,
+            "total": 675
+          }
+        }
+      },
+      "violations": [],
+      "narrowest": [
+        {
+          "name": "model.layers.44.mlp.experts.down_proj",
+          "bits": 2,
+          "role": "moe.expert.down",
+          "num_params": 201326592,
+          "score": 0.010416666666666666
+        },
+        {
+          "name": "model.layers.8.mlp.experts.down_proj",
+          "bits": 2,
+          "role": "moe.expert.down",
+          "num_params": 201326592,
+          "score": 0.03125
+        },
+        {
+          "name": "model.layers.26.mlp.experts.down_proj",
+          "bits": 2,
+          "role": "moe.expert.down",
+          "num_params": 201326592,
+          "score": 0.052083333333333336
+        },
+        {
+          "name": "model.layers.32.mlp.experts.down_proj",
+          "bits": 2,
+          "role": "moe.expert.down",
+          "num_params": 201326592,
+          "score": 0.07291666666666667
+        },
+        {
+          "name": "model.layers.38.mlp.experts.down_proj",
+          "bits": 2,
+          "role": "moe.expert.down",
+          "num_params": 201326592,
+          "score": 0.09375
+        },
+        {
+          "name": "model.layers.20.mlp.experts.down_proj",
+          "bits": 2,
+          "role": "moe.expert.down",
+          "num_params": 201326592,
+          "score": 0.11458333333333333
+        },
+        {
+          "name": "model.layers.14.mlp.experts.down_proj",
+          "bits": 2,
+          "role": "moe.expert.down",
+          "num_params": 201326592,
+          "score": 0.13541666666666666
+        },
+        {
+          "name": "model.layers.27.mlp.experts.down_proj",
+          "bits": 2,
+          "role": "moe.expert.down",
+          "num_params": 201326592,
+          "score": 0.15625
+        }
+      ]
+    }
+  },
+  "saved_map": "/workspace/runs/omni-slurp/maps.json"
+}

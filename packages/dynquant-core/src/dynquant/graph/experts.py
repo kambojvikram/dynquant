@@ -75,10 +75,13 @@ __all__ = [
     "bank_orientation",
     "batched_expert_params",
     "is_expert_container",
+    "owning_configs",
     "reads_hidden",
 ]
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from torch import nn
 
 OUT_IN = "out_in"
@@ -155,6 +158,63 @@ def reads_hidden(param_name: str) -> bool | None:
     if param_name in _WRITES_HIDDEN:
         return False
     return None
+
+
+def owning_configs(modules: Mapping[str, nn.Module], raw_name: str) -> tuple[Any, ...]:
+    """Every config that could describe ``raw_name``'s widths, most specific first.
+
+    A composite model does not have *a* config. ``qwen3_omni_moe`` carries a Thinker
+    and a Talker, each a full MoE with its own hidden size and its own expert width,
+    and the top-level ``Qwen3OmniMoeConfig`` holds neither number -- they live two
+    levels down, in ``thinker_config.text_config`` and ``talker_config.text_config``.
+    Hand the outer config to :func:`bank_orientation` and ``_widths`` returns empty
+    sets, so every bank in the model is refused for want of a dimension that is
+    present in the file the whole time. On this family that is 90.8% of the
+    parameters declined.
+
+    Resolution is *structural*: the answer for a bank is the config of the nearest
+    module that encloses it and owns one. ``thinker.model.layers.0.mlp.experts`` is
+    enclosed by ``thinker.model``, whose config is the Thinker's text config, and
+    that is the authority on the Thinker's widths. Walking outward from the bank
+    rather than inward from the root is what keeps the Talker's numbers away from a
+    Thinker bank: the Talker is not an ancestor of it, so it is never a candidate.
+
+    Two properties make this safe to use as a fallback rather than a guess. Every
+    candidate is an ancestor, so it describes a subtree that *contains* this bank --
+    none of them is some other model's config. And orientation is decided by matching
+    the config's widths against the tensor's actual shape, so a config from the wrong
+    tower does not quietly win: measured on Qwen3-Omni, the Thinker's text config
+    against a Talker bank returns :data:`UNKNOWN`, and the reverse does too. A wrong
+    candidate refuses; it does not mislead.
+
+    Args:
+        modules: ``dict(model.named_modules())``. Taken as a mapping rather than a
+            model because the caller already built it -- rebuilding it per bank is
+            an extra full walk of the module tree for each of 68 banks.
+        raw_name: The bank's un-canonicalised name, as ``named_modules`` gave it.
+
+    Returns:
+        Candidate configs, nearest enclosing module first, then outward to the root.
+        Each config is followed by its ``text_config`` when it has one, since a
+        wrapper config's dimensions usually sit one level in. Deduplicated by
+        identity, so a sub-model that shares its parent's config is offered once.
+        Empty when no ancestor owns a config.
+    """
+    parts = raw_name.split(".") if raw_name else []
+    found: list[Any] = []
+    seen: set[int] = set()
+    for depth in range(len(parts) - 1, -1, -1):
+        ancestor = modules.get(".".join(parts[:depth]))
+        if ancestor is None:
+            continue
+        config = getattr(ancestor, "config", None)
+        if config is None:
+            continue
+        for candidate in (config, getattr(config, "text_config", None)):
+            if candidate is not None and id(candidate) not in seen:
+                seen.add(id(candidate))
+                found.append(candidate)
+    return tuple(found)
 
 
 def bank_orientation(module: nn.Module, config: Any) -> str:

@@ -98,6 +98,16 @@ def _add_loading(parser: argparse.ArgumentParser, *, device: str = "cuda") -> No
         action="store_true",
         help="execute modelling code shipped with the checkpoint",
     )
+    parser.add_argument(
+        "--model-class",
+        metavar="NAME",
+        help=(
+            "transformers class to load with, when the automatic choice is not the "
+            "one you want. The default reads the checkpoint's own config: "
+            "AutoModelForCausalLM whenever it claims the model, otherwise the class "
+            "named in config.architectures"
+        ),
+    )
 
 
 def _add_allocation(parser: argparse.ArgumentParser) -> None:
@@ -490,8 +500,10 @@ def _add_eval(subparsers: _SubParsers) -> None:
             "how --map reaches the weights: `pack` swaps modules onto the packed "
             "runtime, so VRAM is the packed size; `encode` writes the same encoder's "
             "output back in the compute dtype, which holds the same values at fp16 size. "
-            "`encode` is the only one that reaches a batched MoE expert bank "
-            "(default: pack)"
+            "`pack` reaches a batched MoE expert bank, but refuses a module that "
+            "owns a weight while being neither a Linear nor a bank -- an MoE "
+            "router is the usual case, and a map that names one is a map `pack` "
+            "cannot apply whole (default: pack)"
         ),
     )
     parser.add_argument(

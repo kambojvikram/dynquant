@@ -1,0 +1,38 @@
+{
+  "train_pool": 50628,
+  "shots_excluded": 4,
+  "train_used": 8000,
+  "distinct_intents": 59,
+  "menu_size": 60,
+  "rarest_intent": [
+    "music_dislikeness",
+    9
+  ],
+  "shot_answers": [
+    "27",
+    "15",
+    "34",
+    "22"
+  ],
+  "loaded_params": 34021720625,
+  "loaded_modules": 2144,
+  "thinker_params": 30677725808,
+  "thinker_banked": 28991029248,
+  "model": "/workspace/models/qwen3-omni-30b",
+  "task": "slurp",
+  "regime": "qlora",
+  "lora_rank": 16,
+  "estimator": "outer_exact",
+  "bank_shards": 6,
+  "bank_tensors": 96,
+  "measure_expert_banks": true,
+  "world_size": 2,
+  "effective_batch": 16,
+  "steps": 500,
+  "train_loss": 4.031702354431152,
+  "seconds": 4188.1,
+  "tracked_modules": 654,
+  "stats_file": "/workspace/runs/omni-slurp/stats/dynquant_stats.json",
+  "output": "/workspace/runs/omni-slurp/adapter",
+  "commit": "93ac918c080c77a939359cea5c09516b6688e9de"
+}

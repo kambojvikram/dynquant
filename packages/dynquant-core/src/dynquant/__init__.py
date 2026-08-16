@@ -21,14 +21,26 @@ Typical use -- collect during training, allocate and pack afterwards::
 
 then::
 
-    dynquant quantize ./merged --stats stats/dynquant_stats.json --target 3.0 -o ./q3
+    dynquant export ./merged --stats stats/dynquant_stats.json --target 3.0 -o ./q3
 
-and load the result through plain transformers::
+and load the result through plain transformers -- with the quantizer registered::
 
+    import dynquant; dynquant.register_hf_quantizer()
     model = AutoModelForCausalLM.from_pretrained("./q3")   # stays packed in VRAM
 
+That first line is not boilerplate. transformers answers a ``quant_method`` it
+cannot resolve with a ``logger.warning`` and ``pre_quantized = False``, so the
+packed tensors match no parameter the model has and ``from_pretrained`` returns a
+**randomly initialised model without raising**.
+
+``dynquant quantize`` is the other writer and a different artifact: it holds the
+quantized *values* in the compute dtype, so it loads with no DynQuant installed
+and measures the quantized model's accuracy at fp16 footprint. ``export`` is the
+one whose VRAM is the packed size.
+
 Attribute access is lazy: ``import dynquant`` does not import torch-heavy or
-transformers-dependent submodules until you actually touch them.
+transformers-dependent submodules until you actually touch them, which is why
+registration is a call rather than an import side effect.
 """
 
 from __future__ import annotations

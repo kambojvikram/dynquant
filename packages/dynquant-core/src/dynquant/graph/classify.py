@@ -44,7 +44,14 @@ from dynquant._logging import get_logger
 from dynquant.constants import BIT_OPTIONS, DEFAULT_GROUP_SIZE
 from dynquant.quant.pack import stored_bits
 
-from .experts import IN_OUT, OUT_IN, bank_orientation, batched_expert_params
+from .experts import (
+    IN_OUT,
+    OUT_IN,
+    UNKNOWN,
+    bank_orientation,
+    batched_expert_params,
+    owning_configs,
+)
 from .naming import canonical_name
 from .registry import ModuleContext, plugin_for
 from .roles import (
@@ -408,7 +415,9 @@ def classify_model(
             # A batched MoE expert bank owns its experts as 3-D parameters and has no
             # `.weight`, so it lands here beside the genuine containers. Skipping it
             # is how ~91% of a 128-expert model used to become invisible.
-            found, refused = _expert_bank(raw_name, module, inner, overrides)
+            found, refused = _expert_bank(
+                raw_name, module, _bank_config(module, by_raw_name, raw_name, inner), overrides
+            )
             modules.update(found)
             _record_skipped(refused, into=skipped, seen=seen_skipped)
             claimed.update(id(param) for _, param in batched_expert_params(module))
@@ -552,6 +561,37 @@ def _structural_role(ctx: ModuleContext) -> ModuleRole | None:
         return ModuleRole.EMBEDDING
 
     return None
+
+
+def _bank_config(
+    module: nn.Module,
+    modules: Mapping[str, nn.Module],
+    raw_name: str,
+    default: Any,
+) -> Any:
+    """The config whose widths describe this bank; ``default`` whenever it already works.
+
+    ``default`` is tried first and kept the moment it decides, so every model that
+    classifies today classifies through exactly the same config it does today. The
+    search below can only run for a bank that is currently being *refused* -- it
+    turns a refusal into an answer or leaves the refusal standing, and has no reach
+    into any bank that already resolves.
+
+    That ordering is the whole safety argument, and it is deliberate rather than
+    incidental. A composite model like ``qwen3_omni_moe`` keeps each tower's widths
+    in its own sub-config, and :func:`owning_configs` walks outward from the bank to
+    find them; but a candidate that disagrees with the tensor's shape returns
+    :data:`UNKNOWN` rather than a plausible wrong axis, so the fallback cannot
+    convert a correct refusal into a confident error.
+    """
+    if not batched_expert_params(module):
+        return default
+    if bank_orientation(module, default) != UNKNOWN:
+        return default
+    for candidate in owning_configs(modules, raw_name):
+        if bank_orientation(module, candidate) != UNKNOWN:
+            return candidate
+    return default
 
 
 def _expert_bank(

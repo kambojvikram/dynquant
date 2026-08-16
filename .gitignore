@@ -154,6 +154,14 @@ logs/
 out/
 !tests/**/*.safetensors
 
+# Where artifacts get staged on the way off a rented box. `/workspace` is not a
+# persistent volume, so anything a run produces is copied here first and sorted
+# afterwards -- adapters, merged configs, whole tarballs. It is a staging area and
+# never a record: what belongs in the repo gets moved into `experiments/` on
+# purpose, and what does not should not arrive by way of an untracked directory
+# nobody looked inside before committing.
+_offbox_artifacts/
+
 # Autotuner cache, if a run is pointed at the repo instead of the user cache dir
 .dynquant_cache/
 autotune.json

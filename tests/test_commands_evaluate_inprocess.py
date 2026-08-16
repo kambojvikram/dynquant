@@ -51,30 +51,31 @@ class _Result:
         return {"stub": True}
 
 
-class _Spec:
+class _Spec(evaluate._TaskSpec):
     """A task spec that loads nothing and records what it was handed to score.
 
     Substituted for a real entry in ``TASKS`` rather than driving a real task, because what
     is under test is which *model object* reaches ``evaluate`` -- and a real task would add a
     dataset download and a generation loop between the assertion and the thing it asserts.
+
+    A subclass and not a stand-alone stub with the same attribute names. The two are
+    interchangeable right up to the day a field is added to `_TaskSpec`: the copy keeps
+    passing every test that does not touch the new field and fails the command with an
+    `AttributeError` from a line no test in this file is about. Inheriting means a new
+    capability arrives here with the default the real class gives it, and a field that is
+    *renamed* breaks the constructor call below rather than the command.
     """
 
-    key = "stub"
-    chance = 0.0
-    max_new_tokens = 8
-    max_prompt_tokens = 32
-    batch_size = 1
-    split = "test"
-    shot_split = None
-    add_special_tokens = True
-    takes_shots = False
-    takes_style = False
-    takes_sources = False
-    unverifiable = False
-    executes_code = False
-    detail = False
-
     def __init__(self) -> None:
+        super().__init__(
+            "stub",
+            shots=0,
+            chance=0.0,
+            max_new_tokens=8,
+            max_prompt_tokens=32,
+            batch_size=1,
+            shot_split=None,
+        )
         self.scored: Any = None
 
     def load(self, split: str | None) -> list[Any]:

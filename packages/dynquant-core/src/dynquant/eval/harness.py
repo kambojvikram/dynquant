@@ -54,10 +54,11 @@ import torch
 from dynquant._logging import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
 __all__ = [
     "NEUTRAL_DECODE",
+    "AudioPrompt",
     "EncodedPrompts",
     "EvalBackend",
     "EvalConfig",
@@ -74,12 +75,43 @@ __all__ = [
 
 _log = get_logger(__name__)
 
-Prompt: TypeAlias = "str | list[int]"
-"""What a task may hand the harness: text to tokenize, or tokens already.
+
+@dataclass(frozen=True, slots=True)
+class AudioPrompt:
+    """Prompt ids whose meaning depends on tensors travelling beside them.
+
+    An audio model's processor does not turn a conversation into ids and then take
+    audio separately. It emits both together: the ids contain a run of placeholder
+    tokens standing in for the waveform, and the encoder fills those positions from
+    ``features``. The two are a single object with two halves, and every operation
+    the harness performs on ids -- padding, batching, sorting -- has to keep the
+    halves together or the model attends to audio belonging to a different example.
+
+    So the halves are carried in one value rather than in two parallel sequences a
+    caller could zip up wrong.
+
+    ``features`` is whatever the processor returned for *this one* example, batch
+    axis included (shape ``[1, ...]``), and it is handed to ``generate`` unread.
+    Naming the keys here would mean this module knowing which model it is serving,
+    which is the one thing :class:`EvalBackend` exists to keep out of the harness.
+    """
+
+    ids: tuple[int, ...]
+    features: Mapping[str, Any]
+
+    def __len__(self) -> int:
+        return len(self.ids)
+
+
+Prompt: TypeAlias = "str | list[int] | AudioPrompt"
+"""What a task may hand the harness: text to tokenize, tokens already, or tokens
+that only mean something alongside audio.
 
 Few-shot prompts are text -- they are text in the dataset and text is what the model
 was trained on. A *chat* prompt is ids, because the framing is made of control tokens
-and :func:`render_chat` is the only thing entitled to emit them."""
+and :func:`render_chat` is the only thing entitled to emit them. An
+:class:`AudioPrompt` is ids too, for the same reason and one more: the processor that
+emitted them also emitted the encoder inputs those ids refer to."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +166,15 @@ class EncodedPrompts(NamedTuple):
     truncated: int
     """How many prompts lost tokens off the front."""
 
+    extras: tuple[Mapping[str, Any] | None, ...] = ()
+    """Per-prompt encoder inputs, aligned to :attr:`ids`, or empty when no prompt
+    carried any.
+
+    Defaulted so every existing construction of this tuple keeps its meaning, and
+    empty rather than a tuple of ``None`` so that "nothing in this batch had audio"
+    is one falsy check rather than a scan.
+    """
+
 
 def encode_prompts(tokenizer: Any, prompts: Sequence[Prompt], config: EvalConfig) -> EncodedPrompts:
     """Tokenize, count the overlong ones, and cut them at the front.
@@ -148,6 +189,14 @@ def encode_prompts(tokenizer: Any, prompts: Sequence[Prompt], config: EvalConfig
     A prompt that arrives as ids is passed through and truncated identically. Only
     :func:`render_chat` produces those, and it produces them precisely so that the
     control tokens framing the turn never have to survive a trip through text.
+
+    An :class:`AudioPrompt` is the one kind that is *refused* rather than cut. Its
+    ids contain a run of placeholder positions the encoder fills from the tensors
+    beside them, and the count has to match exactly; slicing the front removes some
+    of those positions while the tensors stay whole, so the model reads the audio
+    offset against the text. That failure raises nothing and has no signature in the
+    output -- it scores low and looks like a weak model -- so an overlong audio
+    prompt raises here instead, naming the two numbers the caller has to reconcile.
     """
     if not prompts:
         return EncodedPrompts(ids=[], truncated=0)
@@ -164,10 +213,29 @@ def encode_prompts(tokenizer: Any, prompts: Sequence[Prompt], config: EvalConfig
         )["input_ids"]
         for index, row in zip(text_at, encoded, strict=True):
             rows[index] = [int(token) for token in row]
+    extras: list[Mapping[str, Any] | None] = [None] * len(prompts)
     for index, prompt in enumerate(prompts):
-        if not isinstance(prompt, str):
+        if isinstance(prompt, AudioPrompt):
+            rows[index] = [int(token) for token in prompt.ids]
+            extras[index] = prompt.features
+        elif not isinstance(prompt, str):
             rows[index] = [int(token) for token in prompt]
     limit = config.max_prompt_tokens
+    overlong = [
+        index
+        for index, extra in enumerate(extras)
+        if extra is not None and len(rows[index]) > limit
+    ]
+    if overlong:
+        longest = max(len(rows[index]) for index in overlong)
+        raise ValueError(
+            f"{len(overlong)}/{len(prompts)} audio prompts are longer than "
+            f"max_prompt_tokens={limit} (longest {longest}). An audio prompt cannot be cut "
+            f"at the front: its ids reserve one position per encoder frame, and dropping "
+            f"some of those while the encoder inputs stay whole offsets the audio against "
+            f"the text without raising. Raise max_prompt_tokens above {longest}, or shorten "
+            f"the prompt -- fewer shots, or shorter clips."
+        )
     truncated = sum(len(row) > limit for row in rows)
     if truncated:
         _log.warning(
@@ -178,7 +246,11 @@ def encode_prompts(tokenizer: Any, prompts: Sequence[Prompt], config: EvalConfig
             len(prompts),
             limit,
         )
-    return EncodedPrompts(ids=[row[-limit:] for row in rows], truncated=truncated)
+    return EncodedPrompts(
+        ids=[row[-limit:] for row in rows],
+        truncated=truncated,
+        extras=tuple(extras) if any(extra is not None for extra in extras) else (),
+    )
 
 
 def chat_prompt_style(tokenizer: Any) -> Literal["chat-template", "raw"]:
@@ -307,8 +379,20 @@ class EvalBackend(ABC):
         config: EvalConfig,
         *,
         progress: Callable[[int, int], None] | None = None,
+        extras: Sequence[Mapping[str, Any] | None] | None = None,
     ) -> list[list[int]]:
-        """Greedy continuations, one per prompt, **in input order**."""
+        """Greedy continuations, one per prompt, **in input order**.
+
+        ``extras`` carries per-prompt encoder inputs -- audio features, image
+        patches -- aligned to ``prompt_ids``, for the backends that can consume
+        them. It is defaulted, and :func:`generate_batched` only passes it when a
+        prompt actually carried something, so a backend written before this
+        argument existed is never handed it and keeps working unchanged on every
+        text task. A backend that cannot consume extras should refuse them by name
+        rather than ignore them: silently dropping the audio leaves a model
+        answering a question about a clip it was never given, at a score that looks
+        like a bad model rather than a missing input.
+        """
 
 
 #: Decode settings that are neutral by definition, checked rather than assumed.
@@ -428,7 +512,16 @@ class TransformersBackend(EvalBackend):
         config: EvalConfig,
         *,
         progress: Callable[[int, int], None] | None = None,
+        extras: Sequence[Mapping[str, Any] | None] | None = None,
     ) -> list[list[int]]:
+        if extras and any(extra is not None for extra in extras):
+            raise NotImplementedError(
+                "TransformersBackend takes ids only. These prompts carry encoder inputs "
+                "(audio features, say), and batching those is model-specific -- which axis "
+                "is ragged, which mask goes with it -- so it is not something this class "
+                "can do generically. Use dynquant.eval.omni.OmniThinkerBackend, or a "
+                "backend for whatever modality produced them."
+            )
         model = self._model
         # Sort long-to-short so the first batch is the memory high-water mark: an OOM
         # then happens immediately rather than 40 minutes into a run.
@@ -501,7 +594,16 @@ def generate_batched(
 
     encoded = encode_prompts(tokenizer, prompts, config)
     backend = model if isinstance(model, EvalBackend) else TransformersBackend(model, tokenizer)
-    continuations = backend.generate_ids(encoded.ids, config, progress=progress)
+    # Passed only when there is something to pass. A defaulted keyword is already
+    # compatible with any backend defined in this package, but `EvalBackend` is a
+    # public base class and the subclasses that matter most are the ones written
+    # elsewhere -- so a text task must not become the first thing to hand one an
+    # argument its signature never declared.
+    continuations = (
+        backend.generate_ids(encoded.ids, config, progress=progress, extras=encoded.extras)
+        if encoded.extras
+        else backend.generate_ids(encoded.ids, config, progress=progress)
+    )
 
     if len(continuations) != len(prompts):
         raise RuntimeError(

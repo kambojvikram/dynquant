@@ -1442,7 +1442,7 @@ class SignalTracker:
                     if beta_c is not None and entry.coherence_calls > 0
                     else None
                 ),
-                param_count=entry.weight.numel(),
+                param_count=_logical_numel(entry.module, entry.weight),
                 role=entry.role.value,
                 routing_hits=(entry.forward_calls if entry.role in _MOE_EXPERT_ROLES else None),
                 forward_calls=entry.forward_calls,
@@ -1785,6 +1785,59 @@ def _quantizable_weight(module: nn.Module) -> nn.Parameter | None:
         if isinstance(inner, nn.Module):
             return _quantizable_weight(inner)
     return None
+
+
+def _declared_numel(module: nn.Module) -> int | None:
+    """``out_features * in_features`` off the module itself, unwrapping wrappers.
+
+    ``None`` when the module does not declare both -- an ``nn.Embedding``, a conv, a
+    batched expert bank -- in which case the stored tensor is the only description of
+    the weight there is, and it is the right one.
+    """
+    out = getattr(module, "out_features", None)
+    inp = getattr(module, "in_features", None)
+    if isinstance(out, int) and isinstance(inp, int):
+        return out * inp
+    for attribute in ("base_layer", "original_module"):
+        inner = getattr(module, attribute, None)
+        if isinstance(inner, nn.Module):
+            return _declared_numel(inner)
+    return None
+
+
+def _logical_numel(module: nn.Module, weight: Tensor) -> int:
+    """How many parameters a module *has*, not how many its storage holds.
+
+    The two differ under 4-bit QLoRA. A ``bitsandbytes`` ``Linear4bit`` packs two
+    values per byte and stores the result flat, so a 4096x2048 projection has
+    ``weight.shape == (4194304, 1)`` and ``weight.numel()`` is exactly half the
+    parameters. Measured on Qwen3-Omni-30B-A3B: 503 of 654 tracked modules reported
+    half, 151 reported correctly, and the stats file's total came to 30.677 B against
+    the model's real 31.718 B.
+
+    That gap is not cosmetic and it is not uniform, which is what makes it dangerous.
+    The modules bnb replaces are attention and the dense MLPs; the ones it leaves
+    alone here are the embedding, the LM head, the routers and the expert banks. A
+    consumer that sizes modules from this field therefore sees attention as half
+    price against experts at full price -- a systematic bias toward spending bits on
+    attention, in the one direction nothing downstream would flag as wrong.
+
+    No shipped path spends it that way today: :func:`dynquant.allocate.allocate_bits`
+    prices from :class:`~dynquant.graph.classify.ModelGraph`, off the real shapes, and
+    :mod:`dynquant._legacy.allocator` -- which *does* allocate from ``param_counts``
+    -- is fed counts derived from shapes by its golden test. The exposure is that
+    handing that allocator this file's counts is the obvious thing to do, and the
+    result would look entirely reasonable. The field is also quoted directly: the
+    Qwen3-Omni campaign's "98.07% of parameters gradient-measured" was 97.28% once
+    recomputed against the model.
+
+    The declared shape is preferred over the stored one wherever a module states it,
+    rather than only when the two disagree, because the declaration is what the
+    weight will be once it is merged and saved -- which is the tensor every consumer
+    of this file is reasoning about.
+    """
+    declared = _declared_numel(module)
+    return declared if declared is not None else weight.numel()
 
 
 def _unmeasurable_experts(name: str, module: nn.Module) -> dict[str, str]:

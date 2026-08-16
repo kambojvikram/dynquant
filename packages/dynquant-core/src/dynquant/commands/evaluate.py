@@ -25,10 +25,19 @@ makes a collapsed arm look like a mildly damaged one.
 memory, so no arm needs a checkpoint written for it. ``--map-apply pack`` (the
 default) swaps the named modules onto the packed runtime, so the weights stay
 quantized in VRAM and the memory figure is real. ``--map-apply encode`` writes the
-same encoder's reconstruction back in the compute dtype: the same values, fp16
-size, and the only mode that reaches a weight held as a bare parameter rather than
-a module -- which on a batched-expert MoE is most of the model. A directory written
-by ``dynquant quantize`` is the same thing as ``encode``, spelled on disk.
+same encoder's reconstruction back in the compute dtype: the same values, at fp16
+size. A directory written by ``dynquant quantize`` is the same thing as ``encode``,
+spelled on disk.
+
+``pack`` does reach a batched expert bank -- a rank-3 weight becomes a
+:class:`DynQuantExpertBank` its parent indexes one expert at a time. What it refuses
+is a module that owns a weight while being neither a Linear nor a bank, and on every
+MoE family tried so far that is the **router**: ``MOE_ROUTER`` carries an 8-bit floor
+rather than an exclusion, so a router is in every map however the map was made, and
+:func:`resolve_target` raises on it rather than skipping it. ``encode`` resolves the
+same names through the quantizer, which has no forward to replace and therefore no
+such refusal. That is the reason to prefer ``encode`` on a MoE -- not any inability
+to reach the experts.
 
 **It pins the experts dispatch.** The two modes hold the same values and do not, on
 a MoE, run the same computation: packing moves the model off the default dispatch,
@@ -201,6 +210,7 @@ class _TaskSpec:
         takes_sources: bool = False,
         unverifiable: bool = False,
         detail: bool = False,
+        takes_audio: bool = False,
     ) -> None:
         self.key = key
         self.shots = shots
@@ -217,6 +227,14 @@ class _TaskSpec:
         self.takes_sources = takes_sources
         self.unverifiable = unverifiable
         self.detail = detail
+        self.takes_audio = takes_audio
+        """The task's prompts carry encoder inputs, so it needs the checkpoint's
+        processor rather than its tokenizer.
+
+        A capability rather than a name check, for the same reason `takes_sources`
+        is one: the command decides what to build from what the task declares, so
+        adding a second audio task is a line in `TASKS` and not an edit to a branch
+        that lists task keys."""
 
     @property
     def takes_shots(self) -> bool:
@@ -296,6 +314,35 @@ TASKS = {
         max_new_tokens=6,
         max_prompt_tokens=1536,
         batch_size=32,
+    ),
+    # Spoken intent, from the audio. Four shots, and they are *transcripts* -- the
+    # prefix is there to fix the output format and nothing about a format is audible,
+    # so rendering them as audio would cost several hundred tokens and an encoder pass
+    # each to teach what fifteen tokens of text teaches. 4096 prompt tokens because the
+    # menu plus the placeholder run for a clip is already past Banking77's 1536, and an
+    # audio prompt that does not fit is refused rather than cut. Batch 8, not 32: each
+    # row carries a spectrogram, so the activation high-water mark per row is an order
+    # up from a text task's.
+    "slurp": _TaskSpec(
+        "slurp",
+        shots=4,
+        # SLURP's taxonomy is 60 intents -- 18 scenarios by the actions each admits --
+        # read out of SLURP's own annotation rather than written down here, because an
+        # earlier draft of this line wrote down 69 from memory and 69 is not a number
+        # SLURP has ever had. The menu is pinned by digest at load
+        # (`dynquant.eval.slurp.EXPECTED_INTENTS_SHA`), and every result carries the
+        # `n_intents` it was actually scored against, so this constant and the floor a
+        # result reports can be checked against each other rather than assumed equal.
+        # A literal and not an import of `slurp.N_INTENTS`, because `dynquant.eval`
+        # pulls torch and this module is on the CLI's startup path; the two are tied
+        # together by `test_the_task_specs_chance_floor_is_its_modules_class_count` instead.
+        chance=1.0 / 60,
+        max_new_tokens=8,
+        max_prompt_tokens=4096,
+        batch_size=8,
+        add_special_tokens=False,
+        detail=True,
+        takes_audio=True,
     ),
     # IFEval ships a single split, named `train`, and takes no few-shot prefix: the
     # constraint *is* the instruction, and an exemplar would demonstrate obeying a
@@ -507,9 +554,12 @@ def run(args: argparse.Namespace, *, model: Any = None) -> int:
     # command that every arm of a panel passes through.
     experts = _pin_experts_dispatch(model, args)
 
-    tokenizer = _shared.load_tokenizer(
-        args.tokenizer or args.model, trust_remote_code=args.trust_remote_code
-    )
+    # One object for an audio task, two roles: it builds the prompts (ids *and* the
+    # spectrogram they reserve room for) and it decodes the answers. A separate
+    # tokenizer would agree with it about text and know nothing about the placeholder
+    # run, which is a disagreement with no error attached.
+    load = _shared.load_processor if spec.takes_audio else _shared.load_tokenizer
+    tokenizer = load(args.tokenizer or args.model, trust_remote_code=args.trust_remote_code)
     label = args.label or f"{args.task}:{Path(args.model).name}"
 
     started = time.time()
@@ -633,6 +683,7 @@ def _load_runtime(args: argparse.Namespace, config: Any) -> tuple[Any, dict[str,
             device=args.device,
             dtype=args.dtype,
             trust_remote_code=args.trust_remote_code,
+            model_class=args.model_class,
         )
         model.config.use_cache = True
         return model, (_apply_map(model, args) if args.map is not None else None)
@@ -883,10 +934,11 @@ def _apply_map(model: Any, args: argparse.Namespace) -> dict[str, Any]:
     same footing; a caller reaching this function directly does not get that and has to
     pin its own.
 
-    That last clause is why the choice exists rather than being decided here. On a
-    batched-expert MoE the packed runtime has nothing to replace for 91.5% of the
-    parameters, and a command that quietly encoded them instead would report a size it
-    was not holding. So the caller says which, and the record says which was done.
+    That last clause is why the choice exists rather than being decided here. The two
+    modes differ in what the model holds -- ``pack`` keeps the weights quantized in
+    VRAM, ``encode`` holds the same values at dense size -- so a command that silently
+    substituted one for the other would report a size it was not holding. So the caller
+    says which, and the record says which was done.
     """
     if getattr(args, "map_apply", "pack") == "encode":
         return _encode(model, args)

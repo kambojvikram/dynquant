@@ -23,6 +23,7 @@ from dynquant.constants import (
     ALLOCATION_SCHEMA,
     COMPUTE_DTYPES,
     DEFAULT_GROUP_SIZE,
+    HF_QUANT_METHOD,
 )
 from dynquant.errors import DynQuantError
 
@@ -46,6 +47,7 @@ __all__ = [
     "build_inputs",
     "check_map_covers",
     "load_model",
+    "load_processor",
     "load_tokenizer",
     "parse_overrides",
     "progress_printer",
@@ -83,8 +85,9 @@ def load_model(
     device: str = "cuda",
     dtype: str = "bfloat16",
     trust_remote_code: bool = False,
+    model_class: str | None = None,
 ) -> Any:
-    """Load a causal LM, in one dtype, on one device.
+    """Load a model, in one dtype, on one device.
 
     ``device="cpu"`` is meaningful for :mod:`~dynquant.commands.inspect`, which
     reads only names and shapes: a second copy of the weights on the GPU while an
@@ -94,14 +97,172 @@ def load_model(
     something -- ``False`` for training and for the calibration pass, ``True`` for
     generation -- so the command that knows which it is sets it, rather than this
     function guessing on everyone's behalf.
+
+    The class is ``AutoModelForCausalLM`` for every checkpoint that class claims,
+    which is every model this project has published. It is not universal, and the
+    way it fails is not a small inconvenience: a composite checkpoint registers a
+    class the causal-LM mapping has never heard of and ``from_pretrained`` raises
+    before it reads a weight, so ``dynquant quantize`` cannot run at all on the
+    model. :func:`_model_loader` decides which class to use; ``model_class`` pins
+    it by name when the automatic answer is not the one you want.
     """
     transformers = _require_transformers()
-    return transformers.AutoModelForCausalLM.from_pretrained(
+    _register_hf_quantizer()
+    loader = _model_loader(
+        transformers, path, trust_remote_code=trust_remote_code, model_class=model_class
+    )
+    model = loader.from_pretrained(
         path,
         device_map=device,
         trust_remote_code=trust_remote_code,
         **{_dtype_kwarg(transformers): resolve_dtype(dtype)},
     )
+    _check_packed_load(path, model)
+    return model
+
+
+def _register_hf_quantizer() -> None:
+    """Make ``quant_method: dynquant`` resolvable before any ``from_pretrained``.
+
+    Not optional, and the reason is that skipping it is silent. transformers reads
+    ``config.quantization_config``, asks ``AutoHfQuantizer.supports_quant_method``,
+    and on an unregistered name **downgrades the checkpoint to un-quantized** --
+    ``pre_quantized = False``, ``hf_quantizer = None``, a ``logger.warning`` and no
+    exception. The packed tensors then match no parameter the model has, every
+    weight is left at its initialisation, and ``from_pretrained`` returns a
+    **randomly initialised model**. On Qwen3-Omni that scored 0.0% on 500 SLURP
+    items with 499 unparseable generations and took 478 s to do it.
+
+    Idempotent, and a no-op on an install whose transformers cannot be imported --
+    the loader below raises about that on its own, with a better message.
+    """
+    try:
+        from dynquant.integration.hf_quantizer import register_hf_quantizer
+    except ImportError:  # pragma: no cover -- torch/transformers missing
+        return
+    register_hf_quantizer()
+
+
+def _check_packed_load(path: str, model: nn.Module) -> None:
+    """Fail loudly when a checkpoint that says it is packed came back dense.
+
+    :func:`_register_hf_quantizer` closes the known way this happens, which is
+    exactly why the check belongs here: the next way will not announce itself
+    either, and a model whose weights are all at their initialisation reads as a
+    catastrophic *accuracy* result rather than a failed load. A count is the only
+    thing that separates them.
+    """
+    if not _declares_dynquant(getattr(model, "config", None)):
+        return
+    from dynquant.integration.hf_quantizer import packed_module_names
+    from dynquant.runtime.linear import DynQuantExpertBank
+
+    packed = len(packed_module_names(model))
+    banks = sum(isinstance(m, DynQuantExpertBank) for m in model.modules())
+    if packed or banks:
+        return
+    raise DynQuantError(
+        f"{path} declares quant_method='dynquant' but not one module came back packed. "
+        "transformers skips a quantization method it cannot resolve and returns a "
+        "randomly initialised model without raising, so this is a failed load rather "
+        "than a bad checkpoint -- check that `dynquant.register_hf_quantizer()` ran."
+    )
+
+
+def _declares_dynquant(config: Any) -> bool:
+    """Whether a loaded config carries DynQuant's own ``quant_method``.
+
+    Read from either shape it can be in: a resolved config object when the
+    quantizer was registered, and a plain ``dict`` when it was not -- which is the
+    case this exists to catch.
+    """
+    quant_config = getattr(config, "quantization_config", None)
+    if quant_config is None:
+        return False
+    if isinstance(quant_config, dict):
+        method = quant_config.get("quant_method")
+    else:
+        method = getattr(quant_config, "quant_method", None)
+    return str(method) == HF_QUANT_METHOD
+
+
+def _model_loader(
+    transformers: Any,
+    path: str,
+    *,
+    trust_remote_code: bool = False,
+    model_class: str | None = None,
+) -> Any:
+    """The class whose ``from_pretrained`` can build this checkpoint.
+
+    ``AutoModelForCausalLM`` is returned *by identity* whenever it claims the
+    config, so every checkpoint that loads today keeps loading through exactly
+    the class it always did. The search below is reachable only for a checkpoint
+    that raises today, which is why widening this cannot move a published arm.
+
+    The decision is made from the config rather than by catching the auto class's
+    ``ValueError: Unrecognized configuration class ... for this kind of
+    AutoModel``. Recovering after the fact would mean deciding what to do with a
+    half-read checkpoint, and the message names neither the class that would have
+    worked nor where it lives -- which is exactly the state this function exists
+    to avoid handing a caller.
+
+    ``config.architectures`` is the checkpoint's *own* record of the class that
+    saved it, not an inference of ours. Preferring it means the fallback cannot
+    choose a different head than the weights came from: it can pick the right
+    class or fail to find any, and the failure names what it looked for.
+    """
+    if model_class is not None:
+        klass = getattr(transformers, model_class, None)
+        if klass is None:
+            raise DynQuantError(
+                f"--model-class {model_class!r} is not exported by transformers "
+                f"{getattr(transformers, '__version__', '?')}; pass the class name as "
+                f"transformers spells it (for example Qwen3OmniMoeForConditionalGeneration)"
+            )
+        return klass
+
+    config = transformers.AutoConfig.from_pretrained(path, trust_remote_code=trust_remote_code)
+    if _claims_causal_lm(transformers, config):
+        return transformers.AutoModelForCausalLM
+
+    architectures = tuple(getattr(config, "architectures", None) or ())
+    for name in architectures:
+        klass = getattr(transformers, name, None)
+        if klass is not None:
+            return klass
+
+    auto_map = getattr(config, "auto_map", None) or {}
+    for name in auto_map:
+        klass = getattr(transformers, name, None)
+        if klass is not None and name.startswith("AutoModel"):
+            return klass
+
+    raise DynQuantError(
+        f"no loader for {path}: its config ({type(config).__name__}) is not registered "
+        f"for AutoModelForCausalLM, and transformers "
+        f"{getattr(transformers, '__version__', '?')} exports none of the classes it "
+        f"names ({', '.join(architectures) or 'none listed'}). Pass model_class= with a "
+        f"class transformers exports, or upgrade transformers."
+    )
+
+
+def _claims_causal_lm(transformers: Any, config: Any) -> bool:
+    """Whether ``AutoModelForCausalLM`` owns this config.
+
+    Two ways it can: the config class is in the causal-LM mapping, or the
+    checkpoint ships remote code that nominates the auto class itself. The
+    membership test goes through ``in`` rather than a lookup because the mapping
+    is lazy -- it imports the modelling module on ``__getitem__``, and asking a
+    question should not import fifty megabytes of modelling code.
+    """
+    auto_map = getattr(config, "auto_map", None) or {}
+    if "AutoModelForCausalLM" in auto_map:
+        return True
+    try:
+        return type(config) in transformers.MODEL_FOR_CAUSAL_LM_MAPPING
+    except (AttributeError, TypeError):  # pragma: no cover -- shape of the mapping changed
+        return True
 
 
 def _dtype_kwarg(transformers: Any) -> str:
@@ -137,6 +298,29 @@ def load_tokenizer(path: str, *, trust_remote_code: bool = False) -> Any:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     return tokenizer
+
+
+def load_processor(path: str, *, trust_remote_code: bool = False) -> Any:
+    """Load a multi-modal processor and guarantee a pad token on its tokenizer.
+
+    A processor is a tokenizer plus the feature extractors for whatever else the
+    model reads, and for an audio or vision task it has to be the *same* object that
+    built the prompt and that decodes the answer -- a separate ``AutoTokenizer``
+    loaded from the same directory agrees with it about text and knows nothing about
+    the placeholder run the processor writes into the ids.
+
+    The pad-token guarantee is the tokenizer's, for the reason
+    :func:`load_tokenizer` gives, and is applied to the inner tokenizer because that
+    is where padding actually reads it from.
+    """
+    transformers = _require_transformers()
+    processor = transformers.AutoProcessor.from_pretrained(
+        path, trust_remote_code=trust_remote_code
+    )
+    tokenizer = getattr(processor, "tokenizer", None)
+    if tokenizer is not None and getattr(tokenizer, "pad_token", None) is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    return processor
 
 
 def _require_transformers() -> Any:

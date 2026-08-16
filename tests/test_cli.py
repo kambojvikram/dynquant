@@ -27,6 +27,7 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from test_graph_classify import Qwen3_5ForCausalLM
@@ -194,6 +195,156 @@ def test_the_dtype_argument_is_named_the_way_this_transformers_names_it(
     keyword argument 'dtype'`, which names neither transformers nor the version.
     """
     assert _shared._dtype_kwarg(argparse.Namespace(__version__=version)) == expected
+
+
+# --------------------------------------------------------------------------
+# Which class loads the checkpoint
+# --------------------------------------------------------------------------
+#
+# `AutoModelForCausalLM` is right for every model this project has published and
+# wrong for the next one. A composite checkpoint -- Qwen3-Omni is two full MoE
+# towers plus an audio tower, a visual tower and a vocoder in one directory --
+# registers as `Qwen3OmniMoeForConditionalGeneration`, which is not in the
+# causal-LM mapping at all. `from_pretrained` raises before it reads a weight, so
+# every command that loads a model is unavailable on the model, not degraded on it.
+#
+# The shape of the fix is the same one `_bank_config` uses in the classifier:
+# the historical answer is tried first and returned by identity when it applies,
+# so the new path is reachable only where the old one raised.
+
+
+class _FakeMapping:
+    """A stand-in for `MODEL_FOR_CAUSAL_LM_MAPPING`, which is lazy in transformers.
+
+    Membership is the only operation `_claims_causal_lm` is allowed to use:
+    `__getitem__` on the real mapping imports the modelling module, and asking
+    which class to load should not cost fifty megabytes of imports.
+    """
+
+    def __init__(self, *claimed: type) -> None:
+        self._claimed = set(claimed)
+        self.subscripted = False
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._claimed
+
+    def __getitem__(self, key: object) -> None:  # pragma: no cover -- must not be called
+        self.subscripted = True
+        raise AssertionError("membership must not subscript the lazy mapping")
+
+
+class _CausalConfig:
+    architectures: ClassVar[list[str]] = ["StubForCausalLM"]
+
+
+class _CompositeConfig:
+    """No entry in the causal-LM mapping; names its own class, as save_pretrained does."""
+
+    architectures: ClassVar[list[str]] = ["StubOmniForConditionalGeneration"]
+
+
+class _RemoteCodeConfig:
+    """A checkpoint whose own code nominates the auto class."""
+
+    architectures: ClassVar[list[str]] = ["SomethingNotInThisTransformers"]
+    auto_map: ClassVar[dict[str, str]] = {
+        "AutoModelForCausalLM": "modelling_stub.SomethingNotInThisTransformers"
+    }
+
+
+class _NamelessConfig:
+    architectures: ClassVar[list[str]] = []
+
+
+def _fake_transformers(config: object, *, claimed: tuple[type, ...] = ()) -> argparse.Namespace:
+    mapping = _FakeMapping(*claimed)
+    return argparse.Namespace(
+        __version__="5.14.1",
+        AutoConfig=argparse.Namespace(from_pretrained=lambda _p, **_k: config),
+        AutoModelForCausalLM="<AutoModelForCausalLM>",
+        StubForCausalLM="<StubForCausalLM>",
+        StubOmniForConditionalGeneration="<StubOmniForConditionalGeneration>",
+        MODEL_FOR_CAUSAL_LM_MAPPING=mapping,
+    )
+
+
+def test_a_causal_lm_checkpoint_still_loads_through_the_class_it_always_did() -> None:
+    """The no-regression guard, by identity rather than by equality.
+
+    Every published arm loaded through `AutoModelForCausalLM`. The fallback below
+    must be unreachable for those checkpoints, not merely equivalent for them.
+    """
+    fake = _fake_transformers(_CausalConfig(), claimed=(_CausalConfig,))
+    assert _shared._model_loader(fake, "m") is fake.AutoModelForCausalLM
+    assert not fake.MODEL_FOR_CAUSAL_LM_MAPPING.subscripted
+
+
+def test_a_composite_checkpoint_loads_through_the_class_that_saved_it() -> None:
+    """`config.architectures` is the checkpoint's own record, not an inference of ours.
+
+    Preferring it means the fallback cannot pick a *different* head than the
+    weights came from: it finds the right class or finds none.
+    """
+    fake = _fake_transformers(_CompositeConfig())
+    assert _shared._model_loader(fake, "m") is fake.StubOmniForConditionalGeneration
+
+
+def test_remote_code_that_nominates_the_auto_class_is_believed() -> None:
+    """A `trust_remote_code` checkpoint is absent from the mapping and still causal.
+
+    Its `auto_map` is the answer; reading `architectures` first would send it to a
+    class this transformers does not export.
+    """
+    fake = _fake_transformers(_RemoteCodeConfig())
+    assert _shared._model_loader(fake, "m") is fake.AutoModelForCausalLM
+
+
+def test_naming_a_class_pins_it_without_reading_the_config() -> None:
+    read = []
+
+    def _record(_path: str, **_kwargs: object) -> _CausalConfig:
+        read.append(_path)
+        return _CausalConfig()
+
+    fake = _fake_transformers(_CausalConfig(), claimed=(_CausalConfig,))
+    fake.AutoConfig = argparse.Namespace(from_pretrained=_record)
+    loader = _shared._model_loader(fake, "m", model_class="StubOmniForConditionalGeneration")
+    assert loader is fake.StubOmniForConditionalGeneration
+    assert not read, "an explicit class should not need the config"
+
+
+def test_a_class_this_transformers_does_not_export_is_named_in_the_error() -> None:
+    fake = _fake_transformers(_CausalConfig(), claimed=(_CausalConfig,))
+    with pytest.raises(DynQuantError, match="Qwen4Whatever"):
+        _shared._model_loader(fake, "m", model_class="Qwen4Whatever")
+
+
+def test_a_checkpoint_no_class_can_build_says_what_it_looked_for() -> None:
+    """The failure this replaces said `Unrecognized configuration class` and named
+    neither the class that would have worked nor where to find it."""
+    fake = _fake_transformers(_CompositeConfig())
+    del fake.StubOmniForConditionalGeneration
+    with pytest.raises(DynQuantError, match="StubOmniForConditionalGeneration"):
+        _shared._model_loader(fake, "m")
+
+    bare = _fake_transformers(_NamelessConfig())
+    with pytest.raises(DynQuantError, match="none listed"):
+        _shared._model_loader(bare, "m")
+
+
+@pytest.mark.parametrize("command", ["inspect", "quantize", "export", "eval"])
+def test_every_command_that_loads_a_model_can_be_told_which_class(command: str) -> None:
+    """One flag on the shared loading group, so the four cannot drift apart."""
+    parser = build_parser()
+    argv = {
+        "inspect": [command, "m"],
+        "quantize": [command, "m", "-o", "o"],
+        "export": [command, "m", "-o", "o"],
+        "eval": [command, "m", "--task", "gsm8k"],
+    }[command]
+    assert parser.parse_args(argv).model_class is None
+    pinned = parser.parse_args([*argv, "--model-class", "Qwen3OmniMoeForConditionalGeneration"])
+    assert pinned.model_class == "Qwen3OmniMoeForConditionalGeneration"
 
 
 def test_inspect_defaults_to_cpu_and_quantize_to_cuda() -> None:

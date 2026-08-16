@@ -1,0 +1,18 @@
+{
+  "loaded_params": 35259818545,
+  "loaded_modules": 2144,
+  "thinker_params": 31719205488,
+  "thinker_banked": 28991029248,
+  "base": "/workspace/models/qwen3-omni-30b",
+  "adapter": "/workspace/runs/omni-slurp/adapter",
+  "output": "/workspace/runs/omni-slurp/merged",
+  "model_class": "Qwen3OmniMoeThinkerForConditionalGeneration",
+  "merged_weights": 384,
+  "expert_banks_unchanged": 96,
+  "fingerprint_sample_elements": 4096,
+  "max_sampled_change_merged": 0.909423828125,
+  "min_sampled_change_merged": 0.479736328125,
+  "max_sampled_change_unmerged": 0.0,
+  "safetensors_bytes": 63440876184,
+  "seconds": 48.1
+}

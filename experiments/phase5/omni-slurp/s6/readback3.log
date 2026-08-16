@@ -1,0 +1,16 @@
+
+packed module types: {"DynQuantEmbedding": 2, "DynQuantExpertBank": 96, "DynQuantLinear": 504}
+routers: 48 total, 48 dense
+  DynQuantLinear audio_tower.layers.0.self_attn.k_proj: 2b g128 per-group distinct 4-4 of 128 (ceiling 4)
+  DynQuantLinear audio_tower.layers.0.self_attn.v_proj: 2b g128 per-group distinct 4-4 of 128 (ceiling 4)
+  DynQuantLinear audio_tower.layers.0.self_attn.q_proj: 2b g128 per-group distinct 4-4 of 128 (ceiling 4)
+  DynQuantLinear audio_tower.layers.0.self_attn.out_proj: 3b g128 per-group distinct 8-8 of 128 (ceiling 8)
+  DynQuantLinear audio_tower.layers.0.fc1: 2b g128 per-group distinct 4-4 of 128 (ceiling 4)
+  DynQuantLinear audio_tower.layers.0.fc2: 3b g128 per-group distinct 6-8 of 128 (ceiling 8)
+  DynQuantLinear audio_tower.layers.1.self_attn.k_proj: 2b g128 per-group distinct 4-4 of 128 (ceiling 4)
+  DynQuantLinear audio_tower.layers.1.self_attn.v_proj: 2b g128 per-group distinct 4-4 of 128 (ceiling 4)
+  ROUTER(dense, never quantized) model.layers.0.mlp.gate: per-group distinct 65-95 of 128
+resident VRAM: 11927683584 B
+packed payload on disk: 11894918480 B
+resident / payload: 1.0028
+READBACK DONE

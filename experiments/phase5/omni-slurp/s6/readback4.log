@@ -1,0 +1,21 @@
+# NOTE: the `lattice ...` lines below are wrong and are kept only because they were the
+# first measurement taken. They count distinct values over a 4096-element slab, which
+# spans 32 groups of 128, each with its own scale and zero point -- so the ceiling is
+# 32 * 2**bits, not 2**bits, and the printed `(ceiling 16)` is meaningless. The correct
+# per-group measurement for this arm is in lattice4b.log; readback3.log carries the
+# fixed probe for the 3-bit arm. Module types, router count and the VRAM figures below
+# are unaffected.
+
+packed module types: {"DynQuantEmbedding": 2, "DynQuantExpertBank": 96, "DynQuantLinear": 504}
+routers: 48 total, 48 dense
+  lattice DynQuantExpertBank model.layers.0.mlp.experts.down_proj: 371 distinct in first 4096 (ceiling 16)
+  lattice DynQuantExpertBank model.layers.0.mlp.experts.gate_up_proj: 382 distinct in first 4096 (ceiling 16)
+  lattice DynQuantExpertBank model.layers.1.mlp.experts.down_proj: 370 distinct in first 4096 (ceiling 16)
+  lattice DynQuantExpertBank model.layers.1.mlp.experts.gate_up_proj: 370 distinct in first 4096 (ceiling 16)
+  lattice DynQuantExpertBank model.layers.2.mlp.experts.down_proj: 358 distinct in first 4096 (ceiling 16)
+  lattice DynQuantExpertBank model.layers.2.mlp.experts.gate_up_proj: 365 distinct in first 4096 (ceiling 16)
+  lattice ROUTER(dense) model.layers.0.mlp.gate: 1150 distinct in first 4096
+resident VRAM: 15892454912 B
+packed payload on disk: 15859696832 B
+resident / payload: 1.0021
+READBACK DONE

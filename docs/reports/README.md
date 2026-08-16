@@ -4,11 +4,12 @@ Every experiment run on DynQuant since the package was built, what it measured, 
 full record lives. Nothing here is taken from the paper; everything is measured on this
 repository's own code. Questions 1–6 were measured on a single NVIDIA A100 80GB PCIe;
 from question 7 the box is one NVIDIA RTX PRO 6000 Blackwell Workstation Edition (97 887 MiB,
-driver 580.159.03). Nothing is measured across the two — every comparison in a given campaign
-was run on one machine.
+driver 580.159.03); question 29 needed two cards to fine-tune a 30 B model and ran on 2×
+RTX PRO 6000 Blackwell Max-Q (94.97 GiB each, sm_120). Nothing is measured across machines —
+every comparison in a given campaign was run on one.
 
-There are eighteen campaigns — seventeen of them measured on a GPU, the eighteenth an audit of
-how all seventeen counted their bytes. They answer twenty-eight questions, in this order — phase 4
+There are nineteen campaigns — eighteen of them measured on a GPU, the other an audit of
+how the rest counted their bytes. They answer twenty-nine questions, in this order — phase 4
 answers ten of them, because whether a benchmark can read damage, whether the model has
 already seen its answers, whose bytes “matched bytes” means, which of two prices chose the
 widths, whether the driver that runs the arms runs at all, how many of its variants can be
@@ -47,6 +48,7 @@ model of another family are ten separate failures:
 | 26 | Does the grouped kernel's >=3x hold on a second MoE family, and where does the margin come from? | **Yes — 3.180x on OLMoE-1B-7B-0125-Instruct at 3 bits, wider than LFM2.5's 2.66x, and the widening is the launch-bound story arriving from the other side.** Everything in rows 23-25 came off one checkpoint. P8's gate names Mixtral-8x7B / Qwen3-MoE; neither fits an L4 at bf16, so the clause was answered with a family that is genuinely a different test rather than one that shares a name: 64 experts against 32, top-8 against top-4, expert intermediate 1024 against 1792, 16 full-attention layers against 6 attention plus 18 short-convolution, a plain `nn.Linear` router against a custom router class, untied embeddings against tied. What it shares is the batched `[E, out, in]` bank the kernel consumes. The packer needed nothing added: **98 modules packed, 16 routers left dense** (2,097,152 params, 0.030% of the model), 0 tied, 0 skipped, `accounted_bits` **3.2515**, and the generic structural classifier reached `mlp.gate` through `out_features == num_experts` with an `experts` sibling — the test P3 was written around, exercised end to end for the first time on a family it was not developed against. Decode: bf16 **41.48**, per-expert loop **11.59**, grouped **36.86** tok/s — **3.180x the loop** (3.167x in an earlier process, so it reproduces), 0.889x bf16. Resident **2685.4 MiB** against a manifest `packed_bytes` of 2,679.8 MiB — **5.6 MiB apart, 0.21%**, closing P6's *peak VRAM ~ manifest size* on a second family; the bf16 ratio is **4.914x**, identical to LFM2.5's at four significant figures because both land at 3.2515 accounted bits. Coherent at 3 bits on both prompts in all three arms, and the two packed arms are **byte-identical on the first prompt** and divergent on the second, which is what substituting one kernel at the dispatch should give. The interesting column is why the margin is *wider* here. OLMoE is the smaller model and its bf16 arm is faster (41.48 against 33.25), yet **its loop is slower in absolute terms** — 11.59 against 12.23 while reading 17% fewer expert parameters per token. A loop doing less work in more time is launch-bound, and the geometry says by how much: **384 expert matmuls per token against 264**, each doing **43% less arithmetic**, so roughly 1.75x the launch overhead per unit of work — while the grouped kernel issues one launch per layer regardless of expert count. Row 25 measured that overhead directly at 76-82% of a decode step; this row watches the gap widen exactly where the launches get smaller, which is what a launch-bound explanation predicts and a bandwidth-bound one does not. The column that moves the other way moves honestly: grouped recovers 0.889x of bf16 here against 0.978x on LFM2.5, because a 2048x1024 expert matrix gives the quantized GEMV less arithmetic to hide dequantization behind. One harness bug is recorded because a comparison would have hidden it: OLMoE ships **`use_cache: false`** in its config, the explicit `GenerationConfig` had left that one field unset, and 128 tokens without a KV cache is quadratic — all three arms would have paid it equally, so the **ratio** would have survived and the **rate** would not. The first instrumentation for it read `model.config.use_cache` and **measured nothing**, reporting `False` next to three arms that demonstrably used a cache, because `generate` is governed by the per-call `GenerationConfig`; it was replaced by a four-token probe that asks `generate` to hand the cache back, recorded as `decoded_cache_len` and reading **30** on every arm. Not claimed: two families are not a trend, the cross-family arithmetic is a sanity check rather than a controlled comparison (only the within-model grouped-against-loop ratios are controlled), coherent generation on two prompts is not an evaluation, and `--map-apply pack` still cannot reach this path because routers carry an 8-bit floor rather than an exclusion | [`kernel-first-compile.md`](kernel-first-compile.md) §15 |
 | 27 | Is the packed path actually faster than bf16, or only faster than its own eager baseline? | **Both, and which one you get is a single flag.** Rows 24-26 timed the grouped kernel against the per-expert loop and against bf16 *eager*; row 25 measured graph replay on one model at one width. Neither answered whether that speedup belongs to the packed path or is what `torch.compile` gives anything on this card. Fourteen arms at commit `d92ee05` — LFM2.5-8B-A1B and OLMoE-1B-7B × {bf16, uniform 3-bit} × the compile ladder, `--reps 3 --cache-impl static` throughout so the cache is fixed and only the compiler moves. **The compiled bf16 control is the point of the run**: compiling buys bf16 **15.6%** and **14.3%**, and buys the packed path **4.96×** and **4.67×** — 31.57 — 156.57 and 35.41 — 165.20 tok/s. So row 26's number was never *`torch.compile` is fast on an L4*; it is the packed path carrying a per-step launch and Python surface, once per module, that bf16 does not have. The consequence is a **sign change**: uncompiled, DynQuant decodes *slower* than bf16 (**0.967×** and **0.873×**); compiled, it decodes **4.145×** and **3.563×** the compiled bf16 arm — the whole distance between *packing costs 3-13% of decode rate* and *packing is four times faster* is one flag, and every ratio against bf16 earlier in this campaign (0.95× at row 24, 0.889× at row 26) is the eager end of that pair. Running `--compile-mode default` against `reduce-overhead` splits the win into what Inductor fused and what the cudagraph captured: on the packed path **3.116× / 1.592×** and **3.430× / 1.360×**, on bf16 1.099/1.052 and 1.086/1.053 — so **fusion is the larger half**, which a capture-only measurement could not see, and the two columns are *with graphs* and *without* rather than *launches* and *work*, because a fused dequant-into-GEMV removes launches too. **Memory does not move at all**: resident is identical across all three compile settings to the tenth of a MiB, **3 286.7** and **2 685.4** MiB against manifests of 3 280.1 and 2 679.8 — 0.20% and 0.21% apart, P6's *peak VRAM ≈ manifest size* on two families at once — and `peak_mib_total` equals `peak_mib_loaded` on every packed arm while exceeding it on every bf16 arm, which is what a decode that never materialises a dense weight looks like. `dynamo_unique_graphs` is read back from the counter rather than inferred: **0** on every arm that asked for eager, **2** on every arm that did not. `decoded_cache_len` reads **26** and **30** on all twelve arms — prompts of 23 and 27 tokens plus the three writes a four-token generation makes — where before `d92ee05` the same field read 54 and 58, `prompt + 31`, the *warmup's* fill: `generate` keeps one static cache on the model, so a reference held past the probe reported the timed run. Constant across compile modes is the evidence it now measures the probe; the same fix corrects a sentence in §15 that read the 30 as *26 prompt tokens plus 4 generated*. **The two `manual` arms exit 1 on both families**, same line, same error: `accessing tensor output of CUDAGraphs that has been overwritten by a subsequent run`. Compiling `forward` underneath `generate`'s loop leaves the loop reading tensors the next replay overwrote — the hazard row 25's hand capture met while **returning a wrong token with nothing raised**. Here it raises, so the supported path is the one that neither lies nor raises and is also the fastest arm. Not claimed: two families, one card, one prompt pair, three reps, nothing bounding long context; **these are not the panel's checkpoints** (uniform 3-bit, routers dense, `accounted_bits` 3.251 and 3.2515, not the allocator's 3.1488) and no accuracy was scored, so nothing here revises a panel number; and `warmup_s` is **22.4-24.5 s for bf16 against 7.98-9.03 s packed** — the model with 111 substituted modules and a custom op compiles three times faster, in both families and both modes, with no account of it here | [`kernel-first-compile.md`](kernel-first-compile.md) §16 |
 | 28 | Do the arms these panels call byte-matched hold the same number of bytes? | **No — every symmetric arm was charged for a zero point it never stores.** `meta_bits = 16 + bits` existed in **two** independent copies, the second with a written comment defending it: charging only the asymmetric arm would make the baselines differ by a *convention* rather than by their weights. The argument inverts — arms differ in a size column because they **store** different things, and charging both the maximum is what imposes a convention. `compressed-tensors` writes `weight_zero_point` **only when the grid is asymmetric**, measured rather than read: a symmetric checkpoint holds **0** such tensors, an asymmetric one **186**, each `I32 [2,16]` = 1 024 bits = exactly `groups × bits`. GPTQ and RTN are symmetric by default in this repository and always have been, so **every GPTQ and RTN arm this project has published** was over-charged **~0.7%** of its width, in the direction that flatters DynQuant: `gptq_4b` **4.1565 → 4.1253** b, `gptq_3b` **3.1488 → 3.1253**, Mistral's **4.3760 → 4.3453** and **3.3869 → 3.3639**. Exactly one arm corrects the other way — `gptq_3b_asym` was never charged for its `weight_g_idx`, **+0.163%**. The serious part is `anchor_bytes`, which computes **one** budget per width: every DynQuant arm in phase 4 was sized on the asymmetric figure and then scored against a symmetric arm, carrying **+0.713%**, **+0.708%**, **+0.693%** and **+0.654%** more bytes — all **6.5–7.1×** the panels' own **0.1%** tolerance, all one way. So **DynQuant-against-GPTQ was not byte-matched on any phase-4 panel**; DynQuant-against-AWQ was, and is untouched, which is why every panel still carries one honest external baseline. Nothing was re-quantized and no accuracy figure moves — this is a denominator. Found by a smoke test refusing to print rather than by review, and its assertion's *stated* reason for firing was the wrong hypothesis while the thing it actually tested was right: **a control that varies an axis needs every column able to see that axis**; a blind column does not produce an obviously broken table, it produces one whose numbers are individually plausible and whose comparison measures nothing. Ninth duplicated-registry case in this campaign and the second where the duplicated thing is a *dependency's* arithmetic. Not claimed: the panels are **not** re-run, so those GPTQ comparisons stand with the gap stated rather than closed; and `stage8_bnb.py` holds a third copy of `accounted_bytes` for NF4, which does not take this term and has not been audited against bitsandbytes' own storage | [`byte-accounting-zero-point.md`](byte-accounting-zero-point.md) |
+| 29 | Does any of it survive on a 30 B audio MoE whose expert banks are 91.4% of the model, at 3 and 4 bits? | **At 4 bits yes, at 3 bits no — and the two budgets were never the same experiment.** The QLoRA fine-tune is worth **+7.40** points over the base checkpoint (*p* = 7.5e-07, paired). Against that bf16 ceiling, **dq4 loses 0.60 at 4.00× fewer bytes and does not separate** (*p* = 0.70; the interval `[-2.64, +1.44]` excludes damage worse than 2.64 points rather than proving zero), while **dq3 loses 61.80** (25.00%, *p* = 1.6e-88, discordance 3/312) — a destroyed model, not a degraded one. The role floors alone cost **3.418 average bits** on this architecture, so 4.00 has 0.582 bits of headroom and breaches nothing, and 3.00 is *below the floor budget*: soft floors bind and **400 of 650 modules** are breached, putting 42.9% of the parameters at 2 bits. The 48 routers are never breached at either budget — `MOE_ROUTER` is structural — so the collapse is not a routing collapse. The largest single breach is `lm_head` **8→3**, and measured on that tensor directly the ladder is 99.8% → 77.7% → **58.6%** top-1 agreement at 8/4/3 bits: the arm that kept the head at its floor tied its ceiling and the arm that cut it collapsed. That is consistent, not conclusive — 400 modules moved at once, and isolating the head needs a floor-policy arm (`LM_HEAD` is not in `STRUCTURAL_ROLES`; `MOE_ROUTER` is) that was not run, as was the uniform control that would say whether 3 bits is reachable here at all. Measured sensitivity covers **1.02%** of this model — bnb stores a 4-bit weight flat, so the moment hook's shape guard rejects every module it replaced, leaving 48 routers and `lm_head` — and changes **0 of 650** widths at 4.00 and 23 at 3.00, one of which cuts `lm_head` further to 2. Three defects on the way: a merge verifier that fingerprinted weights by **L2 norm** and aborted a correct merge, wrong three separate ways (a norm difference is a projection not a distance; its threshold fell *inside* a gapless distribution, passing min 1.073e-6 against failing max 9.888e-7; and it was reduced in fp32, whose noise was 100× the signal it measured); a `pgrep -f` watcher that **matched itself** and left a finished fine-tune's merge chain sleeping on two idle GPUs for 40 minutes; and transformers v5's `save_pretrained` OOMing beside its own 63 GiB model. A fourth was found by reading rather than running, and it inverts a conclusion both write-ups had published: they justified `--map-apply encode` on the grounds that `pack` **cannot reach a batched expert bank**, which would have meant a `pack` run scoring a 91.4%-bf16 model. False, and already false at the commit these arms ran — `DynQuantExpertBank` landed 154 commits earlier and all 96 banks pack. The real blocker is the one rows 24 and 26 had already recorded on two other MoE families, **the router**, which `resolve_target` *raises* on rather than skipping, so the run would have died at `model.layers.0.mlp.gate` rather than lying; the recommendation survives and the reason was copied forward from prose instead of read off a run. Because `dynquant export` resolves routers with `restore=True`, **a packed checkpoint at both widths is producible** — 650 of 650 names resolve on a meta-device census. Both have since been **exported, loaded back and scored**, which closes the one claim `encode` could not make: resident VRAM is **15 892 454 912 B and 11 927 683 584 B**, +0.21% and +0.28% over the manifest and **3.99x / 5.32x** below the bf16 merge, with a per-group value lattice at or under `2**bits` on every sampled module and the map's per-module widths visible in the file (the same six audio-tower modules run 4/4/4/4/3/3 bits at the 4.00 budget and 2/2/2/3/2/3 at 3.00). Each packed arm reproduces its `encode` twin on **all 500 items** — 431/500 and 125/500, **zero discordant pairs**, 40/40 identical predictions, matching unparseable counts — which is the *predicted* result, and therefore the test: one discordant item would have meant the packed path diverges from the encoder. Getting there cost two more defects, both now fixed and pinned: **`dynquant eval` scored a randomly initialised model and called it 0.0%**, because nothing on the eval path called `register_hf_quantizer` and `supports_quant_method` answers an unregistered method with a `logger.warning` and `False` rather than an exception — the fix already existed in `integration/hf_quantizer.py`, documented at length, and had never been **called**; and `export` wrote a directory `AutoProcessor` refuses, where the raised filename `preprocessor_config.json` is a red herring and the file that decides is `processor_config.json`. Plus a third of the same family as the `pgrep -f` one: a `pkill -f` that **matched the ssh command line running it**, so the relaunch never happened and a monitor read the previous run's stale log as completion | [`phase5-omni-slurp.md`](phase5-omni-slurp.md) · [strategy](../phase5-qwen3-omni-strategy.md) |
 
 The method itself — signals, sensitivity estimator, allocator, encoder, format, packed
 runtime, kernels — is documented end to end in the
@@ -1634,6 +1636,111 @@ Ten tests, the load-bearing one asserting the two schemes **cannot** account to 
 any of 2/3/4/8 bits -- a property, because the broken version satisfied every equality anyone
 would have thought to write.
 
+## 29. A 30 B audio MoE, where one of the two budgets sits below its own floors
+
+Every campaign above measures a model whose quantizable mass is `nn.Linear`. This one asks
+whether any of it survives when **91.4% of the checkpoint** is batched 3-D expert banks —
+96 of them, 28.991 B parameters — that no LoRA updates, no `bitsandbytes` quantizes and no
+`all-linear` target list sees. `Qwen/Qwen3-Omni-30B-A3B-Instruct`, QLoRA fine-tuned on SLURP
+intent classification from speech on 2× RTX PRO 6000 Blackwell Max-Q, then allocated at 3 and
+4 bits. No GPTQ/AWQ/RTN arms — descoped, and §"what this cannot claim" below is the price.
+
+The signal does get measured on the banks: all 654 modules tracked, the banks included, via a
+per-entry masked Welford over a rotating shard window. The fine-tune is worth **+7.40** points
+(79.40% → 86.80%, *p* = 7.5e-07 paired). Against that bf16 ceiling, **dq4 loses 0.60 at 4.00×
+fewer bytes and does not separate** — *p* = 0.70, interval `[-2.64, +1.44]`, which excludes
+damage worse than 2.64 points and does not prove zero. **dq3 loses 61.80**: 25.00%, discordance
+3/312, *p* = 1.6e-88. A destroyed model, not a degraded one.
+
+**The two budgets are two different experiments, and that is the finding.** The role floors on
+this architecture cost **3.418 average bits** before any score is read. So 4.00 has 0.582 bits
+of headroom, breaches nothing, and spends the headroom lifting `moe.expert.down` off its 2-bit
+floor. 3.00 is *below the floor budget*: soft floors bind, **400 of 650 modules** are breached,
+and 42.9% of the parameters land at 2 bits. dq3 is therefore not a test of the ordering. It is
+a measurement of what happens when an architecture's floors are overridden wholesale, which is
+worth having — the soft-floor path was added precisely so this returns an allocation instead of
+silently returning the floor map — but it is not the same question dq4 answers.
+
+Two things the floor policy got right, from opposite directions. **The 48 routers are never
+breached at either budget** — `MOE_ROUTER` is in `STRUCTURAL_ROLES` — so the collapse is not a
+routing collapse. And the largest single breach is `lm_head` **8→3**, the only 5-bit drop in
+the map; measured on that tensor directly against 512 probes the ladder is 99.8% → 77.7% →
+**58.6%** → 28.5% top-1 agreement at 8/4/3/2 bits. The arm that kept the head at its floor tied
+its ceiling; the arm that cut it collapsed. **Consistent, not conclusive**: 400 modules moved at
+once, and isolating the head needs a floor-policy arm — `LM_HEAD` is *not* in `STRUCTURAL_ROLES`,
+which is itself the thing to fix — that was not run.
+
+Measured channel sensitivity covers **49 of 654 modules, 1.02% of the parameters**. The cause is
+mechanical: bnb stores a 4-bit weight flat, so a 4096×2048 projection presents as `(4194304, 1)`
+and the moment hook's shape guard rejects **every module bnb replaced**. What survives is the 48
+routers and `lm_head` — all 8-bit-floor roles, a thin and biased anchor for a global fallback
+scale. Run anyway as a dry-run diff, it changes **0 of 650** widths at 4.00 and 23 at 3.00, one
+of which cuts `lm_head` further to 2 bits. The proxy-priced map the primary arms used is the
+conservative one.
+
+Three defects found by running. A merge verifier fingerprinted weights by **L2 norm** and aborted
+a correct merge — wrong three ways at once, since a norm difference is a projection and not a
+distance, the tolerance was scaled to the wrong tensor, and the comparison spanned a dtype cast;
+replaced by a sampled-value test with seven bug guards. A `pgrep -f` watcher matched its own
+command line and reported a finished job as running. And `save_pretrained` OOMs on a 59.1 GiB
+merge unless the shards are written as they are built.
+
+A fourth was found by reading, in this report's own first draft, and it is the one worth keeping.
+Both write-ups justified `--map-apply encode` by saying `pack` **cannot reach a batched expert
+bank** — which would mean a `pack` run scored a 91.4%-bf16 model and printed a packed size anyway.
+That is false and was already false when the campaign ran: `DynQuantExpertBank` landed 154 commits
+earlier and all 96 banks are packable. The true blocker is the one rows 24 and 26 had already
+recorded on two other MoE families — **the router**, which carries an 8-bit floor rather than an
+exclusion, so it is in every map and `pack` refuses it by class. A meta-device census of the 650
+names returns 504 `nn.Linear`, 96 rank-3 parameters, **48 `Qwen3OmniMoeThinkerTextTopKRouter`**
+and 2 `nn.Embedding`, and `resolve_target` **raises** on the router rather than skipping it — so
+the run would have died at `model.layers.0.mlp.gate`, loudly. The recommendation was right, the
+reason was wrong, and the wrong reason had been copied forward from prose rather than read off a
+run. The correction also inverts a conclusion: because `dynquant export` resolves the routers with
+`restore=True`, **a packed checkpoint at both widths is producible**. Both have since been built
+and scored — see below.
+
+**The packed checkpoints exist, and they close the VRAM claim.** 650 of 650 modules exported per
+arm in 78 s and 74 s, both totals landing on the map's byte prediction **exactly**. Read back with
+the quantizer registered they give `{DynQuantLinear: 504, DynQuantEmbedding: 2,
+DynQuantExpertBank: 96}` and **48 of 48 routers dense**, on a per-group value lattice at or under
+`2**bits` everywhere — with the allocation's heterogeneity visible in the file, the same six
+audio-tower modules sitting at 4/4/4/4/3/3 bits under the 4.00 map and 2/2/2/3/2/3 under 3.00.
+Resident VRAM is **15 892 454 912 B and 11 927 683 584 B**, **+0.21%** and **+0.28%** over the
+manifest and **3.99x / 5.32x** below the 63 440 876 184 B bf16 merge. Scored on the same 500
+SLURP items, each packed arm reproduces its `encode` twin **item for item**: 431/500 and 125/500,
+**zero discordant pairs**, 40/40 identical kept predictions, unparseable counts matching at 0 and
+3. That is the predicted outcome rather than a surprise — `encode` and `pack` dequantize the same
+codes with the same scales to the same dtype — and predicting it is what makes it a test: one
+discordant item would have located a divergence in the packed path. The 3-bit artifact remains a
+**25.00% model** and is labelled one.
+
+Two more defects, both found by running the packed arms and both now fixed. **`dynquant eval`
+scored a randomly initialised model and reported 0.0%**: nothing on the eval path called
+`register_hf_quantizer`, and `AutoHfQuantizer.supports_quant_method` answers an unregistered
+method with a `logger.warning` and `False`, so `from_pretrained` silently un-set `pre_quantized`
+and built the model from the config. The sharpest part is that the fix already existed —
+`integration/hf_quantizer.py` documents this exact failure under *"Why this exists, measured
+rather than assumed"* — and had never been **called**. It cost two 8-minute arms. And **`export`
+wrote a directory `AutoProcessor` refuses**, where the raised filename `preprocessor_config.json`
+is a red herring: the merged bf16 directory has none either and loads fine, and the file that
+decides is `processor_config.json`. A third belongs with the `pgrep -f` defect above: a `pkill -f`
+that matched the ssh command line running it, so the kill succeeded, the relaunch never happened,
+and a monitor read the *previous* run's log as this run's completion.
+
+**What this campaign cannot claim.** There are no baseline arms, so nothing here says the
+ordering beats a uniform allocator at matched bytes; that arm was descoped and its absence is
+load-bearing at 3 bits especially. The four S5 arms run `--map-apply encode`, not `pack` — for the router
+reason above, not the bank reason the first draft gave — so for *those* arms accuracy is the
+quantized model's and the size claim comes from the map, not from `nvidia-smi`; the S6 packed
+arms lift that limit and are where the VRAM number comes from. `base vs SFT` differs in two things,
+the fine-tune and the absence of the Talker; the arms carrying the actual claim are all
+Thinker-only. And the adapter is trained against NF4 and merged into bf16, so the merged
+checkpoint is not bit-for-bit the model that produced the signal.
+
+Full record: [`phase5-omni-slurp.md`](phase5-omni-slurp.md). The build strategy, the
+architecture measurements and the verification gates: [`phase5-qwen3-omni-strategy.md`](../phase5-qwen3-omni-strategy.md).
+
 ## Conventions that apply to every campaign
 
 **Paired tests on stored per-item hits.** Every arm stores which items it got right, so every
@@ -1664,6 +1771,7 @@ as the wins.
 | [`stats/`](../../stats/) | the signal maps collected by the fine-tune hooks |
 | [`experiments/phase3/`](../../experiments/phase3/) | the phase-3 campaign: the headroom screen, the S2 signal maps, and S3's allocation maps and 36 eval cells with per-item hits |
 | [`experiments/phase4/`](../../experiments/phase4/) | the phase-4 campaign: the text-to-SQL admission screen for both splits, per source, with the refusal broken down by cause. Panel artifacts pulled off the non-volume box while it ran live in [`s4_panel/`](../../experiments/phase4/s4_panel/) (records with per-item hits, quant manifests, decode probes, leakage scans) and [`s4_runs/`](../../experiments/phase4/s4_runs/) (the signal file and the measured expert-bank moments). The finished seven-arm panel is banked in [`results/`](../../experiments/phase4/results/) — `s4-lfm25-panel/` is the panel of record, scored with every arm on one expert arithmetic, and `s4-lfm25-panel-grouped_mm/` keeps the three records it superseded so the delta stays checkable. |
+| [`experiments/phase5/`](../../experiments/phase5/) | the phase-5 campaign on Qwen3-Omni-30B-A3B: the base headroom screen and the three post-merge arms with per-item hits, both allocations in full (`s5/inspect{,_moments}.json`), the two saved bit maps the arms were evaluated from, the proxy-vs-moments map diff rolled up by role, and the merge record. Small enough to bank whole — the checkpoints they describe are 59–70 GiB and live only on a box with no persistent volume |
 | [`docs/format-spec.md`](../format-spec.md) | the checkpoint format contract these experiments write and read |
 | [`docs/legacy-audit.md`](../legacy-audit.md) | what was wrong with the supplementary code, defect by defect |
 | [`decode-neutrality.md`](decode-neutrality.md) | the checkpoint's own `generation_config` reaching a "greedy" decode: how the phase-3 G4 gate found it, which campaigns it does and does not touch, and why the fix took two attempts — the first was correct on transformers 4.x and inert on the 5.x the campaign runs. Ends with what the fixed gate measures: −0.83 points, and a ±1.00 bound GSM8K is too small to resolve |

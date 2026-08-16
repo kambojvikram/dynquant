@@ -820,13 +820,15 @@ def test_a_quantized_arm_that_ran_out_of_budget_is_recorded_not_refused(
 def test_the_dynquant_arms_apply_their_map_the_only_way_this_model_allows(
     arms: Any, tmp_path: Path
 ) -> None:
-    """Packing has nothing to replace for 91.5% of this checkpoint.
+    """The router is in this map, and packing refuses a router.
 
-    The expert banks are bare 3-D parameters, and the packed runtime swaps ``Linear`` and
-    ``Embedding`` *modules*, so ``--map-apply pack`` -- the default, and right for every
-    dense model -- reaches 8.5% of the parameters here and refuses on the rest. Encoding
-    runs the same encoder at the same widths and writes the reconstruction back, which is
-    what the accuracy panel is measuring; the byte figure comes from the map either way.
+    Not the experts: a bare 3-D parameter resolves to a :class:`DynQuantExpertBank` and packs
+    fine. ``MOE_ROUTER`` carries an 8-bit floor rather than an exclusion, so ``mlp.gate`` is in
+    every map this panel can produce, and it is a module that owns a weight while being neither
+    a ``Linear`` nor a bank -- ``resolve_target`` *raises* on it. ``--map-apply pack`` -- the
+    default, and right for every dense model -- would therefore die partway through the swap.
+    Encoding runs the same encoder at the same widths and writes the reconstruction back, which
+    is what the accuracy panel is measuring; the byte figure comes from the map either way.
 
     Asserted on the DynQuant arms only. If the flag ever became a panel-wide default it
     would silently change what every future dense campaign measures in VRAM, and this test

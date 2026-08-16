@@ -1,0 +1,53 @@
+{
+  "left": {
+    "path": "/workspace/runs/omni-slurp/maps.json",
+    "allocator": "rank_product",
+    "average_bits": 3.9999453383534256,
+    "nbytes": 15859386016,
+    "violations": 0,
+    "pricing": {
+      "measured_modules": 0,
+      "proxied_modules": 650,
+      "measured_params": 0,
+      "proxied_params": 31712079872,
+      "proxied_share": 1.0,
+      "scale": 1.0
+    }
+  },
+  "right": {
+    "path": "/workspace/runs/omni-slurp/maps_moments.json",
+    "allocator": "sensitivity",
+    "average_bits": 3.9999453383534256,
+    "nbytes": 15859386016,
+    "violations": 0,
+    "pricing": {
+      "measured_modules": 49,
+      "proxied_modules": 601,
+      "measured_params": 324009984,
+      "proxied_params": 31388069888,
+      "proxied_share": 0.9897827583271799,
+      "scale": null
+    }
+  },
+  "key": "4.00",
+  "modules": 650,
+  "changed": 0,
+  "changed_share": 0.0,
+  "by_role": {},
+  "role_totals": {
+    "other": 66,
+    "mlp.up": 32,
+    "mlp.down": 32,
+    "attn.k": 80,
+    "attn.o": 80,
+    "attn.q": 80,
+    "attn.v": 80,
+    "lm_head": 1,
+    "embedding": 1,
+    "moe.expert.down": 48,
+    "moe.expert.gate_up": 48,
+    "moe.router": 48,
+    "vision.mlp": 54
+  },
+  "detail": {}
+}

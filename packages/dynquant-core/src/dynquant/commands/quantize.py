@@ -34,10 +34,13 @@ Three ways, in the order they are checked:
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from dynquant import constants
 
 from . import _shared
 
@@ -121,6 +124,7 @@ def run(args: argparse.Namespace) -> int:
         device=args.device,
         dtype=args.dtype,
         trust_remote_code=args.trust_remote_code,
+        model_class=args.model_class,
     )
 
     resolved = _resolve_widths(model, args)
@@ -367,6 +371,13 @@ def _save_tokenizer(args: argparse.Namespace, out: Path) -> None:
     tokenizer file could not be found would be the wrong trade. The reason is
     printed either way -- an evaluation that then has to be pointed at the original
     tokenizer should know why.
+
+    A processor-based model needs more than a tokenizer, and the difference is not
+    cosmetic: without ``processor_config.json`` every evaluation against the output
+    directory exits before it loads a single weight. Any of
+    :data:`~dynquant.constants.HF_PROCESSOR_SIDECARS` found next to a *local*
+    source is copied through; a hub id is left alone, because the loader can
+    reach the hub for them on its own.
     """
     source = args.tokenizer or args.model
     try:
@@ -374,3 +385,22 @@ def _save_tokenizer(args: argparse.Namespace, out: Path) -> None:
         tokenizer.save_pretrained(str(out))
     except Exception as exc:  # noqa: BLE001 -- see the docstring
         print(f"  note: no tokenizer copied from {source} ({exc})", flush=True)
+    _copy_processor_sidecars(Path(source), out)
+
+
+def _copy_processor_sidecars(source: Path, out: Path) -> None:
+    """Copy any processor sidecars sitting next to a local `source` into `out`."""
+    copied = []
+    try:
+        if not source.is_dir():
+            return
+        for name in constants.HF_PROCESSOR_SIDECARS:
+            src = source / name
+            if src.is_file() and not (out / name).exists():
+                shutil.copyfile(src, out / name)
+                copied.append(name)
+    except OSError as exc:
+        print(f"  note: processor sidecars not copied from {source} ({exc})", flush=True)
+        return
+    if copied:
+        print(f"  processor sidecars: {', '.join(copied)}", flush=True)

@@ -321,6 +321,31 @@ with ``quantization_config`` in ``config.json``.
 self-contained artifacts, which are not HF model directories.
 """
 
+HF_PROCESSOR_SIDECARS: Final = (
+    "processor_config.json",
+    "preprocessor_config.json",
+    "chat_template.json",
+    "video_preprocessor_config.json",
+    "audio_tokenizer_config.json",
+)
+"""Files a processor-based model needs that ``tokenizer.save_pretrained`` omits.
+
+Owned by transformers, named here because the exporter copies them. On a
+multimodal checkpoint ``processor_config.json`` is the one that decides: with it
+present ``AutoProcessor.from_pretrained`` resolves the processor class named
+inside it, and without it the resolution falls through to the image-processor
+auto path, which raises about a *missing* ``preprocessor_config.json`` -- a file
+the source directory may not have had either. So the error names one file and the
+fix is another, which is exactly the kind of mismatch worth writing down once.
+
+The consequence is not cosmetic. A packed Qwen3-Omni directory without these
+exits every evaluation pointed at it before a single weight is read.
+
+Every name here is transformers' own, and ``tests/test_processor_sidecars.py``
+reads them back off ``transformers`` rather than off a fixture, so a rename
+upstream fails a test instead of silently writing an incomplete directory.
+"""
+
 # --------------------------------------------------------------------------
 # Environment variables
 # --------------------------------------------------------------------------
