@@ -166,7 +166,13 @@ jobs:
         # gigabyte, and four more release cadences that could break a PR touching
         # none of them. The suite needs pytest and hypothesis. The heavy extras get
         # exercised by the phases that use them, as those land.
-        run: pip install ./packages/dynquant-core pytest pytest-xdist hypothesis
+        #
+        # `scipy` is the one exception, and it is not an extra: the phase-2 control-table
+        # tests import an `experiments/` module that does `from scipy.stats import
+        # binomtest` at module scope, so without it collection *errors* rather than
+        # skipping. That is how every job in this workflow went red for three pushes
+        # while the no-skip guard stayed green -- it only catches a skip.
+        run: pip install ./packages/dynquant-core pytest pytest-xdist hypothesis scipy
 
       - name: pytest
         run: pytest -n auto --no-header
@@ -225,9 +231,14 @@ jobs:
         # *on the datasets module*, because both readers import it at call time -- so
         # with the module absent there is no attach point and six decontamination tests
         # skip, which is the suite's only coverage of the leak guard.
+        #
+        # `scipy` because the phase-2 control-table tests import the experiment module
+        # that computes the paired test, and that module imports `binomtest` at module
+        # scope. Without it collection *errors* rather than skipping, which is how this
+        # job went red for three pushes: the guard below only catches a skip.
         run: |
           pip install ./packages/dynquant-core pytest pytest-xdist hypothesis
-          pip install "transformers==${{ matrix.transformers }}" peft datasets
+          pip install "transformers==${{ matrix.transformers }}" peft datasets scipy
 
       - name: the version under test is the one that got installed
         # A resolver backtrack that quietly lands on a different transformers would
@@ -514,7 +525,7 @@ jobs:
           pip install --no-build-isolation -v \
             -C cmake.define.DYNQUANT_REQUIRE_CUDA=ON \
             ./packages/dynquant-kernels
-          pip install ./packages/dynquant-core pytest
+          pip install ./packages/dynquant-core pytest hypothesis scipy
 
       - name: full suite against the real binary
         env:

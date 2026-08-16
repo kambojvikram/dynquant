@@ -107,6 +107,7 @@ def test_probe_reads_the_length_before_the_timed_reps_move_it(harness: Any) -> N
     generation's fill, which is how ``prompt + 32 - 1`` reached a record labelled as a
     four-token probe.
     """
+    pytest.importorskip("transformers")  # `_probe_cache` builds a GenerationConfig
     cache = _LiveCache(30)
     model = _Model(cache)
     length = harness._probe_cache(model, _Tok(), "hello", "cpu", "static", True, "default")
@@ -116,4 +117,5 @@ def test_probe_reads_the_length_before_the_timed_reps_move_it(harness: Any) -> N
 
 def test_probe_returns_minus_one_when_generate_decoded_without_a_cache(harness: Any) -> None:
     """``use_cache: false`` in a checkpoint is the case this field was added to catch."""
+    pytest.importorskip("transformers")  # `_probe_cache` builds a GenerationConfig
     assert harness._probe_cache(_Model(None), _Tok(), "hello", "cpu", None, True, "default") == -1
