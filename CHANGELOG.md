@@ -4,7 +4,7 @@ All notable changes to DynQuant are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Three version numbers move independently, and a release note has to say which one
+Four version numbers move independently, and a release note has to say which one
 it is talking about:
 
 | Number | Meaning | Breaks what |
@@ -17,7 +17,158 @@ it is talking about:
 A bump to any of the last three is called out explicitly, because those are the
 ones that invalidate artifacts a user has already produced.
 
-## [Unreleased]
+## [0.5.0] — 2026-08-16
+
+Every number that describes an artifact stays put: `KERNEL_ABI_VERSION` at 3,
+`MIN_KERNEL_ABI_VERSION` at 2, `CHECKPOINT_FORMAT_VERSION` at 2, `STATS_SCHEMA_VERSION` at 2.
+Nothing under `csrc/` changed. The kernels wheel version moves to 0.5.0 anyway — PyPI refuses a
+filename it already holds — so the meta package's ceiling moves from `<0.5` to `<0.6`.
+
+`STATS_SCHEMA_VERSION` holding at 2 comes with one caveat a version number cannot carry. The
+`param_count` fix below changes what that field *holds* without changing what it *means*, so two
+v2 stats files written either side of this release will disagree about the same model on every
+module `bitsandbytes` replaced, and the newer one is right. Nothing needs migrating and nothing
+is unreadable: an old file still parses, and the values in it are the ones its own run allocated
+on.
+
+Everything below came out of running Qwen3-Omni-30B-A3B-Thinker — a 31.719 B composite whose
+audio tower, vision tower and 96 batched expert banks sit under three different sub-configs —
+through fine-tune, allocation, packing and evaluation. None of it was found by reading the code.
+
+### Added — an eval path for audio: `slurp`, `OmniThinkerBackend`, and prompts that carry tensors
+
+Every task the harness had turns text into ids. An audio model's processor does not work that
+way: it emits the ids and the encoder inputs *together*, with a run of placeholder tokens in the
+ids standing in for the waveform, and the two halves have to survive padding, batching and
+length-sorting side by side or the model attends to another example's audio.
+
+So `Prompt` gained a third member. `AudioPrompt` holds `ids` and the processor's `features` for
+*that one example*, batch axis included, and hands them to `generate` unread — naming the keys
+would mean the harness knowing which model it is serving, which is the one thing `EvalBackend`
+exists to keep out of it. `EncodedPrompts.extras` carries them per prompt, defaulted to `()` so
+every existing construction keeps its meaning and "nothing in this batch had audio" stays one
+falsy check rather than a scan. `EvalBackend.generate_ids` takes `extras`; the vLLM backend
+raises on a non-empty one rather than dropping it, because vLLM takes multi-modal inputs through
+its own `multi_modal_data` field and forwarding the processor's tensors is not a matter of
+renaming a key. Truncation *refuses* an `AudioPrompt` instead of cutting it — the placeholder
+count has to match the encoder inputs exactly, so a shortened prompt is a wrong answer rather
+than a smaller one.
+
+[`eval/omni.py`](packages/dynquant-core/src/dynquant/eval/omni.py) is the backend that carries
+the modality, kept out of `TransformersBackend` so one model's spectrogram layout never lands on
+the path every published text arm takes. It finds the ragged axis by comparing shapes rather
+than padding the last one, because "pad the last axis" is right for `[batch, mels, frames]` and
+silently wrong for `[batch, frames, mels]` — wrong in the way that does not raise, feeds the
+encoder a transposed-looking spectrogram, and returns a plausible low score.
+
+[`eval/slurp.py`](packages/dynquant-core/src/dynquant/eval/slurp.py) is the first task built on
+it: SLURP spoken-language understanding, scored as exact match on the `scenario_action` intent
+over a 60-way menu, with scenario-only and action-only rungs alongside it so a model that lost
+the domain is distinguishable from one that has the domain and picks the wrong verb in it. The
+menu is derived from the annotation and digest-checked, because the index a model answers with
+names a different intent the moment the revision moves. SLURP's own `intent` field is not used:
+it disagrees with the `scenario`/`action` pair on 1,548 of 72,396 recordings, always by having
+lost the scenario.
+
+### Added — `--model-class`, for the checkpoint `AutoModelForCausalLM` has never heard of
+
+`load_model` loaded through `AutoModelForCausalLM`, which claims every model this project has
+published and is not universal. A composite checkpoint registers a class that mapping has never
+heard of, and `from_pretrained` raises before it reads a weight — so `dynquant quantize` could
+not run on the model at all, which is a different failure from running it badly. `_model_loader`
+now reads the checkpoint's own config: the auto class whenever it claims the model, otherwise
+the class named in `config.architectures`. `--model-class NAME` pins it when the automatic
+answer is not the one you want, and reaches `inspect`, `quantize`, `export` and `evaluate`
+through the shared loading group rather than four times.
+
+### Fixed — `eval` could score a randomly initialised model and report it as an accuracy
+
+Nothing on the eval path called `register_hf_quantizer()`. `from_pretrained` asks
+`AutoHfQuantizer.supports_quant_method`, which answers an unregistered method with a
+`logger.warning` and `False` rather than an exception, so `pre_quantized` is silently un-set and
+transformers builds the model from the config with **random weights**. Two packed Qwen3-Omni
+arms scored 0.0% with 499 and 500 of 500 generations unparseable, which is indistinguishable
+from a destroyed checkpoint by the number alone — and that campaign already had a genuine
+25.00% collapse at 3 bits, which made the fake one plausible.
+
+`load_model` in `commands/_shared.py` — the single model-loading seam for every CLI
+subcommand — now registers the quantizer before `from_pretrained`, and for any checkpoint
+whose config declares `quant_method: dynquant` counts the packed modules afterwards, raising
+`DynQuantError` if none came back. The count includes `DynQuantExpertBank`, because on a
+91.4%-bank MoE zero packed Linears is a perfectly ordinary reading. The `HfQuantizer` that
+closes the hole already existed and already documented this exact failure mode; it had never
+been *called*. Pinned by `tests/test_shared_packed_load.py`, whose negative control asserts the
+downgrade behaviour against transformers itself rather than a fixture.
+
+### Fixed — `export` wrote a directory `AutoProcessor` refuses
+
+`_save_tokenizer` calls `tokenizer.save_pretrained`, which writes none of the processor
+sidecars, so every eval against a packed multimodal checkpoint exited before loading a weight.
+The raised filename is a red herring: the error names `preprocessor_config.json`, and the merged
+bf16 directory has none either and loads fine. The file that decides is `processor_config.json`
+— with it present `AutoProcessor` resolves the model's own processor class directly, and
+without it resolution falls through to `image_processing_auto`, which is what raises. Export now
+copies any of the five files in `constants.HF_PROCESSOR_SIDECARS` that sit beside a local source
+model, never overwriting. `tests/test_processor_sidecars.py` reads the expected names back off
+`transformers.processing_utils` rather than restating them.
+
+### Fixed — `param_count` was exactly half on every module `bitsandbytes` replaced
+
+`Linear4bit` stores its weight packed and flat, so `weight.numel()` is half the logical count and
+the shape carries none of the original geometry. The tracker read `numel()` directly, so on a
+QLoRA run **503 of 654 tracked modules reported half and 151 reported correctly**. Bimodal along
+"did bnb touch this" is the worst shape the error could have taken: the allocator prices
+`score / (params × Δbits)`, so a module bnb left alone looked twice as expensive per bit as its
+neighbour and the allocation tilted systematically toward whatever bnb had replaced.
+
+`_logical_numel` prefers the module's declared geometry — `in_features × out_features`, or an
+expert bank's three axes — and falls back to `numel()` only when nothing declares one. The
+stats-file total goes from 30.677 B to the model's real 31.718 B, and the Qwen3-Omni campaign's
+published "98.07% of parameters gradient-measured" is **97.28%** once recomputed against the
+model rather than against the stats file's own total: 30.854 B of 31.718 B, 531 of 654 modules.
+
+### Fixed — a bank refused because the config in hand did not describe it
+
+`bank_orientation` decides a batched expert bank's axis order by matching its shape against the
+config's declared widths, and returns `UNKNOWN` rather than guessing when nothing matches. On a
+composite model that refusal was correct and useless: the outer `Qwen3OmniMoeConfig` holds
+neither tower's hidden size, so every one of the 96 banks was declined — **90.8% of the
+parameters**, on the one model class where the banks *are* the cost.
+
+[`graph.experts.owning_configs`](packages/dynquant-core/src/dynquant/graph/experts.py) walks
+outward from a bank to the enclosing modules that own a config, offering each config and its
+`text_config`, deduped by identity. `_bank_config` tries the config already in hand first and
+keeps it the moment it decides, so every model that classifies today classifies through exactly
+the same config it does today; the search can only run for a bank that is already being refused.
+A candidate that disagrees with the tensor's shape still returns `UNKNOWN`, so the fallback turns
+a refusal into an answer or leaves the refusal standing, and cannot turn a correct refusal into a
+confident wrong axis.
+
+### Changed — `--map-apply pack`'s help now says what it refuses
+
+The help called `encode` "the only one that reaches a batched MoE expert bank", which stopped
+being true when `pack` learned banks. What `pack` cannot take is a module that owns a weight
+while being neither a `Linear` nor a bank — an MoE router is the usual case, and the structural
+8-bit floor puts one in every map on a model that has them, so `--map-apply pack` against a
+48-router checkpoint raises instead of applying the map whole. Behaviour is unchanged; the
+sentence now describes it.
+
+### Added — phase 5: Qwen3-Omni, and the strategy that got there
+
+[`docs/phase5-qwen3-omni-strategy.md`](docs/phase5-qwen3-omni-strategy.md) is the plan and
+[`docs/reports/phase5-omni-slurp.md`](docs/reports/phase5-omni-slurp.md) is what happened:
+Qwen3-Omni-30B-A3B-Thinker QLoRA fine-tuned on SLURP, allocated on measured gradient moments,
+packed at 4.00 and 3.00 average bits. The 4-bit arm holds. The 3-bit arm collapses to 25.00%,
+and the reason is arithmetic rather than allocation — this architecture's structural floors
+alone cost more than 3.4 bits, so a 3.00 target overrides them and measures floor-override
+damage, not the allocator. `experiments/phase5/` carries the drivers and the artifacts, and
+[`scripts/run_s2_omni_finetune.py`](scripts/run_s2_omni_finetune.py) and
+[`scripts/run_s3_omni_merge.py`](scripts/run_s3_omni_merge.py) are the fine-tune and merge steps.
+
+`_offbox_artifacts/` is gitignored. `/workspace` on a rented box is not a persistent volume, so
+everything a run produces is copied there first and sorted afterwards; it is a staging area and
+never a record. What belongs in the repo gets moved into `experiments/` on purpose, rather than
+arriving by way of an untracked directory nobody looked inside before committing.
 
 ### Fixed — phase 2's held claim: the asymmetric GPTQ control has been run
 
@@ -1866,7 +2017,8 @@ and `mma.sync` accumulation — the AWQ/Marlin route — which is P7.
   Python costs. CUDA Graphs (P8) and a `flash-linear-attention` fast path are what address
   it. `experiments/qwen35_2b/RESULTS.md` has the measurement.
 
-[Unreleased]: https://github.com/kambojvikram/dynquant/compare/v0.4.0...main
+[Unreleased]: https://github.com/kambojvikram/dynquant/compare/v0.5.0...main
+[0.5.0]: https://github.com/kambojvikram/dynquant/releases/tag/v0.5.0
 [0.4.0]: https://github.com/kambojvikram/dynquant/releases/tag/v0.4.0
 [0.3.0]: https://github.com/kambojvikram/dynquant/releases/tag/v0.3.0
 [0.2.0]: https://github.com/kambojvikram/dynquant/releases/tag/v0.2.0
