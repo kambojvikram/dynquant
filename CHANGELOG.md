@@ -60,6 +60,20 @@ the compiled wheel published for 0.5.1 remains valid.
   parameters were being measured. Nothing raised, and gradient norms need no axes, so
   the stats file looked complete.
 
+- **Warmup was silently disabled on transformers 4.x.** transformers 5 removed
+  `warmup_ratio` and folded it into `warmup_steps`, which now reads any value below 1 as
+  a fraction of the run. The two spellings are not interchangeable in the direction that
+  matters: `warmup_ratio` is a `TypeError` on 5, which is loud, but passing 0.03 to a 4.x
+  `warmup_steps` raises nothing and warms up for 0.03 *steps* -- which is none. A 27B
+  QLoRA run would take its first optimizer step at the full learning rate and leave no
+  evidence behind but a loss curve nobody has a reference for.
+
+  `warmup_kwargs` picks the field from what `TrainingArguments` *declares*, not from
+  `transformers.__version__` and not by passing one spelling and catching the failure --
+  catching works on 5 and is exactly the case that fails silently on 4. A version string
+  is a claim about a distribution; this is a question about a class. A transformers with
+  neither field raises rather than training without a warmup.
+
 - **DDP zero-fill used the stored width too**, so a rank holding no local moment for a
   module contributed a vector of the wrong length to the all-reduce. Same root cause,
   same fix.
@@ -114,6 +128,33 @@ the compiled wheel published for 0.5.1 remains valid.
   implementation recovers the graph from a block's *inputs*, and under QLoRA every
   block's inputs are frozen -- the embedding included -- so the run would train nothing
   while reporting a falling loss.
+
+- **`tests/test_export_roundtrip_arch.py`: export -> load -> forward, against module
+  trees `transformers` really builds.** The export suite was thorough and entirely
+  synthetic -- every fixture in `test_export_checkpoint.py` is a hand-built module, so it
+  checked that what the packer wrote is what the runtime reads, on shapes we chose.
+  Nothing ran the path against a real architecture.
+
+  Qwen3.5 is where that stopped being acceptable. Its linear-attention blocks contribute
+  `lin_attn.a` and `lin_attn.b`, which are bare parameters rather than Linears, and
+  `lin_attn.conv`, which is a `Conv1d` and so has a weight of rank three; and its head is
+  untied against a 248k-row table. No synthetic fixture has an analogue for any of those,
+  which meant the first time the packer would have met them was on a 27B checkpoint at
+  the end of a four-hour fine-tune.
+
+  Runs at 2, 3, 4 and 8 bits rather than one width: the packers are separate code per
+  width, 3-bit most of all, being the only one whose values do not divide a 32-bit word
+  evenly. A companion check asserts bytes fall with width, which catches what a forward
+  pass cannot -- a width that packs and loads and answers while storing at the width
+  above it, which reads as a working arm and as a compression ratio that quietly is not
+  the one on the card. `register_hf_quantizer()` is called before `from_pretrained`,
+  which is load-bearing: there is no transformers entry point for it, only vLLM and
+  SGLang, and transformers answers an unresolvable `quant_method` with a warning and a
+  randomly initialised model rather than an exception.
+
+  Architectures the installed transformers does not know are skipped *by name*, so a
+  reader can see which guard did not run rather than reading a green suite that quietly
+  covered less than it looks like.
 
 ### Changed
 
