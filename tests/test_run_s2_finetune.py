@@ -842,6 +842,65 @@ def test_seam_is_the_last_resort_and_not_the_first(s2) -> None:
     assert s2.choose_mask_mode({"template": 3, "assemble": 3, "seam": 4}) == "seam"
 
 
+def test_the_warmup_fraction_is_spelled_the_way_the_installed_transformers_spells_it(
+    s2,
+) -> None:
+    """The two spellings differ in the direction that fails silently.
+
+    transformers 5 removed ``warmup_ratio`` and folded it into ``warmup_steps``, which
+    reads any value below 1 as a fraction of the run. Passing 0.03 to a 4.x
+    ``warmup_steps`` raises nothing and warms up for 0.03 steps -- which is none -- so a
+    multi-hour QLoRA run would take its first optimizer step at full learning rate and
+    leave no evidence but a loss curve nobody has a reference for. The 5 direction is the
+    loud one: ``warmup_ratio`` is a ``TypeError`` there, which is how this was found.
+
+    So the field is chosen by what the class declares, and asserted against a stand-in for
+    each generation rather than against whichever one CI happens to have installed.
+
+    Turns red when: the choice moves to a try/except (right for 5, silent on 4), to a
+    version string, or to one hardcoded spelling.
+    """
+    import dataclasses
+
+    @dataclasses.dataclass
+    class _Four:
+        warmup_steps: int = 0
+        warmup_ratio: float = 0.0
+
+    @dataclasses.dataclass
+    class _Five:
+        warmup_steps: float = 0.0
+
+    assert s2.warmup_kwargs(_Four) == {"warmup_ratio": s2.WARMUP_FRACTION}
+    assert s2.warmup_kwargs(_Five) == {"warmup_steps": s2.WARMUP_FRACTION}
+    # Both must be constructible with what they were handed -- the point of the exercise.
+    assert _Four(**s2.warmup_kwargs(_Four)).warmup_ratio == s2.WARMUP_FRACTION
+    assert _Five(**s2.warmup_kwargs(_Five)).warmup_steps == s2.WARMUP_FRACTION
+    # And a fraction, not a step count: the campaign's mixtures differ by 5x in size.
+    assert 0 < s2.WARMUP_FRACTION < 1
+
+
+def test_a_transformers_with_neither_spelling_refuses_rather_than_warms_up_from_zero(
+    s2,
+) -> None:
+    """A third rewrite is not something to guess through.
+
+    Warmup is not decoration on a QLoRA run at this scale, and the failure mode of getting
+    it silently wrong is a worse first step and no message. If neither field is there, the
+    driver has no supported way to ask for a warmup and says so.
+
+    Turns red when: the unknown case starts falling through to a default.
+    """
+    import dataclasses
+
+    @dataclasses.dataclass
+    class _Later:
+        schedule: str = "cosine"
+
+    with pytest.raises(RuntimeError, match="neither warmup_ratio nor warmup_steps"):
+        s2.warmup_kwargs(_Later)
+
+
 def test_an_overlong_conversation_is_dropped_not_truncated(s2) -> None:
     """Truncation has no correct end to cut from here.
 

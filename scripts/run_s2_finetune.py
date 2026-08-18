@@ -1412,7 +1412,7 @@ def _train(
         gradient_accumulation_steps=args.accum,
         learning_rate=lr,
         lr_scheduler_type="cosine",
-        warmup_ratio=0.03,
+        **warmup_kwargs(TrainingArguments),
         weight_decay=0.0,
         bf16=True,
         # Off deliberately: checkpointing replays the forward pass during backward, so a
@@ -1531,6 +1531,45 @@ def _train(
             return 6
     print(f"-> signal map: {tracked} modules at {stats_file}", flush=True)
     return 0
+
+
+#: Warmup as a fraction of the run. Every phase-3 arm has trained under this number and
+#: it is a fraction rather than a step count on purpose: the campaign runs mixtures that
+#: differ by 5x in size, and a fixed step count would mean a different thing in each.
+WARMUP_FRACTION = 0.03
+
+
+def warmup_kwargs(training_arguments: Any) -> dict[str, float]:
+    """Spell the warmup fraction the way the installed ``transformers`` spells it.
+
+    transformers 5 removed ``warmup_ratio`` and folded it into ``warmup_steps``, which now
+    reads any value below 1 as a fraction of the run. The two spellings are not
+    interchangeable in the direction that matters: passing 0.03 to a 4.x ``warmup_steps``
+    raises nothing and warms up for 0.03 *steps* -- which is none -- so a 27B QLoRA run
+    would take its first optimizer step at the full learning rate and the only evidence
+    would be a loss curve nobody has a reference for.
+
+    So the spelling is chosen from what the class *declares* rather than by passing one
+    and catching the failure. Catching would work for 5 (``warmup_ratio`` is a TypeError
+    there) and is exactly the case that fails silently on 4.
+
+    Turns on the presence of the field, not on ``transformers.__version__``: a version
+    string is a claim about a distribution and this is a question about a class.
+    """
+    import dataclasses
+
+    try:
+        fields = {field.name for field in dataclasses.fields(training_arguments)}
+    except TypeError:  # not a dataclass -- a test double, or a future rewrite
+        fields = set(vars(training_arguments))
+    if "warmup_ratio" in fields:
+        return {"warmup_ratio": WARMUP_FRACTION}
+    if "warmup_steps" not in fields:
+        raise RuntimeError(
+            "TrainingArguments declares neither warmup_ratio nor warmup_steps; "
+            "refusing to train without a warmup rather than guessing at the spelling"
+        )
+    return {"warmup_steps": WARMUP_FRACTION}
 
 
 def save_outputs(
