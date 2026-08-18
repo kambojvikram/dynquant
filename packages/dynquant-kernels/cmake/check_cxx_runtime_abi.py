@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -59,7 +58,17 @@ INTRODUCED_AFTER_BASELINE: dict[str, str] = {
 #: The C++ runtime surface. Everything else undefined in the module -- ATen,
 #: libtorch, libc, libcudart -- is resolved at load time from libraries that are
 #: guaranteed present next to it, and is not this script's business.
-CXX_RUNTIME_PREFIXES = ("__cxa_", "__cxx_", "__gxx_", "_ZSt", "_ZNSt", "_ZNKSt", "_ZN9__gnu_cxx", "_ZTVSt", "_ZTISt")
+CXX_RUNTIME_PREFIXES = (
+    "__cxa_",
+    "__cxx_",
+    "__gxx_",
+    "_ZSt",
+    "_ZNSt",
+    "_ZNKSt",
+    "_ZN9__gnu_cxx",
+    "_ZTVSt",
+    "_ZTISt",
+)
 
 
 def _tool(name: str) -> str:
@@ -78,7 +87,9 @@ def undefined_symbols(so: Path) -> list[str]:
     """
     out = subprocess.run(
         [_tool("nm"), "-D", "--undefined-only", str(so)],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout
     syms = []
     for line in out.splitlines():
@@ -93,9 +104,13 @@ def undefined_symbols(so: Path) -> list[str]:
 def defined_symbols(lib: Path) -> set[str]:
     out = subprocess.run(
         [_tool("nm"), "-D", "--defined-only", str(lib)],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout
-    return {line.split()[-1].split("@", 1)[0] for line in out.splitlines() if len(line.split()) >= 2}
+    return {
+        line.split()[-1].split("@", 1)[0] for line in out.splitlines() if len(line.split()) >= 2
+    }
 
 
 #: The libraries the loader will actually resolve these symbols from. libstdc++ is
@@ -109,7 +124,11 @@ BASELINE_LIBRARIES = ("libstdc++.so.6", "libc.so.6", "libgcc_s.so.1")
 #: Where to look when the compiler will not say. `-print-file-name` answers for
 #: libraries the compiler links itself and echoes the bare name for the rest.
 _FALLBACK_LIBDIRS = (
-    "/lib/x86_64-linux-gnu", "/usr/lib/x86_64-linux-gnu", "/lib64", "/usr/lib64", "/usr/lib",
+    "/lib/x86_64-linux-gnu",
+    "/usr/lib/x86_64-linux-gnu",
+    "/lib64",
+    "/usr/lib64",
+    "/usr/lib",
 )
 
 
@@ -153,7 +172,9 @@ def find_baseline(explicit: str | None) -> list[Path]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("shared_object", type=Path)
     ap.add_argument("--baseline", help="oldest libstdc++.so.6 this release supports")
     args = ap.parse_args()
@@ -173,7 +194,9 @@ def main() -> int:
 
     baseline = find_baseline(args.baseline)
     if not baseline:
-        print("ABI check: no baseline libraries located; running the deny-list only.", file=sys.stderr)
+        print(
+            "ABI check: no baseline libraries located; running the deny-list only.", file=sys.stderr
+        )
     else:
         have: set[str] = set()
         for lib in baseline:
