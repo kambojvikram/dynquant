@@ -59,10 +59,20 @@ INSPECT: dict[str, Any] = {
                 "8": {"modules": 96, "params": 23_592_960},
             },
             "violations": [
-                {"name": "lm_head", "role": "lm_head", "floor_bits": 8,
-                 "assigned_bits": 3, "num_params": 1_271_398_400},
-                {"name": "model.layers.0.mlp.gate_proj", "role": "mlp.gate",
-                 "floor_bits": 4, "assigned_bits": 2, "num_params": 89_128_960},
+                {
+                    "name": "lm_head",
+                    "role": "lm_head",
+                    "floor_bits": 8,
+                    "assigned_bits": 3,
+                    "num_params": 1_271_398_400,
+                },
+                {
+                    "name": "model.layers.0.mlp.gate_proj",
+                    "role": "mlp.gate",
+                    "floor_bits": 4,
+                    "assigned_bits": 2,
+                    "num_params": 89_128_960,
+                },
             ],
         },
         "4.02": {
@@ -79,16 +89,26 @@ INSPECT: dict[str, Any] = {
 }
 
 FINETUNE = {
-    "regime": "qlora", "lora_rank": 32, "epochs": 1, "lr": 1e-4,
-    "effective_batch": 16, "steps": 625, "train_loss": 0.0864,
-    "tracked_modules": 654, "conversations_kept": 9999,
+    "regime": "qlora",
+    "lora_rank": 32,
+    "epochs": 1,
+    "lr": 1e-4,
+    "effective_batch": 16,
+    "steps": 625,
+    "train_loss": 0.0864,
+    "tracked_modules": 654,
+    "conversations_kept": 9999,
     "supervised_tokens": 350_799,
     "train_sources": ["spider", "gretel", "wikisql", "create-context"],
 }
 
 EVAL = {
-    "label": "dq3", "accuracy": 0.4125, "total": 400, "correct": 165,
-    "max_new_tokens": 1024, "unfinished_reasoning": 0,
+    "label": "dq3",
+    "accuracy": 0.4125,
+    "total": 400,
+    "correct": 165,
+    "max_new_tokens": 1024,
+    "unfinished_reasoning": 0,
     "sources": ["spider", "gretel", "wikisql", "create-context"],
 }
 
@@ -96,8 +116,11 @@ EVAL = {
 def _write(tmp_path: Path, **overrides: Any) -> dict[str, str]:
     """Lay the four inputs on disk the way the run leaves them."""
     export = {
-        "dynquant_core": "0.5.2", "average_bits": 2.9998, "modules": 498,
-        "directory_nbytes": 10_085_628_928, "group_size": 128,
+        "dynquant_core": "0.5.2",
+        "average_bits": 2.9998,
+        "modules": 498,
+        "directory_nbytes": 10_085_628_928,
+        "group_size": 128,
     }
     export.update(overrides.get("export", {}))
     files = {
@@ -122,12 +145,28 @@ def _render(card: Any, tmp_path: Path, target: str, **overrides: Any) -> str:
     """
     paths = _write(tmp_path, **overrides)
     out = tmp_path / f"README-{target}-{len(overrides)}.md"
-    card.main([
-        "--arm", "dq3", "--repo", "Org/model", "--base-model", "Qwen/Qwen3.8-27B",
-        "--finetune", paths["finetune"], "--export", paths["export"],
-        "--eval", paths["eval"], "--inspect", paths["inspect"],
-        "--inspect-target", target, "--out", str(out),
-    ])
+    card.main(
+        [
+            "--arm",
+            "dq3",
+            "--repo",
+            "Org/model",
+            "--base-model",
+            "Qwen/Qwen3.8-27B",
+            "--finetune",
+            paths["finetune"],
+            "--export",
+            paths["export"],
+            "--eval",
+            paths["eval"],
+            "--inspect",
+            paths["inspect"],
+            "--inspect-target",
+            target,
+            "--out",
+            str(out),
+        ]
+    )
     return out.read_text(encoding="utf-8")
 
 
@@ -152,15 +191,14 @@ def test_an_arm_below_the_floor_budget_says_so_before_it_says_its_score(
     assert text.index("Read this first") < text.index("## Results")
 
 
-def test_the_arm_at_the_floor_budget_is_not_given_the_warning(
-    card: Any, tmp_path: Path
-) -> None:
+def test_the_arm_at_the_floor_budget_is_not_given_the_warning(card: Any, tmp_path: Path) -> None:
     """Because a warning that appears on every card is one nobody reads.
 
     Turns red when: the threshold widens far enough to catch a clean arm.
     """
-    text = _render(card, tmp_path, "4.02",
-                   export={"average_bits": 4.0196, "directory_nbytes": 13_447_625_728})
+    text = _render(
+        card, tmp_path, "4.02", export={"average_bits": 4.0196, "directory_nbytes": 13_447_625_728}
+    )
     assert "Read this first" not in text
     assert "clears every floor" in text
 
@@ -192,9 +230,7 @@ def test_the_registration_call_is_in_the_load_snippet(card: Any, tmp_path: Path)
     assert "randomly initialised" in text
 
 
-def test_a_decode_budget_that_bound_is_reported_as_a_bound(
-    card: Any, tmp_path: Path
-) -> None:
+def test_a_decode_budget_that_bound_is_reported_as_a_bound(card: Any, tmp_path: Path) -> None:
     """A generation that never finished is scored wrong, so the accuracy has a ceiling.
 
     On this task a 256-token cap once scored 5.50% where 1024 scored 57.75% on the same
@@ -210,9 +246,7 @@ def test_a_decode_budget_that_bound_is_reported_as_a_bound(
     assert "bounded above" not in clean
 
 
-def test_a_target_the_inspection_never_measured_is_refused(
-    card: Any, tmp_path: Path
-) -> None:
+def test_a_target_the_inspection_never_measured_is_refused(card: Any, tmp_path: Path) -> None:
     """Otherwise the allocation table describes a budget this arm was not exported at.
 
     Turns red when: the lookup starts defaulting to some row rather than raising.

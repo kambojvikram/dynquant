@@ -368,9 +368,10 @@ def test_a_repeated_target_flag_accumulates_rather_than_replacing() -> None:
     """
     parser = build_parser()
     assert parser.parse_args(["inspect", "m", "--target", "3.0", "4.0"]).target == [3.0, 4.0]
-    assert parser.parse_args(
-        ["inspect", "m", "--target", "3.0", "--target", "4.0"]
-    ).target == [3.0, 4.0]
+    assert parser.parse_args(["inspect", "m", "--target", "3.0", "--target", "4.0"]).target == [
+        3.0,
+        4.0,
+    ]
     # Absent entirely still means absent, not an empty run with a silent default.
     assert parser.parse_args(["inspect", "m"]).target is None
 

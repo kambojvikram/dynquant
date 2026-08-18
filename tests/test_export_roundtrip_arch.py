@@ -140,10 +140,19 @@ def _export(src, out, bits: int) -> None:
     env = dict(os.environ, PYTHONPATH=os.pathsep.join(p for p in sys.path if p))
     proc = subprocess.run(
         [
-            sys.executable, "-m", "dynquant", "export", str(src),
-            "--uniform", str(bits),
-            "--device", "cpu", "--compute-device", "cpu",
-            "-o", str(out),
+            sys.executable,
+            "-m",
+            "dynquant",
+            "export",
+            str(src),
+            "--uniform",
+            str(bits),
+            "--device",
+            "cpu",
+            "--compute-device",
+            "cpu",
+            "-o",
+            str(out),
         ],
         capture_output=True,
         text=True,
