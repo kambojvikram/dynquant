@@ -25,6 +25,7 @@ import json
 import sys
 import types
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 import torch
@@ -168,6 +169,75 @@ class _WrongEos(_Templated):
     """
 
     eos_token_id = 99
+
+
+class _SeamMerging:
+    """A thinking template whose generation prompt ends inside a BPE merge.
+
+    Qwen3.5, reduced to the one property that matters. Its generation prompt opens a
+    reasoning block and ends ``<think>\n``; the rendered assistant turn continues
+    ``\n</think>``, so the template's own output contains ``\n\n`` across the boundary
+    and the tokenizer merges the pair into a single id. The prompt's *text* is a prefix of
+    the full render's and its *tokens* are not -- the last prompt token differs -- which is
+    what ``template`` and ``assemble`` are right to refuse and what ``seam`` exists for.
+
+    Its frame is written as sentinel characters that it reads back as its own control ids.
+    That is not a convenience: it is the property that makes the text path admissible here
+    and inadmissible for :class:`_MistralShaped`, and the seam mode checks for it per turn
+    rather than assuming it.
+    """
+
+    USER, ASSISTANT, END, NL, NLNL = 1, 2, 3, 6, 7
+    FRAME: ClassVar[dict[str, int]] = {
+        "\x01": USER,
+        "\x02": ASSISTANT,
+        "\x03": END,
+        "\n": NL,
+    }
+
+    pad_token = "<pad>"
+    pad_token_id = 0
+    eos_token = "</s>"
+    eos_token_id = 3
+
+    def __call__(self, text, add_special_tokens=True):
+        assert add_special_tokens is False, "message content must not be framed twice"
+        return {"input_ids": self._encode(text)}
+
+    @classmethod
+    def _encode(cls, text: str) -> list[int]:
+        ids: list[int] = []
+        index = 0
+        while index < len(text):
+            if text.startswith("\n\n", index):  # the merge, and the whole point
+                ids.append(cls.NLNL)
+                index += 2
+                continue
+            ids.append(cls.FRAME.get(text[index], 1000 + ord(text[index])))
+            index += 1
+        return ids
+
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        tokenize=False,
+        add_generation_prompt=False,
+        continue_final_message=False,
+    ):
+        assert not (add_generation_prompt and continue_final_message)
+        parts = []
+        for message in messages:
+            if message["role"] == "user":
+                parts.append(f"\x01{message['content']}\x03")
+            else:
+                # The closed, empty reasoning block a thinking template emits for a turn it
+                # is not being asked to continue -- this is where the `\n\n` comes from.
+                parts.append(f"\x02\n\n{message['content']}\x03")
+        if add_generation_prompt:
+            parts.append("\x02\n")
+        text = "".join(parts)
+        return self._encode(text) if tokenize else text
 
 
 class _MistralShaped:
@@ -601,11 +671,14 @@ def test_the_mode_is_measured_against_the_tokenizer_not_read_off_it(s2) -> None:
     ] * 4
 
     refusing = s2.probe_mask_modes(rows, _MistralShaped(), column="messages", max_len=64)
-    assert refusing == {"template": 0, "assemble": 4}
+    # `seam` is 0 for the same reason it exists: it goes through text, and this backend
+    # renders its frame as characters it will not read back. It refuses rather than
+    # producing an unframed sequence.
+    assert refusing == {"template": 0, "assemble": 4, "seam": 0}
     assert s2.choose_mask_mode(refusing) == "assemble"
 
     fine = s2.probe_mask_modes(rows, _Templated(), column="messages", max_len=64)
-    assert fine == {"template": 4, "assemble": 4}
+    assert fine == {"template": 4, "assemble": 4, "seam": 0}
     assert s2.choose_mask_mode(fine) == "template"
 
 
@@ -637,18 +710,136 @@ def test_no_render_asks_for_text(s2) -> None:
     -- a frame it will never be served under, and damage that would surface at S4 looking
     like quantization loss.
 
-    Asserted as the property rather than as its symptom, and over both modes, because the
-    text path is a *fallback* in most codebases: it fires on the tokenizers CI does not
-    exercise.
+    Asserted as the property rather than as its symptom, and over both walk modes, because
+    the text path is a *fallback* in most codebases: it fires on the tokenizers CI does not
+    exercise. ``seam`` is the deliberate exception and is asserted below it.
 
     Turns red when: a ``tokenize=False`` call is reintroduced anywhere in the masking path.
     """
     conversation = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
-    for mode in s2.MASK_MODES:
+    for mode in ("template", "assemble"):
         tokenizer = _Templated()
         s2.mask_conversation(tokenizer, conversation, max_len=64, mode=mode)
         assert tokenizer.tokenize_flags, f"{mode} rendered nothing"
         assert all(tokenizer.tokenize_flags), f"{mode} asked for text"
+
+    # `seam` is the one mode that does go through text, because a generation prompt ending
+    # inside a BPE merge cannot be located any other way. It pays for that with a check
+    # rather than an assumption: it re-encodes the render and compares against what
+    # `tokenize=True` produced, so on a tokenizer that does not read its own frame back out
+    # of text -- which is what this stub is -- it refuses instead of training unframed.
+    tokenizer = _Templated()
+    with pytest.raises(s2.MaskError, match="round-trip the frame"):
+        s2.mask_conversation(tokenizer, conversation, max_len=64, mode="seam")
+
+
+def test_a_generation_prompt_ending_inside_a_merge_masks_under_seam_alone(s2) -> None:
+    """The Qwen3.5 case, and the reason a third mode exists at all.
+
+    Both walk modes ask for the generation prompt's tokens to be a prefix of the turn's.
+    This template makes that false without being wrong: it opens a reasoning block ending
+    ``<think>\n`` and continues it ``\n</think>``, so its own output holds ``\n\n``
+    across the boundary and BPE merges it. The refusals are correct -- the alternative is
+    supervising at an offset -- but they refuse *every* row, so the mixture is untrainable
+    until something masks it.
+
+    Turns red when: seam stops handling a boundary merge, or a walk mode starts pretending
+    it can.
+    """
+    conversation = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
+
+    for mode in ("template", "assemble"):
+        with pytest.raises(s2.MaskError):
+            s2.mask_conversation(_SeamMerging(), conversation, max_len=64, mode=mode)
+
+    masked = s2.mask_conversation(_SeamMerging(), conversation, max_len=64, mode="seam")
+    assert sum(1 for label in masked["labels"] if label != -100) > 0
+
+
+def test_the_seam_is_placed_where_serving_places_it(s2) -> None:
+    """The unsupervised half must be, token for token, what the harness will send.
+
+    This is the property that justifies emitting a sequence the tokenizer would not produce
+    from its own text. One pair at the seam is split where BPE would have merged it, and
+    that split is the *correct* one: at inference the model is handed the generation prompt
+    and asked to continue it, so the token it must learn to follow is the prompt's last
+    token -- not the merged token that only exists in a render of text the model never
+    sees. Training on the canonical merge would train on a prompt token that cannot occur.
+
+    Multi-turn is where the mode's cost is legible, so it is asserted rather than avoided.
+    Each seam leaves its split pair behind in the context, so the *second* assistant turn's
+    prompt runs one token longer than what serving would tokenize for the same text, and
+    the third two longer. What holds at every turn is the part that carries the gradient:
+    the token immediately before the supervised span is the one serving will actually hand
+    the model. This mixture is single-turn, so the drift is measured here and paid nowhere.
+
+    Turns red when: the seam moves off the generation-prompt boundary, the prompt side
+    starts being tokenized as a fragment of the full text rather than on its own, or the
+    multi-turn drift grows past one token per seam already passed.
+    """
+    tokenizer = _SeamMerging()
+    conversation = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "b"},
+        {"role": "user", "content": "c"},
+        {"role": "assistant", "content": "d"},
+    ]
+
+    masked = s2.mask_conversation(tokenizer, conversation, max_len=64, mode="seam")
+    ids, labels = masked["input_ids"], masked["labels"]
+    starts = [
+        i for i in range(len(labels)) if labels[i] != -100 and (i == 0 or labels[i - 1] == -100)
+    ]
+    assert len(starts) == 2, "one supervised span per assistant turn"
+
+    for seams_passed, (turn, start) in enumerate(zip((1, 3), starts, strict=True)):
+        served = tokenizer.apply_chat_template(
+            conversation[:turn], tokenize=True, add_generation_prompt=True
+        )
+        # The load-bearing one, and it holds at every turn: the model learns to continue
+        # from the token it will actually be given.
+        assert ids[start - 1] == served[-1] == tokenizer.NL, f"turn {turn}: wrong last token"
+        if seams_passed == 0:
+            assert ids[:start] == served, f"turn {turn}: the prompt is not what serving sends"
+        else:
+            assert len(ids[:start]) == len(served) + seams_passed, f"turn {turn}: drifted"
+
+    # And the merge really was in play, so this is not a template the walk would have
+    # handled anyway: the canonical encoding of the same text is exactly one token shorter
+    # per seam.
+    canonical = tokenizer.apply_chat_template(conversation, tokenize=True)
+    assert len(canonical) == len(ids) - len(starts)
+
+    assert labels[-1] != -100, "the last turn is supervised through its end"
+
+
+def test_seam_is_the_last_resort_and_not_the_first(s2) -> None:
+    """A mode that emits a non-canonical sequence must not win a tie.
+
+    ``seam`` is the only mode whose output the tokenizer would not have produced from its
+    own text. That is a real cost, paid deliberately for templates that leave no
+    alternative, and it must not be paid for a template that has one. So the probe's tie
+    break orders the modes by how much each assumes, and seam is last.
+
+    Turns red when: the tie break reverts to a two-way comparison, which silently promotes
+    whichever mode was added most recently.
+    """
+    rows = [
+        {
+            "messages": [
+                {"role": "user", "content": "a"},
+                {"role": "assistant", "content": "b"},
+            ]
+        }
+    ] * 4
+
+    merging = s2.probe_mask_modes(rows, _SeamMerging(), column="messages", max_len=64)
+    assert merging == {"template": 0, "assemble": 0, "seam": 4}
+    assert s2.choose_mask_mode(merging) == "seam"
+
+    assert s2.choose_mask_mode({"template": 4, "assemble": 4, "seam": 4}) == "template"
+    assert s2.choose_mask_mode({"template": 0, "assemble": 4, "seam": 4}) == "assemble"
+    assert s2.choose_mask_mode({"template": 3, "assemble": 3, "seam": 4}) == "seam"
 
 
 def test_an_overlong_conversation_is_dropped_not_truncated(s2) -> None:
@@ -1007,7 +1198,7 @@ def test_auto_mode_rescues_a_tokenizer_the_walk_cannot_handle(s2, monkeypatch, t
     )
     assert census["mask_mode"] == "assemble"
     assert census["mask_mode_requested"] == "auto"
-    assert census["mask_mode_probe"] == {"template": 0, "assemble": 3}
+    assert census["mask_mode_probe"] == {"template": 0, "assemble": 3, "seam": 0}
     assert census["conversations_kept"] == 3
     assert census["drop_rate"] == 0.0
 

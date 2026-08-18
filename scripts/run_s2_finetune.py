@@ -195,7 +195,7 @@ TERMINATOR_TOKENS = 2
 #: at all -- it appends a synthetic user turn and takes each assistant span as the
 #: difference between two renders that a serving validator accepts. See
 #: :func:`mask_conversation`.
-MASK_MODES = ("template", "assemble")
+MASK_MODES = ("template", "assemble", "seam")
 
 
 class MaskError(Exception):
@@ -301,9 +301,11 @@ def mask_conversation(
     ``mode="assemble"`` never asks for a conversation ending in an assistant turn at all,
     taking each span as the difference between two renders that a serving validator will
     accept (:func:`_assemble_conversation`) -- which is the only way to mask anything for
-    ``mistral_common``. Neither mode is right for every tokenizer and neither can be chosen
-    from an attribute, so the driver measures both against the tokenizer it was actually
-    given -- see :func:`probe_mask_modes`.
+    ``mistral_common``. ``mode="seam"`` splits on the rendered *text* and tokenizes each
+    side, which is the only way to mask anything for a template whose generation prompt
+    ends inside a BPE merge (:func:`_seam_conversation`). No mode is right for every
+    tokenizer and none can be chosen from an attribute, so the driver measures all of them
+    against the tokenizer it was actually given -- see :func:`probe_mask_modes`.
     """
     if not messages:
         raise MaskError("empty conversation")
@@ -314,6 +316,8 @@ def mask_conversation(
         input_ids, spans = _walk_template(tokenizer, messages, max_len=max_len)
     elif mode == "assemble":
         input_ids, spans = _assemble_conversation(tokenizer, messages, max_len=max_len)
+    elif mode == "seam":
+        input_ids, spans = _seam_conversation(tokenizer, messages, max_len=max_len)
     else:
         raise MaskError(f"unknown mask mode {mode!r}")
 
@@ -581,6 +585,125 @@ def _reason(message: str) -> str:
     return message
 
 
+def _render_text(tokenizer: Any, messages: list[dict[str, str]], *, generation_prompt: bool) -> str:
+    """One prefix of a conversation, as the string the template emits."""
+    try:
+        rendered = tokenizer.apply_chat_template(
+            [dict(message) for message in messages],
+            tokenize=False,
+            add_generation_prompt=generation_prompt,
+        )
+    except MaskError:
+        raise
+    except Exception as exc:
+        raise MaskError(f"apply_chat_template raised {type(exc).__name__}") from exc
+    if isinstance(rendered, (list, tuple)) and len(rendered) == 1:
+        rendered = rendered[0]
+    if not isinstance(rendered, str):
+        raise MaskError("apply_chat_template(tokenize=False) did not return a string")
+    return rendered
+
+
+def _encode(tokenizer: Any, text: str) -> list[int]:
+    """Tokenize a fragment as a fragment: no BOS, no EOS, no framing of its own."""
+    if not text:
+        return []
+    ids = _as_token_ids(tokenizer(text, add_special_tokens=False))
+    if ids is None:
+        raise MaskError("the tokenizer did not return ids for a rendered fragment")
+    return ids
+
+
+def _seam_conversation(
+    tokenizer: Any, messages: list[dict[str, str]], *, max_len: int
+) -> tuple[list[int], list[tuple[int, int]]]:
+    """Split on the rendered text, and tokenize each side of the split separately.
+
+    Both other modes require the generation prompt's tokens to be a *token* prefix of the
+    turn that follows it. Qwen3.5 breaks that, and not by a bug: its generation prompt
+    ends ``<think>\n`` and its rendered assistant turn continues ``\n</think>``, so the
+    template's own output contains ``\n\n`` across the boundary and BPE merges it into
+    one token. The prompt tokenizes ``<think>``, ``\n``; the full render tokenizes
+    ``<think>``, ``\n\n``. The string is a prefix and the tokens are not, and the last
+    prompt token differs -- so ``template`` and ``assemble`` both reject every row of the
+    mixture, which is what they should do rather than supervise at an offset.
+
+    This mode asks the weaker and more useful question. The seam is placed where *serving*
+    puts it: the prompt is tokenized exactly as the harness will tokenize it, the rest is
+    tokenized as its own fragment, and the two are concatenated. Training then sees
+    ``<think>``, ``\n`` and learns to emit ``\n``, ``</think>`` -- which is exactly the
+    continuation the model is asked for at inference, from exactly the tokens it will have
+    in context.
+
+    The cost is that the sequence is not the tokenizer's canonical encoding of its own
+    text: one token pair at each seam is split where BPE would have merged it. That is a
+    real difference and it is the *right* one -- canonical encoding is not what generation
+    produces, and a model trained on the canonical merge would be trained on a prompt
+    token it can never be given.
+
+    Going through text is otherwise the exact mistake that cost S1 two re-runs, so it is
+    permitted only where it is checked: every turn re-encodes the whole prompt and compares
+    it against what ``tokenize=True`` produced. A tokenizer that does not read its own
+    control tokens back out of text fails that on the first turn and the mode masks
+    nothing, which is what sends the probe to ``assemble``.
+
+    Multi-turn carries a bounded cost from that split. Each seam leaves its two tokens in
+    the context where serving would have one, so the second supervised turn's prompt runs a
+    token longer than the canonical encoding of the same text and the third two longer --
+    the token before each span is still exactly the one serving hands the model, which is
+    what the gradient is computed against, but the deeper context drifts by one token per
+    seam already passed. It is a real cost and it is the reason this mode sorts last in
+    :func:`choose_mask_mode`; on a single-turn mixture there is exactly one seam and it is
+    the last thing in the prompt, so nothing drifts at all.
+
+    Chaining across turns is strict: each turn's prompt must extend the text already
+    committed, verbatim. A template that re-closes a conversation it is not being asked to
+    continue -- Phi-4-mini ends ``<|end|><|endoftext|>`` mid-conversation -- fails that and
+    the row is dropped. No allowance is made for it here, because such a template does not
+    have this mode's problem in the first place and ``template`` masks it correctly with
+    the terminator allowance it already has. The probe picks whichever mode works.
+    """
+    committed = ""
+    ids: list[int] = []
+    spans: list[tuple[int, int]] = []
+
+    for index, message in enumerate(messages):
+        if message["role"] != "assistant":
+            continue
+        prompt_text = _render_text(tokenizer, messages[:index], generation_prompt=True)
+        through_text = _render_text(tokenizer, messages[: index + 1], generation_prompt=False)
+        if not prompt_text.startswith(committed):
+            raise MaskError(f"turn {index}: the template rewrote text it had already emitted")
+        if not through_text.startswith(prompt_text):
+            raise MaskError(f"turn {index}: rendering is not prefix-stable")
+        if _encode(tokenizer, prompt_text) != _render(
+            tokenizer, messages[:index], generation_prompt=True
+        ):
+            # The guard that makes a text path admissible at all. `mistral_common` renders
+            # its frame as the characters `[INST]` and `tekken` will not read them back out
+            # of user text, so re-encoding a render there silently produces a sequence with
+            # no BOS and no frame -- a model trained on it is trained under a frame it will
+            # never be served with, and the damage surfaces two stages later looking like
+            # quantization loss. Rather than assume a tokenizer round-trips its own control
+            # tokens, ask it: the text path is used only where it agrees with the
+            # `tokenize=True` path on the prompt, and the row is dropped where it does not.
+            raise MaskError(f"turn {index}: the text path does not round-trip the frame")
+
+        ids += _encode(tokenizer, prompt_text[len(committed) :])
+        start = len(ids)
+        ids += _encode(tokenizer, through_text[len(prompt_text) :])
+        if len(ids) == start:
+            raise MaskError(f"turn {index}: supervises nothing")
+        spans.append((start, len(ids)))
+        committed = through_text
+
+    if len(ids) > max_len:
+        # Checked once at the end rather than per turn: the whole sequence is what has to
+        # fit, and a per-turn check would report the wrong turn as the long one.
+        raise MaskError(f"too long: {len(ids)} > {max_len}")
+    return ids, spans
+
+
 def probe_mask_modes(
     rows: Any, tokenizer: Any, *, column: str, max_len: int, sample: int = 32
 ) -> dict[str, int]:
@@ -612,8 +735,15 @@ def probe_mask_modes(
 
 
 def choose_mask_mode(counts: dict[str, int]) -> str:
-    """Ties go to ``template``: it assumes nothing about where a turn ends."""
-    return "assemble" if counts.get("assemble", 0) > counts.get("template", 0) else "template"
+    """The mode that masked the most rows; ties broken by how much each mode assumes.
+
+    ``template`` first because it assumes nothing -- the sequence is the template's own
+    output, token for token. Then ``assemble``, which supplies the turn terminator itself
+    and re-verifies it against the template every turn. Then ``seam``, which is the only
+    one that emits a sequence the tokenizer would not have produced from its own text, and
+    so is the one to reach for last and only when the others reach nothing.
+    """
+    return max(MASK_MODES, key=lambda mode: (counts.get(mode, 0), -MASK_MODES.index(mode)))
 
 
 def collate(batch: list[dict[str, list[int]]], pad_id: int) -> dict[str, Any]:

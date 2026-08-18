@@ -96,6 +96,44 @@ the compiled wheel published for 0.5.1 remains valid.
 
 ### Changed
 
+- **`seam`, a third conversation-masking mode, and `--train-sources`.** Both mask modes
+  DynQuant had require the generation prompt's *tokens* to be a prefix of the rendered
+  turn's. Qwen3.5 makes that false without doing anything wrong: it is a thinking model,
+  its generation prompt ends `<think>\n`, and its rendered assistant turn continues
+  `\n</think>` -- so the template's own output holds `\n\n` across the boundary and BPE
+  merges the pair into one id. The prompt tokenizes to 54 tokens, the full render's first
+  54 differ at index 53, and the *text* is a prefix while the tokens are not. Both modes
+  therefore refused every row of the text-to-SQL mixture, correctly: the alternative is
+  supervising at a one-token offset, which shifts every label after it and shows up
+  nowhere. The run stopped rather than training, which is the behaviour that made this
+  findable.
+
+  `seam` splits on the rendered text and tokenizes each side separately, so the prompt is
+  encoded exactly as the harness will encode it at serving time and the continuation is
+  encoded as its own fragment. The model then learns to emit `\n`, `</think>` from
+  `<think>`, `\n` -- which is exactly the continuation it is asked for, from exactly the
+  tokens it will have in context. The cost is that one pair per seam is split where BPE
+  would have merged it, so the sequence is not the tokenizer's canonical encoding of its
+  own text; on a multi-turn conversation that drift accumulates at one token per seam
+  already passed, though the token immediately before each supervised span is always the
+  one serving hands the model. This is the only mode that emits a non-canonical sequence,
+  so the probe's tie-break sorts it last and it is reached only when the others reach
+  nothing.
+
+  It is also the only mode that goes through `apply_chat_template(tokenize=False)`, which
+  is otherwise forbidden here -- `mistral_common` renders its frame as the *characters*
+  `[INST]` and `tekken` will not read them back out of user text, so a text-path masker
+  trains Ministral on a sequence with no frame at all. `seam` earns the exception by
+  checking rather than assuming: per turn, it re-encodes the render and compares against
+  what `tokenize=True` produced, and refuses the row when they disagree.
+
+  `--train-sources` names the text-to-SQL corpora to train on. The default is unchanged
+  and still excludes Spider; naming it trains on `spider/train` and leaves the scored
+  `spider/validation` untouched, which is the standard Spider protocol -- the splits use
+  disjoint databases by construction. Decontamination runs either way and its per-source
+  drop count is reported, so an actual question overlap is counted rather than argued
+  about.
+
 - **A QLoRA adapter is now merged onto a reloaded bf16 base, not onto the NF4 one.**
   `merge_and_unload` on a `bitsandbytes` base does the arithmetic correctly and stores
   the answer wrongly: it dequantizes each `Linear4bit`, adds `BA`, and quantizes the sum
