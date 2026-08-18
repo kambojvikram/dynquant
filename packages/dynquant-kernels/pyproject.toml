@@ -42,7 +42,7 @@ dynamic = ["version"]
 # would make the two wheels mutually constraining, so a core patch release could
 # not be installed without a matching kernels rebuild -- for a change that touched
 # no binary at all.
-dependencies = ["torch>=2.4"]
+dependencies = ["torch>=2.13,<2.14"]
 
 [project.urls]
 Homepage = "https://github.com/kambojvikram/dynquant"

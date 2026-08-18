@@ -131,32 +131,69 @@ def test_meta_mirrors_every_core_extra(core_toml: dict, meta_toml: dict) -> None
         )
 
 
+def test_the_default_install_cannot_move_torch(meta_toml: dict) -> None:
+    """``pip install dynquant`` must never change the torch the user already has.
+
+    This is the regression guard for the defect that made 0.5.0's install story
+    worse than no install story. ``dynquant-kernels`` is a compiled extension
+    pinned to one torch minor (``torch>=2.7,<2.8``), and it was listed as an
+    unconditional dependency here. pip does not decline a hard requirement it
+    cannot otherwise satisfy -- it *downgrades*, so a machine carrying torch 2.13
+    silently got torch 2.7.1 installed underneath it, torchvision left compiled
+    against the outgoing version, and the next ``import transformers`` died on
+    ``operator torchvision::nms does not exist``. The command reported success.
+
+    So: nothing reachable from a bare ``pip install dynquant`` may carry a torch
+    bound tighter than core's own open floor. The kernels stay available through
+    ``dynquant[kernels]``, where the user asked for them.
+    """
+    deps = meta_toml["project"]["dependencies"]
+    offenders = [d for d in deps if d.startswith("dynquant-kernels")]
+    assert not offenders, (
+        "dynquant-kernels must not be a default dependency: it pins a torch minor, "
+        f"and pip satisfies such a pin by downgrading the user's torch. Got {offenders}"
+    )
+    assert deps == [f"dynquant-core=={__version__}"], (
+        "the default install is core and nothing else; anything added here must be "
+        f"proven not to constrain torch. Got {deps}"
+    )
+
+
 def test_kernels_is_pinned_by_range_not_exactly(meta_toml: dict) -> None:
     """The kernels wheel is rebuilt on its own cadence -- a new toolkit, a new torch
     minor -- none of which changes a line of Python. An exact pin would force a core
     release for every binary rebuild. Compatibility is the ABI handshake's job."""
-    pins = [d for d in meta_toml["project"]["dependencies"] if d.startswith("dynquant-kernels")]
+    extras = meta_toml["project"]["optional-dependencies"]
+    pins = [d for d in extras["kernels"] if d.startswith("dynquant-kernels")]
     assert len(pins) == 1, pins
-    # Split off the environment marker first: it contains `==` of its own, and the
-    # claim being made here is only about the version specifier.
     specifier, _, marker = pins[0].partition(";")
     assert "==" not in specifier, specifier
     assert ">=" in specifier and "<" in specifier, specifier
-    # Narrow marker on purpose: elsewhere this must resolve to nothing rather than
-    # sending pip looking for a wheel that was never built.
-    assert "platform_system=='Linux'" in marker.replace('"', "'")
+    # Marker-free on purpose, and this is the reverse of what the old dependency
+    # asserted. As an extra the request is explicit, so a platform with no prebuilt
+    # wheel should get the sdist build it asked for rather than silently nothing.
+    assert not marker.strip(), (
+        f"dynquant[kernels] should resolve everywhere; a marker makes it a no-op "
+        f"on exactly the platforms whose users typed it deliberately. Got {marker!r}"
+    )
 
 
-def test_the_doctors_platform_test_matches_the_dependency_marker(meta_toml: dict) -> None:
+def test_the_doctors_platform_test_matches_the_declared_wheel_platforms(
+    meta_toml: dict,
+) -> None:
     """``_prebuilt_wheel_exists`` decides which remedy ``dynquant doctor`` prints when
-    the kernels are missing, and the marker decides whether pip would have installed
-    them. If the two drift, the doctor tells users on a wheel-less platform to run the
-    install that just declined to give them one -- advice that cannot work, from the
-    command whose whole job is to explain why something did not."""
+    the kernels are missing. If it drifts from where wheels are actually published,
+    the doctor tells users on a wheel-less platform to run an install that cannot
+    give them one -- bad advice from the command whose whole job is to explain why
+    something did not work.
+
+    The marker used to live on the meta-package's kernels dependency. That
+    dependency is gone (see ``test_the_default_install_cannot_move_torch``), so the
+    fact is declared under ``[tool.dynquant]`` instead -- the same claim, with no
+    install-time side effect attached to stating it."""
     from dynquant.runtime.backend import _prebuilt_wheel_exists
 
-    pins = [d for d in meta_toml["project"]["dependencies"] if d.startswith("dynquant-kernels")]
-    marker = pins[0].partition(";")[2].replace('"', "'").strip()
+    marker = meta_toml["tool"]["dynquant"]["prebuilt-wheel-marker"].replace('"', "'").strip()
 
     # Evaluate the real marker against synthetic environments and require the doctor's
     # predicate to agree on each. `packaging` ships with pip and is a test-time dep.

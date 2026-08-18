@@ -86,7 +86,12 @@ class BackendStatus:
 def _prebuilt_wheel_exists() -> bool:
     """Whether a ``dynquant-kernels`` wheel is published for this platform.
 
-    Mirrors the environment marker on the ``dynquant`` meta-package's dependency.
+    Mirrors ``[tool.dynquant] prebuilt-wheel-marker`` in the ``dynquant``
+    meta-package. It mirrored an environment marker on that package's kernels
+    *dependency* until that dependency was removed -- it was pinning a torch minor,
+    and pip satisfies such a pin by downgrading the user's torch. The platform
+    question outlived the requirement that used to answer it.
+
     Kept in sync by tests/test_packaging.py: if the two ever disagree, the doctor
     starts handing out advice that cannot work.
     """
@@ -102,8 +107,13 @@ def _probe_cuda() -> BackendStatus:
         # Saying so is the difference between a diagnosis and a dead end.
         if _prebuilt_wheel_exists():
             remedy = (
-                "pip install dynquant   (the meta-package pulls in the kernels wheel "
-                f"for your platform), or pip install {KERNELS_DISTRIBUTION} directly."
+                "pip install 'dynquant[kernels]'   (a prebuilt wheel is published for "
+                f"your platform), or pip install {KERNELS_DISTRIBUTION} directly. "
+                "Check what pip proposes before accepting it: the kernels are a "
+                "compiled extension pinned to one torch minor, so if your torch is "
+                "not that minor, pip will offer to change your torch rather than "
+                "decline the wheel. That is why this is an extra and not something "
+                "`pip install dynquant` did to you."
             )
         else:
             remedy = (

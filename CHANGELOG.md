@@ -17,6 +17,91 @@ it is talking about:
 A bump to any of the last three is called out explicitly, because those are the
 ones that invalidate artifacts a user has already produced.
 
+## [0.5.1] — 2026-08-17
+
+A packaging-only release. No `csrc/` change, no algorithm change, and every artifact
+number stays put: `KERNEL_ABI_VERSION` 3, `MIN_KERNEL_ABI_VERSION` 2,
+`CHECKPOINT_FORMAT_VERSION` 2, `STATS_SCHEMA_VERSION` 2. Checkpoints and stats files
+written by 0.5.0 are read by 0.5.1 unchanged.
+
+It exists because **0.5.0 did not work when installed from PyPI**, in two independent
+ways. Both were found by installing the published artifacts on a clean box rather than
+by testing the source tree.
+
+### Fixed
+
+- **The compiled kernels never loaded.** `dynquant-kernels` 0.5.0's `_C.so` failed with
+  `undefined symbol: __cxa_call_terminate` on every glibc older than the build image's.
+  The wheel installed and `import dynquant_kernels` succeeded — the package catches the
+  ImportError and degrades to the pure-torch backend — so the failure was silent, and
+  cost roughly 60x: 32 tokens still unfinished after 32 minutes against 21 tok/s with
+  kernels.
+
+  The cause was in `wheels.yml`, not in the C++. `CUDAHOSTCXX` pinned GCC 13 for the host
+  half of `.cu` files, but `CC`/`CXX` were never set, so every plain `.cpp` — including
+  `bindings.cpp`, where the pybind11 and torch glue lives — was compiled by the image
+  default, GCC 14.2.1. The published wheel records it: `CXX_COMPILER: "GNU 14.2.1"`.
+  GCC 14 emits `__cxa_call_terminate` on exception-cleanup paths and libstdc++ defines it
+  only from GCC 14 (CXXABI_1.3.15); Ubuntu 22.04, Debian 12 and RHEL 9 — the floor these
+  wheels advertise — provide 1.3.13.
+
+  **Why nothing caught it, which is the part worth keeping.** auditwheel computes a
+  platform tag from the ELF `.gnu.version_r` table, and `__cxa_call_terminate` is
+  *unversioned*, so it never appears there. The wheel's versioned requirements top out at
+  `GLIBCXX_3.4.21` — GCC 5 — and looked immaculate. A symbol-version policy is
+  structurally unable to see this class of defect. Three guards were added, because the
+  binary is the only thing that can be trusted to answer:
+  `CC`/`CXX` pinned alongside `CUDAHOSTCXX`; a POST_BUILD
+  `cmake/check_cxx_runtime_abi.py` that resolves C++ runtime symbols *by name* against
+  libstdc++, libc and libgcc plus an explicit deny-list; and an `abi-smoke` CI job that
+  **dlopens the wheel inside `ubuntu:22.04`**, which is what actually answers the
+  question. No GPU is needed for it — `objdump -p _C.so` lists no `libcuda.so.1`.
+
+- **`pip install dynquant` moved the user's torch.** The meta package listed
+  `dynquant-kernels` as an unconditional dependency; that wheel is correctly pinned to one
+  torch minor, and pip resolves a hard requirement it cannot otherwise satisfy by
+  downgrading — torch 2.13.0+cu130 to 2.7.1+cu126. That left torchvision compiled against
+  the outgoing torch, so `import transformers` died with
+  `RuntimeError: operator torchvision::nms does not exist`, surfacing as
+  `ModuleNotFoundError: Could not import module 'MistralForCausalLM'`. The report named
+  transformers and torchvision; neither was the cause.
+
+  PEP 508 has no marker for an installed distribution's version, so the requirement is
+  either unconditional or absent — there is no "only if it does not move torch". It is now
+  **absent**: `pip install dynquant` brings `dynquant-core` alone, which carries an open
+  `torch>=2.4` and so constrains torch not at all. Kernels move to an opt-in extra:
+
+      pip install "dynquant[hf]"              # default; never touches your torch
+      pip install "dynquant[hf,kernels]"      # adds kernels; check what pip proposes
+
+  Two packaging tests asserted the design that produced this and were retargeted, not
+  worked around.
+
+- **`pip install dynquant` did not install `transformers`.** The documented usage calls
+  `AutoModelForCausalLM`, and the HF integration is `dynquant-core`'s `[hf]` extra —
+  `dynquant-hf` has never existed on PyPI. Model cards and README now say
+  `pip install "dynquant[hf]"`.
+
+- **Source builds were impossible on a box with a partial CUDA toolkit** — the machine
+  class the fallback exists to serve. CMake globbed `nvidia/*/include` from torch's
+  bundled packages to borrow math-library headers; torch's CUDA 13 wheel is one monolithic
+  `nvidia/cu13/include` carrying an entire second toolkit, so `crt/host_runtime.h` was
+  shadowed and every build died on
+  `macro "__cudaLaunch" passed 2 arguments, but takes just 1` — the two copies both stamp
+  `CUDART_VERSION 13000` and cannot be told apart by version. Include *order* does not fix
+  this: measured with `nvcc -M`, `-isystem` at flag position 9 still beat `-I` at position
+  5. The vendored tree is now reduced to a symlink shim holding only entries the toolkit
+  lacks (81 on the verification box), which cannot shadow whatever nvcc does with ordering.
+
+### Known limits of this release
+
+- PyPI holds exactly one cell of the wheel matrix, because PEP 440 local versions are
+  rejected there. That cell is cu126 / torch 2.7. Every other combination is on the GitHub
+  Release, which is a `pip install --find-links` index. A user on a different torch gets an
+  undefined-symbol ImportError that `_loader.py` turns into the exact wheel name to install.
+- `dynquant-kernels` 0.5.0 should be yanked from PyPI. It is not merely superseded; it
+  cannot work on any supported platform.
+
 ## [0.5.0] — 2026-08-16
 
 Every number that describes an artifact stays put: `KERNEL_ABI_VERSION` at 3,

@@ -237,9 +237,30 @@ jobs:
           # consumed at `enable_language(CUDA)`, which torch's own cuda.cmake reaches
           # while our find_package(Torch) is still running, so a -D on our command line
           # lands too late to be read. Installed by CIBW_BEFORE_ALL above.
+          #
+          # CC/CXX matter as much as CUDAHOSTCXX and were missing, which is the whole
+          # of the 0.5.0 kernels defect. CUDAHOSTCXX governs only the host half of a
+          # `.cu`; every plain `.cpp` -- `bindings.cpp`, where the pybind11 and torch
+          # glue lives -- was compiled by whatever the image defaults to, and this image
+          # defaults to GCC 14.2.1. The published wheel says so itself:
+          # `_build_info.py` records `CXX_COMPILER: "GNU 14.2.1"`.
+          #
+          # GCC 14 emits `__cxa_call_terminate` on exception-cleanup paths, and
+          # libstdc++ only defines it from GCC 14 (CXXABI_1.3.15). Ubuntu 22.04 /
+          # Debian 12 / RHEL 9 -- the floor this matrix advertises -- provide 1.3.13. So
+          # the wheel installed, imported, and `_C.so` never loaded: users silently got
+          # the pure-torch fallback, which is ~60x slower.
+          #
+          # Nothing caught it. auditwheel reads `.gnu.version_r`, and
+          # `__cxa_call_terminate` is *unversioned*, so it is not in that table at all;
+          # the wheel's versioned requirements top out at GLIBCXX_3.4.21, which is GCC 5
+          # and looks immaculate. A symbol-version policy structurally cannot see this.
+          # Hence `abi-smoke` below, which answers the question by dlopening.
           CIBW_ENVIRONMENT: >-
             CUDACXX=/usr/local/cuda/bin/nvcc
             CUDAHOSTCXX=/opt/rh/gcc-toolset-13/root/usr/bin/g++
+            CC=/opt/rh/gcc-toolset-13/root/usr/bin/gcc
+            CXX=/opt/rh/gcc-toolset-13/root/usr/bin/g++
             CMAKE_ARGS=-DDYNQUANT_REQUIRE_CUDA=ON
           # auditwheel must not vendor libtorch or the CUDA runtime. Bundling them
           # would produce a ~2GB wheel with a second copy of libtorch loaded into
@@ -348,11 +369,78 @@ jobs:
           if-no-files-found: error
 
   # ------------------------------------------------------------------------
+  # The only question that matters
+  # ------------------------------------------------------------------------
+  #
+  # Three questions look alike and are not: does the *wheel* install, does the
+  # *package* import, does the *`.so`* load. `dynquant_kernels/__init__.py` catches
+  # the ImportError and degrades to the torch backend, so the first two answer yes
+  # while the artifact is dead -- which is exactly how 0.5.0 shipped.
+  #
+  # This job answers the third, on the oldest runtime the wheels advertise. The
+  # container is the point: `ubuntu:22.04` is glibc 2.35 and libstdc++ 6.0.30
+  # (CXXABI_1.3.13), the manylinux_2_34 floor. Building on new and testing on new
+  # proves nothing about the floor.
+  #
+  # No GPU and no driver are needed, contrary to what CIBW_TEST_SKIP above assumes:
+  # `objdump -p _C.so` lists no `libcuda.so.1` -- only libtorch and the CUDA runtime
+  # torch itself bundles. Numerics still belong on a GPU; *loading* does not.
+  abi-smoke:
+    name: dlopen on Ubuntu 22.04 (the manylinux_2_34 floor)
+    needs: [linux-wheels]
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: a python, and proof of the C++ runtime we are testing against
+        run: |
+          set -eux
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends             python3 python3-pip python3-venv ca-certificates binutils
+          python3 -VV
+          echo "libstdc++ here provides up to:"
+          strings /usr/lib/x86_64-linux-gnu/libstdc++.so.6             | grep -oE 'CXXABI_1\.3\.[0-9]+' | sort -V | tail -1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-cu12.6-torch2.7.1
+          path: wheelhouse
+
+      - name: install the PyPI cell next to the torch it was built against
+        run: |
+          set -eux
+          python3 -m venv /venv
+          /venv/bin/pip install -q --upgrade pip
+          /venv/bin/pip install -q torch==2.7.1 --index-url https://download.pytorch.org/whl/cu126
+          W=$(ls wheelhouse/dynquant_kernels-*cp310-cp310-manylinux*.whl | head -1)
+          echo "testing $W"
+          /venv/bin/pip install -q "$W"
+
+      - name: dlopen it
+        # `import dynquant_kernels` is NOT the test -- it catches and falls back.
+        # Importing `_C` is the dlopen, and an ImportError here blocks the release.
+        run: |
+          /venv/bin/python - <<'PY'
+          import dynquant_kernels as k
+          from dynquant_kernels import _C
+          print("wheel version :", k.__version__)
+          print("_C loaded from:", _C.__file__)
+          PY
+
+      - name: and state, by name, what C++ runtime symbols it still needs
+        run: |
+          W=$(ls wheelhouse/dynquant_kernels-*cp310-cp310-manylinux*.whl | head -1)
+          python3 -m zipfile -e "$W" /tmp/ext
+          python3 packages/dynquant-kernels/cmake/check_cxx_runtime_abi.py /tmp/ext/dynquant_kernels/_C*.so
+        continue-on-error: true
+
+  # ------------------------------------------------------------------------
   # Publication
   # ------------------------------------------------------------------------
   release:
     name: attach to the GitHub Release
-    needs: [sdist, linux-wheels]
+    needs: [sdist, linux-wheels, abi-smoke]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -404,7 +492,7 @@ jobs:
   # `pip install dynquant` unresolvable for that entire window.
   publish-core:
     name: publish dynquant-core to PyPI
-    needs: [sdist, linux-wheels]
+    needs: [sdist, linux-wheels, abi-smoke]
     if: startsWith(github.ref, 'refs/tags/v') && vars.PUBLISH_ENABLED == 'true'
     runs-on: ubuntu-latest
     environment: pypi-core

@@ -221,6 +221,68 @@ print(';'.join(sorted(str(d) for d in p.glob('*/include') if d.is_dir())) if p.i
           "Install the full toolkit, or `pip install nvidia-cusparse-cu${_dq_tk_cuda_major}`.")
     endif()
     message(STATUS "CUDA headers from torch's bundled packages: ${DYNQUANT_BUNDLED_CUSPARSE}")
+
+    # ---- Fill the gaps; shadow nothing --------------------------------------
+    #
+    # Adding the directory that has `cusparse.h` used to mean adding everything
+    # next to it. torch's CUDA 13 wheel is one monolithic `nvidia/cu13/include`
+    # holding `crt/`, `cuda_runtime.h` and the whole runtime alongside the math
+    # headers, so borrowing the one header the toolkit lacks replaced all the
+    # ones it has.
+    #
+    # That is not a warning-level problem, it is a build that compiles zero
+    # translation units. This box runs nvcc 13.0.88 against a wheel built from
+    # 13.3, and the two disagree about a macro in `crt/host_runtime.h`:
+    #
+    #   toolkit 13.0  #define __cudaLaunch(fun, isTileKernel)   <- 2 parameters
+    #   wheel   13.3  #define __cudaLaunch(fun)                 <- 1 parameter
+    #
+    # nvcc emits the two-argument form into its generated stub, the preprocessor
+    # reads the wheel's one-argument macro, and every kernel in the file fails
+    # with `macro "__cudaLaunch" passed 2 arguments, but takes just 1` -- an error
+    # in a file nobody wrote, about a symbol nobody called. Both headers stamp
+    # `CUDART_VERSION 13000`, so no version guard can tell them apart.
+    #
+    # Include *order* does not fix this. The obvious reading of `-isystem` is
+    # "search after -I", and measured against nvcc that reading is wrong: with
+    # `-I<toolkit>` ahead of `-isystem<wheel>` on the same command line, the
+    # preprocessor still resolves `crt/host_runtime.h` to the wheel. So this does
+    # not rely on ordering semantics at all. It builds a directory of symlinks to
+    # exactly those entries the toolkit does not have, and adds only that. A
+    # header the toolkit provides is then not reachable through this path at all,
+    # whatever nvcc does with the flags.
+    set(_dq_shim "${CMAKE_CURRENT_BINARY_DIR}/cuda_header_shim")
+    file(REMOVE_RECURSE "${_dq_shim}")
+    file(MAKE_DIRECTORY "${_dq_shim}")
+    set(_dq_shimmed "")
+    foreach(_dq_dir IN LISTS DYNQUANT_EXTRA_CUDA_INCLUDES)
+      file(GLOB _dq_entries RELATIVE "${_dq_dir}" "${_dq_dir}/*")
+      foreach(_dq_entry IN LISTS _dq_entries)
+        set(_dq_in_toolkit FALSE)
+        foreach(_dq_tk IN LISTS CUDAToolkit_INCLUDE_DIRS)
+          if(EXISTS "${_dq_tk}/${_dq_entry}")
+            set(_dq_in_toolkit TRUE)
+            break()
+          endif()
+        endforeach()
+        # First wheel to offer a name wins, and only if the toolkit offers none.
+        if(NOT _dq_in_toolkit AND NOT EXISTS "${_dq_shim}/${_dq_entry}")
+          file(CREATE_LINK "${_dq_dir}/${_dq_entry}" "${_dq_shim}/${_dq_entry}" SYMBOLIC)
+          list(APPEND _dq_shimmed "${_dq_entry}")
+        endif()
+      endforeach()
+    endforeach()
+    list(LENGTH _dq_shimmed _dq_nshim)
+    message(STATUS "CUDA header shim: ${_dq_nshim} entries the toolkit lacks")
+    # The header that sent us down this path must survive the filter. If the
+    # toolkit turns out to have had it after all, the detection above is wrong and
+    # silently building without the shim would hide that.
+    if(NOT EXISTS "${_dq_shim}/cusparse.h")
+      message(FATAL_ERROR
+          "the CUDA header shim did not pick up cusparse.h, but the toolkit was "
+          "found not to have it -- the two checks disagree, so one is wrong.")
+    endif()
+    set(DYNQUANT_EXTRA_CUDA_INCLUDES "${_dq_shim}")
   endif()
 endif()
 
@@ -255,8 +317,10 @@ target_link_libraries(_C PRIVATE torch)
 if(DYNQUANT_WITH_CUDA)
   target_compile_definitions(_C PRIVATE DYNQUANT_WITH_CUDA=1)
   if(DYNQUANT_EXTRA_CUDA_INCLUDES)
-    # SYSTEM, and after the toolkit's own: vendored headers should never shadow a
-    # complete toolkit, and warnings from them are not ours to fix.
+    # This is the shim built above, not the vendored tree itself: it contains only
+    # headers the toolkit does not have, so it cannot shadow the toolkit no matter
+    # where nvcc decides to search it. SYSTEM because warnings from headers we did
+    # not write are not ours to fix.
     target_include_directories(_C SYSTEM PRIVATE ${DYNQUANT_EXTRA_CUDA_INCLUDES})
   endif()
   target_link_libraries(_C PRIVATE CUDA::cudart CUDA::cublas)
@@ -301,6 +365,31 @@ if(MSVC)
   endif()
 else()
   target_compile_options(_C PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-O3 -fvisibility=hidden>)
+
+  # ---- The C++ runtime ABI gate ---------------------------------------------
+  #
+  # 0.5.0 shipped a wheel that installed, imported, and did not work: built by
+  # GCC 14, it needed `__cxa_call_terminate` (CXXABI_1.3.15), and every image
+  # older than GCC 14 -- Ubuntu 22.04 included -- defines no such symbol. The
+  # extension failed to load, `is_available()` returned False, and DynQuant fell
+  # back to the torch path *silently*. On an L40 that fallback left 32 decode
+  # tokens unfinished after 32 minutes at 0% GPU utilisation, against 20.97 tok/s
+  # with the kernels loaded. No error, no warning, correct results, unusable.
+  #
+  # auditwheel did not catch it and could not have: the manylinux tag is computed
+  # from the ELF's versioned symbol requirements, which topped out at
+  # CXXABI_1.3.9 here -- because the one symbol that broke the wheel is
+  # *unversioned*. So the check has to resolve C++ runtime symbols by name.
+  #
+  # POST_BUILD rather than a test: a wheel that cannot load must not reach the
+  # point of being packaged, let alone uploaded. Failing at link time costs
+  # seconds; failing at the user's import costs a silent 60x slowdown.
+  add_custom_command(TARGET _C POST_BUILD
+    COMMAND "${Python_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_cxx_runtime_abi.py"
+            "$<TARGET_FILE:_C>"
+    COMMENT "Checking the C++ runtime ABI of $<TARGET_FILE_NAME:_C>"
+    VERBATIM)
 endif()
 
 # ---------------------------------------------------------------------------

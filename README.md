@@ -243,24 +243,39 @@ in this repository reports them from the other.
 
 ## Install
 
-On Linux x86_64 with CPython 3.10–3.13:
-
 ```bash
-pip install dynquant                              # core + kernels
+pip install "dynquant[hf]"     # quantize and load, anywhere -- no compiler, no GPU needed
 ```
 
-**Use 0.1.1 or newer.** From 0.1.1 each kernels wheel declares the torch minor it was
-built against, so pip either resolves a torch the binary can load or tells you it
-cannot — the one thing it can no longer do is pair them silently wrong. Either way,
-run `dynquant doctor`: it reports which backend you actually got, which is the only
-statement about kernels that `pip install` output does not make.
+The `[hf]` extra is what adds `transformers` and `accelerate`. A bare `pip install
+dynquant` gives you the allocator and the quantizer, which genuinely do not need
+transformers -- but every load snippet in this README starts with
+`from transformers import AutoModelForCausalLM`, so `[hf]` is what most people want.
+(There is no `dynquant-hf` distribution; that name is a 404 on PyPI.)
 
-0.1.0 needs `pip install dynquant 'torch==2.7.*'` instead, and the pin is load-bearing.
-That wheel declares an open `torch>=2.4` while the binary is linked against torch
-2.7.1's C++ ABI, so a bare install resolves torch 2.13 beside it, the extension fails
-an undefined-symbol import, and DynQuant falls back to the torch backend — correct
-results, no VRAM saving, no speedup, `pip` reporting success the whole way. See
-[CHANGELOG.md](CHANGELOG.md#known-issues-in-010).
+**This install does not touch your torch, and that is deliberate.** The compiled
+kernels are a separate opt-in:
+
+```bash
+pip install "dynquant[hf,kernels]"     # + prebuilt CUDA kernels (Linux x86_64)
+```
+
+They are an extra rather than a default because a compiled extension is valid only
+next to the torch minor it was linked against, so its wheel declares a narrow pin
+(`torch>=2.7,<2.8` for the 0.5.0 PyPI cell). pip does not decline a hard requirement
+it cannot otherwise satisfy -- it downgrades. Through 0.5.0 the kernels were a
+default dependency, so `pip install dynquant` on a machine carrying torch 2.13
+silently installed torch 2.7.1 underneath it, left torchvision compiled against the
+outgoing version, and the next `import transformers` died with `operator
+torchvision::nms does not exist`. The command reported success. Since then the
+kernels are requested explicitly, which means **check what pip proposes before
+accepting it** -- if your torch is not the pinned minor, pip will offer to change
+your torch, and that is now a decision you get to see.
+
+Either way, run `dynquant doctor`: it reports which backend you actually got, which
+is the one statement about kernels that `pip install` output does not make. A wheel
+that installs is not a kernel that loads -- 0.5.0's did neither of the last two, and
+the fallback is silent by design.
 
 There is one wheel on PyPI — the cu126 / torch 2.7 build. For other combinations the
 [v0.2.0 release][v020] is a `--find-links` variant index:

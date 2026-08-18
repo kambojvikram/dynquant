@@ -24,7 +24,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dynquant"
-version = "0.5.0"
+version = "0.5.1"
 description = "Training-dynamics-driven mixed-precision LLM quantization, with prebuilt CUDA kernels."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -42,55 +42,55 @@ classifiers = [
 ]
 
 dependencies = [
-    "dynquant-core==0.5.0",
-    # Prebuilt kernels exist only where we can build and test them. Elsewhere this
-    # resolves to nothing, `dynquant doctor` reports backend=torch with the reason,
-    # and quantization still works -- rather than pip failing to find a wheel and
-    # the install dying on a machine that would have been perfectly usable.
+    "dynquant-core==0.5.1",
+    # The prebuilt kernels are NOT here, and that is the fix for the defect that
+    # cost 0.5.0 its install story. See `[project.optional-dependencies] kernels`.
     #
-    # The marker is deliberately narrow: an sdist fallback compiling CUDA on a
-    # user's laptop is a 20-minute build that usually ends in a toolkit error, so
-    # `dynquant-kernels` is opted into explicitly on unsupported platforms rather
-    # than attempted automatically.
+    # `dynquant-kernels` is a compiled extension linked against one torch minor's
+    # C++ ABI, so its wheel declares a narrow runtime pin (`torch>=2.7,<2.8` for
+    # the 0.5.0 PyPI cell). PyPI accepts exactly one cell of the build matrix --
+    # local version segments are rejected outright -- so there is exactly one torch
+    # minor that cell is compatible with, and everyone else is a conflict.
     #
-    # Pinned by *range*, not exactly, unlike core: core is the same source tree
-    # released together, but the kernels wheel exists to be rebuilt on its own
-    # cadence -- a new CUDA toolkit, a new torch minor, a kernel optimisation --
-    # none of which changes a line of Python. Real compatibility is enforced by the
-    # ABI handshake (see csrc/include/dynquant/abi.h), which is a much stronger
-    # check than a version equality: a mismatched ABI refuses to load, whereas a
-    # matching version number proves nothing about the packed layout.
-    # Floor raised to 0.1.1 for a reason unrelated to the cadence above: 0.1.0's
-    # wheels are the ones declaring an open `torch>=2.4` against a binary linked to one
-    # minor, which is the failure 0.1.1 exists to close. Leaving the floor at 0.1.0
-    # would let this release resolve the very wheel it fixes.
+    # A conflict is not what pip reports. Listing the kernels here made it a hard
+    # requirement, and pip resolved it the only way a hard requirement can be
+    # resolved: by *downgrading the user's torch*. On a machine carrying
+    # torch 2.13.0+cu130, `pip install dynquant` silently installed torch 2.7.1+cu126
+    # underneath it, left torchvision compiled against the outgoing version, and the
+    # next `import transformers` died with
     #
-    # Ceiling raised to <0.6 at 0.5.0, for the same duller reason it was raised to <0.5
-    # before it: the kernels wheel moves with every tagged release whether or not a
-    # kernel changed, because PyPI refuses a filename it already holds -- so this release
-    # publishes 0.5.0 wheels, and a `<0.5` ceiling would have excluded them.
+    #     RuntimeError: operator torchvision::nms does not exist
+    #     ModuleNotFoundError: Could not import module 'MistralForCausalLM'
     #
-    # The floor stays at 0.1.1, but this release is the first where that needs an
-    # argument rather than an observation. The ABI moved 2 -> 3 for `moe_grouped_gemv`,
-    # so a 0.1.x wheel no longer carries every op core knows about. It stays compatible
-    # because MIN_KERNEL_ABI_VERSION was deliberately left at 2: core feature-detects
-    # the grouped op and falls back to the per-expert loop, which is slower and not
-    # wrong. A floor raise would refuse a wheel that can still serve every model it
-    # served yesterday.
-    "dynquant-kernels>=0.1.1,<0.6; platform_system=='Linux' and platform_machine=='x86_64'",
+    # -- an error that names a model class, from a command that reported success, for
+    # a cause that is neither. Installing a quantization library must never move the
+    # framework it quantizes for.
+    #
+    # PEP 508 cannot express "only if it does not move torch": there is no
+    # environment marker for the version of an installed distribution, so the
+    # requirement is either unconditional or absent. Absent is the only safe answer.
+    # `dynquant-core` alone declares an open `torch>=2.4`, so the default install now
+    # constrains nothing, and `dynquant doctor` reports backend=torch with the exact
+    # command to add the kernels for the torch actually present.
 ]
 
 [project.optional-dependencies]
 # Mirrors of dynquant-core's extras, so users never have to know that `core`
 # exists as a separate name.
-hf = ["dynquant-core[hf]==0.5.0"]
-train = ["dynquant-core[train]==0.5.0"]
-eval = ["dynquant-core[eval]==0.5.0"]
-triton = ["dynquant-core[triton]==0.5.0"]
-dev = ["dynquant-core[dev]==0.5.0"]
+hf = ["dynquant-core[hf]==0.5.1"]
+train = ["dynquant-core[train]==0.5.1"]
+eval = ["dynquant-core[eval]==0.5.1"]
+triton = ["dynquant-core[triton]==0.5.1"]
+dev = ["dynquant-core[dev]==0.5.1"]
 
-# Force the compiled kernels regardless of platform marker. Falls back to an sdist
-# build, which needs nvcc, cmake and a C++ toolchain.
+# The compiled kernels, opt-in. This is the one place the binary is requested, and
+# it is an extra rather than a dependency because asking for it can force a torch
+# change -- see the note in `dependencies` above. As an extra that change is a
+# thing the user typed, not a thing that happened to them.
+#
+# Still marker-free, so it works on platforms with no published wheel too: there it
+# falls back to an sdist build, which needs nvcc, cmake >= 3.26 and a C++ toolchain.
+# Whether a *prebuilt* wheel exists is declared once, below, under [tool.dynquant].
 kernels = ["dynquant-kernels>=0.1.1,<0.6"]
 
 [project.urls]
@@ -106,3 +106,17 @@ bypass-selection = true
 
 [tool.hatch.build.targets.sdist]
 include = ["README.md", "LICENSE", "pyproject.toml"]
+
+[tool.dynquant]
+# The platforms a prebuilt `dynquant-kernels` wheel is published for.
+#
+# This used to be an environment marker on the dependency above, and `dynquant
+# doctor` mirrored it in `runtime/backend.py:_prebuilt_wheel_exists` so it would
+# never tell a user on a wheel-less platform to run an install that declines to
+# give them one. Removing the dependency removed the marker, but not the question
+# it answered, so the fact is declared here instead of being inferred from a
+# requirement whose presence had a side effect nobody wanted.
+#
+# tests/test_packaging.py evaluates this against synthetic environments and
+# requires the doctor's predicate to agree on every one.
+prebuilt-wheel-marker = "platform_system=='Linux' and platform_machine=='x86_64'"

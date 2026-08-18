@@ -73,7 +73,14 @@ LOADER = "`transformers` with `dynquant` installed"
 #: arm here is unreadable without the package -- so both lines are generated onto the
 #: card rather than left to a reader who has already spent 4 GB finding out.
 GITHUB = "https://github.com/kambojvikram/dynquant"
-PIP = "pip install dynquant"
+PIP = 'pip install "dynquant[hf]"'
+#: The `[hf]` extra, not a bare `pip install dynquant`, and the difference is the
+#: whole card. A bare install brings `dynquant-core` and its own dependencies --
+#: which do not include `transformers`, because the quantization pipeline does not
+#: need it. But every usage snippet on these cards opens with
+#: `from transformers import AutoModelForCausalLM`, so the reader who follows the
+#: card top to bottom gets an ImportError on the first line of the second block.
+#: `dynquant-hf` does not exist on PyPI (404); the integration is core's `[hf]` extra.
 
 #: The kind the panel records for the unquantized arm. It is publishable here, unlike
 #: in `publish_panel.py`, because on this campaign the ceiling *is* the merged
