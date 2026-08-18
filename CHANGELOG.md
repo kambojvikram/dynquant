@@ -28,6 +28,21 @@ the compiled wheel published for 0.5.1 remains valid.
 
 ### Fixed
 
+- **`inspect` silently dropped budgets it had been asked for and had already
+  computed.** Two defects in the same surface, both found while bisecting the floor
+  budget of a 27B. `--target` is documented as repeatable, but `nargs="+"` with the
+  default `store` action keeps only the last group, so `--target 4.01 --target 4.02`
+  measured one budget and printed a well-formed report for it -- the one the reader had
+  asked to compare *against*, not the one they were reading. And the JSON payload keyed
+  each budget as `f"{target:.2f}"`, so two targets that round alike collided and the
+  second allocation overwrote the first after being computed in full, which on a 27B is
+  minutes spent on a row nobody sees. `--target` now accumulates under either spelling,
+  and labels take the least precision at which each one parses back to its own target --
+  which gives distinctness for free, and which plain distinctness does not give: at two
+  decimals `4.005` and `4.015` are distinct, name numbers that were never measured, and
+  collide across runs with a genuine `4.00`. Duplicate targets are refused rather than
+  merged. `3.0` is still `"3.00"`, so records already written stay comparable.
+
 - **The torch backend reconstructed a whole tensor to use part of it, twice.**
   `embedding_lookup` dequantized the entire table and then indexed the result, and
   `quantized_matmul` dequantized the entire weight to hand to one `F.linear`. Both are
