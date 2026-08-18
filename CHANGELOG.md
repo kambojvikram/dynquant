@@ -88,11 +88,32 @@ the compiled wheel published for 0.5.1 remains valid.
   what makes each rank's full replica affordable. Three things had to be right for the
   signals to survive it. The replica is placed by `LOCAL_RANK` rather than at `"cuda"`,
   which every rank resolves to device 0 -- a two-rank job was stacking both replicas on
-  one card. `prepare_model_for_kbit_training` is deliberately not called: it enables
-  gradient checkpointing, which replays the forward and fires each saliency hook twice
-  per step against one backward, and it upcasts non-quantized parameters to fp32, which
-  on this model puts a 248k x 5120 embedding and an untied head into fp32 for nothing.
-  And the merge does not go through the quantized weights -- see below.
+  one card. `prepare_model_for_kbit_training` is deliberately not called: it upcasts
+  non-quantized parameters to fp32, which on this model puts a 248k x 5120 embedding and
+  an untied head into fp32 for nothing, and it turns on gradient checkpointing as a side
+  effect -- a decision this driver now makes per run rather than inherits, see
+  `--gradient-checkpointing` below. And the merge does not go through the quantized
+  weights -- see below.
+
+- `--gradient-checkpointing` on `scripts/run_s2_finetune.py`. Checkpointing used to be
+  unconditionally off here, because it replays a block's forward during backward and
+  module forward hooks fire on the replay, so the saliency EMA counted each micro-batch
+  twice. `signals.tracker._in_backward` now separates the two -- the graph-task id is the
+  only thing that differs between a replayed forward and a real one; `torch.is_grad_enabled()`,
+  `requires_grad` and the `grad_fn` type are all identical -- so the driver no longer has
+  to refuse the memory saving to protect the signal. Verified on the 27B rather than
+  assumed: a 3-step 2-rank run at accumulation 8 records `forward_calls: 48`, which is 24
+  micro-batches times 2 ranks, not 96.
+
+  It is off by default, because every arm of the campaign so far trained without it and
+  the recompute costs step time on models with memory to spare. It is not optional on a
+  27B: at 3072 tokens and batch 1, storing 64 layers of activations wants 93 GiB and a
+  95 GiB card dies on the forward. With it, the same run peaks at 35.5 GiB.
+
+  `use_reentrant=False` is load-bearing rather than stylistic. The reentrant
+  implementation recovers the graph from a block's *inputs*, and under QLoRA every
+  block's inputs are frozen -- the embedding included -- so the run would train nothing
+  while reporting a falling loss.
 
 ### Changed
 
