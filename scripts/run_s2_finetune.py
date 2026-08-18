@@ -85,6 +85,13 @@ from run_s1_headroom import MODELS
 #: -- and reading it three times invites the three to disagree.
 LOCAL_RANK = int(os.environ.get("LOCAL_RANK", "-1"))
 
+#: How many ranks are training. Every rank runs its own ``batch x accum`` sequences per
+#: optimizer step, so the run's real batch is this times that product -- and torchrun is the
+#: only thing that knows the number. Read here for the same reason as ``LOCAL_RANK``: the
+#: alternative is deriving it at the one call site that needs it and getting `1` under a
+#: plain ``python`` invocation, which is right, and `1` under torchrun, which is not.
+WORLD_SIZE = int(os.environ.get("WORLD_SIZE", "1"))
+
 #: The chat mixtures phase 3 trains on. ``column`` is where the conversation lives;
 #: its *shape* is not recorded here because two of these ship ShareGPT-style
 #: ``{"from", "value"}`` turns and one ships ``{"role", "content"}``, and a registry that
@@ -904,6 +911,30 @@ def resolve_regime(lora_rank: int) -> str:
     return "lora" if lora_rank > 0 else "full fine-tune"
 
 
+def training_shape(args: argparse.Namespace, regime: str, world_size: int) -> dict[str, object]:
+    """The four manifest fields a reader would use to reproduce this run.
+
+    They are here rather than inline in the record because both of the ones that are easy to
+    get wrong are wrong in a way that reads as correct, and neither is reachable by a test
+    while it lives inside ``main``:
+
+    * ``resolve_regime`` decides off the LoRA rank alone, so it answers "lora" for a QLoRA run
+      as readily as for a bf16 one. ``--load-4bit`` is consulted elsewhere only to reject rank
+      0. An NF4-frozen base is a different experiment from a bf16 base at the same rank and
+      the same loss, and the manifest is what the public model card quotes.
+    * the batch a run really put through per optimizer step is ``batch x accum`` **per rank**,
+      and only torchrun knows how many ranks there are. Without the factor the number is wrong
+      by exactly the GPU count -- and equally plausible at either value, so nothing downstream
+      can catch it.
+    """
+    return {
+        "regime": "qlora" if args.load_4bit else regime,
+        "base_precision": "nf4" if args.load_4bit else "bf16",
+        "effective_batch": args.batch * args.accum * world_size,
+        "world_size": world_size,
+    }
+
+
 def run_dir(out: Path, model: str, dataset: str) -> Path:
     """Where this cell's artifacts go: one directory per (model, dataset), always.
 
@@ -1507,12 +1538,11 @@ def _train(
     tracked = len(callback.tracker) if callback.tracker is not None else 0
     record = {
         **census,
-        "regime": regime,
+        **training_shape(args, regime, WORLD_SIZE),
         "lora_rank": args.lora_rank,
         "estimator": args.estimator,
         "epochs": args.epochs,
         "lr": lr,
-        "effective_batch": args.batch * args.accum,
         "steps": result.global_step,
         "train_loss": result.training_loss,
         "seconds": round(elapsed, 1),

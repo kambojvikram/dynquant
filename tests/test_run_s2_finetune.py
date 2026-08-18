@@ -1948,3 +1948,56 @@ def test_the_default_training_mixture_still_excludes_spider(s2) -> None:
 
     assert DEFAULT_TRAIN == ("gretel", "wikisql", "create-context")
     assert "spider" not in DEFAULT_TRAIN
+
+
+def test_a_qlora_run_is_not_recorded_as_a_lora_run(s2) -> None:
+    """``resolve_regime`` reads the LoRA rank and nothing else, so it cannot tell them apart.
+
+    The two runs are identical on every field the manifest carries -- same rank, same lr,
+    same steps, same loss -- and different in the one thing a reader would want to know:
+    whether the base weights were frozen in NF4 or trained in bf16. That word goes onto a
+    public model card verbatim. ``--load-4bit`` is consulted exactly once elsewhere in this
+    script, to reject rank 0, and never to say what the run was.
+
+    Turns red when: the regime is taken straight from ``resolve_regime`` again, which is how
+    this campaign's Qwen3.8-27B manifest came to say "lora" for an NF4-frozen run.
+    """
+    args = argparse.Namespace(load_4bit=True, batch=1, accum=8, lora_rank=32)
+    regime = s2.resolve_regime(args.lora_rank)
+    assert regime == "lora", "the precondition: the rank alone still says lora"
+
+    shape = s2.training_shape(args, regime, 2)
+    assert shape["regime"] == "qlora"
+    assert shape["base_precision"] == "nf4"
+
+    # And a genuine bf16 LoRA run keeps its own name, or the fix is just a relabel.
+    bf16 = s2.training_shape(argparse.Namespace(load_4bit=False, batch=1, accum=8), regime, 2)
+    assert bf16["regime"] == "lora"
+    assert bf16["base_precision"] == "bf16"
+
+
+def test_the_effective_batch_counts_every_rank(s2) -> None:
+    """Under torchrun each rank puts ``batch x accum`` sequences through before the step.
+
+    So the run's real batch is that product times the world size, and the world size is
+    known only to torchrun -- there is no way to recover it from the flags. A manifest
+    without the factor is wrong by exactly the GPU count and entirely plausible at either
+    value, which means no downstream check can catch it and a reader reproducing the run
+    on one GPU would use a quarter of the batch and wonder why the loss curve differs.
+
+    Turns red when: the world-size factor is dropped, or read at a call site that sees `1`
+    because it runs outside torchrun.
+    """
+    args = argparse.Namespace(load_4bit=True, batch=1, accum=8)
+    assert s2.training_shape(args, "lora", 2)["effective_batch"] == 16
+    assert s2.training_shape(args, "lora", 2)["world_size"] == 2
+
+    # The single-process case has to keep giving the flags' own product, or the factor is
+    # not a factor but an unconditional doubling.
+    assert s2.training_shape(args, "lora", 1)["effective_batch"] == 8
+    assert (
+        s2.training_shape(argparse.Namespace(load_4bit=False, batch=4, accum=8), "lora", 8)[
+            "effective_batch"
+        ]
+        == 256
+    )
