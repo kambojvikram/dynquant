@@ -303,6 +303,11 @@ def _add_inspect(subparsers: _SubParsers) -> None:
         "--target",
         type=float,
         nargs="+",
+        # `extend` rather than the default `store`, which with nargs="+" keeps only the
+        # last group: `--target 3.0 --target 4.0` silently measured one budget and
+        # reported it as though nothing had been asked for. Both spellings now
+        # accumulate, which is what "repeatable" in the help has always claimed.
+        action="extend",
         metavar="BITS",
         help="average bits per weight; repeatable, so several budgets are compared",
     )

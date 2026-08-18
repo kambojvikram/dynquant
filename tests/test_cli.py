@@ -355,6 +355,53 @@ def test_inspect_defaults_to_cpu_and_quantize_to_cuda() -> None:
     assert parser.parse_args(["quantize", "m", "-o", "o"]).device == "cuda"
 
 
+def test_a_repeated_target_flag_accumulates_rather_than_replacing() -> None:
+    """The help has always called it repeatable; ``nargs="+"`` alone is not.
+
+    With the default ``store`` action a second ``--target`` overwrites the first, so
+    ``--target 3.0 --target 4.0`` measured one budget and printed one table -- and the
+    table it printed was for a budget the reader had asked to *compare against*, not the
+    one they were reading. Nothing warns, and the output is a well-formed report.
+
+    Turns red when: the action goes back to the default, or the space-separated spelling
+    stops working.
+    """
+    parser = build_parser()
+    assert parser.parse_args(["inspect", "m", "--target", "3.0", "4.0"]).target == [3.0, 4.0]
+    assert parser.parse_args(
+        ["inspect", "m", "--target", "3.0", "--target", "4.0"]
+    ).target == [3.0, 4.0]
+    # Absent entirely still means absent, not an empty run with a silent default.
+    assert parser.parse_args(["inspect", "m"]).target is None
+
+
+def test_two_targets_that_round_alike_still_get_separate_rows() -> None:
+    """The labels are dictionary keys, so a collision discards an allocation.
+
+    At two decimals ``4.005`` and ``4.015`` both became ``"4.02"`` and the second
+    overwrote the first: the JSON carried one budget where two were asked for and paid
+    for, and on a 27B each discarded allocation cost minutes. Precision grows only as far
+    as this run needs, so the ordinary case keeps the labels every existing record uses.
+
+    Turns red when: the label format goes back to a fixed width.
+    """
+    assert inspect._target_labels([3.0, 4.0]) == ["3.00", "4.00"]
+    assert inspect._target_labels([4.005, 4.015]) == ["4.005", "4.015"]
+    assert len(set(inspect._target_labels([4.0, 4.005, 4.01, 4.015]))) == 4
+
+
+def test_two_targets_that_are_genuinely_the_same_number_are_refused() -> None:
+    """Because that is a different sentence to say than "the labels collided".
+
+    Growing precision forever would turn one mistake into an unreadable label; the honest
+    answer is that the run cannot report two of the same budget separately.
+
+    Turns red when: the loop starts returning duplicates instead of raising.
+    """
+    with pytest.raises(DynQuantError, match="eight decimal places"):
+        inspect._target_labels([4.0, 4.0])
+
+
 def test_uniform_is_a_list_for_inspect_and_a_scalar_for_quantize() -> None:
     """inspect compares several control arms in one pass; quantize writes one."""
     parser = build_parser()
