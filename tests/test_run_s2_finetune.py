@@ -937,7 +937,7 @@ def test_too_many_unmaskable_conversations_refuses_to_train(
         # `(rows, decontaminated)`: the second element is the per-source count of rows
         # dropped for asking a question the evaluation asks, and it is `{}` here because
         # this mixture has no decontamination step -- not because one ran and found none.
-        lambda spec, examples, seed: (
+        lambda spec, examples, seed, sources=None: (
             [
                 {
                     "messages": [
@@ -982,7 +982,7 @@ def test_auto_mode_rescues_a_tokenizer_the_walk_cannot_handle(s2, monkeypatch, t
     monkeypatch.setattr(
         s2,
         "load_rows",
-        lambda spec, examples, seed: (
+        lambda spec, examples, seed, sources=None: (
             [
                 {
                     "messages": [
@@ -1026,7 +1026,7 @@ def test_a_dry_run_writes_the_census_and_touches_no_gpu(s2, monkeypatch, tmp_pat
     monkeypatch.setattr(
         s2,
         "load_rows",
-        lambda spec, examples, seed: (
+        lambda spec, examples, seed, sources=None: (
             [
                 {
                     "source": "ai2-adapt-dev/tulu_v3.9_open_math_2_gsm8k_50k",
@@ -1623,3 +1623,49 @@ def test_the_qlora_load_does_not_upcast_the_model(s2) -> None:
         "`prepare_model_for_kbit_training`", ""
     )
     assert "gradient_checkpointing=False" in source
+
+
+def test_naming_spider_trains_on_it_and_still_scores_the_held_out_split(s2, monkeypatch) -> None:
+    """``--train-sources`` reaches ``load_text2sql``'s ``sources``, and only that.
+
+    The split it asks for stays ``"train"``. Spider's train and validation splits use
+    disjoint databases by construction -- that is what the benchmark is -- so training on
+    one and scoring on the other is the standard protocol; passing the *split* through
+    would be the leak this looks like.
+
+    Turns red when: the argument is dropped on the floor, which would train the campaign
+    default while the manifest recorded the requested list, or when it starts changing
+    the split.
+    """
+    seen: dict[str, object] = {}
+
+    def _load(split, *, sources=None, limit=None, seed=0, tallies=None, **kwargs):
+        seen.update(split=split, sources=sources, limit=limit)
+        return []
+
+    module = types.ModuleType("dynquant.eval.text2sql")
+    module.load_text2sql = _load  # type: ignore[attr-defined]
+    module.instruction = lambda item: "q"  # type: ignore[attr-defined]
+    sources_mod = types.ModuleType("dynquant.eval.text2sql_sources")
+    sources_mod.SourceTally = type("SourceTally", (), {"contaminated": 0})  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "dynquant.eval.text2sql", module)
+    monkeypatch.setitem(sys.modules, "dynquant.eval.text2sql_sources", sources_mod)
+
+    s2.load_text2sql_rows(examples=10_000, seed=0, sources=["spider", "gretel", "wikisql"])
+    assert seen == {"split": "train", "sources": ["spider", "gretel", "wikisql"], "limit": 10_000}
+
+    s2.load_text2sql_rows(examples=10_000, seed=0)
+    assert seen["sources"] is None, "the default must stay the registry's, not a copy of it"
+
+
+def test_the_default_training_mixture_still_excludes_spider(s2) -> None:
+    """The knob is opt-in. Acquiring Spider silently would report in-domain accuracy
+    under the name of the held-out number, and nothing downstream could tell.
+
+    Turns red when: ``DEFAULT_TRAIN`` grows spider, which would change what every
+    previously published arm in this campaign trained on without changing its manifest.
+    """
+    from dynquant.eval.text2sql_sources import DEFAULT_TRAIN
+
+    assert DEFAULT_TRAIN == ("gretel", "wikisql", "create-context")
+    assert "spider" not in DEFAULT_TRAIN

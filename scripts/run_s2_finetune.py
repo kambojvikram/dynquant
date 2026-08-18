@@ -664,7 +664,9 @@ def report_sources(rows: Any) -> tuple[Counter, list[str]]:
     return counts, sorted(flagged)
 
 
-def load_rows(spec: dict[str, str], *, examples: int, seed: int) -> tuple[Any, dict[str, int]]:
+def load_rows(
+    spec: dict[str, str], *, examples: int, seed: int, sources: list[str] | None = None
+) -> tuple[Any, dict[str, int]]:
     """Load the mixture and take a shuffled subsample of it.
 
     Shuffled before the limit, always. These splits arrive grouped -- Tulu-3 is ordered by
@@ -680,7 +682,7 @@ def load_rows(spec: dict[str, str], *, examples: int, seed: int) -> tuple[Any, d
     none.
     """
     if spec.get("builder") == "text2sql":
-        return load_text2sql_rows(examples=examples, seed=seed)
+        return load_text2sql_rows(examples=examples, seed=seed, sources=sources)
 
     from datasets import load_dataset
 
@@ -693,7 +695,9 @@ def load_rows(spec: dict[str, str], *, examples: int, seed: int) -> tuple[Any, d
     return dataset, {}
 
 
-def load_text2sql_rows(*, examples: int, seed: int) -> tuple[list[dict[str, Any]], dict[str, int]]:
+def load_text2sql_rows(
+    *, examples: int, seed: int, sources: list[str] | None = None
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """The text-to-SQL mixture, as single-turn conversations.
 
     Two properties this has to preserve and neither is visible downstream if it breaks.
@@ -704,18 +708,33 @@ def load_text2sql_rows(*, examples: int, seed: int) -> tuple[list[dict[str, Any]
     fine-tune that scores badly for a reason no arm of the comparison could reveal,
     because every arm would share it.
 
-    ``load_text2sql`` balances and interleaves the three sources itself, so the
-    ``examples`` limit takes a proportional sample rather than a prefix of whichever
-    source came first. It also drops the evaluation's "gold must return rows" rule for
-    ``train``: an empty result set is still correct supervision, and enforcing it here
-    would discard most of two sources.
+    ``load_text2sql`` balances and interleaves the sources itself, so the ``examples``
+    limit takes a proportional sample rather than a prefix of whichever source came
+    first. It also drops the evaluation's "gold must return rows" rule for ``train``: an
+    empty result set is still correct supervision, and enforcing it here would discard
+    most of two sources.
+
+    ``sources`` is ``None`` for the campaign default, which is the three corpora
+    :data:`~dynquant.eval.text2sql_sources.DEFAULT_TRAIN` names and does *not* include
+    Spider. Naming Spider explicitly is a supported and different experiment: its train
+    and dev splits use disjoint databases by construction, which is what the benchmark is
+    for, so training on ``spider/train`` and scoring on ``spider/validation`` is the
+    standard Spider protocol rather than a leak. It is not the default because a run that
+    quietly acquired it would report in-domain accuracy under the same name as the
+    held-out number. Whichever list is used, the decontamination filter runs against the
+    *evaluation* questions and its per-source drop count is returned, so an actual
+    question overlap is counted rather than argued about.
     """
     from dynquant.eval.text2sql import instruction, load_text2sql
     from dynquant.eval.text2sql_sources import SourceTally
 
     tallies: dict[str, SourceTally] = {}
     items = load_text2sql(
-        "train", limit=examples if examples > 0 else None, seed=seed, tallies=tallies
+        "train",
+        sources=sources,
+        limit=examples if examples > 0 else None,
+        seed=seed,
+        tallies=tallies,
     )
     # Decontamination is on by default for `train`, and this is where it becomes visible.
     # `b-mc2/sql-create-context` holds 189 of the 200 WikiSQL items this campaign scores;
@@ -927,6 +946,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="build the data, report the masking census, and stop before touching a GPU",
     )
+    parser.add_argument(
+        "--train-sources",
+        default=None,
+        help=(
+            "comma-separated text2sql corpora to train on, e.g. "
+            "spider,gretel,wikisql,create-context. Default: the campaign's three, which "
+            "exclude spider. Naming spider trains on its train split and leaves its "
+            "validation split -- the scored one -- untouched; the databases are disjoint "
+            "across those splits, and the decontamination filter reports any question that "
+            "is not. Only applies to the text2sql dataset."
+        ),
+    )
     parser.add_argument("--trust-remote-code", action="store_true")
     return parser
 
@@ -986,7 +1017,14 @@ def main(argv: list[str] | None = None) -> int:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    rows, decontaminated = load_rows(spec, examples=args.examples, seed=args.seed)
+    train_sources = (
+        [name.strip() for name in args.train_sources.split(",") if name.strip()]
+        if args.train_sources
+        else None
+    )
+    rows, decontaminated = load_rows(
+        spec, examples=args.examples, seed=args.seed, sources=train_sources
+    )
     sources, flagged = report_sources(rows)
     if sources:
         top = ", ".join(f"{name} {count}" for name, count in sources.most_common(8))
@@ -1064,6 +1102,11 @@ def main(argv: list[str] | None = None) -> int:
         "mask_mode_probe": probe,
         "max_len": args.max_len,
         "sources": dict(sources),
+        # What was *asked* for, beside the realised mixture above. `None` records that
+        # the run took the registry default rather than that it chose the same list --
+        # a later reader comparing two runs needs to know whether a difference in the
+        # realised mixture came from the request or from the admission rates.
+        "train_sources_requested": train_sources,
         "sources_overlapping_an_eval_task": flagged,
         # What that check actually checked. An empty list above is only as strong as this
         # list, and on the text-to-SQL mixture it is worth nothing: the markers are
