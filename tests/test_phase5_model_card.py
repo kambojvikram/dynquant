@@ -75,6 +75,26 @@ INSPECT: dict[str, Any] = {
                 },
             ],
         },
+        # The budget the 4-bit arm is really exported at: 0.02 bits under the floor, which
+        # is a handful of mild breaches rather than the wholesale override the 3.00 row is.
+        "4.00": {
+            "average_bits": 4.00496,
+            "total_params": 26_893_352_960,
+            "widths": {
+                "3": {"modules": 138, "params": 11_884_249_088},
+                "4": {"modules": 263, "params": 13_735_567_360},
+                "8": {"modules": 96, "params": 1_273_536_512},
+            },
+            "violations": [
+                {
+                    "name": "model.layers.3.mlp.down_proj",
+                    "role": "mlp.down",
+                    "floor_bits": 3,
+                    "assigned_bits": 2,
+                    "num_params": 89_128_960,
+                }
+            ],
+        },
         "4.02": {
             "average_bits": 4.019577,
             "total_params": 26_893_352_960,
@@ -201,6 +221,27 @@ def test_the_arm_at_the_floor_budget_is_not_given_the_warning(card: Any, tmp_pat
     )
     assert "Read this first" not in text
     assert "clears every floor" in text
+
+
+def test_the_arm_just_under_the_floor_budget_still_admits_what_it_broke(
+    card: Any, tmp_path: Path
+) -> None:
+    """The case actually shipped, which neither of the two above it is.
+
+    The 4-bit arm is exported at a 4.00 target against a 4.0196-bit floor budget. That is
+    0.02 bits under, far too little for the override warning the 3-bit arm earns and far
+    too much to call clean: a few modules do drop below their role's floor. A card that
+    rounded this to either neighbour would be wrong in one of the two directions that
+    matter -- alarming a reader about a sound arm, or quietly nodding through breaches.
+
+    Turns red when: the near-floor branch stops counting violations and starts asserting
+    the arm clears every floor because it is close enough to the budget.
+    """
+    text = _render(card, tmp_path, "4.00", export={"average_bits": 4.00496})
+    assert "Read this first" not in text
+    assert "sits essentially at" in text
+    assert "still breaks 1 of them" in text
+    assert "clears every floor" not in text
 
 
 def test_every_breached_floor_reaches_the_card(card: Any, tmp_path: Path) -> None:
