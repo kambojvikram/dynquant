@@ -62,8 +62,11 @@ def floor_budget(inspect: dict[str, Any]) -> tuple[float | None, str | None]:
     is the allocator's job, and a second implementation here would agree with it until the
     release where it did not.
     """
-    clean = [(row["average_bits"], key) for key, row in inspect["targets"].items()
-             if not row["violations"]]
+    clean = [
+        (row["average_bits"], key)
+        for key, row in inspect["targets"].items()
+        if not row["violations"]
+    ]
     if not clean:
         return None, None
     bits, key = min(clean)
@@ -75,9 +78,7 @@ def widths_table(row: dict[str, Any], total_params: int) -> str:
     for bits in sorted(row["widths"], key=int):
         width = row["widths"][bits]
         share = 100 * width["params"] / total_params
-        lines.append(
-            f"| {bits}-bit | {width['modules']:,} | {width['params']:,} | {share:.2f}% |"
-        )
+        lines.append(f"| {bits}-bit | {width['modules']:,} | {width['params']:,} | {share:.2f}% |")
     return "\n".join(lines)
 
 
@@ -88,8 +89,10 @@ def violations_table(row: dict[str, Any]) -> str:
     a reader skips. By role it is a dozen, and the dozen is the finding.
     """
     if not row["violations"]:
-        return ("No floor was breached at this budget: every module sits at or above the "
-                "width its role requires.")
+        return (
+            "No floor was breached at this budget: every module sits at or above the "
+            "width its role requires."
+        )
     agg: dict[str, dict[str, Any]] = {}
     for violation in row["violations"]:
         entry = agg.setdefault(
@@ -101,8 +104,7 @@ def violations_table(row: dict[str, Any]) -> str:
         entry["got"].add(violation["assigned_bits"])
 
     lines = [
-        f"{len(row['violations'])} modules were allocated below the floor their role "
-        f"requires:",
+        f"{len(row['violations'])} modules were allocated below the floor their role requires:",
         "",
         "| Role | Modules | Parameters | Floor | Given |",
         "|---|---:|---:|---:|---:|",
@@ -110,30 +112,30 @@ def violations_table(row: dict[str, Any]) -> str:
     for role, entry in sorted(agg.items(), key=lambda kv: -kv[1]["params"]):
         floor = "/".join(f"{bits}b" for bits in sorted(entry["floor"]))
         got = "/".join(f"{bits}b" for bits in sorted(entry["got"]))
-        lines.append(
-            f"| `{role}` | {entry['n']} | {entry['params']:,} | {floor} | {got} |"
-        )
+        lines.append(f"| `{role}` | {entry['n']} | {entry['params']:,} | {floor} | {got} |")
     return "\n".join(lines)
 
 
 def frontmatter(args: argparse.Namespace) -> str:
-    return "\n".join([
-        "---",
-        "license: apache-2.0",
-        f"base_model: {args.base_model}",
-        "library_name: transformers",
-        "pipeline_tag: text-generation",
-        "tags:",
-        "- dynquant",
-        "- quantization",
-        "- mixed-precision",
-        "- text-to-sql",
-        "- qlora",
-        "language:",
-        "- en",
-        "---",
-        "",
-    ])
+    return "\n".join(
+        [
+            "---",
+            "license: apache-2.0",
+            f"base_model: {args.base_model}",
+            "library_name: transformers",
+            "pipeline_tag: text-generation",
+            "tags:",
+            "- dynquant",
+            "- quantization",
+            "- mixed-precision",
+            "- text-to-sql",
+            "- qlora",
+            "language:",
+            "- en",
+            "---",
+            "",
+        ]
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -182,9 +184,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     paired = None
     if args.panel:
         panel = load(args.panel, "panel")
-        paired = next(
-            (arm["comparison"] for arm in panel["arms"] if arm["arm"] == args.arm), None
-        )
+        paired = next((arm["comparison"] for arm in panel["arms"] if arm["arm"] == args.arm), None)
 
     budget_bits, budget_key = floor_budget(inspect)
     realised = export["average_bits"]
@@ -194,89 +194,117 @@ def main(argv: Sequence[str] | None = None) -> int:
     add = out.append
 
     add(f"# {args.repo.split('/')[-1]}\n")
-    add(f"`{args.base_model}`, fine-tuned for text-to-SQL with QLoRA and then quantized "
+    add(
+        f"`{args.base_model}`, fine-tuned for text-to-SQL with QLoRA and then quantized "
         f"with [DynQuant]({GITHUB}) to **{realised:.3f} bits per weight** "
-        f"({gib(export['directory_nbytes'])} on disk).\n")
-    add("DynQuant gives every module its own width, driven by two signals measured "
+        f"({gib(export['directory_nbytes'])} on disk).\n"
+    )
+    add(
+        "DynQuant gives every module its own width, driven by two signals measured "
         "*during* the fine-tune: how much activation mass each weight sees, and how "
         "unstable its gradient is across optimizer steps. Modules the training dynamics "
-        "say are load-bearing keep their bits; the rest pay for them.\n")
+        "say are load-bearing keep their bits; the rest pay for them.\n"
+    )
 
     # The one thing a reader has to know before trusting the number below.
     if below is not None and below > 0.1:
         add("## Read this first\n")
-        add(f"This architecture has a **floor budget of {budget_bits:.4f} bits** -- the "
+        add(
+            f"This architecture has a **floor budget of {budget_bits:.4f} bits** -- the "
             f"narrowest average width at which every module can still be given the "
             f"minimum its role requires. That is measured, not assumed: it is the "
-            f"narrowest budget in this campaign's sweep that breached no floor.\n")
-        add(f"This arm was exported at **{realised:.3f} bits, {below:.2f} bits below "
+            f"narrowest budget in this campaign's sweep that breached no floor.\n"
+        )
+        add(
+            f"This arm was exported at **{realised:.3f} bits, {below:.2f} bits below "
             f"it**. So it is not an allocation within the architecture's limits; it is a "
             f"measurement of what overriding those limits costs. The table further down "
             f"names every floor it broke. The score was measured exactly as every other "
             f"arm's was -- what it is a score *of* is a deliberately over-compressed "
-            f"model.\n")
-        if budget_key:
-            add(f"For the smallest arm that breaks nothing, use the {budget_key}-bit "
-                f"budget instead.\n")
-    elif below is not None:
-        clears = "It clears every floor." if not row["violations"] else (
-            f"It still breaks {len(row['violations'])} of them, listed below."
+            f"model.\n"
         )
-        add(f"At {realised:.3f} bits this arm sits essentially at the architecture's "
+        if budget_key:
+            add(
+                f"For the smallest arm that breaks nothing, use the {budget_key}-bit "
+                f"budget instead.\n"
+            )
+    elif below is not None:
+        clears = (
+            "It clears every floor."
+            if not row["violations"]
+            else (f"It still breaks {len(row['violations'])} of them, listed below.")
+        )
+        add(
+            f"At {realised:.3f} bits this arm sits essentially at the architecture's "
             f"**floor budget of {budget_bits:.4f} bits** -- the narrowest average width "
             f"at which every module can still hold the minimum its role requires. "
-            f"{clears}\n")
+            f"{clears}\n"
+        )
 
     add("## Results\n")
     sources = scored.get("sources") or []
-    add(f"Execution accuracy on the held-out validation split of {joined(sources)}, "
-        f"{scored.get('total', '?')} problems, greedy decode.\n")
+    add(
+        f"Execution accuracy on the held-out validation split of {joined(sources)}, "
+        f"{scored.get('total', '?')} problems, greedy decode.\n"
+    )
 
     rows = [
         "| Model | Bits | Size | Accuracy | vs bf16 | p |",
         "|---|---:|---:|---:|---:|---:|",
     ]
     if reference:
-        rows.append(f"| bf16 (unquantized) | 16 | -- | {pct(reference.get('accuracy'))} "
-                    f"| -- | -- |")
+        rows.append(
+            f"| bf16 (unquantized) | 16 | -- | {pct(reference.get('accuracy'))} | -- | -- |"
+        )
     delta = f"{paired['delta_points']:+.2f}" if paired else "--"
     pvalue = f"{paired['p_value']:.4f}" if paired else "--"
-    rows.append(f"| **this checkpoint** | {realised:.3f} | {gib(export['directory_nbytes'])} "
-                f"| {pct(scored.get('accuracy'))} | {delta} | {pvalue} |")
+    rows.append(
+        f"| **this checkpoint** | {realised:.3f} | {gib(export['directory_nbytes'])} "
+        f"| {pct(scored.get('accuracy'))} | {delta} | {pvalue} |"
+    )
     add("\n".join(rows) + "\n")
-    add("The comparison is paired: both arms answered the same problems in the same "
+    add(
+        "The comparison is paired: both arms answered the same problems in the same "
         "order, so the difference is a McNemar test on the per-problem outcomes rather "
-        "than two independent accuracies subtracted.\n")
+        "than two independent accuracies subtracted.\n"
+    )
 
     unfinished = scored.get("unfinished_reasoning", 0) or 0
     total = scored.get("total") or 0
     budget_note = (
         ". A short decode budget scores a model that deliberates as though it were "
         "wrong, so this is reported rather than assumed.\n"
-        if not unfinished else
-        f" -- so accuracy is bounded above by {1 - unfinished / total:.2%} and the number "
+        if not unfinished
+        else f" -- so accuracy is bounded above by {1 - unfinished / total:.2%} and the number "
         f"above is partly a measurement of the budget.\n"
     )
-    add(f"Decode budget was {scored.get('max_new_tokens', '?')} new tokens, and "
-        f"{unfinished} generations reached it without finishing{budget_note}")
+    add(
+        f"Decode budget was {scored.get('max_new_tokens', '?')} new tokens, and "
+        f"{unfinished} generations reached it without finishing{budget_note}"
+    )
 
     add("## What the allocator did\n")
-    add(f"{export['modules']} modules were quantized at group size "
+    add(
+        f"{export['modules']} modules were quantized at group size "
         f"{export.get('group_size') or inspect.get('group_size')}, scored by the "
-        f"`{inspect.get('allocator', '?')}` allocator.\n")
+        f"`{inspect.get('allocator', '?')}` allocator.\n"
+    )
     add(widths_table(row, total_params) + "\n")
 
     add("### Floors\n")
-    add("Each role carries a minimum width below which that role is known to break -- an "
+    add(
+        "Each role carries a minimum width below which that role is known to break -- an "
         "embedding, an LM head, an attention projection and an MLP gate do not tolerate "
         "the same compression. When a budget cannot pay for every floor, DynQuant breaks "
         "the cheapest ones and **reports every one it broke**, rather than quietly "
-        "lowering a floor until the arithmetic works.\n")
+        "lowering a floor until the arithmetic works.\n"
+    )
     add(violations_table(row) + "\n")
 
     add("## Use it\n")
     add(f"```bash\n{PIP}\n```\n")
-    add("```python\n"
+    add(
+        "```python\n"
         "from transformers import AutoModelForCausalLM, AutoTokenizer\n"
         "import dynquant\n"
         "\n"
@@ -288,13 +316,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         "\n"
         f'model = AutoModelForCausalLM.from_pretrained("{args.repo}", device_map="auto")\n'
         f'tokenizer = AutoTokenizer.from_pretrained("{args.repo}")\n'
-        "```\n")
-    add(f"Or serve it: `vllm serve {args.repo}`. The vLLM plugin registers itself through "
-        f"an entry point, so nothing extra is needed there.\n")
+        "```\n"
+    )
+    add(
+        f"Or serve it: `vllm serve {args.repo}`. The vLLM plugin registers itself through "
+        f"an entry point, so nothing extra is needed there.\n"
+    )
 
     add("## How it was made\n")
     trained_on = finetune.get("train_sources") or []
-    add(f"- **Base**: `{args.base_model}`, text tower only\n"
+    add(
+        f"- **Base**: `{args.base_model}`, text tower only\n"
         f"- **Regime**: {finetune.get('regime', '?')}, LoRA rank "
         f"{finetune.get('lora_rank', '?')}\n"
         f"- **Data**: {finetune.get('conversations_kept', 0):,} conversations from "
@@ -305,18 +337,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"train loss {finetune.get('train_loss', '?')}\n"
         f"- **Signals**: collected from {finetune.get('tracked_modules', '?')} modules "
         f"during the fine-tune itself, with no extra forward or backward pass\n"
-        f"- **DynQuant**: {export['dynquant_core']}\n")
+        f"- **DynQuant**: {export['dynquant_core']}\n"
+    )
 
     add("## Limitations\n")
-    add("- Fine-tuned and evaluated on text-to-SQL. General-purpose ability was not "
+    add(
+        "- Fine-tuned and evaluated on text-to-SQL. General-purpose ability was not "
         "measured, and quantization is not free elsewhere.\n"
         "- Only the base model's text tower was trained and quantized. This checkpoint "
         "does not carry the vision path.\n"
         "- The score is execution accuracy on the datasets named above, against their "
-        "own schemas. Accuracy on your schemas is a different measurement.\n")
+        "own schemas. Accuracy on your schemas is a different measurement.\n"
+    )
     if row["violations"]:
-        add(f"- {len(row['violations'])} modules sit below their role's floor; the table "
-            f"above says which.\n")
+        add(
+            f"- {len(row['violations'])} modules sit below their role's floor; the table "
+            f"above says which.\n"
+        )
 
     destination = Path(args.out)
     destination.parent.mkdir(parents=True, exist_ok=True)
