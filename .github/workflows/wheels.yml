@@ -439,14 +439,43 @@ jobs:
           /venv/bin/pip install -q "$W"
 
       - name: dlopen it
-        # `import dynquant_kernels` is NOT the test -- it catches and falls back.
-        # Importing `_C` is the dlopen, and an ImportError here blocks the release.
+        # `import dynquant_kernels` is NOT the test: the shell loads `_C` lazily
+        # and catches the ImportError, so it succeeds on a dead wheel.
+        #
+        # But a bare `from dynquant_kernels import _C` is not the test either.
+        # That was the first attempt here and it failed on a *good* wheel, with
+        # `ImportError: libtorch.so: cannot open shared object file`. It is a raw
+        # submodule import, so it bypasses `_loader.load()` -- and `load()`
+        # imports torch before `_C` for a load-bearing reason. `readelf -d`
+        # on the built extension lists libtorch.so, libtorch_cpu.so,
+        # libtorch_cuda.so, libc10.so, libc10_cuda.so and the CUDA runtime as
+        # DT_NEEDED, with **no RUNPATH and no RPATH at all**. That is deliberate:
+        # auditwheel is told to exclude those very libraries so the process uses
+        # the user's own torch rather than a second vendored copy. Nothing on
+        # disk resolves those sonames; what resolves them is that `import torch`
+        # has already loaded them into the process. Torch first, then the dlopen.
+        #
+        # DYNQUANT_KERNELS_STRICT cannot be used here. With no GPU, `load()`
+        # returns available=False on its "no available device" branch, which is
+        # deliberately not flagged `expected`, so strict mode would fail a
+        # perfect wheel on this runner. Everything that *can* be established
+        # without a device is asserted explicitly instead: that the operators
+        # registered, that the ABI matches, and that CUDA was compiled in.
         run: |
           /venv/bin/python - <<'PY'
+          import torch                       # must precede _C -- see above
           import dynquant_kernels as k
-          from dynquant_kernels import _C
+          import dynquant_kernels._C as _C   # this line is the dlopen
+
           print("wheel version :", k.__version__)
           print("_C loaded from:", _C.__file__)
+
+          abi = int(torch.ops.dynquant.abi_version())
+          cuda = bool(torch.ops.dynquant.built_with_cuda())
+          print("ops registered, abi:", abi, "built_with_cuda:", cuda)
+
+          assert abi == k.ABI_VERSION, f"binary ABI {abi} != shell {k.ABI_VERSION}"
+          assert cuda, "wheel reports it was built without CUDA"
           PY
 
       - name: and state, by name, what C++ runtime symbols it still needs
