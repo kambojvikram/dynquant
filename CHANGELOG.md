@@ -17,6 +17,71 @@ it is talking about:
 A bump to any of the last three is called out explicitly, because those are the
 ones that invalidate artifacts a user has already produced.
 
+## [0.5.2] — 2026-08-18
+
+Two runtime defects and one signal defect, all three found by running a real model
+rather than by reading the source, plus first-class support for Qwen3.5's 27B. No
+`csrc/` change and no artifact-number change: `KERNEL_ABI_VERSION` 3,
+`MIN_KERNEL_ABI_VERSION` 2, `CHECKPOINT_FORMAT_VERSION` 2, `STATS_SCHEMA_VERSION` 2.
+Checkpoints and stats files written by 0.5.0 and 0.5.1 are read by 0.5.2 unchanged, and
+the compiled wheel published for 0.5.1 remains valid.
+
+### Fixed
+
+- **The torch backend reconstructed a whole tensor to use part of it, twice.**
+  `embedding_lookup` dequantized the entire table and then indexed the result, and
+  `quantized_matmul` dequantized the entire weight to hand to one `F.linear`. Both are
+  correct and both cost a transient the size of the tensor in fp32, several times over
+  once `dequantize`'s own intermediates are counted. The peak therefore scaled with the
+  largest tensor in the model rather than with the work being asked for: a 248k x 5120
+  embedding table needs about 5 GiB to read one token's row, so a model whose *packed
+  weights* fit comfortably in VRAM could still fail to generate a single token. It did,
+  on a 46 GiB L40.
+
+  `QuantTensor.select_rows` is new and public: an arbitrary row gather that stays
+  packed, which is what an embedding lookup is, and which the compiled backend was
+  already doing. `TORCH_DEQUANT_BAND_ELEMENTS` (16 Mi elements, 64 MiB of fp32) bounds
+  the matmul path -- rows are a partition of the output, so a banded reconstruction
+  computes the same product with a peak set by the constant instead of by the weight.
+  Not bit-identical to the unbanded path on the *product*: `F.linear` selects its kernel
+  by shape and different shapes accumulate fp32 in a different order, measured at 3e-7
+  absolute. Exactly identical on the reconstructed weights, which is the part that is a
+  partition. The compiled backend is untouched -- its decode path never materialises a
+  weight and its prefill path hands one straight to a tensor-core GEMM.
+
+- **The signal tracker measured no channel moments at all under 4-bit QLoRA.** Both
+  moment hooks validated an activation against `entry.weight.shape`, and a
+  `bitsandbytes` `Linear4bit` stores two values per byte in a flat `(out*in/2, 1)`
+  tensor, so the check rejected every module `bitsandbytes` had replaced -- which under
+  QLoRA is every attention and MLP projection. The axes now come from what the module
+  *declares* (`_matmul_shape`, resolved once at registration and recorded on
+  `_Tracked`), because the Gram identity is about the matmul and not about how its
+  operand is laid out. Measured on Qwen3-Omni-30B-A3B: 49 of 654 modules and 1.02 % of
+  parameters were being measured. Nothing raised, and gradient norms need no axes, so
+  the stats file looked complete.
+
+- **DDP zero-fill used the stored width too**, so a rank holding no local moment for a
+  module contributed a vector of the wrong length to the all-reduce. Same root cause,
+  same fix.
+
+### Added
+
+- `scripts/extract_text_tower.py`. Qwen ships the 27B as
+  `Qwen3_5ForConditionalGeneration`: one checkpoint with the text tower under
+  `model.language_model.*`, a 27-layer vision tower under `model.visual.*` and a
+  multi-token-prediction head under `mtp.*`. `Qwen3_5ForCausalLM` reads `model.*`, and
+  `from_pretrained` answers that mismatch with a logged MISSING table and a randomly
+  initialised model rather than an exception -- a run started that way trains, evaluates
+  and quantizes weights that were never Qwen's, and every number it produces is
+  internally consistent. The script does the rename once and checks it by name in both
+  directions: every tensor the target class declares must be present and nothing else
+  may be. On `Qwen/Qwen3.8-27B` that is 1199 checkpoint keys to 851 renamed, 851
+  declared, 348 dropped, 0 unmapped -- and a key matching neither a rename nor a drop is
+  an error, never a passthrough.
+
+- `qwen38-27b` in the S1 model registry, flagged `text_only` so the entry records that
+  the repo needs extracting before `--model-path` is pointed at it.
+
 ## [0.5.1] — 2026-08-17
 
 A packaging-only release. No `csrc/` change, no algorithm change, and every artifact
@@ -2102,7 +2167,9 @@ and `mma.sync` accumulation — the AWQ/Marlin route — which is P7.
   Python costs. CUDA Graphs (P8) and a `flash-linear-attention` fast path are what address
   it. `experiments/qwen35_2b/RESULTS.md` has the measurement.
 
-[Unreleased]: https://github.com/kambojvikram/dynquant/compare/v0.5.0...main
+[Unreleased]: https://github.com/kambojvikram/dynquant/compare/v0.5.2...main
+[0.5.2]: https://github.com/kambojvikram/dynquant/releases/tag/v0.5.2
+[0.5.1]: https://github.com/kambojvikram/dynquant/releases/tag/v0.5.1
 [0.5.0]: https://github.com/kambojvikram/dynquant/releases/tag/v0.5.0
 [0.4.0]: https://github.com/kambojvikram/dynquant/releases/tag/v0.4.0
 [0.3.0]: https://github.com/kambojvikram/dynquant/releases/tag/v0.3.0

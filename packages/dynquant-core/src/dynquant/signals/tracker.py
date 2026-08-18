@@ -352,6 +352,17 @@ class _Tracked:
     """``"linear"``, ``"embedding"`` or ``"other"``. Decides whether the Gram
     identity applies, and how the input Gram is built."""
 
+    matmul_shape: tuple[int, int] | None = None
+    """``(out_features, in_features)`` this module *declares*, not what it stores.
+
+    The two differ under 4-bit QLoRA, and the difference is not cosmetic: a
+    ``bitsandbytes`` ``Linear4bit`` packs two values per byte and stores the result
+    flat, so a 4096x2048 projection has ``weight.shape == (4194304, 1)``. Every
+    channel-moment consumer wants the logical axes -- the axes of the matmul the
+    Gram identity is about -- so they are resolved once here rather than read off
+    the storage at each micro-batch. ``None`` only for a module that declares
+    neither and does not store a matrix, which no ``kind == "linear"`` entry is."""
+
     saliency_from: str | None = None
     """Which boundary activation this entry's saliency reads, overriding the config.
 
@@ -578,6 +589,7 @@ class SignalTracker:
                 weight=weight,
                 role=roles.get(key) or role_of_name(key),
                 kind=kind,
+                matmul_shape=_matmul_shape(module, weight),
             )
             self._tracked.append(entry)
             self._by_module[id(module)] = entry
@@ -1055,7 +1067,17 @@ class SignalTracker:
         # embedding takes integer ids (rejected above); a conv1d's input axis is not
         # the weight's second axis, and silently pairing the two would produce a
         # number for a module the identity does not describe.
-        if entry.kind != "linear" or inp.shape[-1] != entry.weight.shape[1]:
+        #
+        # Checked against the *declared* in_features, not the stored second axis.
+        # Those agree for an nn.Linear and disagree for every module bitsandbytes
+        # replaces, whose weight is packed flat to (out*in/2, 1) -- so reading the
+        # storage rejected the whole of a QLoRA run's attention and MLP and left a
+        # moments file covering only the Linears the recipe kept in bf16. Measured
+        # on Qwen3-Omni-30B-A3B: 49 of 654 modules, 1.02% of parameters, and no
+        # error anywhere, because grad norms need no axes and looked complete.
+        if entry.kind != "linear" or entry.matmul_shape is None:
+            return
+        if inp.shape[-1] != entry.matmul_shape[1]:
             return
         dims = tuple(range(inp.ndim - 1))
         with torch.no_grad():
@@ -1077,7 +1099,9 @@ class SignalTracker:
         """
         if grad.ndim < 2 or not grad.is_floating_point() or not grad.numel():
             return
-        if entry.kind != "linear" or grad.shape[-1] != entry.weight.shape[0]:
+        if entry.kind != "linear" or entry.matmul_shape is None:
+            return
+        if grad.shape[-1] != entry.matmul_shape[0]:
             return
         dims = tuple(range(grad.ndim - 1))
         squares = torch.linalg.vector_norm(grad, dim=dims, dtype=torch.float32)
@@ -1530,7 +1554,7 @@ class SignalTracker:
                     local.clone()
                     if local is not None
                     else torch.zeros(
-                        entry.weight.shape[axis], dtype=torch.float32, device=self._device
+                        _moment_width(entry, axis), dtype=torch.float32, device=self._device
                     )
                 )
                 torch.distributed.all_reduce(total)
@@ -1787,8 +1811,8 @@ def _quantizable_weight(module: nn.Module) -> nn.Parameter | None:
     return None
 
 
-def _declared_numel(module: nn.Module) -> int | None:
-    """``out_features * in_features`` off the module itself, unwrapping wrappers.
+def _declared_shape(module: nn.Module) -> tuple[int, int] | None:
+    """``(out_features, in_features)`` off the module itself, unwrapping wrappers.
 
     ``None`` when the module does not declare both -- an ``nn.Embedding``, a conv, a
     batched expert bank -- in which case the stored tensor is the only description of
@@ -1797,12 +1821,57 @@ def _declared_numel(module: nn.Module) -> int | None:
     out = getattr(module, "out_features", None)
     inp = getattr(module, "in_features", None)
     if isinstance(out, int) and isinstance(inp, int):
-        return out * inp
+        return out, inp
     for attribute in ("base_layer", "original_module"):
         inner = getattr(module, attribute, None)
         if isinstance(inner, nn.Module):
-            return _declared_numel(inner)
+            return _declared_shape(inner)
     return None
+
+
+def _declared_numel(module: nn.Module) -> int | None:
+    """``out_features * in_features``, or ``None`` -- see :func:`_declared_shape`.
+
+    Expressed on top of the shape resolver rather than repeating the walk, so a
+    module the tracker can size is by construction a module it can find axes for.
+    """
+    declared = _declared_shape(module)
+    return None if declared is None else declared[0] * declared[1]
+
+
+def _matmul_shape(module: nn.Module, weight: Tensor) -> tuple[int, int] | None:
+    """The ``(out, in)`` axes of the matmul this module performs.
+
+    The declaration wins over the storage wherever a module makes one, because the
+    Gram identity is about the matmul, not about how its operand happens to be laid
+    out in memory. They coincide for an ``nn.Linear`` and part company for a
+    ``bitsandbytes`` ``Linear4bit`` -- see :attr:`_Tracked.matmul_shape`.
+
+    Falls back to the stored axes for a plain matrix that declares nothing, and to
+    ``None`` for anything else, which the moment hooks treat as "do not measure".
+    """
+    declared = _declared_shape(module)
+    if declared is not None:
+        return declared
+    if weight.ndim == 2:
+        return int(weight.shape[0]), int(weight.shape[1])
+    return None
+
+
+def _moment_width(entry: _Tracked, axis: int) -> int:
+    """Length of ``entry``'s channel-moment vector along ``axis`` (1 = in, 0 = out).
+
+    Load-bearing under DDP: :meth:`SignalTracker._reduced_moments` materialises this
+    many zeros for a module that a rank never saw, and every rank must agree on the
+    number or the all-reduce mismatches. Reading it off packed storage was harmless
+    only while the guards above rejected those modules on every rank alike; once
+    they are measured, a rank that saw tokens contributes ``in_features`` and a rank
+    that did not would have contributed ``in_features / 2``, and NCCL does not raise
+    on that -- it hangs.
+    """
+    if entry.matmul_shape is not None:
+        return entry.matmul_shape[axis]
+    return int(entry.weight.shape[axis])
 
 
 def _logical_numel(module: nn.Module, weight: Tensor) -> int:

@@ -24,7 +24,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dynquant"
-version = "0.5.1"
+version = "0.5.2"
 description = "Training-dynamics-driven mixed-precision LLM quantization, with prebuilt CUDA kernels."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -42,7 +42,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "dynquant-core==0.5.1",
+    "dynquant-core==0.5.2",
     # The prebuilt kernels are NOT here, and that is the fix for the defect that
     # cost 0.5.0 its install story. See `[project.optional-dependencies] kernels`.
     #
@@ -77,11 +77,11 @@ dependencies = [
 [project.optional-dependencies]
 # Mirrors of dynquant-core's extras, so users never have to know that `core`
 # exists as a separate name.
-hf = ["dynquant-core[hf]==0.5.1"]
-train = ["dynquant-core[train]==0.5.1"]
-eval = ["dynquant-core[eval]==0.5.1"]
-triton = ["dynquant-core[triton]==0.5.1"]
-dev = ["dynquant-core[dev]==0.5.1"]
+hf = ["dynquant-core[hf]==0.5.2"]
+train = ["dynquant-core[train]==0.5.2"]
+eval = ["dynquant-core[eval]==0.5.2"]
+triton = ["dynquant-core[triton]==0.5.2"]
+dev = ["dynquant-core[dev]==0.5.2"]
 
 # The compiled kernels, opt-in. This is the one place the binary is requested, and
 # it is an extra rather than a dependency because asking for it can force a torch

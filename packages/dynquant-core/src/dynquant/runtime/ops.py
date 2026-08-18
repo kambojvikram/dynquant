@@ -188,6 +188,53 @@ def dequantize(qt: QuantTensor, *, dtype: torch.dtype | None = None) -> torch.Te
     return dense if dtype is None else dense.to(dtype)
 
 
+TORCH_DEQUANT_BAND_ELEMENTS = 1 << 24
+"""How many weight elements the torch backend reconstructs at once.
+
+The reconstruction is not free of intermediates: :meth:`QuantTensor.dequantize`
+holds the unpacked codes, their fp32 promotion and the scaled result at the same
+time, so materialising a whole tensor to multiply by it costs several times the
+tensor in fp32 -- on Mistral's ``down_proj`` (4096 x 14336) that is a 448 MiB
+allocation to do one GEMV, and on a 27B model's ``lm_head`` it is gigabytes.
+Rows are independent -- a row band is a slice of the *output* features, and its
+groups run along the untouched input axis -- so the same numbers come out of a
+banded reconstruction, with a peak set by this constant rather than by the
+largest tensor in the model.
+
+16 Mi elements is 64 MiB of fp32 per intermediate. Small enough that a 7B decodes
+inside a few hundred MiB of workspace; large enough that most projections in a
+dense model are one or two bands and the loop is not the cost. The compiled
+backend does not use it: its decode path never materialises the weight at all,
+and its prefill path materialises one it hands straight to a tensor-core GEMM.
+"""
+
+
+def _banded_linear(
+    flat: torch.Tensor,
+    qt: QuantTensor,
+    bias: torch.Tensor | None,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """``flat @ W.T + bias`` reconstructing at most one band of ``W`` at a time.
+
+    Bit-identical to reconstructing the whole weight: each output column depends
+    on exactly one weight row, so the split is a partition of the output, not a
+    reassociation of any sum.
+    """
+    rows_per_band = max(1, TORCH_DEQUANT_BAND_ELEMENTS // max(qt.in_features, 1))
+    if rows_per_band >= qt.num_rows:
+        return torch.nn.functional.linear(flat, qt.dequantize(dtype=dtype), bias)
+
+    out = torch.empty(flat.shape[0], qt.num_rows, dtype=dtype, device=flat.device)
+    for start in range(0, qt.num_rows, rows_per_band):
+        stop = min(start + rows_per_band, qt.num_rows)
+        band = qt.rows(start, stop).dequantize(dtype=dtype)
+        out[:, start:stop] = torch.nn.functional.linear(
+            flat, band, None if bias is None else bias[start:stop]
+        )
+    return out
+
+
 def quantized_matmul(
     x: torch.Tensor, qt: QuantTensor, bias: torch.Tensor | None = None
 ) -> torch.Tensor:
@@ -216,8 +263,7 @@ def quantized_matmul(
         bias = bias.to(flat.dtype)
 
     if not uses_compiled_kernels(qt):
-        weight = qt.dequantize(dtype=x.dtype)
-        out = torch.nn.functional.linear(flat, weight, bias)
+        out = _banded_linear(flat, qt, bias, x.dtype)
         return out.reshape(*lead, qt.num_rows)
 
     packed, scales, offsets, bits, group_values, in_features = _kernel_args(qt)
@@ -323,13 +369,20 @@ def embedding_lookup(qt: QuantTensor, ids: torch.Tensor) -> torch.Tensor:
     packed in VRAM for the whole run instead of only on disk.
 
     No separate kernel: this is ``index_select`` composed with ``dequant``, and
-    composing them is why neither needed to know about the other.
+    composing them is why neither needed to know about the other. Both backends
+    gather first -- the torch one through :meth:`QuantTensor.select_rows`, which is
+    the same composition written in torch. It did not, once: it dequantized the
+    whole table and indexed the result, which is correct and costs a transient the
+    size of the table in fp32. That is 1 GiB on Mistral's 32k x 4096 table and 5 GiB
+    on a 248k x 5120 one, per forward -- so a model whose *weights* fit in VRAM
+    could still fail to run a single token, which is what it did.
     """
     if len(qt.logical_shape) != 2:
         raise ValueError(f"embedding table must be 2-D, got {qt.logical_shape}")
     flat_ids = ids.reshape(-1)
     if not uses_compiled_kernels(qt):
-        return qt.dequantize()[flat_ids].reshape(*ids.shape, qt.in_features)
+        gathered = qt.select_rows(flat_ids).dequantize()
+        return gathered.reshape(*ids.shape, qt.in_features)
 
     packed, scales, offsets, bits, group_values, in_features = _kernel_args(qt)
     rows = packed.index_select(0, flat_ids)

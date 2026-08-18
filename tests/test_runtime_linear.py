@@ -298,3 +298,120 @@ def test_effective_bits_include_the_metadata(bits, ceiling):
         torch.randn(64, 512), bits=bits, group_size=128, compute_dtype=torch.float16
     )
     assert bits < quantized.bits_per_weight <= ceiling
+
+
+def test_an_embedding_lookup_never_materialises_the_whole_table():
+    """The gather is the point, not an optimisation detail worth leaving unpinned.
+
+    ``embedding_lookup`` used to dequantize the table and index the result, which
+    is correct and allocates an fp32 intermediate the size of the table on every
+    forward -- 1 GiB on Mistral's 32k x 4096 table, 5 GiB on a 248k x 5120 one. A
+    model whose packed weights fit in VRAM could still fail to decode one token,
+    and the failure looked like the weights being too big rather than like a
+    lookup being written the expensive way. Counting rows is the observation that
+    distinguishes the two implementations; ``test_packed_embedding_gathers_the_
+    same_rows`` above already establishes they agree on the values.
+    """
+    from dynquant.quant.tensor import QuantTensor
+
+    dense = nn.Embedding(512, 64)
+    packed = DynQuantEmbedding.from_embedding(dense, 4)
+    ids = torch.randint(0, 512, (3, 7))
+
+    seen: list[int] = []
+    original = QuantTensor.dequantize
+
+    def counting(self, **kwargs):
+        seen.append(self.num_rows)
+        return original(self, **kwargs)
+
+    QuantTensor.dequantize = counting  # type: ignore[method-assign]
+    try:
+        out = packed(ids)
+    finally:
+        QuantTensor.dequantize = original  # type: ignore[method-assign]
+
+    assert out.shape == (3, 7, 64)
+    assert seen == [21], f"dequantized {seen} rows for 21 ids out of a 512-row table"
+
+
+def test_select_rows_is_a_gather_of_the_packed_rows():
+    """``select_rows`` against the table-wide route, including duplicate ids.
+
+    A gather that dropped duplicates or reordered them would still pass a test
+    written on a permutation, so the index here repeats and is out of order.
+    """
+    torch.manual_seed(3)
+    table = DynQuantEmbedding.from_embedding(nn.Embedding(64, 32), 3).weight_qt
+    index = torch.tensor([7, 7, 0, 63, 31, 7])
+
+    gathered = table.select_rows(index)
+    assert gathered.logical_shape == (6, 32)
+    assert gathered.row_offset == 0
+    torch.testing.assert_close(
+        gathered.dequantize(), table.dequantize()[index], rtol=0, atol=0
+    )
+
+
+@pytest.mark.parametrize("bits", [2, 3, 4, 8])
+def test_a_band_reconstructs_exactly_the_rows_it_covers(bits):
+    """The invariant banding actually has: the weights are bit-identical.
+
+    Asserted on the reconstruction rather than on the matmul because the matmul is
+    not bit-identical and should not be claimed to be -- ``F.linear`` picks its
+    kernel by shape, so a 40-column GEMM and forty 1-column GEMVs accumulate in
+    different orders and land a few fp32 ULPs apart. What must not move is which
+    weight a band reconstructs, and that is exact.
+    """
+    torch.manual_seed(bits)
+    qt = DynQuantLinear.from_linear(nn.Linear(96, 40), bits).weight_qt
+    whole = qt.dequantize()
+
+    rebuilt = torch.cat([qt.rows(s, min(s + 7, 40)).dequantize() for s in range(0, 40, 7)])
+    torch.testing.assert_close(rebuilt, whole, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("bits", [2, 3, 4, 8])
+def test_banded_and_whole_tensor_matmuls_agree(bits, monkeypatch):
+    """And the product agrees to fp32, which is the claim the runtime makes."""
+    from dynquant.runtime import ops as _ops
+
+    torch.manual_seed(bits)
+    packed = DynQuantLinear.from_linear(nn.Linear(96, 40), bits)
+    x = torch.randn(5, 96)
+
+    whole = packed(x)
+    # 96 elements a band -> one output row at a time, the most adversarial split.
+    monkeypatch.setattr(_ops, "TORCH_DEQUANT_BAND_ELEMENTS", 96)
+    torch.testing.assert_close(packed(x), whole, rtol=1e-5, atol=1e-6)
+
+
+def test_banding_bounds_the_reconstruction_peak():
+    """The point of the band is the peak, so the peak is what is asserted.
+
+    ``down_proj`` on a 7B is 4096 x 14336; reconstructing it whole to multiply by
+    it wants 448 MiB of fp32 intermediates for a single token, which is how a
+    model whose packed weights fit in VRAM fails to decode. Counting the rows each
+    reconstruction covers is that quantity, measured without needing the GPU.
+    """
+    from dynquant.quant.tensor import QuantTensor
+    from dynquant.runtime import ops as _ops
+
+    packed = DynQuantLinear.from_linear(nn.Linear(128, 64), 4)
+    seen: list[int] = []
+    original = QuantTensor.dequantize
+
+    def counting(self, **kwargs):
+        seen.append(self.num_rows)
+        return original(self, **kwargs)
+
+    band = _ops.TORCH_DEQUANT_BAND_ELEMENTS
+    QuantTensor.dequantize = counting  # type: ignore[method-assign]
+    _ops.TORCH_DEQUANT_BAND_ELEMENTS = 128 * 8
+    try:
+        packed(torch.randn(2, 128))
+    finally:
+        QuantTensor.dequantize = original  # type: ignore[method-assign]
+        _ops.TORCH_DEQUANT_BAND_ELEMENTS = band
+
+    assert seen == [8] * 8, f"expected eight 8-row bands over 64 rows, got {seen}"

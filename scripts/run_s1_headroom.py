@@ -63,6 +63,16 @@ MODELS: dict[str, dict[str, object]] = {
     # No dot in the key, deliberately: records are `{name}.{task}.json` and `summarize`
     # splits on the first one, so "lfm2.5-8b-a1b" would file itself under model "lfm2".
     "lfm25-8b-a1b": {"repo": "LiquidAI/LFM2.5-8B-A1B", "gated": False},
+    # Qwen3.5's 27B release is a vision-language model -- the repo's architecture is
+    # `Qwen3_5ForConditionalGeneration` and its checkpoint holds the text tower under
+    # `model.language_model.*`, a 27-layer vision tower under `model.visual.*` and a
+    # multi-token-prediction head under `mtp.*`. `Qwen3_5ForCausalLM`, which is what
+    # every task in this campaign wants, expects `model.*`, and `from_pretrained`
+    # answers that mismatch with a printed MISSING table and randomly initialised
+    # weights rather than an exception. `text_only` records that the repo needs
+    # `scripts/extract_text_tower.py` run over it first; point `--model-path` at the
+    # result. Key has no dot, as above -- "qwen3.8-27b" would file under "qwen3".
+    "qwen38-27b": {"repo": "Qwen/Qwen3.8-27B", "gated": False, "text_only": True},
 }
 
 #: Ordered cheapest-first so a broken cell surfaces before the expensive ones run.

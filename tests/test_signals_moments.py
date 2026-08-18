@@ -242,3 +242,102 @@ def test_no_sidecar_is_written_when_collection_is_off(tmp_path) -> None:
     stats_path = tracker.save(tmp_path, reduce=False)
     assert stats_path is not None
     assert not (stats_path.parent / MOMENTS_FILENAME).exists()
+
+
+# --------------------------------------------------------------------------
+# Packed storage: the axes come from the declaration, not from the bytes
+# --------------------------------------------------------------------------
+
+
+class _PackedLinear(torch.nn.Module):
+    """A Linear whose stored weight is flat and half-length, as bitsandbytes stores it.
+
+    A ``bitsandbytes`` ``Linear4bit`` puts two 4-bit values in a byte and keeps the
+    result flat, so a ``(out, in)`` projection stores ``(out * in / 2, 1)``. It still
+    declares ``in_features`` and ``out_features``, and it still performs the ``(out,
+    in)`` matmul -- only the storage disagrees.
+
+    Reproduced here rather than imported because bitsandbytes needs a GPU and this
+    defect is about shapes, which are platform-independent. The forward runs off a
+    separate dense buffer for the same reason bnb's does not differentiate its packed
+    weight: what the hooks observe is the module's input and its output gradient, and
+    neither depends on how the operand is laid out.
+    """
+
+    def __init__(self, fan_in: int = 6, fan_out: int = 4) -> None:
+        super().__init__()
+        self.in_features = fan_in
+        self.out_features = fan_out
+        self.weight = torch.nn.Parameter(
+            torch.zeros(fan_in * fan_out // 2, 1, dtype=torch.uint8).float(),
+            requires_grad=False,
+        )
+        self.register_buffer("dense", torch.randn(fan_out, fan_in))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.linear(x, self.dense)
+
+
+class _PackedSolo(torch.nn.Module):
+    def __init__(self, fan_in: int = 6, fan_out: int = 4) -> None:
+        super().__init__()
+        self.proj = _PackedLinear(fan_in, fan_out)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.proj(x)
+
+
+def test_a_flat_packed_weight_still_gets_moments_on_its_declared_axes() -> None:
+    """The QLoRA regression: reading the stored second axis rejected every bnb module.
+
+    ``inp.shape[-1] != weight.shape[1]`` is ``6 != 1`` here, so the guard returned and
+    the module contributed nothing -- with no error, because grad norms need no axes
+    and went on looking complete. On Qwen3-Omni-30B-A3B that left 49 of 654 modules
+    and 1.02% of parameters in the sidecar.
+    """
+    torch.manual_seed(0)
+    model = _PackedSolo()
+    tracker = _tracker(model)
+
+    x = torch.randn(5, 6, requires_grad=True)
+    model(x).square().sum().backward()
+
+    moments = tracker.channel_moments()
+    assert "proj" in moments.input_sq, "the packed module contributed no input moment"
+    assert "proj" in moments.output_grad_sq, "the packed module contributed no output moment"
+    # Declared axes, not stored ones: (6,) and (4,), never (1,) or (12,).
+    assert moments.input_sq["proj"].shape == (6,)
+    assert moments.output_grad_sq["proj"].shape == (4,)
+    torch.testing.assert_close(moments.input_sq["proj"], x.detach().square().mean(0))
+
+
+def test_the_ddp_zero_fill_is_sized_from_the_declared_axes() -> None:
+    """A rank that saw no tokens must contribute a vector the other ranks can reduce.
+
+    Sized off packed storage this was ``in_features / 2`` on one side and
+    ``out_features * in_features / 2`` on the other, against ``in_features`` and
+    ``out_features`` from a rank that did see tokens. ``all_reduce`` does not raise on
+    a size mismatch; it hangs, which under torchrun looks exactly like a slow save.
+    """
+    from dynquant.signals.tracker import _moment_width
+
+    model = _PackedSolo()
+    tracker = SignalTracker(model, config=TrackerConfig(collect_channel_moments=True))
+    (entry,) = [e for e in tracker._tracked if e.name == "proj"]
+
+    assert entry.weight.shape == (12, 1), "the fixture is not exercising packed storage"
+    assert _moment_width(entry, 1) == 6  # in_features, for the input moment
+    assert _moment_width(entry, 0) == 4  # out_features, for the output moment
+
+
+def test_an_ordinary_linear_is_unchanged_by_the_declared_axis_lookup() -> None:
+    """Declaration and storage agree for an nn.Linear, so nothing about it moves."""
+    from dynquant.signals.tracker import _moment_width
+
+    model = _Solo()
+    tracker = SignalTracker(model, config=TrackerConfig(collect_channel_moments=True))
+    (entry,) = [e for e in tracker._tracked if e.name == "proj"]
+
+    assert entry.matmul_shape == (4, 6) == tuple(entry.weight.shape)
+    assert _moment_width(entry, 1) == entry.weight.shape[1]
+    assert _moment_width(entry, 0) == entry.weight.shape[0]

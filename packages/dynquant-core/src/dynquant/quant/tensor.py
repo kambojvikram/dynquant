@@ -594,6 +594,37 @@ class QuantTensor:
             symmetric=self.symmetric,
         )
 
+    def select_rows(self, index: torch.Tensor) -> QuantTensor:
+        """The rows named by ``index``, gathered, still packed.
+
+        :meth:`rows` gives a contiguous band as a view; this gives an arbitrary
+        gather as a copy, which is the operation an embedding lookup is. The copy
+        is of packed words -- ``in_features * bits / 8`` bytes a row rather than
+        ``in_features * 2`` -- so gathering 2k rows out of a 250k-row table costs
+        about 1% of what dequantizing the table to index it costs, and, more to the
+        point, its *peak* is 1% too. On a 248k x 5120 table the table-wide route
+        needs a 5 GiB fp32 intermediate to read one token's row.
+
+        ``row_offset`` resets to 0 for the same reason it does in :meth:`rows`: the
+        gathered rows are their own output space, and carrying a position from the
+        table they came out of would describe a shard that does not exist.
+        """
+        if index.ndim != 1:
+            raise PackingError(f"row index must be 1-D, got shape {tuple(index.shape)}")
+        idx = index.to(device=self.packed.device, dtype=torch.long)
+        return QuantTensor(
+            packed=self.packed.index_select(0, idx),
+            scales=self.scales.index_select(0, idx),
+            offsets=None if self.offsets is None else self.offsets.index_select(0, idx),
+            bits=self.bits,
+            group_size=self.group_size,
+            in_features=self.in_features,
+            logical_shape=(int(idx.numel()), self.in_features),
+            row_offset=0,
+            layout=self.layout,
+            symmetric=self.symmetric,
+        )
+
     def quantization_error(self, reference: torch.Tensor) -> dict[str, float]:
         """Relative Frobenius error and max absolute error against a dense tensor.
 
