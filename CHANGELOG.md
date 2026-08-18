@@ -82,6 +82,31 @@ the compiled wheel published for 0.5.1 remains valid.
 - `qwen38-27b` in the S1 model registry, flagged `text_only` so the entry records that
   the repo needs extracting before `--model-path` is pointed at it.
 
+- `--load-4bit` on `scripts/run_s2_finetune.py`, and torchrun awareness throughout it.
+  QLoRA holds the frozen base in `bitsandbytes` NF4 with double quantization and a bf16
+  compute dtype, which is what makes a 27B trainable on one card and, under torchrun,
+  what makes each rank's full replica affordable. Three things had to be right for the
+  signals to survive it. The replica is placed by `LOCAL_RANK` rather than at `"cuda"`,
+  which every rank resolves to device 0 -- a two-rank job was stacking both replicas on
+  one card. `prepare_model_for_kbit_training` is deliberately not called: it enables
+  gradient checkpointing, which replays the forward and fires each saliency hook twice
+  per step against one backward, and it upcasts non-quantized parameters to fp32, which
+  on this model puts a 248k x 5120 embedding and an untied head into fp32 for nothing.
+  And the merge does not go through the quantized weights -- see below.
+
+### Changed
+
+- **A QLoRA adapter is now merged onto a reloaded bf16 base, not onto the NF4 one.**
+  `merge_and_unload` on a `bitsandbytes` base does the arithmetic correctly and stores
+  the answer wrongly: it dequantizes each `Linear4bit`, adds `BA`, and quantizes the sum
+  straight back to NF4. What comes out is a 4-bit model wearing bf16's dtype, every
+  weight already snapped to one of sixteen levels per block. That is not a small error
+  downstream, it is a different experiment: the allocator would price tensors
+  `bitsandbytes` had already quantized, and the eval would charge NF4's damage and
+  DynQuant's damage together to DynQuant. The adapter now goes onto the weights it is a
+  low-rank residual *of*, reloaded in bf16 on the host. Only under `--load-4bit`; a bf16
+  run still merges in place, where the base already is the full-precision weights.
+
 ## [0.5.1] — 2026-08-17
 
 A packaging-only release. No `csrc/` change, no algorithm change, and every artifact

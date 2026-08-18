@@ -1458,3 +1458,168 @@ def test_a_dense_model_has_nothing_to_miss(s2, tmp_path) -> None:
     every batched expert tensor.
     """
     assert s2.banked_entries_missing(torch.nn.Linear(8, 8), _stats(tmp_path, {})) == []
+
+
+# --------------------------------------------------------------------------
+# QLoRA and torchrun
+# --------------------------------------------------------------------------
+
+
+def test_the_qlora_merge_reloads_the_base_instead_of_folding_into_nf4(s2, tmp_path) -> None:
+    """The merge under ``--load-4bit`` must not go through the quantized weights.
+
+    ``merge_and_unload`` on a bitsandbytes base dequantizes, adds ``BA``, and requantizes
+    to NF4 -- so the "full precision" model handed to S3 would already be 4-bit, and every
+    number S4 reported would be NF4-plus-DynQuant charged to DynQuant alone. The test
+    watches which object gets merged: the one reloaded from the base repo, never the
+    trained one still holding ``Linear4bit`` modules.
+
+    Turns red when: ``save_outputs`` merges in place while a full-precision base is named.
+    """
+    reloaded: list[str] = []
+    merged_from: list[object] = []
+
+    class _Wrapped:
+        def merge_and_unload(self, **kwargs: object) -> object:
+            assert kwargs.get("safe_merge") is True
+            return _Saved("reloaded-base")
+
+    class _Peft:
+        @staticmethod
+        def from_pretrained(model: object, adapter: str, **_: object) -> _Wrapped:
+            merged_from.append(model)
+            return _Wrapped()
+
+    class _AutoModel:
+        @staticmethod
+        def from_pretrained(repo: str, **_: object) -> str:
+            reloaded.append(repo)
+            return "bf16-base"
+
+    peft = types.ModuleType("peft")
+    peft.PeftModel = _Peft  # type: ignore[attr-defined]
+    transformers = types.ModuleType("transformers")
+    transformers.AutoModelForCausalLM = _AutoModel  # type: ignore[attr-defined]
+
+    saved = _run_save_outputs(
+        s2,
+        tmp_path,
+        full_precision_base="Qwen/Qwen3.8-27B",
+        modules={"peft": peft, "transformers": transformers},
+    )
+
+    assert reloaded == ["Qwen/Qwen3.8-27B"], "the bf16 base was never reloaded"
+    assert merged_from == ["bf16-base"], "the adapter was folded into the trained NF4 model"
+    assert (saved / "config.json").read_text("utf-8") == "reloaded-base"
+
+
+def test_a_bf16_run_still_merges_in_place(s2, tmp_path) -> None:
+    """Without ``--load-4bit`` there is nothing to reload -- the base already is bf16.
+
+    Turns red when: the QLoRA path becomes unconditional and every bf16 arm pays a
+    46 GiB host reload it does not need.
+    """
+    saved = _run_save_outputs(s2, tmp_path, full_precision_base=None, modules={})
+    assert (saved / "config.json").read_text("utf-8") == "merged-in-place"
+
+
+class _Saved:
+    """A stand-in for whatever ``save_outputs`` ends up writing.
+
+    ``filename`` differs between the model and the tokenizer because both are saved into
+    ``merged/`` and the tokenizer is saved second: sharing a filename would have the
+    tokenizer overwrite the marker the assertion reads, and the test would report the
+    wrong merge path rather than a failure.
+    """
+
+    def __init__(self, marker: str, filename: str = "config.json") -> None:
+        self.marker = marker
+        self.filename = filename
+        self.config = types.SimpleNamespace(use_cache=False)
+
+    def save_pretrained(self, path: str) -> None:
+        Path(path).mkdir(parents=True, exist_ok=True)
+        (Path(path) / self.filename).write_text(self.marker, encoding="utf-8")
+
+
+def _run_save_outputs(s2, tmp_path: Path, *, full_precision_base: str | None, modules: dict):
+    """Drive ``save_outputs`` in the lora regime with both merge paths stubbed."""
+    model = _Saved("adapter")
+    peft_utils = types.ModuleType("dynquant.integration.peft_utils")
+    peft_utils.merge_adapters = lambda _model: _Saved("merged-in-place")  # type: ignore[attr-defined]
+
+    stubs = {"dynquant.integration.peft_utils": peft_utils, **modules}
+    saved_modules = {name: sys.modules.get(name) for name in stubs}
+    sys.modules.update(stubs)
+    try:
+        return s2.save_outputs(
+            model,
+            _Saved("tokenizer", filename="tokenizer_config.json"),
+            tmp_path,
+            regime="lora",
+            full_precision_base=full_precision_base,
+        )
+    finally:
+        for name, previous in saved_modules.items():
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
+
+
+def test_the_replica_lands_on_the_rank_that_owns_it(s2) -> None:
+    """``device_map`` under torchrun has to name *this* rank's card, not device 0.
+
+    ``"cuda"`` resolves to device 0 in every process, so a two-rank job stacks two
+    replicas on GPU 0 and leaves GPU 1 idle. On a 27B that is an OOM; on a small model it
+    is a run that reports two ranks and uses one card, which is worse because it finishes.
+
+    Turns red when: the LOCAL_RANK branch is dropped and every rank asks for "cuda".
+    """
+    source = DRIVER.read_text(encoding="utf-8")
+    assert 'device_map = "cuda" if LOCAL_RANK < 0 else {"": LOCAL_RANK}' in source
+    assert 'device_map="cuda"' not in source
+
+
+def test_only_rank_zero_writes_the_runs_artifacts(s2) -> None:
+    """One set of files per run, not one per rank.
+
+    Both writes are guarded because both are unrecoverable: interleaved shard writes from
+    two ranks calling ``save_pretrained`` on one directory cost the fine-tune, and a
+    truncated ``mask_census.json`` costs the record of what the run trained on.
+
+    Turns red when: either guard is removed, or the tail returns before the ranks have
+    finished the collective inside ``trainer.train()``.
+    """
+    source = DRIVER.read_text(encoding="utf-8")
+    assert "if LOCAL_RANK > 0:" in source
+    assert "if LOCAL_RANK <= 0:" in source
+    tail = source.index("if LOCAL_RANK > 0:")
+    assert source.index("trainer.train()") < tail, "ranks must not skip the signal all-reduce"
+    assert tail < source.index("merged = save_outputs("), "rank 0 alone writes the merge"
+
+
+def test_qlora_without_an_adapter_is_refused(s2) -> None:
+    """NF4 base weights are frozen, so rank 0 would train nothing and still log a loss.
+
+    Turns red when: ``--load-4bit`` stops requiring ``--lora-rank``.
+    """
+    source = DRIVER.read_text(encoding="utf-8")
+    assert 'if args.load_4bit and regime != "lora":' in source
+
+
+def test_the_qlora_load_does_not_upcast_the_model(s2) -> None:
+    """``prepare_model_for_kbit_training`` is deliberately absent, and has to stay absent.
+
+    It turns on gradient checkpointing -- which replays the forward, firing each saliency
+    hook twice per step against one backward and biasing every activation moment the
+    allocator prices -- and upcasts non-quantized parameters to fp32, which on this model
+    puts a 248k x 5120 embedding and an untied head into fp32 for nothing.
+
+    Turns red when: someone adds the call because a tutorial has it.
+    """
+    source = DRIVER.read_text(encoding="utf-8")
+    assert "prepare_model_for_kbit_training" not in source.replace(
+        "`prepare_model_for_kbit_training`", ""
+    )
+    assert "gradient_checkpointing=False" in source

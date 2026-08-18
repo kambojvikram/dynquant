@@ -79,6 +79,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from run_s1_headroom import MODELS
 
+#: torchrun's rank for this process, or -1 when launched directly. Read once, at import,
+#: because it decides three separate things -- which card the replica lands on, whether
+#: this process writes the run's artifacts, and what a plain `python` invocation means
+#: -- and reading it three times invites the three to disagree.
+LOCAL_RANK = int(os.environ.get("LOCAL_RANK", "-1"))
+
 #: The chat mixtures phase 3 trains on. ``column`` is where the conversation lives;
 #: its *shape* is not recorded here because two of these ship ShareGPT-style
 #: ``{"from", "value"}`` turns and one ships ``{"role", "content"}``, and a registry that
@@ -866,6 +872,17 @@ def build_parser() -> argparse.ArgumentParser:
             "two panel models under different regimes would make their arms incomparable"
         ),
     )
+    parser.add_argument(
+        "--load-4bit",
+        action="store_true",
+        help=(
+            "QLoRA: hold the frozen base in bitsandbytes NF4 and train the adapter "
+            "against it. Buys the base at about a quarter of its bf16 footprint, which "
+            "is what makes a 27B trainable on one card -- and under torchrun, what "
+            "makes each rank's full replica affordable. The cost is paid at merge "
+            "time, not here; see _merge_onto_full_precision. Requires --lora-rank > 0."
+        ),
+    )
     parser.add_argument("--lora-alpha", type=int, default=0, help="default 2x rank")
     parser.add_argument("--lora-dropout", type=float, default=0.05)
     parser.add_argument(
@@ -1061,7 +1078,15 @@ def main(argv: list[str] | None = None) -> int:
         # `load_rows` returns `{}` on the generic Hub path.
         "decontaminated": decontaminated,
     }
-    (destination / "mask_census.json").write_text(json.dumps(census, indent=2), encoding="utf-8")
+    if LOCAL_RANK <= 0:
+        # Every rank builds the same census from the same seeded loader, so every rank
+        # would write the same bytes to the same path at the same time. Identical
+        # content is no defence against interleaved writes -- a truncated JSON here
+        # loses the record of what the run trained on, which is not recoverable from
+        # the checkpoint.
+        (destination / "mask_census.json").write_text(
+            json.dumps(census, indent=2), encoding="utf-8"
+        )
 
     if mask_rate > args.max_drop_rate:
         print(
@@ -1112,14 +1137,54 @@ def _train(
     torch.cuda.manual_seed_all(args.seed)
 
     regime = resolve_regime(args.lora_rank)
+    if args.load_4bit and regime != "lora":
+        # NF4 base weights are frozen and not trainable, so a "full fine-tune" that
+        # loaded them would update nothing and still report a loss curve. Refuse
+        # rather than train a model that cannot move.
+        print(
+            "--load-4bit is QLoRA: it freezes the base in NF4 and trains an adapter, "
+            "so it needs --lora-rank > 0. Given rank 0, there would be nothing "
+            "trainable in the model at all.",
+            flush=True,
+        )
+        return 3
     lr = args.lr if args.lr is not None else LR_BY_REGIME[regime]
     print(f"{repo_id}: {regime}, lr {lr:g}, {len(dataset)} conversations", flush=True)
+
+    # Under torchrun every rank holds a full replica and each has to land on *its*
+    # card. "cuda" names device 0 for all of them, so a two-rank job puts two replicas
+    # on GPU 0 and leaves GPU 1 idle -- an OOM on a model this size, and on a smaller
+    # one a run that reports two ranks while using one card.
+    device_map = "cuda" if LOCAL_RANK < 0 else {"": LOCAL_RANK}
+
+    load_kwargs: dict[str, Any] = {}
+    if args.load_4bit:
+        from transformers import BitsAndBytesConfig
+
+        # NF4 with double quantization: QLoRA as published. The compute dtype is bf16 to
+        # match the rest of the run -- the weight is stored in 4 bits and every matmul is
+        # still done in bf16, so the adapter's gradients, and the activation moments the
+        # tracker reads off the same tensors, are in the dtype this arm claims.
+        #
+        # Deliberately no `prepare_model_for_kbit_training`. It exists to turn on
+        # gradient checkpointing and to upcast non-quantized parameters to fp32, and this
+        # run wants neither: checkpointing replays the forward, firing each saliency hook
+        # twice per step against one backward, and the upcast would put this model's
+        # untied 248k x 5120 embedding *and* head into fp32 for ~10 GiB that buys nothing
+        # -- peft creates the LoRA parameters in fp32 either way.
+        load_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+        )
 
     model = AutoModelForCausalLM.from_pretrained(
         repo_id,
         dtype=torch.bfloat16,
-        device_map="cuda",
+        device_map=device_map,
         trust_remote_code=args.trust_remote_code,
+        **load_kwargs,
     )
     model.config.use_cache = False  # incompatible with the backward hooks, unused in training
     if regime == "lora":
@@ -1199,6 +1264,12 @@ def _train(
         seed=args.seed,
         dataloader_num_workers=2,
         remove_unused_columns=False,
+        # Every module in this model runs on every forward -- it is dense, and the
+        # linear-attention layers are unconditional -- so the unused-parameter search has
+        # nothing to find and is pure per-step overhead. It would be wrong rather than
+        # merely slow on an MoE, where a rank whose batch routes to no expert *e*
+        # produces no gradient for *e* and DDP would hang waiting for one.
+        ddp_find_unused_parameters=False,
     )
 
     trainer = Trainer(
@@ -1213,7 +1284,26 @@ def _train(
     result = trainer.train()
     elapsed = time.time() - started
 
-    merged = save_outputs(model, tokenizer, destination, regime=regime)
+    if LOCAL_RANK > 0:
+        # Everything below writes this run's artifacts, and they are one set of files
+        # per run rather than one per rank. Two ranks calling `save_pretrained` on the
+        # same directory interleave shard writes; two ranks reloading a bf16 27B to
+        # merge onto costs twice the host RAM. Rank 0 does it.
+        #
+        # Safe to leave now: every collective this script issues has already run.
+        # `tracker.save` all-reduces the signals and *then* returns None off rank 0, and
+        # it is called from `on_train_end` -- inside `trainer.train()`, which returned.
+        print(f"rank {LOCAL_RANK}: trained {result.global_step} steps, rank 0 writes", flush=True)
+        return 0
+
+    merged = save_outputs(
+        model,
+        tokenizer,
+        destination,
+        regime=regime,
+        full_precision_base=repo_id if args.load_4bit else None,
+        trust_remote_code=args.trust_remote_code,
+    )
     print(f"\nsaved fine-tuned model to {merged}", flush=True)
 
     tracked = len(callback.tracker) if callback.tracker is not None else 0
@@ -1270,7 +1360,15 @@ def _train(
     return 0
 
 
-def save_outputs(model: Any, tokenizer: Any, destination: Path, *, regime: str) -> Path:
+def save_outputs(
+    model: Any,
+    tokenizer: Any,
+    destination: Path,
+    *,
+    regime: str,
+    full_precision_base: str | None = None,
+    trust_remote_code: bool = False,
+) -> Path:
     """Write what the arm produced, and return the directory downstream stages load.
 
     That directory holds a **merged** model, not an adapter. Every stage after this one
@@ -1292,12 +1390,58 @@ def save_outputs(model: Any, tokenizer: Any, destination: Path, *, regime: str) 
 
     if regime == "lora":
         model.save_pretrained(str(destination / "adapter"))
-    saved = merge_adapters(model) if regime == "lora" else model
+    if regime != "lora":
+        saved = model
+    elif full_precision_base is None:
+        saved = merge_adapters(model)
+    else:
+        saved = _merge_onto_full_precision(
+            destination / "adapter", full_precision_base, trust_remote_code
+        )
     saved.config.use_cache = True
     merged = destination / "merged"
     saved.save_pretrained(str(merged))
     tokenizer.save_pretrained(str(merged))
     return merged
+
+
+def _merge_onto_full_precision(adapter: Path, base: str, trust_remote_code: bool) -> Any:
+    """Fold a QLoRA adapter into bf16 base weights rather than into the NF4 ones.
+
+    ``merge_and_unload`` on a bitsandbytes base does the arithmetic right and stores the
+    answer wrong: it dequantizes each ``Linear4bit``, adds ``BA``, and quantizes the sum
+    straight back to NF4. What comes out is a 4-bit model wearing bf16's dtype, every
+    weight already snapped to one of sixteen levels per block.
+
+    Downstream that is not a small error, it is a different experiment. S3 would allocate
+    bit widths for tensors bitsandbytes had already quantized, and S4 would report
+    DynQuant's cost against a baseline that is not full precision -- two quantizations'
+    damage summed and attributed to one of them. The comparison the campaign exists to
+    make would be measuring NF4 plus DynQuant against fp16 while calling it DynQuant.
+
+    So the adapter goes onto the weights it is a low-rank residual *of*: the base is
+    reloaded in bf16 and merged there. On CPU, because the card is still holding the
+    trained replica and a 27B in bf16 is ~46 GiB against the box's 251 GiB of host RAM.
+    It costs a few minutes of memory bandwidth once, at the end of a multi-hour run.
+
+    Only reached under ``--load-4bit``. A bf16 run merges in place, where the base
+    already *is* the full-precision weights and there is nothing to reload.
+    """
+    import torch
+    from peft import PeftModel
+    from transformers import AutoModelForCausalLM
+
+    print(f"merging the adapter onto bf16 weights reloaded from {base}", flush=True)
+    full = AutoModelForCausalLM.from_pretrained(
+        base,
+        dtype=torch.bfloat16,
+        device_map="cpu",
+        trust_remote_code=trust_remote_code,
+    )
+    wrapped = PeftModel.from_pretrained(full, str(adapter), device_map="cpu")
+    # `safe_merge` reconstructs into a scratch tensor and refuses on a non-finite value,
+    # which is the one failure mode that would otherwise reach the Hub silently.
+    return wrapped.merge_and_unload(safe_merge=True)
 
 
 def banked_entries_missing(model: Any, stats_file: Path) -> list[str]:
