@@ -1033,6 +1033,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--lora-alpha", type=int, default=0, help="default 2x rank")
+    parser.add_argument(
+        "--gradient-checkpointing",
+        action="store_true",
+        help=(
+            "recompute each block's activations during backward instead of storing them. "
+            "Trades roughly 30%% of step time for an activation footprint that stops "
+            "scaling with depth -- the difference between 93 GiB and a few on a 64-layer "
+            "27B at 3072 tokens. Safe for the signals: the tracker drops forwards that "
+            "fire inside a backward, so a replay is not counted as an observation"
+        ),
+    )
     parser.add_argument("--lora-dropout", type=float, default=0.05)
     parser.add_argument(
         "--mask-mode",
@@ -1231,6 +1242,7 @@ def main(argv: list[str] | None = None) -> int:
         "mask_mode_requested": args.mask_mode,
         "mask_mode_probe": probe,
         "max_len": args.max_len,
+        "gradient_checkpointing": bool(args.gradient_checkpointing),
         "sources": dict(sources),
         # What was *asked* for, beside the realised mixture above. `None` records that
         # the run took the registry default rather than that it chose the same list --
@@ -1415,11 +1427,24 @@ def _train(
         **warmup_kwargs(TrainingArguments),
         weight_decay=0.0,
         bf16=True,
-        # Off deliberately: checkpointing replays the forward pass during backward, so a
-        # module's forward hook fires twice per step while its backward hook fires once.
-        # The stashed activation would then be the recomputed one and the saliency EMA
-        # would double-count. Memory is not the constraint here -- LoRA is.
-        gradient_checkpointing=False,
+        # Was unconditionally off, for a reason that has since been fixed one layer down.
+        # Checkpointing replays a block's forward during backward and module forward hooks
+        # fire on the replay, so the saliency EMA used to count each micro-batch twice.
+        # `signals.tracker._in_backward` now separates the two -- the graph-task id is the
+        # only thing that differs between them -- and a replayed forward is dropped.
+        #
+        # Still off by default, because every arm of the campaign so far trained without
+        # it and the flag costs ~30% of step time on models that do not need it. It is not
+        # optional on a 27B: at 3072 tokens and batch 1, saving every layer's activations
+        # needs 93 GiB, which is what a 96 GiB card OOMs on.
+        gradient_checkpointing=args.gradient_checkpointing,
+        # Non-reentrant, and that matters under LoRA rather than being a style choice. The
+        # reentrant implementation runs the block's forward under `no_grad` and recovers
+        # the graph from the block's *inputs*, so a block whose inputs are all frozen --
+        # which under QLoRA is every block, the embedding being frozen too -- produces no
+        # gradient at all and the run trains nothing while reporting a falling loss. The
+        # usual fix is `enable_input_require_grads`; not needing it is cleaner.
+        gradient_checkpointing_kwargs={"use_reentrant": False},
         logging_steps=10,
         # Was "no". A twelve-hour run then had nothing to fall back on, and a box that
         # died at step 1800 cost all 1800 -- which is exactly what happened once, on a

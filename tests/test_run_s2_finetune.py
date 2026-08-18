@@ -1861,10 +1861,11 @@ def test_qlora_without_an_adapter_is_refused(s2) -> None:
 def test_the_qlora_load_does_not_upcast_the_model(s2) -> None:
     """``prepare_model_for_kbit_training`` is deliberately absent, and has to stay absent.
 
-    It turns on gradient checkpointing -- which replays the forward, firing each saliency
-    hook twice per step against one backward and biasing every activation moment the
-    allocator prices -- and upcasts non-quantized parameters to fp32, which on this model
-    puts a 248k x 5120 embedding and an untied head into fp32 for nothing.
+    It upcasts every non-quantized parameter to fp32, which on this model puts a 248k x
+    5120 embedding and an untied head into fp32 for nothing -- peft creates the LoRA
+    parameters in fp32 either way. It also turns on gradient checkpointing as a side
+    effect, which is a decision this driver makes per run rather than inherits from a
+    helper: see the test below.
 
     Turns red when: someone adds the call because a tutorial has it.
     """
@@ -1872,7 +1873,35 @@ def test_the_qlora_load_does_not_upcast_the_model(s2) -> None:
     assert "prepare_model_for_kbit_training" not in source.replace(
         "`prepare_model_for_kbit_training`", ""
     )
-    assert "gradient_checkpointing=False" in source
+
+
+def test_gradient_checkpointing_is_a_flag_that_defaults_to_off(s2) -> None:
+    """It used to be hardcoded off, for a reason that has since been fixed a layer down.
+
+    Checkpointing replays a block's forward during backward and module forward hooks fire
+    on the replay, so the saliency EMA counted each micro-batch twice. That is now handled
+    where it belongs -- ``signals.tracker._in_backward`` drops a forward that fires inside
+    a backward -- so the driver no longer has to refuse the memory saving to protect the
+    signal. It is not optional on a 27B, where storing 64 layers of activations at 3072
+    tokens needs 93 GiB and a 96 GiB card OOMs on the forward.
+
+    Off by default all the same: every arm run so far trained without it, and the recompute
+    costs step time on models that have the memory to spare.
+
+    Turns red when: the default flips silently, or the flag stops reaching
+    ``TrainingArguments`` -- which would look exactly like a card that got smaller.
+    """
+    parser = s2.build_parser()
+    base = ["--model", "qwen38-27b", "--out", "runs"]
+    assert parser.parse_args(base).gradient_checkpointing is False
+    assert parser.parse_args([*base, "--gradient-checkpointing"]).gradient_checkpointing is True
+
+    source = DRIVER.read_text(encoding="utf-8")
+    assert "gradient_checkpointing=args.gradient_checkpointing" in source
+    # Non-reentrant is load-bearing under QLoRA rather than stylistic: the reentrant
+    # implementation recovers the graph from a block's inputs, and under QLoRA every
+    # block's inputs are frozen, so the run would train nothing while reporting a loss.
+    assert '"use_reentrant": False' in source
 
 
 def test_naming_spider_trains_on_it_and_still_scores_the_held_out_split(s2, monkeypatch) -> None:
