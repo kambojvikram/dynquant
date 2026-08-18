@@ -35,7 +35,9 @@ jobs:
 
       - name: interrogate the toolchain
         run: |
-          docker run --rm "${{ matrix.image }}" bash -s <<'PROBE'
+          # -i is load-bearing: without it docker leaves stdin unattached, `bash -s`
+          # reads EOF, exits 0, and the step goes green having run nothing.
+          docker run --rm -i "${{ matrix.image }}" bash -s <<'PROBE' | tee /tmp/probe.out
           set -u
           echo "### image"
           head -2 /etc/os-release
@@ -101,3 +103,4 @@ jobs:
             echo
           done
           PROBE
+          grep -q 'VERDICT' /tmp/probe.out || { echo '::error::probe produced no verdicts -- it did not run'; exit 1; }
