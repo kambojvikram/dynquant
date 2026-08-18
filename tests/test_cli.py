@@ -375,30 +375,35 @@ def test_a_repeated_target_flag_accumulates_rather_than_replacing() -> None:
     assert parser.parse_args(["inspect", "m"]).target is None
 
 
-def test_two_targets_that_round_alike_still_get_separate_rows() -> None:
-    """The labels are dictionary keys, so a collision discards an allocation.
+def test_every_target_label_parses_back_to_the_target_it_names() -> None:
+    """Distinctness is not the property; identifying the budget is.
 
-    At two decimals ``4.005`` and ``4.015`` both became ``"4.02"`` and the second
-    overwrote the first: the JSON carried one budget where two were asked for and paid
-    for, and on a 27B each discarded allocation cost minutes. Precision grows only as far
-    as this run needs, so the ordinary case keeps the labels every existing record uses.
+    At two decimals ``4.005`` and ``4.015`` become ``"4.00"`` and ``"4.01"`` -- distinct,
+    so a same-run collision check waves them through, and both name a different number
+    than the one that was measured. ``"4.00"`` then collides across runs with a genuine
+    ``4.00``, which is the version of this bug that survives into a published table.
 
-    Turns red when: the label format goes back to a fixed width.
+    Round-tripping is the stronger requirement and it gives distinctness for free.
+
+    Turns red when: the label format goes back to a fixed width, or the check weakens to
+    ``len(set(labels)) == len(labels)``.
     """
+    for targets in ([3.0, 4.0], [4.005, 4.015], [4.0, 4.005, 4.01, 4.015], [3.15]):
+        labels = inspect._target_labels(targets)
+        assert [float(label) for label in labels] == list(targets), (targets, labels)
+        assert len(set(labels)) == len(labels)
+
+    # The ordinary case keeps the spelling every record already written uses.
     assert inspect._target_labels([3.0, 4.0]) == ["3.00", "4.00"]
-    assert inspect._target_labels([4.005, 4.015]) == ["4.005", "4.015"]
-    assert len(set(inspect._target_labels([4.0, 4.005, 4.01, 4.015]))) == 4
 
 
-def test_two_targets_that_are_genuinely_the_same_number_are_refused() -> None:
-    """Because that is a different sentence to say than "the labels collided".
+def test_the_same_budget_asked_for_twice_is_refused() -> None:
+    """One allocation computed twice and reported as a comparison is not a comparison.
 
-    Growing precision forever would turn one mistake into an unreadable label; the honest
-    answer is that the run cannot report two of the same budget separately.
-
-    Turns red when: the loop starts returning duplicates instead of raising.
+    Turns red when: duplicates start being merged into one row, which is the silent
+    behaviour this whole change exists to remove.
     """
-    with pytest.raises(DynQuantError, match="eight decimal places"):
+    with pytest.raises(DynQuantError, match="asked for twice"):
         inspect._target_labels([4.0, 4.0])
 
 

@@ -307,30 +307,40 @@ def render(report: dict[str, Any]) -> str:
 
 
 def _target_labels(targets: Sequence[float]) -> list[str]:
-    """Names for the requested budgets that are still distinct at the end.
+    """Names for the requested budgets that each identify the budget they name.
 
-    The labels are dictionary keys in the JSON payload, so two that collide do not
-    merely read alike -- the second allocation overwrites the first, and the run reports
-    fewer budgets than it was asked for and than it actually spent minutes computing. At
-    two decimals ``--target 4.005 4.015`` produced one row, and on a 27B each discarded
-    allocation was a real cost paid for nothing.
+    The labels are dictionary keys in the JSON payload, so two that collide do not merely
+    read alike -- the second allocation overwrites the first after being computed in
+    full, and on a 27B each discarded allocation is minutes paid for nothing.
 
-    Two decimals stay the common case, so ``3.0`` is still ``"3.00"`` and records already
-    written remain comparable; precision grows only as far as it takes to separate what
-    this particular run was asked for.
+    Distinctness alone is not the property, though, and asking only for it is how the
+    first version of this passed its own test while still being wrong: at two decimals
+    ``4.005`` and ``4.015`` land on ``"4.00"`` and ``"4.01"``, which are distinct and
+    both name a different number than the one that was asked for. ``"4.00"`` would then
+    collide across runs with a genuine ``4.00``. So the requirement is that each label
+    parses back to its own target, which gives distinctness for free.
+
+    Two decimals stay the common case -- ``3.0`` is still ``"3.00"`` -- so records already
+    written remain comparable; precision grows only as far as this run needs.
     """
-    for places in range(2, 9):
-        labels = [f"{target:.{places}f}" for target in targets]
-        if len(set(labels)) == len(labels):
-            return labels
-    # Beyond eight decimals the floats themselves are the duplicates, which is a
-    # different thing to say than "the labels collided".
     from dynquant.errors import DynQuantError
 
-    raise DynQuantError(
-        "two --target values are equal to within eight decimal places, so they cannot be "
-        f"reported separately: {', '.join(repr(t) for t in targets)}"
-    )
+    seen: dict[float, None] = {}
+    for target in targets:
+        if target in seen:
+            raise DynQuantError(
+                f"--target {target!r} was asked for twice. Two rows for one budget would "
+                f"be the same allocation computed twice and reported as a comparison."
+            )
+        seen[target] = None
+
+    for places in range(2, 9):
+        labels = [f"{target:.{places}f}" for target in targets]
+        if all(float(label) == target for label, target in zip(labels, targets, strict=True)):
+            return labels
+    # A budget specified past eight decimals is not a budget anyone is comparing; repr
+    # round-trips by construction, so the row is still named after the number it used.
+    return [repr(target) for target in targets]
 
 
 def run(args: argparse.Namespace) -> int:
