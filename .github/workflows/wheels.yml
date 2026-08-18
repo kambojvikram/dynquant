@@ -191,19 +191,39 @@ jobs:
           # kernels pyproject documents; here it is the difference between a wheel
           # that matches its advertised torch minor and one that does not.
           CIBW_BUILD_FRONTEND: "build; args: --no-isolation"
-          # Runs once per image, before any build. Three jobs.
+          # Runs once per image, before any build. Two jobs -- the host compiler is
+          # pinned in CIBW_ENVIRONMENT below rather than installed here, for the reason
+          # in the next paragraph.
           #
-          # Pin the host compiler. nvcc compiles the host half of every .cu with a host
-          # C++ compiler, and it hard-refuses versions newer than it knows about: CUDA
-          # 12.6 caps at GCC 13, this image defaults to GCC 14.2.1, and that is what
-          # failed the first manylinux_2_34 run with "unsupported GNU version".
+          # The host compiler is pinned by absolute path to the image's *system* GCC.
+          #
+          # It has to be pinned at all because nvcc compiles the host half of every .cu
+          # with a host C++ compiler and hard-refuses versions newer than it knows about:
+          # CUDA 12.6 caps at GCC 13, these images put GCC 14.2.1 on PATH, and that is
+          # what failed the first manylinux_2_34 run with "unsupported GNU version".
           # `-allow-unsupported-compiler` is not the fix -- nvcc's own message says it
           # "may cause compilation failure or incorrect run time execution", which is not
-          # a bet to take on numerics kernels. GCC 13 is accepted by both 12.6 and 12.8,
-          # so one pin covers the matrix. This is right on its own merits regardless of
-          # the failure: the host compiler used to be whatever the image happened to
-          # default to, so an image rebuild could change code generation under every
-          # wheel we ship, silently.
+          # a bet to take on numerics kernels. It is also right on its own merits: the
+          # host compiler used to be whatever the image happened to default to, so an
+          # image rebuild could change code generation under every wheel we ship.
+          #
+          # The first pin here was `dnf -y install gcc-toolset-13-*`, and it split the
+          # matrix in half. The two images are AlmaLinux 9.5 (CUDA 12.6) and 9.7 (CUDA
+          # 12.8), so one `dnf` line resolved against two different repository states:
+          # 12.6 got a toolset-13 whose `libstdc++_nonshared.a` defines
+          # `std::ios_base_library_init()` (GLIBCXX_3.4.32, new in GCC 13) and 12.8 got
+          # one that leaves it undefined. Same commit, same command, one clean wheel and
+          # one that could not have loaded on the floor this matrix advertises -- the
+          # same class of dead wheel as 0.5.0, caught this time by the ABI gate below
+          # instead of by users. A compiler fetched over the network at build time is
+          # not a pin.
+          #
+          # `/usr/bin/g++` is GCC 11.5.0 in both images, needs no `dnf`, is accepted by
+          # both 12.6 and 12.8 nvcc, and covers the C++17 this project asks for. It is
+          # also the only candidate that structurally *cannot* emit either symbol that
+          # has killed a wheel here: `__cxa_call_terminate` is GCC 14 and
+          # `_ZSt21ios_base_library_initv` is GCC 13. The absolute path is load-bearing
+          # -- bare `g++` on PATH is gcc-toolset-14's.
           #
           # Pin auditwheel, for the same reason and with sharper teeth. The images pick
           # its version for us and they disagree: the CUDA 12.6 image (built 2024-12)
@@ -223,9 +243,10 @@ jobs:
           # the binaries, and the next surprise is a grep instead of a bisect.
           CIBW_BEFORE_ALL: |
             set -eux
-            dnf -y install gcc-toolset-13-gcc gcc-toolset-13-gcc-c++
             /opt/_internal/pipx/venvs/auditwheel/bin/python -m pip install --no-cache-dir auditwheel==6.6.0
-            /opt/rh/gcc-toolset-13/root/usr/bin/g++ --version
+            /usr/bin/gcc --version
+            /usr/bin/g++ --version
+            cat /etc/redhat-release
             /usr/local/cuda/bin/nvcc --version
             auditwheel --version
             ls /opt/python
@@ -236,7 +257,7 @@ jobs:
           # arrive as an environment variable rather than in CMAKE_ARGS: the variable is
           # consumed at `enable_language(CUDA)`, which torch's own cuda.cmake reaches
           # while our find_package(Torch) is still running, so a -D on our command line
-          # lands too late to be read. Installed by CIBW_BEFORE_ALL above.
+          # lands too late to be read. It is the image's own g++, so nothing installs it.
           #
           # CC/CXX matter as much as CUDAHOSTCXX and were missing, which is the whole
           # of the 0.5.0 kernels defect. CUDAHOSTCXX governs only the host half of a
@@ -258,9 +279,9 @@ jobs:
           # Hence `abi-smoke` below, which answers the question by dlopening.
           CIBW_ENVIRONMENT: >-
             CUDACXX=/usr/local/cuda/bin/nvcc
-            CUDAHOSTCXX=/opt/rh/gcc-toolset-13/root/usr/bin/g++
-            CC=/opt/rh/gcc-toolset-13/root/usr/bin/gcc
-            CXX=/opt/rh/gcc-toolset-13/root/usr/bin/g++
+            CUDAHOSTCXX=/usr/bin/g++
+            CC=/usr/bin/gcc
+            CXX=/usr/bin/g++
             CMAKE_ARGS=-DDYNQUANT_REQUIRE_CUDA=ON
           # auditwheel must not vendor libtorch or the CUDA runtime. Bundling them
           # would produce a ~2GB wheel with a second copy of libtorch loaded into
