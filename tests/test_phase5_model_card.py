@@ -294,3 +294,23 @@ def test_a_target_the_inspection_never_measured_is_refused(card: Any, tmp_path: 
     """
     with pytest.raises(SystemExit, match="no target"):
         _render(card, tmp_path, "3.50")
+
+
+def test_a_size_from_one_run_and_a_table_from_another_are_refused(
+    card: Any, tmp_path: Path
+) -> None:
+    """The card reads its width from the export and its widths table from the inspection.
+
+    Those are one allocation described twice, and nothing but this guard makes them so. The
+    inspection is cheap and gets re-run; the export takes forty minutes and does not. So the
+    reachable mistake is an inspection against a newer stats file than the export was built
+    from -- and this campaign has already seen one stats snapshot give 3.99989 bits with 9
+    violations where another gave 4.00496 with 7. Either table looks entirely plausible
+    under either headline. A reader cannot tell, and the numbers are not far enough apart
+    for anyone to notice by eye.
+
+    Turns red when: the two records are read without being compared, which is how the file
+    shipped before this test existed.
+    """
+    with pytest.raises(SystemExit, match="one allocation described twice"):
+        _render(card, tmp_path, "3.00", export={"average_bits": 4.019577})

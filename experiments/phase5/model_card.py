@@ -188,6 +188,24 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     budget_bits, budget_key = floor_budget(inspect)
     realised = export["average_bits"]
+
+    # The headline width comes from the export and the allocation table from the inspect,
+    # so the two have to be the same allocation or the card describes a checkpoint that
+    # does not exist -- a widths table over one budget above a size and a score from
+    # another. They are computed by the same allocator from the same stats and should
+    # agree to the last place; the tolerance is here only because the export counts
+    # tensors it refused to quantize and the inspection does not. A gap wider than that is
+    # a stale file on one side, which is exactly what a resume guard leaves behind.
+    drift = abs(realised - row["average_bits"])
+    if drift > 0.05:
+        raise SystemExit(
+            f"the export realised {realised:.4f} bits but the {args.inspect_target!r} "
+            f"inspection row measured {row['average_bits']:.4f} -- a gap of {drift:.4f}. "
+            f"These are supposed to be one allocation described twice. One of the two "
+            f"files predates the stats the other was built from; re-run the inspection "
+            f"against the stats the export used."
+        )
+
     below = None if budget_bits is None else budget_bits - realised
 
     out: list[str] = [frontmatter(args)]

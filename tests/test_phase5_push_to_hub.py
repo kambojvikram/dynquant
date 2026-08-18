@@ -71,10 +71,20 @@ def _merge(path: Path) -> Path:
 def _inputs(tmp_path: Path) -> dict[str, str]:
     """The four records the card generator reads, with ``{arm}`` paths that resolve.
 
-    One export record and one eval record serve both arms: the ids under test are the repo
-    ids, and giving each arm its own copy of an identical file would only make the fixture
-    longer.
+    One eval record serves both arms: the ids under test are the repo ids, and giving each
+    arm its own copy of an identical file would only make the fixture longer. The **export**
+    records are per arm, because they are per arm in the run -- each one has to agree with
+    its own inspection row or the card generator refuses it.
     """
+    exports = {
+        "dq4": {"average_bits": 4.0192, "directory_nbytes": 13_447_625_728},
+        "dq3": {"average_bits": 2.9998, "directory_nbytes": 10_085_628_928},
+    }
+    for label, fields in exports.items():
+        (tmp_path / f"export-{label}.json").write_text(
+            json.dumps({"dynquant_core": "0.5.2", "modules": 498, "group_size": 128, **fields}),
+            encoding="utf-8",
+        )
     payloads = {
         "finetune": {
             "regime": "qlora",
@@ -88,13 +98,6 @@ def _inputs(tmp_path: Path) -> dict[str, str]:
             "conversations_kept": 9999,
             "supervised_tokens": 350_799,
             "train_sources": ["spider", "gretel", "wikisql", "create-context"],
-        },
-        "export": {
-            "dynquant_core": "0.5.2",
-            "average_bits": 3.0,
-            "modules": 498,
-            "directory_nbytes": 10_085_628_928,
-            "group_size": 128,
         },
         "eval": {
             "label": "arm",
@@ -137,6 +140,7 @@ def _inputs(tmp_path: Path) -> dict[str, str]:
         path = tmp_path / f"{name}.json"
         path.write_text(json.dumps(payload), encoding="utf-8")
         paths[name] = str(path)
+    paths["export"] = str(tmp_path / "export-{arm}.json")
     return paths
 
 
