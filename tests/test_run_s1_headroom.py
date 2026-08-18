@@ -237,7 +237,27 @@ def test_the_gated_models_are_the_ones_the_hub_actually_gates(s1) -> None:
         # strength of the banner would have put it on the skip list and left the S4
         # arm unrun on a box that could have run it.
         "mistral7b-v03",
+        # Open too, and the one entry that is not a causal LM as published: the repo's
+        # architecture is `Qwen3_5ForConditionalGeneration` and its checkpoint carries a
+        # vision tower. `text_only` is how the registry says so, and the driver refuses
+        # to run it from the Hub repo directly -- see the entry's own comment.
+        "qwen38-27b",
     }
+
+
+def test_the_text_only_entries_are_exactly_the_vlm_repos(s1) -> None:
+    """A `text_only` flag that drifts is worse than no flag.
+
+    The models here are the ones whose Hub repo cannot be handed to
+    `AutoModelForCausalLM` as-is, and the failure mode when one is missed is not an
+    exception: `from_pretrained` logs a MISSING table and returns randomly initialised
+    weights. So the set is pinned, and adding a VLM without the flag turns this red.
+
+    Turns red when: a vision-language repo is added without `text_only`, or the flag is
+    put on a repo that does not need extracting.
+    """
+    text_only = {name for name, entry in s1.MODELS.items() if entry.get("text_only")}
+    assert text_only == {"qwen38-27b"}
 
 
 def test_gated_models_are_skipped_loudly_when_there_is_no_token(

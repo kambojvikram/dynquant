@@ -348,9 +348,7 @@ def test_select_rows_is_a_gather_of_the_packed_rows():
     gathered = table.select_rows(index)
     assert gathered.logical_shape == (6, 32)
     assert gathered.row_offset == 0
-    torch.testing.assert_close(
-        gathered.dequantize(), table.dequantize()[index], rtol=0, atol=0
-    )
+    torch.testing.assert_close(gathered.dequantize(), table.dequantize()[index], rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("bits", [2, 3, 4, 8])
