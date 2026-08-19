@@ -146,7 +146,7 @@ def _write(tmp_path: Path, **overrides: Any) -> dict[str, str]:
     files = {
         "finetune": FINETUNE,
         "export": export,
-        "eval": {**EVAL, **overrides.get("eval", {})},
+        "eval": overrides.get("eval_record") or {**EVAL, **overrides.get("eval", {})},
         "inspect": INSPECT,
     }
     paths = {}
@@ -314,3 +314,63 @@ def test_a_size_from_one_run_and_a_table_from_another_are_refused(
     """
     with pytest.raises(SystemExit, match="one allocation described twice"):
         _render(card, tmp_path, "3.00", export={"average_bits": 4.019577})
+
+
+#: The record ``dynquant eval`` actually writes. Every field the card asserts about the
+#: scoring run is nested one level down, and none of the three is where the flat fixture
+#: above puts it -- which is the whole reason these two tests exist alongside it.
+NESTED_EVAL = {
+    "label": "3bit",
+    "accuracy": 0.4125,
+    "total": 400,
+    "correct": 165,
+    "split": "test",
+    "limit": 400,
+    "unparseable": 0,
+    "decode": {
+        "max_new_tokens": 1024,
+        "batch_size": 32,
+        "max_prompt_tokens": 3072,
+        "greedy": True,
+    },
+    "task_options": {"sources": ["spider", "gretel", "wikisql"]},
+    "detail": {
+        "unfinished_reasoning": 0,
+        "by_source": {"gretel": [105, 133], "spider": [108, 134], "wikisql": [124, 133]},
+    },
+}
+
+
+def test_the_record_the_harness_writes_reaches_the_card(card: Any, tmp_path: Path) -> None:
+    """Read flat, all three of these are missing, and two of them fail silently.
+
+    ``dynquant eval`` puts the decode budget under ``decode``, the sources under
+    ``task_options`` and the unfinished count under ``detail``. A card generator reading
+    them at the top level renders a page that is wrong in three places and looks finished in
+    all three: the accuracy sentence names no dataset, the decode budget prints ``?``, and
+    the unfinished count falls back to 0 -- which reads as the run having been measured and
+    found clean rather than never having been asked.
+
+    Turns red when: the reads go back to the top level, which is where they were when the
+    generator was written against a hand-made fixture instead of a real record.
+    """
+    text = _render(card, tmp_path, "3.00", eval_record=NESTED_EVAL)
+    assert "`spider`, `gretel`, `wikisql`" in text
+    assert "Decode budget was 1024 new tokens" in text
+    assert "?" not in text.split("## Results")[1].split("## What the allocator")[0]
+
+
+def test_a_record_that_never_counted_unfinished_generations_is_refused(
+    card: Any, tmp_path: Path
+) -> None:
+    """Zero is a measurement here, so it may not come from a key that is not there.
+
+    A 256-token cap once scored 5.50% on this task where 1024 scored 57.75% on the same
+    problems. "0 generations reached it without finishing" is therefore load-bearing prose,
+    and ``.get(field, 0)`` would print it for a record that never looked.
+
+    Turns red when: the default comes back.
+    """
+    stripped = {k: v for k, v in NESTED_EVAL.items() if k != "detail"}
+    with pytest.raises(SystemExit, match="no unfinished_reasoning count"):
+        _render(card, tmp_path, "3.00", eval_record=stripped)

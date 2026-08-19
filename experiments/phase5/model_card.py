@@ -55,6 +55,39 @@ def joined(names: list[str]) -> str:
     return ", ".join(f"`{name}`" for name in names)
 
 
+def scored_fields(scored: dict[str, Any]) -> dict[str, Any]:
+    """The three eval fields the card asserts, read from where the harness really writes them.
+
+    ``dynquant eval`` nests all three: the decode budget under ``decode``, the source list
+    under ``task_options``, and the unfinished count under ``detail``. Read at the top level
+    every one of them is absent -- and absent is not neutral on a public page. ``sources``
+    degrades to an empty list and the accuracy sentence loses its subject; ``max_new_tokens``
+    prints ``?``; and ``unfinished_reasoning`` defaults to 0, which is the card *asserting*
+    that no generation hit its cap. On this task a cap that binds has been worth 50 points,
+    so that is the one sentence on the page that must not be able to come from a missing key.
+
+    A flattened record is still accepted, because the fixtures and the phase-4 records are
+    flat. But a record carrying the count in neither place is refused rather than read as
+    zero -- the whole point of the field is that it is a claim, not a default.
+    """
+    detail = scored.get("detail") or {}
+    decode = scored.get("decode") or {}
+    options = scored.get("task_options") or {}
+
+    unfinished = scored.get("unfinished_reasoning", detail.get("unfinished_reasoning"))
+    if unfinished is None:
+        raise SystemExit(
+            "the eval record reports no unfinished_reasoning count, at the top level or "
+            "under 'detail'. The card would print 0, which claims that no generation hit "
+            "its decode budget -- a claim this record cannot support."
+        )
+    return {
+        "sources": scored.get("sources") or options.get("sources") or [],
+        "max_new_tokens": scored.get("max_new_tokens", decode.get("max_new_tokens", "?")),
+        "unfinished_reasoning": unfinished,
+    }
+
+
 def floor_budget(inspect: dict[str, Any]) -> tuple[float | None, str | None]:
     """The narrowest budget in this file that broke no floor.
 
@@ -169,6 +202,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     finetune = load(args.finetune, "finetune")
     export = load(args.export, "export")
     scored = load(args.eval, "eval")
+    fields = scored_fields(scored)
     inspect = load(args.inspect, "inspect")
 
     if args.inspect_target not in inspect["targets"]:
@@ -260,7 +294,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     add("## Results\n")
-    sources = scored.get("sources") or []
+    sources = fields["sources"]
     add(
         f"Execution accuracy on the held-out validation split of {joined(sources)}, "
         f"{scored.get('total', '?')} problems, greedy decode.\n"
@@ -287,7 +321,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "than two independent accuracies subtracted.\n"
     )
 
-    unfinished = scored.get("unfinished_reasoning", 0) or 0
+    unfinished = fields["unfinished_reasoning"]
     total = scored.get("total") or 0
     budget_note = (
         ". A short decode budget scores a model that deliberates as though it were "
@@ -297,7 +331,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"above is partly a measurement of the budget.\n"
     )
     add(
-        f"Decode budget was {scored.get('max_new_tokens', '?')} new tokens, and "
+        f"Decode budget was {fields['max_new_tokens']} new tokens, and "
         f"{unfinished} generations reached it without finishing{budget_note}"
     )
 
