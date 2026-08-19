@@ -88,6 +88,73 @@ def scored_fields(scored: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def train_sources(finetune: dict[str, Any]) -> list[str]:
+    """Which datasets the fine-tune trained on, from where the trainer writes them.
+
+    ``run_s2_finetune`` records ``sources`` as a mapping of ``task/name -> count`` and
+    ``train_sources_requested`` as the list that was asked for. It writes no
+    ``train_sources``, so reading that key yields an empty list and the sentence renders as
+    "9,999 conversations from , 350,799 supervised tokens" -- a card that names no dataset
+    while looking like it named one, on the single line a reader checks to decide whether
+    the model was trained on their kind of data.
+
+    The realised mapping wins over the requested list: a source that was asked for and then
+    dropped entirely by decontamination is not something this checkpoint was trained on.
+    """
+    realised = finetune.get("sources")
+    if isinstance(realised, dict) and realised:
+        # "text2sql/spider" -> "spider": the task prefix is the harness's, not the dataset's.
+        return [name.split("/")[-1] for name, count in realised.items() if count]
+    for key in ("train_sources", "train_sources_requested"):
+        listed = finetune.get(key)
+        if listed:
+            return list(listed)
+    return []
+
+
+def pval(value: float | None) -> str:
+    """A p-value that never renders as zero.
+
+    ``:.4f`` prints 1.93e-05 as ``0.0000``, which on a public page is a claim that the
+    difference could not have arisen by chance at all. Below the point where four decimals
+    stop carrying information, print the exponent instead.
+    """
+    if value is None:
+        return "--"
+    return f"{value:.4f}" if value >= 1e-4 else f"{value:.2e}"
+
+
+def decontamination(finetune: dict[str, Any]) -> str | None:
+    """The sentence a text-to-SQL card cannot leave to the reader's imagination.
+
+    This checkpoint trains on `spider`, `gretel` and `wikisql` and is then scored on the
+    held-out splits of `spider`, `gretel` and `wikisql`. Anyone reading the results table
+    will ask whether it was scored on what it was trained on, and a card that does not
+    answer has effectively answered badly. The trainer records both halves -- how many
+    training examples were dropped for matching an eval item, and whether any source
+    remained overlapping afterwards -- so the answer is an artifact rather than a promise.
+
+    Returns None only when the run recorded neither, in which case the card says nothing
+    rather than claiming a check that may not have run.
+    """
+    dropped = finetune.get("decontaminated")
+    overlap = finetune.get("sources_overlapping_an_eval_task")
+    if dropped is None and overlap is None:
+        return None
+    total = sum(dropped.values()) if isinstance(dropped, dict) else (dropped or 0)
+    if overlap:
+        return (
+            f"- **Contamination**: {joined(list(overlap))} overlap an evaluation task after "
+            f"decontamination removed {total:,} training examples. The score on those "
+            f"sources is not a held-out measurement."
+        )
+    return (
+        f"- **Contamination**: the training split was matched against every evaluation item "
+        f"and {total:,} examples were dropped for colliding with one. No source overlaps an "
+        f"evaluation task after that."
+    )
+
+
 def floor_budget(inspect: dict[str, Any]) -> tuple[float | None, str | None]:
     """The narrowest budget in this file that broke no floor.
 
@@ -309,7 +376,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"| bf16 (unquantized) | 16 | -- | {pct(reference.get('accuracy'))} | -- | -- |"
         )
     delta = f"{paired['delta_points']:+.2f}" if paired else "--"
-    pvalue = f"{paired['p_value']:.4f}" if paired else "--"
+    pvalue = pval(paired["p_value"]) if paired else "--"
     rows.append(
         f"| **this checkpoint** | {realised:.3f} | {gib(export['directory_nbytes'])} "
         f"| {pct(scored.get('accuracy'))} | {delta} | {pvalue} |"
@@ -376,7 +443,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     add("## How it was made\n")
-    trained_on = finetune.get("train_sources") or []
+    trained_on = train_sources(finetune)
+    raw_loss = finetune.get("train_loss")
+    loss = "?" if raw_loss is None else f"{raw_loss:.4f}"
     add(
         f"- **Base**: `{args.base_model}`, text tower only\n"
         f"- **Regime**: {finetune.get('regime', '?')}, LoRA rank "
@@ -386,11 +455,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"tokens\n"
         f"- **Steps**: {finetune.get('steps', '?')} at effective batch "
         f"{finetune.get('effective_batch', '?')}, lr {finetune.get('lr', '?')}, final "
-        f"train loss {finetune.get('train_loss', '?')}\n"
+        f"train loss {loss}\n"
         f"- **Signals**: collected from {finetune.get('tracked_modules', '?')} modules "
         f"during the fine-tune itself, with no extra forward or backward pass\n"
         f"- **DynQuant**: {export['dynquant_core']}\n"
     )
+    contamination = decontamination(finetune)
+    if contamination:
+        add(contamination + "\n")
 
     add("## Limitations\n")
     add(

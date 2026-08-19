@@ -144,7 +144,7 @@ def _write(tmp_path: Path, **overrides: Any) -> dict[str, str]:
     }
     export.update(overrides.get("export", {}))
     files = {
-        "finetune": FINETUNE,
+        "finetune": overrides.get("finetune") or FINETUNE,
         "export": export,
         "eval": overrides.get("eval_record") or {**EVAL, **overrides.get("eval", {})},
         "inspect": INSPECT,
@@ -165,6 +165,7 @@ def _render(card: Any, tmp_path: Path, target: str, **overrides: Any) -> str:
     """
     paths = _write(tmp_path, **overrides)
     out = tmp_path / f"README-{target}-{len(overrides)}.md"
+    extra = ["--arm", "dq3", "--panel", overrides["panel"]] if overrides.get("panel") else []
     card.main(
         [
             "--arm",
@@ -185,6 +186,7 @@ def _render(card: Any, tmp_path: Path, target: str, **overrides: Any) -> str:
             target,
             "--out",
             str(out),
+            *extra,
         ]
     )
     return out.read_text(encoding="utf-8")
@@ -359,6 +361,15 @@ def test_the_record_the_harness_writes_reaches_the_card(card: Any, tmp_path: Pat
     assert "Decode budget was 1024 new tokens" in text
     assert "?" not in text.split("## Results")[1].split("## What the allocator")[0]
 
+    # And the count itself, from a run where it is not zero -- which is the only version of
+    # this assertion a top-level read cannot also satisfy. Both records here carry 0 under
+    # `detail`, so a card defaulting to 0 would agree with a correct one on every one of
+    # them and be wrong on the only run where the answer changes anything.
+    bound = {**NESTED_EVAL, "detail": {**NESTED_EVAL["detail"], "unfinished_reasoning": 40}}
+    text = _render(card, tmp_path, "3.00", eval_record=bound)
+    assert "40 generations reached it without finishing" in text
+    assert "bounded above by 90.00%" in text
+
 
 def test_a_record_that_never_counted_unfinished_generations_is_refused(
     card: Any, tmp_path: Path
@@ -374,3 +385,120 @@ def test_a_record_that_never_counted_unfinished_generations_is_refused(
     stripped = {k: v for k, v in NESTED_EVAL.items() if k != "detail"}
     with pytest.raises(SystemExit, match="no unfinished_reasoning count"):
         _render(card, tmp_path, "3.00", eval_record=stripped)
+
+
+#: The manifest ``run_s2_finetune`` really writes. It has no ``train_sources`` key at all --
+#: it records the realised counts under ``sources`` and the request under
+#: ``train_sources_requested`` -- which is why the flat FINETUNE fixture above cannot catch
+#: the read this exercises.
+REAL_FINETUNE = {
+    **FINETUNE,
+    "sources": {
+        "text2sql/spider": 2500,
+        "text2sql/gretel": 2500,
+        "text2sql/wikisql": 2500,
+        "text2sql/create-context": 2500,
+    },
+    "train_sources_requested": ["spider", "gretel", "wikisql", "create-context"],
+    "decontaminated": {"spider": 2, "gretel": 2, "wikisql": 4, "create-context": 593},
+    "sources_overlapping_an_eval_task": [],
+    "train_loss": 0.09632793507575989,
+}
+del REAL_FINETUNE["train_sources"]
+
+
+def test_the_datasets_reach_the_card_from_the_key_the_trainer_writes(
+    card: Any, tmp_path: Path
+) -> None:
+    """What the other read gives is: 9,999 conversations from , 350,799 supervised tokens.
+
+    The card asked for ``train_sources``; the trainer writes ``sources`` as a
+    ``task/name -> count`` mapping. Missing, the list renders empty and the sentence keeps
+    its commas -- a line that names no dataset while looking like it named one, on the one
+    bullet a reader checks to decide whether the model saw their kind of data.
+
+    Turns red when: the read goes back to a key the manifest does not have.
+    """
+    text = _render(card, tmp_path, "3.00", finetune=REAL_FINETUNE)
+    assert "`spider`, `gretel`, `wikisql`, `create-context`" in text
+    assert "conversations from ," not in text
+
+
+def test_a_source_dropped_to_nothing_is_not_claimed_as_training_data(
+    card: Any, tmp_path: Path
+) -> None:
+    """The realised counts win over the requested list, because a request is not a fact.
+
+    Decontamination can empty a source entirely. It was still asked for, and
+    ``train_sources_requested`` still names it, but the checkpoint never saw it.
+
+    Turns red when: the requested list is preferred over the realised mapping.
+    """
+    finetune = {**REAL_FINETUNE, "sources": {**REAL_FINETUNE["sources"], "text2sql/wikisql": 0}}
+    text = _render(card, tmp_path, "3.00", finetune=finetune)
+    assert "`spider`, `gretel`, `create-context`" in text
+    assert "`wikisql`" not in text.split("## How it was made")[1]
+
+
+def test_a_tiny_p_value_does_not_render_as_zero(card: Any, tmp_path: Path) -> None:
+    """``:.4f`` prints 1.93e-05 as 0.0000, which claims a difference that cannot be chance.
+
+    Turns red when: the fixed-decimal format comes back.
+    """
+    panel = tmp_path / "panel.json"
+    panel.write_text(
+        json.dumps(
+            {"arms": [{"arm": "dq3", "comparison": {"delta_points": -6.0, "p_value": 1.93e-05}}]}
+        ),
+        encoding="utf-8",
+    )
+    text = _render(card, tmp_path, "3.00", panel=str(panel))
+    assert "1.93e-05" in text
+    assert "0.0000" not in text
+
+
+def test_a_full_float_repr_of_the_loss_does_not_reach_the_page(card: Any, tmp_path: Path) -> None:
+    """0.09632793507575989 is a float repr; 17 significant figures is not a measurement.
+
+    Turns red when: the raw value is interpolated again.
+    """
+    text = _render(card, tmp_path, "3.00", finetune=REAL_FINETUNE)
+    assert "train loss 0.0963" in text
+    assert "0.09632793507575989" not in text
+
+
+def test_the_contamination_answer_comes_from_the_run(card: Any, tmp_path: Path) -> None:
+    """Trained on spider/gretel/wikisql, scored on spider/gretel/wikisql -- so the card says.
+
+    A reader of the results table will ask whether the model was scored on what it was
+    trained on. The trainer records both halves of the answer, so the card states it rather
+    than leaving the reader to assume either way.
+
+    Turns red when: a run that overlaps an eval task is described as decontaminated, which
+    is the direction that misleads.
+    """
+    clean = _render(card, tmp_path, "3.00", finetune=REAL_FINETUNE)
+    assert "601 examples were dropped" in clean
+    assert "No source overlaps an evaluation task" in clean
+
+    dirty = _render(
+        card,
+        tmp_path,
+        "3.00",
+        finetune={**REAL_FINETUNE, "sources_overlapping_an_eval_task": ["spider"]},
+    )
+    assert "`spider` overlap an evaluation task" in dirty
+    assert "not a held-out measurement" in dirty
+
+    # A run that recorded neither says nothing, rather than claiming a check it never ran.
+    silent = _render(
+        card,
+        tmp_path,
+        "3.00",
+        finetune={
+            k: v
+            for k, v in REAL_FINETUNE.items()
+            if k not in ("decontaminated", "sources_overlapping_an_eval_task")
+        },
+    )
+    assert "Contamination" not in silent
