@@ -305,12 +305,13 @@ def render(
         "- **Merged**: the adapter is folded into the base weights, so this is a plain bf16 "
         "checkpoint with no PEFT dependency at load time."
     )
-    add()
-
+    # No blank line between this and the bullets above it: a blank line inside a markdown list
+    # ends the list, and the contamination sentence would render as a second one-item list
+    # sitting under the first -- which reads as a footnote rather than as part of the recipe.
     contamination = model_card.decontamination(finetune)
     if contamination:
         add(contamination)
-        add()
+    add()
 
     add("## How it was scored")
     add()
