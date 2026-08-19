@@ -413,13 +413,16 @@ jobs:
       # A Windows Blackwell owner who took this variant off the Release page got the
       # same dead end the Linux default gave: a wheel whose newest cubin is sm_90.
       #
-      # `thrust` is gone from the sub-package list because CUDA 13 folded Thrust and
-      # CUB into `cccl`; asking for the old name fails the install outright.
+      # The sub-package names are the *installer's*, not the redistributable
+      # tarballs'. CUDA 13 did fold Thrust and CUB into CCCL upstream, but the
+      # Windows installer still exposes the component as `thrust_13.x` and has no
+      # `cccl` at all -- so the rename that looks correct is the one that fails,
+      # 3s in, with a bare NVIDIA exit code and nothing else to read.
       - uses: Jimver/cuda-toolkit@v0.2.36
         with:
           cuda: "13.0.3"
           method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "cccl", "nvvm", "visual_studio_integration"]'
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "nvvm", "visual_studio_integration"]'
 
       - name: build
         run: |
