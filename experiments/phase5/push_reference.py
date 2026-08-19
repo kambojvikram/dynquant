@@ -361,6 +361,17 @@ def render(
     )
     add()
 
+    add(
+        f"It also serves as published: `vllm serve {args.repo}`, measured on vLLM 0.27.1. "
+        "The quantized arms above do not, for a reason their own cards give."
+    )
+    add()
+
+    add("## Citation")
+    add()
+    add(model_card.citation(args.repo, None).rstrip())
+    add()
+
     add("## Limits")
     add()
     add(

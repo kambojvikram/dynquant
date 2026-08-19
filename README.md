@@ -206,7 +206,6 @@ index. The plan's mkdocs site is still not written; this README and
 [v010]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.0
 [v011]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.1
 [v012]: https://github.com/kambojvikram/dynquant/releases/tag/v0.1.2
-[v020]: https://github.com/kambojvikram/dynquant/releases/tag/v0.2.0
 
 **What "done" means for P6, precisely.** The published research prototype dequantized
 back to fp16 at load time — storage savings only, no VRAM reduction and no speedup.
@@ -262,27 +261,44 @@ pip install "dynquant[hf,kernels]"     # + prebuilt CUDA kernels (Linux x86_64)
 
 They are an extra rather than a default because a compiled extension is valid only
 next to the torch minor it was linked against, so its wheel declares a narrow pin
-(`torch>=2.7,<2.8` for the 0.5.0 PyPI cell). pip does not decline a hard requirement
-it cannot otherwise satisfy -- it downgrades. Through 0.5.0 the kernels were a
-default dependency, so `pip install dynquant` on a machine carrying torch 2.13
-silently installed torch 2.7.1 underneath it, left torchvision compiled against the
-outgoing version, and the next `import transformers` died with `operator
-torchvision::nms does not exist`. The command reported success. Since then the
-kernels are requested explicitly, which means **check what pip proposes before
-accepting it** -- if your torch is not the pinned minor, pip will offer to change
-your torch, and that is now a decision you get to see.
+(`torch>=2.13,<2.14` for the current PyPI cell; it was `torch>=2.7,<2.8` through
+0.5.2). pip does not decline a hard requirement it cannot otherwise satisfy -- it
+downgrades. Through 0.5.0 the kernels were a default dependency, so `pip install
+dynquant` on a machine carrying torch 2.13 silently installed torch 2.7.1 underneath
+it, left torchvision compiled against the outgoing version, and the next `import
+transformers` died with `operator torchvision::nms does not exist`. The command
+reported success. Since then the kernels are requested explicitly, which means
+**check what pip proposes before accepting it** -- if your torch is not the pinned
+minor, pip will offer to change your torch, and that is now a decision you get to
+see.
 
 Either way, run `dynquant doctor`: it reports which backend you actually got, which
 is the one statement about kernels that `pip install` output does not make. A wheel
 that installs is not a kernel that loads -- 0.5.0's did neither of the last two, and
 the fallback is silent by design.
 
-There is one wheel on PyPI — the cu126 / torch 2.7 build. For other combinations the
-[v0.2.0 release][v020] is a `--find-links` variant index:
+Exactly one cell of the build matrix goes to PyPI, and which one is not a tidiness
+question. It has to be the cell that pairs with the torch a plain `pip install torch`
+resolves to, because that is the torch that will be sitting next to the kernels.
+Today that is **cu130 / torch 2.13** -- torch 2.13's own metadata names the CUDA major,
+depending on `nvidia-cudnn-cu13`. When PyPI's torch moves a minor the default cell
+moves with it, and the outgoing pairing stays available as a variant.
+
+Getting that wrong is not a cosmetic mismatch. Through 0.5.2 the PyPI cell was
+cu126 / torch 2.7, so the narrow pin above resolved by pulling torch back to 2.7.1 --
+and torch 2.7.1+cu126 supports up to `sm_90`. On a Blackwell card the install
+succeeded, the extension dlopened and reported itself available, and the first
+tensor died with `no kernel image is available for execution on the device`. It had
+no `sm_120` cubin either. CI now asserts the default wheel's compiled architectures
+cover Ampere through Blackwell, which is checkable without a GPU because the arch
+list is baked into the binary.
+
+Every other combination is attached to the GitHub Release, which doubles as a
+`--find-links` variant index:
 
 ```bash
-pip install 'torch==2.8.*' && pip install dynquant-kernels==0.2.0+cu128torch28 \
-  --find-links https://github.com/kambojvikram/dynquant/releases/expanded_assets/v0.2.0
+pip install 'torch==2.8.*' && pip install dynquant-kernels==0.5.3+cu128torch28 \
+  --find-links https://github.com/kambojvikram/dynquant/releases/expanded_assets/v0.5.3
 ```
 
 Anywhere else — Windows, macOS, CPU-only, ARM, glibc older than 2.34 — `dynquant-core`

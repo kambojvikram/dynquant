@@ -26,7 +26,7 @@ The wheel version carries a PEP 440 local segment identifying what it was built
 against, the same scheme torch uses:
 
 ```
-dynquant-kernels==0.1.0+cu124torch27
+dynquant-kernels==0.5.3+cu128torch28
 ```
 
 Compatibility with `dynquant-core` is enforced by an ABI number baked into the

@@ -752,17 +752,26 @@ STAMP_ITEMS: list[Item] = [
 ]
 
 MATRIX_FOOTNOTES = (
-    "torch 2.4 ships no cp313 wheel, so that cell asks for three CPythons: requesting a fourth fails the "
-    "whole cell.\n"
-    "\n"
     "PyPI rejects local versions outright, so exactly one cell is built plain and published there and every "
     "other variant is attached to the GitHub Release, which doubles as a --find-links index. A user on a "
     "non-default torch either points pip at that index or builds the sdist, which compiles against their own "
     "torch -- the only configuration correct by construction.\n"
     "\n"
-    "Open item, before any public release: the manylinux CUDA image is third-party and must become one we "
-    "build ourselves or at minimum a pinned digest. A tag can be moved, and whoever controls it controls the "
-    "compiler that produces the binaries users run.\n"
+    "Which cell is the plain one is a user-facing decision, not a tidy one. Through 0.5.2 it was cu126 / "
+    "torch 2.7, and pip satisfied that narrow pin by pulling a working torch 2.13 back to 2.7.1 -- which "
+    "supports up to sm_90. Every Blackwell owner got a clean install, a successful dlopen, and a dead first "
+    "tensor. The plain cell now follows the torch a bare pip install resolves to, and CI asserts the shipped "
+    "cubins cover sm_80 through sm_120 -- checkable with no GPU, since the arch list is baked into the "
+    "binary by nvcc.\n"
+    "\n"
+    "A toolkit drops architectures as well as adding them; CUDA 13 removes Maxwell through Volta. So the "
+    "requested list is filtered against nvcc --list-gpu-arch at configure time rather than predicted from a "
+    "version ladder, because asking for one nvcc no longer knows is a hard fatal that would fail a release "
+    "build for a reason having nothing to do with this code.\n"
+    "\n"
+    "The manylinux CUDA images are third-party and are pinned by digest rather than tag: a tag can be moved, "
+    "and whoever controls it controls the compiler that produces the binaries users run. Building our own "
+    "remains the better answer.\n"
     "\n"
     "macOS gets no cell and needs none -- there is no CUDA on it. It installs dynquant-core and runs the "
     "torch backend, which is the entire quantization path; only accelerated inference is missing, and it "
@@ -1140,10 +1149,14 @@ def build() -> Sheet:
     y += BAND_HEAD + h2 + 20 + hs + BAND_GAP
     tw = bw * 0.52
     rw = bw - tw - GAP
+    # Newest first, and that ordering is the point rather than a preference: the plain
+    # cell has to pair with the torch a bare `pip install torch` resolves to, because
+    # that is the torch that will be sitting next to the kernels in a fresh environment.
     rows = (
-        (("cu126 / torch 2.7", "12.6", "2.7.1", "3.10 \u2013 3.13", "(plain) \u2192 PyPI"), CUDA),
-        (("cu124 / torch 2.6", "12.4", "2.6.0", "3.10 \u2013 3.13", "+cu124torch26"), DIM),
-        (("cu121 / torch 2.4", "12.1", "2.4.1", "3.10 \u2013 3.12", "+cu121torch24"), DIM),
+        (("cu130 / torch 2.13", "13.0", "2.13.0", "3.10 \u2013 3.13", "(plain) \u2192 PyPI"), CUDA),
+        (("cu128 / torch 2.8", "12.8", "2.8.0", "3.10 \u2013 3.13", "+cu128torch28"), DIM),
+        (("cu126 / torch 2.7", "12.6", "2.7.1", "3.10 \u2013 3.13", "+cu126torch27"), DIM),
+        (("cu126 / torch 2.6", "12.6", "2.6.0", "3.10 \u2013 3.13", "+cu126torch26"), DIM),
     )
     rh = 42
     foot = wrap(MATRIX_FOOTNOTES, F_SMALL, tw - 44)
@@ -1174,7 +1187,11 @@ def build() -> Sheet:
     s.rect(bx, ty, tw, h3, fill=PANEL, outline=BORDER, radius=10, width=1)
     s.rect(bx, ty, 4, h3, fill=BUILD, radius=2)
     s.text(bx + 22, ty + 20, "The matrix", F_PTITLE, FG)
-    s.text(bx + tw - 22, ty + 25, "12 WHEELS PER RELEASE", F_TAG, BUILD, anchor="ra")
+    n_wheels = sum(
+        int(hi.rsplit(".", 1)[1]) - int(lo.rsplit(".", 1)[1]) + 1
+        for lo, hi in ([p.strip() for p in cells[3].split("\u2013")] for cells, _ in rows)
+    )
+    s.text(bx + tw - 22, ty + 25, f"{n_wheels} WHEELS PER RELEASE", F_TAG, BUILD, anchor="ra")
     hy = ty + 62
     cxs: list[float] = []
     acc = bx + 22

@@ -162,6 +162,43 @@ if(DYNQUANT_WITH_CUDA)
     else()
       list(APPEND _dq_archs 86-virtual)
     endif()
+    # A toolkit removes architectures as well as adding them -- CUDA 12 dropped
+    # sm_35, CUDA 13 drops the pre-Turing line -- and a version ladder can only
+    # encode what was true when it was written. Asking nvcc for an arch it no
+    # longer knows is a hard `nvcc fatal`, which kills a release build for a
+    # reason that has nothing to do with this code. So ask the compiler that is
+    # about to run instead of predicting it.
+    #
+    # Filtering rather than erroring is deliberate: a dropped low-end arch means
+    # that GPU is gone from the toolkit, which is not a defect in this project.
+    # A missing *high* end is a defect, and that is asserted in CI against the
+    # built binary, where it can be checked without a GPU.
+    execute_process(
+      COMMAND "${CMAKE_CUDA_COMPILER}" --list-gpu-arch
+      OUTPUT_VARIABLE _dq_nvcc_arch_out
+      RESULT_VARIABLE _dq_nvcc_arch_rc
+      ERROR_QUIET
+      OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(_dq_nvcc_arch_rc EQUAL 0 AND _dq_nvcc_arch_out)
+      string(REPLACE "\r" "" _dq_nvcc_arch_out "${_dq_nvcc_arch_out}")
+      string(REPLACE "\n" ";" _dq_nvcc_arch_list "${_dq_nvcc_arch_out}")
+      set(_dq_kept "")
+      foreach(_dq_arch IN LISTS _dq_archs)
+        string(REGEX MATCH "^[0-9]+" _dq_num "${_dq_arch}")
+        list(FIND _dq_nvcc_arch_list "compute_${_dq_num}" _dq_found)
+        if(_dq_found GREATER_EQUAL 0)
+          list(APPEND _dq_kept "${_dq_arch}")
+        else()
+          message(STATUS
+            "dropping CUDA arch ${_dq_arch}: this nvcc does not support compute_${_dq_num}")
+        endif()
+      endforeach()
+      if(NOT _dq_kept)
+        message(FATAL_ERROR
+          "no requested CUDA architecture survived; nvcc offers: ${_dq_nvcc_arch_out}")
+      endif()
+      set(_dq_archs "${_dq_kept}")
+    endif()
     set(CMAKE_CUDA_ARCHITECTURES "${_dq_archs}")
   endif()
   message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")

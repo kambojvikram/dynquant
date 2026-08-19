@@ -412,6 +412,36 @@ def test_every_matrix_cell_stamps_a_torch_pin(ci_wheels_workflow: dict) -> None:
         assert "--torch" in line, line
 
 
+def test_abi_smoke_tests_the_cell_that_reaches_pypi(ci_wheels_workflow: dict) -> None:
+    """`default: true` decides which wheel is published, and `abi-smoke` is the only
+    job that opens one. It names its artifact and its torch as literals, so the two
+    drift apart silently -- and the smoke test staying green on the *outgoing* cell is
+    exactly what a wrong default looks like from the outside."""
+    jobs = ci_wheels_workflow["jobs"]
+    cells = jobs["linux-wheels"]["strategy"]["matrix"]["include"]
+    defaults = [c for c in cells if c.get("default")]
+    assert len(defaults) == 1, (
+        f"exactly one cell may be plain -- PyPI holds one wheel; got {[c['label'] for c in defaults]}"
+    )
+    cell = defaults[0]
+
+    steps = jobs["abi-smoke"]["steps"]
+    downloads = [
+        s["with"]["name"]
+        for s in steps
+        if str(s.get("uses", "")).startswith("actions/download-artifact")
+    ]
+    assert downloads == [f"wheels-cu{cell['cuda']}-torch{cell['torch']}"], (
+        f"abi-smoke opens {downloads}, but the cell going to PyPI is {cell['label']}"
+    )
+
+    runs = "\n".join(s["run"] for s in steps if "run" in s)
+    assert f"torch=={cell['torch']}" in runs, (
+        f"abi-smoke installs a torch that is not {cell['torch']}, so it is not "
+        f"reproducing what a user of the published wheel gets"
+    )
+
+
 def test_the_torch_pin_regex_matches_the_real_pyproject(stamp) -> None:
     """Companion to the version-file check below. If this regex stops matching, the
     script now raises instead of stamping nothing -- but only if the pattern and the

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -214,6 +215,39 @@ def violations_table(row: dict[str, Any]) -> str:
         got = "/".join(f"{bits}b" for bits in sorted(entry["got"]))
         lines.append(f"| `{role}` | {entry['n']} | {entry['params']:,} | {floor} | {got} |")
     return "\n".join(lines)
+
+
+def citation(repo: str, version: str | None) -> str:
+    """BibTeX for the code and for this checkpoint, as two entries rather than one.
+
+    They are two artifacts on two clocks. The method's code keeps moving after a
+    checkpoint is frozen, so a reader who reruns anything has to be able to say which
+    release they ran against -- and a reader who only wants to point at these weights
+    should not have to cite a version that had nothing to do with them.
+
+    ``version`` is optional because the reference arm is not a DynQuant export and has no
+    export record to read one from. Omitting the field is more honest than inventing it.
+    """
+    name = repo.split("/")[-1]
+    key = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+    software = [
+        "@software{dynquant,",
+        "  author  = {Kamboj, Vikrampal},",
+        "  title   = {{DynQuant}: dynamic-signal quantization for large language models},",
+    ]
+    if version:
+        software.append(f"  version = {{{version}}},")
+    software += [f"  url     = {{{GITHUB}}},", "  year    = {2026}", "}"]
+    checkpoint = [
+        f"@misc{{{key},",
+        "  author       = {Kamboj, Vikrampal},",
+        f"  title        = {{{name}}},",
+        "  year         = {2026},",
+        "  publisher    = {Hugging Face},",
+        f"  howpublished = {{\\url{{https://huggingface.co/{repo}}}}}",
+        "}",
+    ]
+    return "```bibtex\n" + "\n".join([*software, "", *checkpoint]) + "\n```\n"
 
 
 def frontmatter(args: argparse.Namespace) -> str:
@@ -438,8 +472,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         "```\n"
     )
     add(
-        f"Or serve it: `vllm serve {args.repo}`. The vLLM plugin registers itself through "
-        f"an entry point, so nothing extra is needed there.\n"
+        "That path is measured rather than assumed: this repo was pulled from the Hub "
+        "and loaded with the released wheel on torch 2.13, and the graph that came back "
+        f"was checked to hold {export['modules']} DynQuant modules at the widths in the "
+        "table above.\n"
+    )
+
+    add("### Serving\n")
+    add(
+        f"`vllm serve {args.repo}` does **not** work, and the failure belongs here rather "
+        "than in your terminal:\n"
+    )
+    add(
+        "```\n"
+        "ValueError: There is no module or parameter named 'embed_tokens.offsets' in "
+        "Qwen3_5Model\n"
+        "```\n"
+    )
+    add(
+        "vLLM builds this architecture's input embedding without offering it to a "
+        "quantization plugin at all, so a packed `model.embed_tokens` has nowhere to "
+        "land. It is not a flag you are missing and it is not the plugin failing to "
+        "register: on vLLM 0.27.1 the DynQuant plugin loads, the engine reports "
+        "`quantization=dynquant`, and then this raises.\n"
+    )
+    add(
+        "That one tensor is the whole gap. Re-exported with the input embedding in the "
+        f"compute dtype and the other {export['modules'] - 1} quantized modules left "
+        "exactly as they are, this arm serves on vLLM 0.27.1 and answers correctly -- so "
+        "nothing else in the allocation is in the way. That export is not what is "
+        "published here. Until it is, use the transformers path above.\n"
     )
 
     add("## How it was made\n")
@@ -463,6 +525,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     contamination = decontamination(finetune)
     if contamination:
         add(contamination + "\n")
+
+    add("## Citation\n")
+    add("The method has no published paper yet, so these cite the code and these weights.\n")
+    add(citation(args.repo, export.get("dynquant_core")))
 
     add("## Limitations\n")
     add(

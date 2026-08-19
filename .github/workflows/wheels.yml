@@ -91,6 +91,31 @@ jobs:
           # _loader.py turns into the exact wheel name to install instead -- the
           # accepted cost of PyPI having room for only one variant.
           #
+          # Which cell holds it is a user-facing decision, not a tidiness one, and
+          # it has a right answer: the cell must pair with the torch that plain
+          # `pip install torch` resolves to, because that is the torch sitting next to
+          # the kernels in a fresh environment. Today that is 2.13.0, and its own
+          # metadata names the CUDA major -- it depends on nvidia-cudnn-**cu13**. So the
+          # default cell is cu130 / torch 2.13.
+          #
+          # 0.5.2 had it on cu126 / torch 2.7, and the damage was not the mismatch the
+          # stamper already guards. It is worse, because the guard works: the PyPI wheel
+          # pins `torch>=2.7,<2.8`, so `pip install "dynquant[kernels]"` *satisfies* that
+          # by downgrading a working torch 2.13 to 2.7.1 -- and torch 2.7.1+cu126
+          # supports up to sm_90. On any Blackwell card (RTX 5090, RTX PRO 6000, B200)
+          # the install succeeds, the extension dlopens, and the first tensor dies with
+          # "no kernel image is available for execution on the device". Measured on an
+          # RTX PRO 6000: the +cu128torch28 variant reports `is_available() True` with
+          # cubins for 75..120 and a correct GEMV at 2, 3 and 4 bits on the same box
+          # where the PyPI cell cannot allocate one.
+          #
+          # This is also the variant `_loader.py` has been printing as the remedy for a
+          # torch mismatch -- `cu130torch213`, named in stamp_kernel_version.py's own
+          # docstring as a wheel "the matrix never built". Now it does.
+          #
+          # Keeping this current is therefore maintenance, not polish: when PyPI's torch
+          # moves a minor, this flag moves with it and the old cell stays as a variant.
+          #
           # The image's CUDA and `torch_index`'s CUDA must be the *same* version, not
           # merely the same major. `CIBW_REPAIR_WHEEL_COMMAND` below excludes
           # `libcudart.so.*` so the wheel uses torch's bundled runtime; a `_C.so`
@@ -114,7 +139,7 @@ jobs:
             torch_index: "https://download.pytorch.org/whl/cu126"
             image: "sameli/manylinux_2_34_x86_64_cuda_12.6@sha256:be84b5937b2f6e02ee584226e54394976026b5f4489de113d3f2df2171a74b62"
             cibw_build: "cp310-* cp311-* cp312-* cp313-*"
-            default: true
+            default: false
           - label: "cu126 / torch 2.6"
             cuda: "12.6"
             torch: "2.6.0"
@@ -129,6 +154,18 @@ jobs:
             image: "sameli/manylinux_2_34_x86_64_cuda_12.8@sha256:3ff78728c35eb6522a97d1fbf507d7faacfc402df6678ca49cc78a7ba5289bf6"
             cibw_build: "cp310-* cp311-* cp312-* cp313-*"
             default: false
+          # The PyPI cell. It is last in the list and newest on purpose -- see the note
+          # on `default` above. Digest is the `latest` tag of that image as of this
+          # commit; its nvcc is 13.0 and it keeps sm_75, so the architecture ladder in
+          # CMakeLists loses nothing by moving up (CUDA 13 drops Maxwell through Volta,
+          # which this project has never targeted).
+          - label: "cu130 / torch 2.13"
+            cuda: "13.0"
+            torch: "2.13.0"
+            torch_index: "https://download.pytorch.org/whl/cu130"
+            image: "sameli/manylinux_2_34_x86_64_cuda_13.0@sha256:1d8f405b2a6565dd94ecca575f44396af62b1d2ad0c85e4b8666e0617d685c8e"
+            cibw_build: "cp310-* cp311-* cp312-* cp313-*"
+            default: true
     steps:
       - uses: actions/checkout@v4
 
@@ -370,17 +407,25 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - uses: Jimver/cuda-toolkit@v0.2.19
+      # Kept deliberately in step with the `default: true` cell of linux-wheels. It
+      # is a separate hardcoded pairing, so it drifts silently -- and it had, sitting
+      # on CUDA 12.6 / torch 2.7 long after that stopped being what anyone installs.
+      # A Windows Blackwell owner who took this variant off the Release page got the
+      # same dead end the Linux default gave: a wheel whose newest cubin is sm_90.
+      #
+      # `thrust` is gone from the sub-package list because CUDA 13 folded Thrust and
+      # CUB into `cccl`; asking for the old name fails the install outright.
+      - uses: Jimver/cuda-toolkit@v0.2.36
         with:
-          cuda: "12.6.0"
+          cuda: "13.0.3"
           method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "cccl", "nvvm", "visual_studio_integration"]'
 
       - name: build
         run: |
           pip install "scikit-build-core>=0.10" "cmake>=3.26" ninja build
-          pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu126
-          python scripts/stamp_kernel_version.py --cuda 12.6 --torch 2.7.1
+          pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cu130
+          python scripts/stamp_kernel_version.py --cuda 13.0 --torch 2.13.0
           python -m build --wheel --no-isolation --outdir wheelhouse packages/dynquant-kernels
 
       - uses: actions/upload-artifact@v4
@@ -425,15 +470,20 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: wheels-cu12.6-torch2.7.1
+          name: wheels-cu13.0-torch2.13.0
           path: wheelhouse
 
       - name: install the PyPI cell next to the torch it was built against
+        # Deliberately from PyPI and not from a download.pytorch.org index. This job
+        # exists to reproduce what a user gets from `pip install`, and the whole point
+        # of the default cell is that it pairs with the torch PyPI serves. Pointing at
+        # the cu130 index here would test a pairing the user never makes and would hide
+        # the day PyPI's torch moves on.
         run: |
           set -eux
           python3 -m venv /venv
           /venv/bin/pip install -q --upgrade pip
-          /venv/bin/pip install -q torch==2.7.1 --index-url https://download.pytorch.org/whl/cu126
+          /venv/bin/pip install -q torch==2.13.0
           W=$(ls wheelhouse/dynquant_kernels-*cp310-cp310-manylinux*.whl | head -1)
           echo "testing $W"
           /venv/bin/pip install -q "$W"
@@ -476,6 +526,21 @@ jobs:
 
           assert abi == k.ABI_VERSION, f"binary ABI {abi} != shell {k.ABI_VERSION}"
           assert cuda, "wheel reports it was built without CUDA"
+
+          # The other half of "will this run on the user's card", and the half nothing
+          # checked. `is_available()` cannot be asserted on this runner -- there is no
+          # GPU -- but the arch list is compiled *into* the binary from
+          # __CUDA_ARCH_LIST__ and reads back without a device. 0.5.2 shipped a default
+          # wheel whose newest cubin was sm_90, three years behind the cards people buy,
+          # and every gate was green.
+          #
+          # sm_75 is deliberately not required: CUDA drops architectures as well as
+          # adding them, and Turing is the next one due. Ampere through Blackwell is the
+          # range this project claims, so that is the range asserted.
+          archs = k.compiled_architectures()
+          print("compiled architectures:", archs)
+          missing = [sm for sm in (80, 86, 89, 90, 120) if sm not in archs]
+          assert not missing, f"default wheel has no cubin for sm_{missing}; got {archs}"
           PY
 
       - name: and state, by name, what C++ runtime symbols it still needs

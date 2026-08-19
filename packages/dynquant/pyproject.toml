@@ -24,7 +24,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dynquant"
-version = "0.5.2"
+version = "0.5.3"
 description = "Training-dynamics-driven mixed-precision LLM quantization, with prebuilt CUDA kernels."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -42,15 +42,16 @@ classifiers = [
 ]
 
 dependencies = [
-    "dynquant-core==0.5.2",
+    "dynquant-core==0.5.3",
     # The prebuilt kernels are NOT here, and that is the fix for the defect that
     # cost 0.5.0 its install story. See `[project.optional-dependencies] kernels`.
     #
     # `dynquant-kernels` is a compiled extension linked against one torch minor's
-    # C++ ABI, so its wheel declares a narrow runtime pin (`torch>=2.7,<2.8` for
-    # the 0.5.0 PyPI cell). PyPI accepts exactly one cell of the build matrix --
-    # local version segments are rejected outright -- so there is exactly one torch
-    # minor that cell is compatible with, and everyone else is a conflict.
+    # C++ ABI, so its wheel declares a narrow runtime pin (`torch>=2.13,<2.14` for
+    # the current PyPI cell; `torch>=2.7,<2.8` through 0.5.2). PyPI accepts exactly
+    # one cell of the build matrix -- local version segments are rejected outright --
+    # so there is exactly one torch minor that cell is compatible with, and everyone
+    # else is a conflict.
     #
     # A conflict is not what pip reports. Listing the kernels here made it a hard
     # requirement, and pip resolved it the only way a hard requirement can be
@@ -77,11 +78,11 @@ dependencies = [
 [project.optional-dependencies]
 # Mirrors of dynquant-core's extras, so users never have to know that `core`
 # exists as a separate name.
-hf = ["dynquant-core[hf]==0.5.2"]
-train = ["dynquant-core[train]==0.5.2"]
-eval = ["dynquant-core[eval]==0.5.2"]
-triton = ["dynquant-core[triton]==0.5.2"]
-dev = ["dynquant-core[dev]==0.5.2"]
+hf = ["dynquant-core[hf]==0.5.3"]
+train = ["dynquant-core[train]==0.5.3"]
+eval = ["dynquant-core[eval]==0.5.3"]
+triton = ["dynquant-core[triton]==0.5.3"]
+dev = ["dynquant-core[dev]==0.5.3"]
 
 # The compiled kernels, opt-in. This is the one place the binary is requested, and
 # it is an extra rather than a dependency because asking for it can force a torch

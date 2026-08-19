@@ -17,6 +17,105 @@ it is talking about:
 A bump to any of the last three is called out explicitly, because those are the
 ones that invalidate artifacts a user has already produced.
 
+## [0.5.3] — 2026-08-18
+
+The compiled kernels on PyPI could not run on any Blackwell card, and every gate in
+the build was green while that was true. The binary was not the defect -- 0.5.1's
+GCC 11 pin fixed that and the fix holds -- the defect is which cell of the build
+matrix gets published. No `csrc/` change on the numerical path and no artifact-number
+change: `KERNEL_ABI_VERSION` 3, `MIN_KERNEL_ABI_VERSION` 2, `CHECKPOINT_FORMAT_VERSION` 2,
+`STATS_SCHEMA_VERSION` 2. Checkpoints and stats files are unaffected, and the variant
+wheels attached to the 0.5.2 release stay valid.
+
+### Fixed
+
+- **`pip install "dynquant[kernels]"` downgraded torch and then could not launch a
+  kernel.** Four facts compose into it, none of which is wrong on its own. The default
+  matrix cell was cu126 / torch 2.7, so the PyPI wheel declares `Requires-Dist:
+  torch<2.8,>=2.7`. pip does not decline a hard requirement it can otherwise satisfy --
+  it downgrades, so a working torch 2.13 became 2.7.1+cu126. torch 2.7.1+cu126 supports
+  up to `sm_90` and refuses Blackwell outright. And the kernels wheel had no `sm_120`
+  cubin either, so even a compatible torch would not have helped. The install reported
+  success, the extension dlopened, `dynquant_kernels.is_available()` returned `True`,
+  and the first tensor died with `CUDA error: no kernel image is available for execution
+  on the device`.
+
+  Measured on 2x RTX PRO 6000 (`sm_120`, driver 590.48.01), two arms of the *published*
+  0.5.2 wheel, one variable: the `+cu128torch28` variant off the Release page reported
+  `is_available() True` with cubins for 75..120 and a correct GEMV at 2, 3 and 4 bits;
+  the plain PyPI wheel could not allocate a tensor on the same box.
+
+  The default cell is now **cu130 / torch 2.13**, and which cell holds it is no longer a
+  free choice: it has to pair with the torch a bare `pip install torch` resolves to,
+  because that is the torch that will be sitting next to the kernels. PyPI's torch
+  2.13.0 names its own CUDA major in its metadata -- it depends on `nvidia-cudnn-cu13`.
+  The new pin is `torch>=2.13,<2.14`, so the install stops moving anyone's torch. That
+  cell was built and run before being made the default, on the box above: GNU 11.4.0,
+  CUDA 13.0.88, torch 2.13.0+cu130, ABI 3, `CUDA_ARCHITECTURES
+  75-real;80-real;86-real;89-real;90-real;100-real;120-real;120-virtual`,
+  `Backend.CUDA`, and a decode GEMV matching the torch reference at 4, 3 and 2 bits.
+  4096x4096 at batch 1: 0.009 ms packed against 0.012 ms for the bf16 dense product,
+  with 8.5 / 6.5 / 4.5 MiB of weight against 32.0 MiB. The comparison is exercised at
+  M in {1, 8, 128}; at 128 rows the runtime takes the same dequantize-then-GEMM path as
+  the reference, so the compiled GEMV proper is what the small-M rows measure.
+
+  cu128 / torch 2.8 was rebuilt from the same source as a regression arm and is
+  unchanged: identical architecture list, correct numerics, 0.009 ms against 0.015 ms.
+
+- **Nothing in CI could see that the shipped wheel had no cubin for a current GPU.**
+  `abi-smoke` checked that the extension imports, that its ops register, and that its
+  ABI number matches -- all of which the broken wheel passed. It now also asserts
+  `compiled_architectures()` covers `sm_80` through `sm_120`. That needs no GPU: the
+  arch list comes from `__CUDA_ARCH_LIST__`, baked in by nvcc and readable after a
+  successful dlopen, verified by running the check verbatim under
+  `CUDA_VISIBLE_DEVICES=`. `sm_75` is deliberately not required, because CUDA drops
+  architectures as well as adding them and Turing is next in line. The job also pulls
+  its torch from PyPI rather than from a `download.pytorch.org` index, since its purpose
+  is to reproduce what a plain `pip install` produces -- pointing it at the cu130 index
+  would test a pairing no user makes, and would hide the day PyPI's torch moves on.
+
+  Both of those are literals in a second file, so `tests/test_packaging.py` now asserts
+  that exactly one matrix cell is plain and that `abi-smoke` opens *that* cell's
+  artifact and installs *that* cell's torch. Without it the smoke job keeps passing
+  against the outgoing wheel after a default moves, which is indistinguishable from
+  working. Checked against all three ways it can go wrong -- two defaults, a moved
+  default, a drifted torch -- rather than only against the arrangement that is correct
+  today.
+
+### Added
+
+- **The CUDA architecture list is filtered against the compiler that is about to run.**
+  A version ladder can only encode what was true when it was written, and a toolkit
+  removes architectures as well as adding them: CUDA 12 dropped `sm_35`, CUDA 13 drops
+  Maxwell through Volta. Asking nvcc for one it no longer knows is `nvcc fatal`, which
+  fails a release build for a reason unrelated to this code -- so CMake now intersects
+  the requested list with `nvcc --list-gpu-arch`. Proven by negative control: injecting
+  `70-real` prints `dropping CUDA arch 70-real: this nvcc does not support compute_70`
+  and builds, where the unfiltered configure stops at `nvcc fatal : Unsupported gpu
+  architecture 'compute_70'`. A dropped low-end architecture is not a defect in this
+  project; a missing high end is, and that is what the CI assertion above covers.
+
+### Changed
+
+- The Windows wheel job moves to CUDA 13.0.3 / torch 2.13.0 to stay in step with the
+  default Linux cell -- it is a second hardcoded pairing and had drifted silently, so a
+  Windows Blackwell owner taking that variant off the Release page hit the same dead
+  end its toolkit implies: CUDA 12.6 predates `sm_120` entirely. `thrust` leaves its
+  sub-package list because CUDA 13 folded Thrust and CUB into `cccl` and the old name
+  fails the install outright. Its torch keeps an explicit `--index-url`, which the
+  Linux smoke job deliberately dropped: reproducing a user's `pip install` is that
+  job's whole purpose, and it is not this one's. This job links against torch, so it
+  needs one built with CUDA, and on Windows PyPI's torch has been the CPU build.
+
+  **The build itself is unvalidated.** The job is `continue-on-error: true` and there
+  is no Windows CUDA box here, so it will be readable only from the first run's log.
+  What was checked from here is that its pins resolve: `download.pytorch.org/whl/cu130`
+  carries `torch-2.13.0+cu130` for cp310 through cp313 on `win_amd64`.
+
+- The build-matrix figure and the README paragraph naming the PyPI cell were describing
+  cells that no longer exist (`cu124 / torch 2.6`, `cu121 / torch 2.4`) and a wheel count
+  that nothing recomputed. The figure now derives that count from the rows it prints.
+
 ## [0.5.2] — 2026-08-18
 
 Two runtime defects and one signal defect, all three found by running a real model
@@ -2307,7 +2406,8 @@ and `mma.sync` accumulation — the AWQ/Marlin route — which is P7.
   Python costs. CUDA Graphs (P8) and a `flash-linear-attention` fast path are what address
   it. `experiments/qwen35_2b/RESULTS.md` has the measurement.
 
-[Unreleased]: https://github.com/kambojvikram/dynquant/compare/v0.5.2...main
+[Unreleased]: https://github.com/kambojvikram/dynquant/compare/v0.5.3...main
+[0.5.3]: https://github.com/kambojvikram/dynquant/releases/tag/v0.5.3
 [0.5.2]: https://github.com/kambojvikram/dynquant/releases/tag/v0.5.2
 [0.5.1]: https://github.com/kambojvikram/dynquant/releases/tag/v0.5.1
 [0.5.0]: https://github.com/kambojvikram/dynquant/releases/tag/v0.5.0
