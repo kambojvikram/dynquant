@@ -347,3 +347,57 @@ def test_a_token_in_the_arguments_stops_the_run(push: Any) -> None:
     """
     with pytest.raises(SystemExit, match="compromised"):
         push.main(["--token", "hf_averyrealtoken", "--source", "/nowhere"])
+
+
+def test_the_upload_path_is_constructed_the_way_phase4_expects(
+    push: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every other test here stops at --dry-run, which is where this bug lived.
+
+    ``phase4.Push`` takes a ``kind``. Omitting it raises TypeError on the line that runs
+    *only* on the irreversible path -- after the card is written, after the guards pass, with
+    the token already in the environment. A suite that exercises only the dry run reports
+    green on a script that cannot upload at all.
+
+    ``kind`` also has to be CEILING specifically, not any string: phase4's arm check branches
+    on it to refuse a quantization_config on this arm, and any other value routes the bf16
+    merge into the branch that demands one.
+
+    Turns red when: the upload path is constructed with the wrong arity or the wrong kind.
+    """
+    source = _dir(tmp_path / "merged", shards={"model-00001-of-00001.safetensors": 500})
+    inputs = _inputs(tmp_path)
+    seen: dict[str, Any] = {}
+
+    monkeypatch.setenv("HF_TOKEN", "not-a-real-token")
+    monkeypatch.setattr(push.phase4, "occupied", lambda pushes, token: [])
+    monkeypatch.setattr(
+        push.phase4,
+        "upload",
+        lambda p, card, token, *, private: (
+            seen.update(push=p, private=private, card=card)
+            or "https://huggingface.co/Org/model-bf16"
+        ),
+    )
+
+    code = push.main(
+        [
+            "--source",
+            str(source),
+            "--finetune",
+            inputs["finetune"],
+            "--eval",
+            inputs["eval"],
+            "--panel",
+            inputs["panel"],
+            "--base-model",
+            "Qwen/Qwen3.8-27B",
+            "--repo",
+            "Org/model-bf16",
+        ]
+    )
+    assert code == 0
+    assert seen["push"].kind == push.phase4.model_cards.CEILING
+    assert seen["push"].repo == "Org/model-bf16"
+    assert seen["private"] is False
+    assert "85.50%" in seen["card"]

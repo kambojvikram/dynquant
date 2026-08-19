@@ -441,7 +441,10 @@ def main(argv: list[str] | None = None) -> int:
     if not token:
         raise SystemExit("HF_TOKEN is not set")
 
-    push = phase4.Push(label="bf16", source=source, repo=args.repo)
+    # ``kind`` is not decoration: phase4's own arm check reads it, and CEILING selects the
+    # branch that refuses a quantization_config on this arm -- the same refusal ``check``
+    # above makes, arrived at from the other direction.
+    push = phase4.Push(label="bf16", source=source, repo=args.repo, kind=phase4.model_cards.CEILING)
     for line in phase4.occupied([push], token):
         print(f"note: {line}")
     url = phase4.upload(push, card, token, private=args.private)
